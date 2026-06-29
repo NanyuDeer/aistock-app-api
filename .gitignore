@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+.turbo/
+__pycache__/
+*.pyc
+data/hot-sector-cache/

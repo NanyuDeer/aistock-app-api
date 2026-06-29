@@ -1,0 +1,22 @@
+gupiao.yaozhineng.com {
+    root * /var/www/aistock
+    file_server
+
+    encode gzip
+
+    try_files {path} /index.html
+
+    log {
+        output file /home/aistock/logs/caddy-frontend.log
+    }
+}
+
+gupiao-api.yaozhineng.com {
+    reverse_proxy 127.0.0.1:56790
+
+    encode gzip
+
+    log {
+        output file /home/aistock/logs/caddy-api.log
+    }
+}

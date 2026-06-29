@@ -1,0 +1,24 @@
+{
+  "apps": [
+    {
+      "name": "aistock-api",
+      "script": "dist/index.js",
+      "cwd": "/home/aistock/aistock-api",
+      "instances": 1,
+      "exec_mode": "fork",
+      "watch": false,
+      "autorestart": true,
+      "max_restarts": 10,
+      "restart_delay": 5000,
+      "env": {
+        "NODE_ENV": "production",
+        "TZ": "Asia/Shanghai"
+      },
+      "error_file": "/home/aistock/logs/aistock-api-error.log",
+      "out_file": "/home/aistock/logs/aistock-api-out.log",
+      "log_date_format": "YYYY-MM-DD HH:mm:ss Z",
+      "merge_logs": true,
+      "max_memory_restart": "512M"
+    }
+  ]
+}
