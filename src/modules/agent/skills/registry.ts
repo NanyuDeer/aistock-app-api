@@ -3,7 +3,7 @@
  * 消费 skills.generated.ts，不做动态扫描
  * Skills 的新增/移除由构建时代码生成脚本处理
  */
-import type { Skill, SkillMetadata } from './types'
+import type { Agent, Skill, SkillMetadata, SkillResult } from './types'
 import { SKILLS_REGISTRY, SKILL_LOADERS } from './skills.generated'
 
 // Skills 运行时缓存（懒加载后缓存）
@@ -61,4 +61,34 @@ export function getSkillsDescription(): string {
  */
 export function getSkillsMetadata(): SkillMetadata[] {
   return SKILLS_REGISTRY
+}
+
+/**
+ * 带权限校验的 Skill 执行
+ * @param agent 发起调用的 Agent
+ * @param skillName 要调用的 Skill 名称
+ * @param params 参数
+ * @returns SkillResult
+ * @throws Error 当越权或 Skill 不存在时
+ */
+export async function executeSkill(
+  agent: Agent,
+  skillName: string,
+  params: any
+): Promise<SkillResult> {
+  // Phase 3: 白名单校验
+  if (!agent.allowedSkills.includes(skillName)) {
+    const allowed = agent.allowedSkills.join(', ')
+    throw new Error(
+      `权限拒绝: Agent "${agent.id}" 无权调用 Skill "${skillName}"。` +
+      `该 Agent 允许的 Skills: [${allowed}]`
+    )
+  }
+
+  const skill = getSkill(skillName)
+  if (!skill) {
+    throw new Error(`Skill "${skillName}" 未注册，请确认名称是否正确`)
+  }
+
+  return skill.execute(params)
 }
