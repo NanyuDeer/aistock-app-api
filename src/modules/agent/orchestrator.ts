@@ -9,9 +9,9 @@ import { SYSTEM_PROMPT } from './prompts/system'
 // 初始化 Skills
 let initialized = false
 
-function ensureInit() {
+async function ensureInit() {
   if (!initialized) {
-    initSkills()
+    await initSkills()
     initialized = true
   }
 }
@@ -61,7 +61,7 @@ export async function handleMessage(
   message: string,
   context?: ChatContext
 ): Promise<{ content: string; skillResult?: SkillResult; session_id: string }> {
-  ensureInit()
+  await ensureInit()
 
   const intent = recognizeIntent(message)
   const sessionId = context?.sessionId || `session_${Date.now()}`
@@ -145,7 +145,7 @@ export async function* handleMessageStream(
   message: string,
   context?: ChatContext
 ): AsyncGenerator<StreamMessage> {
-  ensureInit()
+  await ensureInit()
 
   const result = await handleMessage(message, context)
 
@@ -163,7 +163,7 @@ export async function* handleMessageStream(
 /**
  * 获取系统提示词（含 Skills 描述）
  */
-export function getSystemPrompt(): string {
-  ensureInit()
+export async function getSystemPrompt(): Promise<string> {
+  await ensureInit()
   return SYSTEM_PROMPT.replace('{{SKILLS_DESCRIPTION}}', getSkillsDescription())
 }

@@ -3,10 +3,7 @@
  */
 import { Router, type Request, type Response } from 'express'
 import { handleMessage } from '../../modules/agent/orchestrator'
-import { initSkills, getAllSkills } from '../../modules/agent/skills/registry'
-
-// 模块加载时初始化 Skills（确保 /skills 接口能返回数据）
-initSkills()
+import { initSkills } from '../../modules/agent/skills/registry'
 
 const router: Router = Router()
 
@@ -16,6 +13,7 @@ const router: Router = Router()
  */
 router.post('/chat/message', async (req: Request, res: Response) => {
   try {
+    await initSkills()
     const { message, session_id, context } = req.body || {}
 
     if (!message || typeof message !== 'string') {
@@ -40,15 +38,12 @@ router.post('/chat/message', async (req: Request, res: Response) => {
 
 /**
  * GET /api/agent/skills
- * 获取所有已注册的 Skills 列表
+ * 获取所有已注册的 Skills 列表（元数据静态可用，无需 init）
  */
 router.get('/skills', async (_req: Request, res: Response) => {
   try {
-    const skills = getAllSkills().map(s => ({
-      name: s.name,
-      description: s.description
-    }))
-    res.json({ code: 200, data: skills })
+    const { getSkillsMetadata } = await import('../../modules/agent/skills/registry')
+    res.json({ code: 200, data: getSkillsMetadata() })
   } catch (err: any) {
     res.status(500).json({ code: 500, message: err.message })
   }

@@ -33,6 +33,14 @@ export interface Skill {
   execute(params: any): Promise<SkillResult>
 }
 
+/** Skill 元数据（不含执行逻辑，用于 LLM 发现和 prompt 构建） */
+export interface SkillMetadata {
+  name: string
+  description: string
+  tags: string[]
+  priority: number
+}
+
 /**
  * Agent 接口
  */
