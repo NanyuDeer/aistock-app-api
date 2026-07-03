@@ -7,3 +7,4 @@ dist/
 __pycache__/
 *.pyc
 data/hot-sector-cache/
+.trae/

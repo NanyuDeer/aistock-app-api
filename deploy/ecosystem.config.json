@@ -1,9 +1,9 @@
 {
   "apps": [
     {
-      "name": "aistock-api",
+      "name": "aistock-app-api",
       "script": "dist/index.js",
-      "cwd": "/home/aistock/aistock-api",
+      "cwd": "/home/aistock/aistock-app-api",
       "instances": 1,
       "exec_mode": "fork",
       "watch": false,

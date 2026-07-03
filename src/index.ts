@@ -8,49 +8,63 @@ import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
 
-import pool from './db';
-import redis from './redis';
+import pool from './core/db';
+import redis from './core/redis';
 
-import { ProfitForecastController } from './controllers/ProfitForecastController';
-import { StockInfoController } from './controllers/StockInfoController';
-import { StockQuoteController } from './controllers/StockQuoteController';
-import { StockListController } from './controllers/StockListController';
-import { IndexQuoteController } from './controllers/IndexQuoteController';
-import { TagLeaderController } from './controllers/TagLeaderController';
-import { NewsController } from './controllers/NewsController';
-import { AuthController } from './controllers/AuthController';
-import { UserController } from './controllers/UserController';
-import { WechatEventController } from './controllers/WechatEventController';
-import { ScanLoginController } from './controllers/ScanLoginController';
-import { StockAnalysisController } from './controllers/StockAnalysisController';
-import { StockOcrController } from './controllers/StockOcrController';
-import { TenxScoreController } from './controllers/TenxScoreController';
-import { CapitalFlowController } from './controllers/CapitalFlowController';
-import { StockMonitorController } from './controllers/StockMonitorController';
-import { PotentialStockPushController } from './controllers/PotentialStockPushController';
-import { WindLeaderController } from './controllers/WindLeaderController';
-import { AiGraphController } from './controllers/AiGraphController';
-import { AiGraphService } from './services/AiGraphService';
-import { IndustryKGController } from './controllers/IndustryKGController';
-import { IndustryKGService } from './services/IndustryKGService';
-import { StockInfoJudgementController } from './controllers/StockInfoJudgementController';
-import { FeishuMessageController } from './controllers/FeishuMessageController';
-import { FeishuAuthController } from './controllers/FeishuAuthController';
-import { ConfigController } from './controllers/ConfigController';
-import { MessagePushService } from './services/MessagePushService';
-import { TenxBatchService } from './services/TenxBatchService';
-import { isValidAShareSymbol } from './utils/validator';
-import { StockInfoCrawlService } from './services/crawler/StockInfoCrawlService';
-import { syncStockConceptMapping } from './services/StockConceptMappingService';
-import { WindLeaderAnalyzerService } from './services/WindLeaderAnalyzerService';
-import { HotBurstService } from './services/HotBurstService';
-import { closeAllAgents } from './utils/httpAgent';
-import { ProfitForecastAutoUpdateService } from './services/ProfitForecastAutoUpdateService';
-import { StockSyncService } from './services/StockSyncService';
+// ==================== 模块导入 ====================
+// quote 行情模块
+import { StockQuoteController } from './modules/quote/controller';
+import { IndexQuoteController } from './modules/quote/indexController';
+import { StockListController } from './modules/quote/stockListController';
+import { TagLeaderController } from './modules/quote/tagLeaderController';
+import { CapitalFlowController } from './modules/quote/capitalFlowController';
+import { StockAnalysisController } from './modules/quote/analysisController';
 
-// Agent + WebSocket 新增
-import agentRouter from './routes/agent';
-import { initWebSocket } from './ws/handler';
+// agent 智能体模块
+import agentRouter from './core/routes/agent';
+
+// push 推送模块
+import { PotentialStockPushController } from './modules/push/controller';
+import { WechatEventController } from './modules/push/wechatEventController';
+import { MessagePushService } from './modules/push/MessagePushService';
+
+// auth 认证模块
+import { AuthController } from './modules/auth/controller';
+import { ScanLoginController } from './modules/auth/scanLoginController';
+import { UserController } from './modules/auth/userController';
+import { FeishuMessageController } from './modules/auth/feishuMessageController';
+import { FeishuAuthController } from './modules/auth/feishuAuthController';
+
+// monitor 监控模块
+import { StockMonitorController } from './modules/monitor/controller';
+import { WindLeaderController } from './modules/monitor/windLeaderController';
+import { NewsController } from './modules/monitor/newsController';
+import { ProfitForecastController } from './modules/monitor/profitForecastController';
+import { TenxScoreController } from './modules/monitor/tenxScoreController';
+import { AiGraphController } from './modules/monitor/aiGraphController';
+import { AiGraphService } from './modules/monitor/AiGraphService';
+import { IndustryKGController } from './modules/monitor/industryKGController';
+import { IndustryKGService } from './modules/monitor/IndustryKGService';
+import { TenxBatchService } from './modules/monitor/TenxBatchService';
+import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
+import { HotBurstService } from './modules/monitor/HotBurstService';
+import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
+import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { StockSyncService } from './modules/monitor/StockSyncService';
+
+// crawler 爬虫模块
+import { StockInfoController } from './modules/crawler/controller';
+import { StockInfoJudgementController } from './modules/crawler/judgementController';
+import { StockOcrController } from './modules/crawler/ocrController';
+import { StockInfoCrawlService } from './modules/crawler/services/StockInfoCrawlService';
+
+// shared 共享层
+import { isValidAShareSymbol } from './shared/utils/validator';
+import { closeAllAgents } from './shared/utils/httpAgent';
+
+// core 基础设施
+import { ConfigController } from './core/routes/configController';
+import { initWebSocket } from './core/ws/handler';
 
 import { Application } from 'express';
 
@@ -217,8 +231,8 @@ app.post('/api/internal/push-stock-info', async (req, res) => {
         const testData = req.body?.test_data;
         if (testData) {
             // 使用传入的测试数据直接推送
-            const { WechatPushService } = await import('./services/WechatPushService');
-            const { MessagePushService } = await import('./services/MessagePushService');
+            const { WechatPushService } = await import('./modules/push/WechatPushService');
+            const { MessagePushService } = await import('./modules/push/MessagePushService');
             const event = {
                 id: testData.id || Date.now(),
                 symbol: testData.symbol || '300750',
@@ -246,7 +260,7 @@ app.post('/api/internal/push-stock-info', async (req, res) => {
             res.json({ success: true, result: { wx: wxResult, feishu: feishuResult } });
         } else {
             // 使用数据库中的数据推送
-            const { StockInfoPushService } = await import('./services/StockInfoPushService');
+            const { StockInfoPushService } = await import('./modules/crawler/StockInfoPushService');
             const result = await StockInfoPushService.push(req.body || { window: 'morning' });
             res.json({ success: true, result });
         }
@@ -469,21 +483,21 @@ cron.schedule('0 4 * * *', async () => {
 cron.schedule('5 19 * * 1-5', async () => {
     console.log('[CapitalFlowCron] 收盘后批量预取资金流向');
     try {
-        const { isAShareTradingTime } = await import('./utils/tradingTime');
+        const { isAShareTradingTime } = await import('./shared/utils/tradingTime');
         const isTrading = await isAShareTradingTime();
         if (isTrading) {
             console.log('[CapitalFlowCron] 仍在交易时间，跳过');
             return;
         }
-        const poolModule = await import('./db');
+        const poolModule = await import('./core/db');
         const dbPool = poolModule.default;
         const result = await dbPool.query('SELECT symbol FROM stocks');
         const symbols = result.rows.map((r: any) => r.symbol as string);
         console.log(`[CapitalFlowCron] 共${symbols.length}只股票待预取`);
 
-        const { getCapitalFlow } = await import('./services/TushareCapitalFlowService');
-        const { CacheService } = await import('./services/CacheService');
-        const { getAShareAdaptiveCacheTtlSeconds } = await import('./utils/tradingTime');
+        const { getCapitalFlow } = await import('./modules/quote/TushareCapitalFlowService');
+        const { CacheService } = await import('./shared/utils/CacheService');
+        const { getAShareAdaptiveCacheTtlSeconds } = await import('./shared/utils/tradingTime');
 
         let success = 0, failed = 0;
         for (const symbol of symbols) {
@@ -508,7 +522,7 @@ cron.schedule('5 19 * * 1-5', async () => {
 cron.schedule('0 3 * * *', async () => {
     console.log('[WindLeaderCron] 开始风口龙头分析');
     try {
-        const { isAShareTradingDay } = await import('./utils/tradingTime');
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
         const isTradingDay = await isAShareTradingDay();
         if (!isTradingDay) {
             console.log('[WindLeaderCron] 今天是非交易日（周末/节假日），跳过风口龙头分析');

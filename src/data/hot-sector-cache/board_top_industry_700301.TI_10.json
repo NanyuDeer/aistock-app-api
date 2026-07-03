@@ -1,0 +1,92 @@
+[
+  {
+    "code": "600714",
+    "name": "金瑞矿业",
+    "price": 18.82,
+    "change_pct": -9.2137,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "603353",
+    "name": "和顺石油",
+    "price": 38.55,
+    "change_pct": -8.779,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600546",
+    "name": "山煤国际",
+    "price": 11.92,
+    "change_pct": 5.4867,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600180",
+    "name": "*ST瑞茂",
+    "price": 1.38,
+    "change_pct": 5.3435,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600759",
+    "name": "ST洲际",
+    "price": 2.02,
+    "change_pct": 5.2083,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "002353",
+    "name": "杰瑞股份",
+    "price": 146.78,
+    "change_pct": -5.0828,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "000571",
+    "name": "新大洲A",
+    "price": 6.97,
+    "change_pct": 4.9699,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600753",
+    "name": "ST海钦",
+    "price": 11.41,
+    "change_pct": 4.9678,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "603698",
+    "name": "航天工程",
+    "price": 41.43,
+    "change_pct": 4.8861,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600397",
+    "name": "江钨装备",
+    "price": 28.5,
+    "change_pct": -4.8414,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  }
+]

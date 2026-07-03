@@ -1,0 +1,9025 @@
+[
+  {
+    "code": "300163",
+    "name": "先锋新材",
+    "price": 6.47,
+    "change_pct": 20.0371,
+    "industry": ""
+  },
+  {
+    "code": "301008",
+    "name": "宏昌科技",
+    "price": 31.93,
+    "change_pct": 19.9925,
+    "industry": ""
+  },
+  {
+    "code": "300069",
+    "name": "金利华电",
+    "price": 39.36,
+    "change_pct": 18.021,
+    "industry": ""
+  },
+  {
+    "code": "300931",
+    "name": "通用电梯",
+    "price": 16.62,
+    "change_pct": 14.779,
+    "industry": ""
+  },
+  {
+    "code": "301696",
+    "name": "三瑞智能",
+    "price": 135.05,
+    "change_pct": 14.2362,
+    "industry": ""
+  },
+  {
+    "code": "300475",
+    "name": "香农芯创",
+    "price": 262.04,
+    "change_pct": -13.3781,
+    "industry": ""
+  },
+  {
+    "code": "300751",
+    "name": "迈为股份",
+    "price": 266.33,
+    "change_pct": -13.106,
+    "industry": ""
+  },
+  {
+    "code": "688305",
+    "name": "科德数控",
+    "price": 75.56,
+    "change_pct": 12.3736,
+    "industry": ""
+  },
+  {
+    "code": "300154",
+    "name": "瑞凌股份",
+    "price": 9.54,
+    "change_pct": 12.2353,
+    "industry": ""
+  },
+  {
+    "code": "300290",
+    "name": "ST荣科",
+    "price": 4.69,
+    "change_pct": -11.8421,
+    "industry": ""
+  },
+  {
+    "code": "300093",
+    "name": "金刚光伏",
+    "price": 24.06,
+    "change_pct": -11.0207,
+    "industry": ""
+  },
+  {
+    "code": "688577",
+    "name": "浙海德曼",
+    "price": 51.85,
+    "change_pct": 10.7906,
+    "industry": ""
+  },
+  {
+    "code": "301297",
+    "name": "富乐德",
+    "price": 57,
+    "change_pct": -10.5742,
+    "industry": ""
+  },
+  {
+    "code": "301163",
+    "name": "宏德股份",
+    "price": 25.45,
+    "change_pct": 10.1732,
+    "industry": ""
+  },
+  {
+    "code": "000595",
+    "name": "*ST宝实",
+    "price": 5.67,
+    "change_pct": 10.0971,
+    "industry": ""
+  },
+  {
+    "code": "600156",
+    "name": "华升股份",
+    "price": 9.53,
+    "change_pct": 10.0462,
+    "industry": ""
+  },
+  {
+    "code": "603273",
+    "name": "天元智能",
+    "price": 14.47,
+    "change_pct": 10.038,
+    "industry": ""
+  },
+  {
+    "code": "002652",
+    "name": "扬子新材",
+    "price": 4.61,
+    "change_pct": 10.0239,
+    "industry": ""
+  },
+  {
+    "code": "605286",
+    "name": "同力天启",
+    "price": 28,
+    "change_pct": 10.0196,
+    "industry": ""
+  },
+  {
+    "code": "603135",
+    "name": "中重科技",
+    "price": 13.73,
+    "change_pct": 10.016,
+    "industry": ""
+  },
+  {
+    "code": "002559",
+    "name": "亚威股份",
+    "price": 15.38,
+    "change_pct": 10.0143,
+    "industry": ""
+  },
+  {
+    "code": "603337",
+    "name": "杰克科技",
+    "price": 39.55,
+    "change_pct": 10.0139,
+    "industry": ""
+  },
+  {
+    "code": "603261",
+    "name": "立航科技",
+    "price": 49.56,
+    "change_pct": 10.0111,
+    "industry": ""
+  },
+  {
+    "code": "605060",
+    "name": "联德股份",
+    "price": 51.45,
+    "change_pct": -10.0052,
+    "industry": ""
+  },
+  {
+    "code": "600184",
+    "name": "光电股份",
+    "price": 28.7,
+    "change_pct": -10.0031,
+    "industry": ""
+  },
+  {
+    "code": "000520",
+    "name": "凤凰航运",
+    "price": 4.51,
+    "change_pct": 10,
+    "industry": ""
+  },
+  {
+    "code": "002931",
+    "name": "锋龙股份",
+    "price": 71.28,
+    "change_pct": 10,
+    "industry": ""
+  },
+  {
+    "code": "600667",
+    "name": "太极实业",
+    "price": 28.89,
+    "change_pct": -10,
+    "industry": ""
+  },
+  {
+    "code": "603163",
+    "name": "圣晖集成",
+    "price": 129.6,
+    "change_pct": -10,
+    "industry": ""
+  },
+  {
+    "code": "603324",
+    "name": "盛剑科技",
+    "price": 49.77,
+    "change_pct": -10,
+    "industry": ""
+  },
+  {
+    "code": "603338",
+    "name": "浙江鼎力",
+    "price": 46.97,
+    "change_pct": 10,
+    "industry": ""
+  },
+  {
+    "code": "605289",
+    "name": "罗曼股份",
+    "price": 143.55,
+    "change_pct": -10,
+    "industry": ""
+  },
+  {
+    "code": "603897",
+    "name": "长城科技",
+    "price": 37.41,
+    "change_pct": 9.9971,
+    "industry": ""
+  },
+  {
+    "code": "001317",
+    "name": "三羊马",
+    "price": 44.03,
+    "change_pct": 9.9925,
+    "industry": ""
+  },
+  {
+    "code": "603458",
+    "name": "勘设股份",
+    "price": 11.71,
+    "change_pct": -9.9923,
+    "industry": ""
+  },
+  {
+    "code": "603638",
+    "name": "艾迪精密",
+    "price": 25.87,
+    "change_pct": 9.9915,
+    "industry": ""
+  },
+  {
+    "code": "603778",
+    "name": "国晟科技",
+    "price": 12.89,
+    "change_pct": 9.9829,
+    "industry": ""
+  },
+  {
+    "code": "603137",
+    "name": "恒尚节能",
+    "price": 15.65,
+    "change_pct": 9.9789,
+    "industry": ""
+  },
+  {
+    "code": "603203",
+    "name": "快克智能",
+    "price": 62.21,
+    "change_pct": -9.9711,
+    "industry": ""
+  },
+  {
+    "code": "000576",
+    "name": "甘化科工",
+    "price": 7.4,
+    "change_pct": 9.9554,
+    "industry": ""
+  },
+  {
+    "code": "600545",
+    "name": "卓郎智能",
+    "price": 6.53,
+    "change_pct": -9.931,
+    "industry": ""
+  },
+  {
+    "code": "600815",
+    "name": "厦工股份",
+    "price": 2.89,
+    "change_pct": 9.8859,
+    "industry": ""
+  },
+  {
+    "code": "002596",
+    "name": "海南瑞泽",
+    "price": 3.23,
+    "change_pct": 9.8639,
+    "industry": ""
+  },
+  {
+    "code": "300694",
+    "name": "蠡湖股份",
+    "price": 11.83,
+    "change_pct": 9.8422,
+    "industry": ""
+  },
+  {
+    "code": "300885",
+    "name": "海昌新材",
+    "price": 26.6,
+    "change_pct": 9.6455,
+    "industry": ""
+  },
+  {
+    "code": "688517",
+    "name": "金冠电气",
+    "price": 18.2,
+    "change_pct": 9.1782,
+    "industry": ""
+  },
+  {
+    "code": "300265",
+    "name": "通光线缆",
+    "price": 17.33,
+    "change_pct": -9.1243,
+    "industry": ""
+  },
+  {
+    "code": "301392",
+    "name": "汇成真空",
+    "price": 259,
+    "change_pct": -9.059,
+    "industry": ""
+  },
+  {
+    "code": "300820",
+    "name": "英杰电气",
+    "price": 77.57,
+    "change_pct": -9.0088,
+    "industry": ""
+  },
+  {
+    "code": "603929",
+    "name": "亚翔集成",
+    "price": 234.62,
+    "change_pct": -8.995,
+    "industry": ""
+  },
+  {
+    "code": "603063",
+    "name": "禾望电气",
+    "price": 44.08,
+    "change_pct": -8.982,
+    "industry": ""
+  },
+  {
+    "code": "688559",
+    "name": "海目星",
+    "price": 74.15,
+    "change_pct": -8.9066,
+    "industry": ""
+  },
+  {
+    "code": "300913",
+    "name": "兆龙互连",
+    "price": 40.34,
+    "change_pct": -8.8568,
+    "industry": ""
+  },
+  {
+    "code": "300786",
+    "name": "国林科技",
+    "price": 23.11,
+    "change_pct": -8.7643,
+    "industry": ""
+  },
+  {
+    "code": "000032",
+    "name": "深桑达A",
+    "price": 21.9,
+    "change_pct": -8.75,
+    "industry": ""
+  },
+  {
+    "code": "688090",
+    "name": "瑞松科技",
+    "price": 97.49,
+    "change_pct": -8.6745,
+    "industry": ""
+  },
+  {
+    "code": "688551",
+    "name": "科威尔",
+    "price": 61.39,
+    "change_pct": -8.5778,
+    "industry": ""
+  },
+  {
+    "code": "300201",
+    "name": "海伦哲",
+    "price": 18.91,
+    "change_pct": -8.559,
+    "industry": ""
+  },
+  {
+    "code": "688697",
+    "name": "纽威数控",
+    "price": 15.44,
+    "change_pct": 8.3509,
+    "industry": ""
+  },
+  {
+    "code": "002989",
+    "name": "中天精装",
+    "price": 31.05,
+    "change_pct": -8.2176,
+    "industry": ""
+  },
+  {
+    "code": "601133",
+    "name": "柏诚股份",
+    "price": 37.95,
+    "change_pct": -8.1114,
+    "industry": ""
+  },
+  {
+    "code": "600869",
+    "name": "远东股份",
+    "price": 29.68,
+    "change_pct": -7.8833,
+    "industry": ""
+  },
+  {
+    "code": "605178",
+    "name": "时空科技",
+    "price": 112.28,
+    "change_pct": 7.651,
+    "industry": ""
+  },
+  {
+    "code": "688103",
+    "name": "国力电子",
+    "price": 74.85,
+    "change_pct": 7.5122,
+    "industry": ""
+  },
+  {
+    "code": "001267",
+    "name": "汇绿生态",
+    "price": 46.85,
+    "change_pct": -7.5025,
+    "industry": ""
+  },
+  {
+    "code": "300969",
+    "name": "恒帅股份",
+    "price": 105.47,
+    "change_pct": 7.4799,
+    "industry": ""
+  },
+  {
+    "code": "301200",
+    "name": "大族数控",
+    "price": 348.6,
+    "change_pct": -7.4374,
+    "industry": ""
+  },
+  {
+    "code": "300932",
+    "name": "三友联众",
+    "price": 11.43,
+    "change_pct": 7.4248,
+    "industry": ""
+  },
+  {
+    "code": "300196",
+    "name": "长海股份",
+    "price": 24.71,
+    "change_pct": -7.3838,
+    "industry": ""
+  },
+  {
+    "code": "688187",
+    "name": "时代电气",
+    "price": 59.77,
+    "change_pct": -7.3333,
+    "industry": ""
+  },
+  {
+    "code": "002080",
+    "name": "中材科技",
+    "price": 82.22,
+    "change_pct": -7.3055,
+    "industry": ""
+  },
+  {
+    "code": "000811",
+    "name": "冰轮环境",
+    "price": 50.89,
+    "change_pct": -7.3042,
+    "industry": ""
+  },
+  {
+    "code": "300626",
+    "name": "华瑞股份",
+    "price": 33.19,
+    "change_pct": -7.2905,
+    "industry": ""
+  },
+  {
+    "code": "600973",
+    "name": "宝胜股份",
+    "price": 6.62,
+    "change_pct": -7.1529,
+    "industry": ""
+  },
+  {
+    "code": "001388",
+    "name": "信通电子",
+    "price": 27.53,
+    "change_pct": -7.1501,
+    "industry": ""
+  },
+  {
+    "code": "002871",
+    "name": "伟隆股份",
+    "price": 21.58,
+    "change_pct": -7.1029,
+    "industry": ""
+  },
+  {
+    "code": "920100",
+    "name": "三协电机",
+    "price": 40.97,
+    "change_pct": 7.0272,
+    "industry": ""
+  },
+  {
+    "code": "603682",
+    "name": "锦和商管",
+    "price": 8.71,
+    "change_pct": 7.0025,
+    "industry": ""
+  },
+  {
+    "code": "301372",
+    "name": "科净源",
+    "price": 35.3,
+    "change_pct": 6.9697,
+    "industry": ""
+  },
+  {
+    "code": "002072",
+    "name": "凯瑞德",
+    "price": 8.76,
+    "change_pct": 6.9597,
+    "industry": ""
+  },
+  {
+    "code": "300054",
+    "name": "鼎龙股份",
+    "price": 93.37,
+    "change_pct": -6.9093,
+    "industry": ""
+  },
+  {
+    "code": "002980",
+    "name": "华盛昌",
+    "price": 101.77,
+    "change_pct": -6.8893,
+    "industry": ""
+  },
+  {
+    "code": "003036",
+    "name": "泰坦股份",
+    "price": 83.31,
+    "change_pct": -6.7912,
+    "industry": ""
+  },
+  {
+    "code": "605117",
+    "name": "德业股份",
+    "price": 94.66,
+    "change_pct": -6.7389,
+    "industry": ""
+  },
+  {
+    "code": "003004",
+    "name": "声迅股份",
+    "price": 73.98,
+    "change_pct": -6.7322,
+    "industry": ""
+  },
+  {
+    "code": "300553",
+    "name": "集智股份",
+    "price": 72.46,
+    "change_pct": 6.7158,
+    "industry": ""
+  },
+  {
+    "code": "920510",
+    "name": "丰光精密",
+    "price": 25.2,
+    "change_pct": 6.6892,
+    "industry": ""
+  },
+  {
+    "code": "301068",
+    "name": "大地海洋",
+    "price": 25.68,
+    "change_pct": 6.6888,
+    "industry": ""
+  },
+  {
+    "code": "300029",
+    "name": "天龙退",
+    "price": 0.16,
+    "change_pct": 6.6667,
+    "industry": ""
+  },
+  {
+    "code": "301312",
+    "name": "智立方",
+    "price": 111.58,
+    "change_pct": -6.6589,
+    "industry": ""
+  },
+  {
+    "code": "300274",
+    "name": "阳光电源",
+    "price": 127.84,
+    "change_pct": -6.6316,
+    "industry": ""
+  },
+  {
+    "code": "688729",
+    "name": "屹唐股份",
+    "price": 40.29,
+    "change_pct": -6.5631,
+    "industry": ""
+  },
+  {
+    "code": "300503",
+    "name": "昊志机电",
+    "price": 94.88,
+    "change_pct": -6.5037,
+    "industry": ""
+  },
+  {
+    "code": "688676",
+    "name": "金盘科技",
+    "price": 79,
+    "change_pct": -6.4314,
+    "industry": ""
+  },
+  {
+    "code": "002943",
+    "name": "宇晶股份",
+    "price": 45.55,
+    "change_pct": -6.372,
+    "industry": ""
+  },
+  {
+    "code": "002196",
+    "name": "方正电机",
+    "price": 13.04,
+    "change_pct": 6.3622,
+    "industry": ""
+  },
+  {
+    "code": "300345",
+    "name": "华民股份",
+    "price": 7.45,
+    "change_pct": 6.2767,
+    "industry": ""
+  },
+  {
+    "code": "600481",
+    "name": "双良节能",
+    "price": 4.8,
+    "change_pct": -6.25,
+    "industry": ""
+  },
+  {
+    "code": "002028",
+    "name": "思源电气",
+    "price": 155.44,
+    "change_pct": -6.2315,
+    "industry": ""
+  },
+  {
+    "code": "300948",
+    "name": "冠中生态",
+    "price": 27.04,
+    "change_pct": 6.2058,
+    "industry": ""
+  },
+  {
+    "code": "003027",
+    "name": "同兴科技",
+    "price": 17.79,
+    "change_pct": -6.1709,
+    "industry": ""
+  },
+  {
+    "code": "301338",
+    "name": "凯格精机",
+    "price": 157.42,
+    "change_pct": -6.13,
+    "industry": ""
+  },
+  {
+    "code": "688700",
+    "name": "东威科技",
+    "price": 78.58,
+    "change_pct": -6.0722,
+    "industry": ""
+  },
+  {
+    "code": "920839",
+    "name": "万通液压",
+    "price": 28.13,
+    "change_pct": 6.0709,
+    "industry": ""
+  },
+  {
+    "code": "300863",
+    "name": "卡倍亿",
+    "price": 59.16,
+    "change_pct": -6.0654,
+    "industry": ""
+  },
+  {
+    "code": "300416",
+    "name": "苏试试验",
+    "price": 20.56,
+    "change_pct": -6.0329,
+    "industry": ""
+  },
+  {
+    "code": "603713",
+    "name": "密尔克卫",
+    "price": 72.03,
+    "change_pct": -6.0274,
+    "industry": ""
+  },
+  {
+    "code": "300617",
+    "name": "安靠智电",
+    "price": 50.72,
+    "change_pct": -6.0219,
+    "industry": ""
+  },
+  {
+    "code": "600391",
+    "name": "航发科技",
+    "price": 32.29,
+    "change_pct": -5.9697,
+    "industry": ""
+  },
+  {
+    "code": "688726",
+    "name": "拉普拉斯",
+    "price": 48.33,
+    "change_pct": -5.9362,
+    "industry": ""
+  },
+  {
+    "code": "000551",
+    "name": "创元科技",
+    "price": 19.76,
+    "change_pct": -5.9048,
+    "industry": ""
+  },
+  {
+    "code": "002062",
+    "name": "宏润建设",
+    "price": 7.9,
+    "change_pct": 5.8981,
+    "industry": ""
+  },
+  {
+    "code": "300470",
+    "name": "中密控股",
+    "price": 31.08,
+    "change_pct": 5.8944,
+    "industry": ""
+  },
+  {
+    "code": "001359",
+    "name": "平安电工",
+    "price": 116.7,
+    "change_pct": -5.8567,
+    "industry": ""
+  },
+  {
+    "code": "300607",
+    "name": "拓斯达",
+    "price": 46.64,
+    "change_pct": -5.7397,
+    "industry": ""
+  },
+  {
+    "code": "301588",
+    "name": "美新科技",
+    "price": 48.88,
+    "change_pct": 5.7322,
+    "industry": ""
+  },
+  {
+    "code": "603985",
+    "name": "恒润股份",
+    "price": 23.72,
+    "change_pct": -5.7234,
+    "industry": ""
+  },
+  {
+    "code": "301260",
+    "name": "格力博",
+    "price": 14.6,
+    "change_pct": 5.7205,
+    "industry": ""
+  },
+  {
+    "code": "300816",
+    "name": "艾可蓝",
+    "price": 68.79,
+    "change_pct": -5.6637,
+    "industry": ""
+  },
+  {
+    "code": "300491",
+    "name": "通合科技",
+    "price": 34.34,
+    "change_pct": -5.5556,
+    "industry": ""
+  },
+  {
+    "code": "002444",
+    "name": "巨星科技",
+    "price": 32.2,
+    "change_pct": 5.5392,
+    "industry": ""
+  },
+  {
+    "code": "300179",
+    "name": "四方达",
+    "price": 57.55,
+    "change_pct": 5.5382,
+    "industry": ""
+  },
+  {
+    "code": "002183",
+    "name": "怡亚通",
+    "price": 5.13,
+    "change_pct": -5.5249,
+    "industry": ""
+  },
+  {
+    "code": "001212",
+    "name": "中旗新材",
+    "price": 44.38,
+    "change_pct": -5.5142,
+    "industry": ""
+  },
+  {
+    "code": "300022",
+    "name": "吉峰科技",
+    "price": 8.44,
+    "change_pct": 5.5,
+    "industry": ""
+  },
+  {
+    "code": "301040",
+    "name": "中环海陆",
+    "price": 23.57,
+    "change_pct": -5.4553,
+    "industry": ""
+  },
+  {
+    "code": "300836",
+    "name": "佰奥智能",
+    "price": 65.99,
+    "change_pct": -5.4314,
+    "industry": ""
+  },
+  {
+    "code": "603333",
+    "name": "福华尚纬",
+    "price": 8.58,
+    "change_pct": 5.4054,
+    "industry": ""
+  },
+  {
+    "code": "920096",
+    "name": "嘉晨智能",
+    "price": 42.78,
+    "change_pct": -5.354,
+    "industry": ""
+  },
+  {
+    "code": "002922",
+    "name": "伊戈尔",
+    "price": 29.6,
+    "change_pct": -5.3406,
+    "industry": ""
+  },
+  {
+    "code": "601038",
+    "name": "一拖股份",
+    "price": 11.35,
+    "change_pct": 5.2876,
+    "industry": ""
+  },
+  {
+    "code": "600590",
+    "name": "泰豪科技",
+    "price": 9.53,
+    "change_pct": -5.2684,
+    "industry": ""
+  },
+  {
+    "code": "301592",
+    "name": "六九一二",
+    "price": 137.9,
+    "change_pct": -5.2624,
+    "industry": ""
+  },
+  {
+    "code": "300692",
+    "name": "中赋科技",
+    "price": 8.62,
+    "change_pct": 5.2503,
+    "industry": ""
+  },
+  {
+    "code": "688556",
+    "name": "高测股份",
+    "price": 12.46,
+    "change_pct": -5.2471,
+    "industry": ""
+  },
+  {
+    "code": "600110",
+    "name": "诺德股份",
+    "price": 14.53,
+    "change_pct": -5.2185,
+    "industry": ""
+  },
+  {
+    "code": "688485",
+    "name": "九州一轨",
+    "price": 61.62,
+    "change_pct": -5.2146,
+    "industry": ""
+  },
+  {
+    "code": "002547",
+    "name": "*ST春兴",
+    "price": 2.63,
+    "change_pct": 5.2,
+    "industry": ""
+  },
+  {
+    "code": "002122",
+    "name": "ST汇洲",
+    "price": 2.43,
+    "change_pct": 5.1948,
+    "industry": ""
+  },
+  {
+    "code": "300277",
+    "name": "汽轮科技",
+    "price": 14.7,
+    "change_pct": -5.1613,
+    "industry": ""
+  },
+  {
+    "code": "600491",
+    "name": "ST龙元",
+    "price": 1.02,
+    "change_pct": 5.1546,
+    "industry": ""
+  },
+  {
+    "code": "600243",
+    "name": "*ST海华",
+    "price": 3.47,
+    "change_pct": 5.1515,
+    "industry": ""
+  },
+  {
+    "code": "001400",
+    "name": "江顺科技",
+    "price": 113.83,
+    "change_pct": -5.1338,
+    "industry": ""
+  },
+  {
+    "code": "300012",
+    "name": "华测检测",
+    "price": 14.27,
+    "change_pct": -5.1197,
+    "industry": ""
+  },
+  {
+    "code": "603359",
+    "name": "*ST东珠",
+    "price": 2.28,
+    "change_pct": 5.0691,
+    "industry": ""
+  },
+  {
+    "code": "002310",
+    "name": "东方新能",
+    "price": 2.26,
+    "change_pct": -5.042,
+    "industry": ""
+  },
+  {
+    "code": "002542",
+    "name": "*ST中岩",
+    "price": 1.25,
+    "change_pct": 5.042,
+    "industry": ""
+  },
+  {
+    "code": "002689",
+    "name": "ST远智",
+    "price": 2.71,
+    "change_pct": 5.0388,
+    "industry": ""
+  },
+  {
+    "code": "002620",
+    "name": "*ST瑞和",
+    "price": 5.63,
+    "change_pct": 5.0373,
+    "industry": ""
+  },
+  {
+    "code": "603789",
+    "name": "ST星农",
+    "price": 6.05,
+    "change_pct": 5.0347,
+    "industry": ""
+  },
+  {
+    "code": "001322",
+    "name": "箭牌家居",
+    "price": 6.47,
+    "change_pct": 5.0325,
+    "industry": ""
+  },
+  {
+    "code": "000010",
+    "name": "*ST美丽",
+    "price": 1.88,
+    "change_pct": 5.0279,
+    "industry": ""
+  },
+  {
+    "code": "300853",
+    "name": "申昊科技",
+    "price": 32.21,
+    "change_pct": -5.0133,
+    "industry": ""
+  },
+  {
+    "code": "000632",
+    "name": "ST三木",
+    "price": 3.36,
+    "change_pct": 5,
+    "industry": ""
+  },
+  {
+    "code": "603828",
+    "name": "*ST利达",
+    "price": 4.42,
+    "change_pct": 4.9881,
+    "industry": ""
+  },
+  {
+    "code": "002856",
+    "name": "*ST美芝",
+    "price": 21.29,
+    "change_pct": 4.9803,
+    "industry": ""
+  },
+  {
+    "code": "300563",
+    "name": "神宇股份",
+    "price": 28.25,
+    "change_pct": -4.9781,
+    "industry": ""
+  },
+  {
+    "code": "002667",
+    "name": "*ST威领",
+    "price": 11.84,
+    "change_pct": 4.9645,
+    "industry": ""
+  },
+  {
+    "code": "000821",
+    "name": "ST京机",
+    "price": 8.04,
+    "change_pct": 4.9608,
+    "industry": ""
+  },
+  {
+    "code": "600343",
+    "name": "航天动力",
+    "price": 28,
+    "change_pct": -4.9559,
+    "industry": ""
+  },
+  {
+    "code": "002586",
+    "name": "ST围海",
+    "price": 4.05,
+    "change_pct": 4.9223,
+    "industry": ""
+  },
+  {
+    "code": "600119",
+    "name": "*ST长投",
+    "price": 4.7,
+    "change_pct": 4.9107,
+    "industry": ""
+  },
+  {
+    "code": "300961",
+    "name": "深水海纳",
+    "price": 12.23,
+    "change_pct": -4.8989,
+    "industry": ""
+  },
+  {
+    "code": "300763",
+    "name": "锦浪科技",
+    "price": 78.48,
+    "change_pct": -4.8958,
+    "industry": ""
+  },
+  {
+    "code": "000820",
+    "name": "*ST节能",
+    "price": 3,
+    "change_pct": 4.8951,
+    "industry": ""
+  },
+  {
+    "code": "300024",
+    "name": "机器人",
+    "price": 17.79,
+    "change_pct": -4.8663,
+    "industry": ""
+  },
+  {
+    "code": "688290",
+    "name": "景业智能",
+    "price": 65.56,
+    "change_pct": -4.8614,
+    "industry": ""
+  },
+  {
+    "code": "605303",
+    "name": "园林股份",
+    "price": 21.74,
+    "change_pct": -4.8578,
+    "industry": ""
+  },
+  {
+    "code": "600118",
+    "name": "中国卫星",
+    "price": 81.5,
+    "change_pct": -4.8453,
+    "industry": ""
+  },
+  {
+    "code": "601717",
+    "name": "中创智领",
+    "price": 14.76,
+    "change_pct": 4.8295,
+    "industry": ""
+  },
+  {
+    "code": "688523",
+    "name": "航天环宇",
+    "price": 50.58,
+    "change_pct": -4.7995,
+    "industry": ""
+  },
+  {
+    "code": "301317",
+    "name": "鑫磊股份",
+    "price": 50.43,
+    "change_pct": -4.7772,
+    "industry": ""
+  },
+  {
+    "code": "300833",
+    "name": "浩洋股份",
+    "price": 31.64,
+    "change_pct": 4.7682,
+    "industry": ""
+  },
+  {
+    "code": "002431",
+    "name": "ST棕榈",
+    "price": 1.32,
+    "change_pct": 4.7619,
+    "industry": ""
+  },
+  {
+    "code": "601611",
+    "name": "中国核建",
+    "price": 10.7,
+    "change_pct": -4.7195,
+    "industry": ""
+  },
+  {
+    "code": "301362",
+    "name": "民爆光电",
+    "price": 169.85,
+    "change_pct": -4.6911,
+    "industry": ""
+  },
+  {
+    "code": "688518",
+    "name": "联赢激光",
+    "price": 28.78,
+    "change_pct": -4.6704,
+    "industry": ""
+  },
+  {
+    "code": "002202",
+    "name": "金风科技",
+    "price": 23.51,
+    "change_pct": -4.6634,
+    "industry": ""
+  },
+  {
+    "code": "002518",
+    "name": "科士达",
+    "price": 49.07,
+    "change_pct": -4.6629,
+    "industry": ""
+  },
+  {
+    "code": "601100",
+    "name": "恒立液压",
+    "price": 110.6,
+    "change_pct": 4.5962,
+    "industry": ""
+  },
+  {
+    "code": "600279",
+    "name": "重庆港",
+    "price": 3.88,
+    "change_pct": 4.5822,
+    "industry": ""
+  },
+  {
+    "code": "300696",
+    "name": "爱乐达",
+    "price": 25.01,
+    "change_pct": -4.5784,
+    "industry": ""
+  },
+  {
+    "code": "300943",
+    "name": "春晖智控",
+    "price": 44.85,
+    "change_pct": -4.5745,
+    "industry": ""
+  },
+  {
+    "code": "000837",
+    "name": "秦川机床",
+    "price": 11.92,
+    "change_pct": 4.5614,
+    "industry": ""
+  },
+  {
+    "code": "301120",
+    "name": "新特电气",
+    "price": 15.98,
+    "change_pct": -4.54,
+    "industry": ""
+  },
+  {
+    "code": "002151",
+    "name": "北斗星通",
+    "price": 31.34,
+    "change_pct": -4.5385,
+    "industry": ""
+  },
+  {
+    "code": "000528",
+    "name": "柳工",
+    "price": 8.07,
+    "change_pct": 4.5337,
+    "industry": ""
+  },
+  {
+    "code": "603618",
+    "name": "杭电股份",
+    "price": 47.59,
+    "change_pct": -4.5144,
+    "industry": ""
+  },
+  {
+    "code": "300222",
+    "name": "科大智能",
+    "price": 12.71,
+    "change_pct": -4.5079,
+    "industry": ""
+  },
+  {
+    "code": "300873",
+    "name": "海晨股份",
+    "price": 30.01,
+    "change_pct": 4.4916,
+    "industry": ""
+  },
+  {
+    "code": "300137",
+    "name": "先河环保",
+    "price": 16.91,
+    "change_pct": -4.4633,
+    "industry": ""
+  },
+  {
+    "code": "603050",
+    "name": "科林电气",
+    "price": 21.08,
+    "change_pct": 4.4599,
+    "industry": ""
+  },
+  {
+    "code": "002837",
+    "name": "英维克",
+    "price": 71.4,
+    "change_pct": -4.456,
+    "industry": ""
+  },
+  {
+    "code": "600579",
+    "name": "中化装备",
+    "price": 7.72,
+    "change_pct": -4.4554,
+    "industry": ""
+  },
+  {
+    "code": "688218",
+    "name": "江苏北人",
+    "price": 49.93,
+    "change_pct": -4.4402,
+    "industry": ""
+  },
+  {
+    "code": "000410",
+    "name": "沈阳机床",
+    "price": 4.98,
+    "change_pct": 4.4025,
+    "industry": ""
+  },
+  {
+    "code": "601515",
+    "name": "衢州东峰",
+    "price": 3.28,
+    "change_pct": -4.3732,
+    "industry": ""
+  },
+  {
+    "code": "688811",
+    "name": "有研复材",
+    "price": 31.62,
+    "change_pct": -4.3557,
+    "industry": ""
+  },
+  {
+    "code": "920125",
+    "name": "鸿仕达",
+    "price": 185.7,
+    "change_pct": -4.3375,
+    "industry": ""
+  },
+  {
+    "code": "300506",
+    "name": "名家汇",
+    "price": 6.18,
+    "change_pct": -4.3344,
+    "industry": ""
+  },
+  {
+    "code": "002169",
+    "name": "智光电气",
+    "price": 13.84,
+    "change_pct": -4.2877,
+    "industry": ""
+  },
+  {
+    "code": "688084",
+    "name": "晶品特装",
+    "price": 49.88,
+    "change_pct": -4.2794,
+    "industry": ""
+  },
+  {
+    "code": "603861",
+    "name": "白云电器",
+    "price": 12.31,
+    "change_pct": -4.2768,
+    "industry": ""
+  },
+  {
+    "code": "300649",
+    "name": "杭州园林",
+    "price": 26.42,
+    "change_pct": -4.2754,
+    "industry": ""
+  },
+  {
+    "code": "600885",
+    "name": "宏发股份",
+    "price": 36.32,
+    "change_pct": -4.2699,
+    "industry": ""
+  },
+  {
+    "code": "301228",
+    "name": "实朴检测",
+    "price": 74.84,
+    "change_pct": -4.2354,
+    "industry": ""
+  },
+  {
+    "code": "600350",
+    "name": "山东高速",
+    "price": 11.82,
+    "change_pct": 4.2328,
+    "industry": ""
+  },
+  {
+    "code": "301603",
+    "name": "乔锋智能",
+    "price": 144.73,
+    "change_pct": 4.2273,
+    "industry": ""
+  },
+  {
+    "code": "603843",
+    "name": "*ST正平",
+    "price": 8.44,
+    "change_pct": 4.1975,
+    "industry": ""
+  },
+  {
+    "code": "920599",
+    "name": "同力股份",
+    "price": 17.13,
+    "change_pct": 4.1971,
+    "industry": ""
+  },
+  {
+    "code": "002366",
+    "name": "融发核电",
+    "price": 5.73,
+    "change_pct": -4.1806,
+    "industry": ""
+  },
+  {
+    "code": "605167",
+    "name": "利柏特",
+    "price": 17.5,
+    "change_pct": 4.1667,
+    "industry": ""
+  },
+  {
+    "code": "002413",
+    "name": "雷科防务",
+    "price": 9.67,
+    "change_pct": -4.1625,
+    "industry": ""
+  },
+  {
+    "code": "603871",
+    "name": "嘉友国际",
+    "price": 11.04,
+    "change_pct": 4.1509,
+    "industry": ""
+  },
+  {
+    "code": "688450",
+    "name": "光格科技",
+    "price": 64.22,
+    "change_pct": -4.1349,
+    "industry": ""
+  },
+  {
+    "code": "600179",
+    "name": "安通控股",
+    "price": 4.64,
+    "change_pct": -4.1322,
+    "industry": ""
+  },
+  {
+    "code": "002779",
+    "name": "中坚科技",
+    "price": 80.17,
+    "change_pct": -4.1143,
+    "industry": ""
+  },
+  {
+    "code": "603011",
+    "name": "合锻智能",
+    "price": 32.23,
+    "change_pct": -4.1059,
+    "industry": ""
+  },
+  {
+    "code": "002617",
+    "name": "露笑科技",
+    "price": 9.6,
+    "change_pct": -4.0959,
+    "industry": ""
+  },
+  {
+    "code": "300688",
+    "name": "创业黑马",
+    "price": 26.31,
+    "change_pct": -4.0831,
+    "industry": ""
+  },
+  {
+    "code": "603836",
+    "name": "海程邦达",
+    "price": 8.43,
+    "change_pct": 4.0741,
+    "industry": ""
+  },
+  {
+    "code": "603588",
+    "name": "高能环境",
+    "price": 18.85,
+    "change_pct": -4.0712,
+    "industry": ""
+  },
+  {
+    "code": "301525",
+    "name": "儒竞科技",
+    "price": 50.39,
+    "change_pct": 4.0686,
+    "industry": ""
+  },
+  {
+    "code": "605298",
+    "name": "必得科技",
+    "price": 50.83,
+    "change_pct": -4.0581,
+    "industry": ""
+  },
+  {
+    "code": "688156",
+    "name": "路德科技",
+    "price": 30.03,
+    "change_pct": -4.0575,
+    "industry": ""
+  },
+  {
+    "code": "002051",
+    "name": "中工国际",
+    "price": 11.13,
+    "change_pct": -4.0517,
+    "industry": ""
+  },
+  {
+    "code": "688392",
+    "name": "骄成超声",
+    "price": 221.71,
+    "change_pct": -4.0216,
+    "industry": ""
+  },
+  {
+    "code": "300400",
+    "name": "劲拓股份",
+    "price": 34.41,
+    "change_pct": -4.0167,
+    "industry": ""
+  },
+  {
+    "code": "600366",
+    "name": "宁波韵升",
+    "price": 16.63,
+    "change_pct": 4.0025,
+    "industry": ""
+  },
+  {
+    "code": "000682",
+    "name": "东方电子",
+    "price": 12.28,
+    "change_pct": -3.9875,
+    "industry": ""
+  },
+  {
+    "code": "002883",
+    "name": "*ST中设",
+    "price": 8.89,
+    "change_pct": 3.9766,
+    "industry": ""
+  },
+  {
+    "code": "688097",
+    "name": "博众精工",
+    "price": 59.99,
+    "change_pct": -3.9545,
+    "industry": ""
+  },
+  {
+    "code": "603257",
+    "name": "中国瑞林",
+    "price": 84.2,
+    "change_pct": 3.9506,
+    "industry": ""
+  },
+  {
+    "code": "002200",
+    "name": "交投生态",
+    "price": 6.34,
+    "change_pct": -3.9394,
+    "industry": ""
+  },
+  {
+    "code": "603315",
+    "name": "福鞍股份",
+    "price": 14.4,
+    "change_pct": -3.936,
+    "industry": ""
+  },
+  {
+    "code": "688516",
+    "name": "奥特维",
+    "price": 54.28,
+    "change_pct": -3.9292,
+    "industry": ""
+  },
+  {
+    "code": "301112",
+    "name": "信邦智能",
+    "price": 34.15,
+    "change_pct": 3.9257,
+    "industry": ""
+  },
+  {
+    "code": "002201",
+    "name": "九鼎新材",
+    "price": 10.29,
+    "change_pct": -3.9216,
+    "industry": ""
+  },
+  {
+    "code": "002229",
+    "name": "鸿博股份",
+    "price": 10.3,
+    "change_pct": -3.9179,
+    "industry": ""
+  },
+  {
+    "code": "002921",
+    "name": "联诚精密",
+    "price": 28.56,
+    "change_pct": -3.9031,
+    "industry": ""
+  },
+  {
+    "code": "002598",
+    "name": "ST章鼓",
+    "price": 6.66,
+    "change_pct": 3.9002,
+    "industry": ""
+  },
+  {
+    "code": "301468",
+    "name": "博盈特焊",
+    "price": 40.72,
+    "change_pct": -3.8943,
+    "industry": ""
+  },
+  {
+    "code": "300317",
+    "name": "珈伟新能",
+    "price": 3.97,
+    "change_pct": -3.8741,
+    "industry": ""
+  },
+  {
+    "code": "300018",
+    "name": "中元股份",
+    "price": 12.21,
+    "change_pct": -3.8583,
+    "industry": ""
+  },
+  {
+    "code": "301662",
+    "name": "宏工科技",
+    "price": 91.71,
+    "change_pct": -3.8578,
+    "industry": ""
+  },
+  {
+    "code": "300032",
+    "name": "金龙机电",
+    "price": 3.74,
+    "change_pct": -3.856,
+    "industry": ""
+  },
+  {
+    "code": "920145",
+    "name": "恒合股份",
+    "price": 9.73,
+    "change_pct": -3.8538,
+    "industry": ""
+  },
+  {
+    "code": "300187",
+    "name": "永清环保",
+    "price": 5.24,
+    "change_pct": -3.8532,
+    "industry": ""
+  },
+  {
+    "code": "300286",
+    "name": "安科瑞",
+    "price": 22.71,
+    "change_pct": -3.8527,
+    "industry": ""
+  },
+  {
+    "code": "603045",
+    "name": "福达合金",
+    "price": 70.67,
+    "change_pct": -3.8503,
+    "industry": ""
+  },
+  {
+    "code": "920122",
+    "name": "中纺标",
+    "price": 24.21,
+    "change_pct": -3.8141,
+    "industry": ""
+  },
+  {
+    "code": "300593",
+    "name": "新雷能",
+    "price": 26.9,
+    "change_pct": -3.7911,
+    "industry": ""
+  },
+  {
+    "code": "002865",
+    "name": "钧达股份",
+    "price": 57.94,
+    "change_pct": -3.7861,
+    "industry": ""
+  },
+  {
+    "code": "603666",
+    "name": "亿嘉和",
+    "price": 29.23,
+    "change_pct": -3.7854,
+    "industry": ""
+  },
+  {
+    "code": "688349",
+    "name": "三一重能",
+    "price": 14.77,
+    "change_pct": -3.7785,
+    "industry": ""
+  },
+  {
+    "code": "600475",
+    "name": "华光环能",
+    "price": 14.8,
+    "change_pct": -3.7711,
+    "industry": ""
+  },
+  {
+    "code": "688186",
+    "name": "广大特材",
+    "price": 15.17,
+    "change_pct": -3.7437,
+    "industry": ""
+  },
+  {
+    "code": "688552",
+    "name": "航天南湖",
+    "price": 27.84,
+    "change_pct": -3.7344,
+    "industry": ""
+  },
+  {
+    "code": "920378",
+    "name": "泰德股份",
+    "price": 7.23,
+    "change_pct": 3.7303,
+    "industry": ""
+  },
+  {
+    "code": "600575",
+    "name": "淮河能源",
+    "price": 3.1,
+    "change_pct": -3.7267,
+    "industry": ""
+  },
+  {
+    "code": "688096",
+    "name": "京源环保",
+    "price": 12.41,
+    "change_pct": -3.7238,
+    "industry": ""
+  },
+  {
+    "code": "002047",
+    "name": "宝鹰股份",
+    "price": 4.68,
+    "change_pct": -3.7037,
+    "industry": ""
+  },
+  {
+    "code": "688509",
+    "name": "正元地信",
+    "price": 4.17,
+    "change_pct": -3.6952,
+    "industry": ""
+  },
+  {
+    "code": "002255",
+    "name": "海陆重工",
+    "price": 9.4,
+    "change_pct": -3.6885,
+    "industry": ""
+  },
+  {
+    "code": "300907",
+    "name": "康平科技",
+    "price": 58.8,
+    "change_pct": 3.6854,
+    "industry": ""
+  },
+  {
+    "code": "002468",
+    "name": "申通快递",
+    "price": 16.61,
+    "change_pct": 3.6829,
+    "industry": ""
+  },
+  {
+    "code": "002706",
+    "name": "良信股份",
+    "price": 10.2,
+    "change_pct": -3.6827,
+    "industry": ""
+  },
+  {
+    "code": "300539",
+    "name": "横河精密",
+    "price": 23.54,
+    "change_pct": -3.6825,
+    "industry": ""
+  },
+  {
+    "code": "301070",
+    "name": "开勒股份",
+    "price": 85.34,
+    "change_pct": -3.6795,
+    "industry": ""
+  },
+  {
+    "code": "002266",
+    "name": "浙富控股",
+    "price": 4.99,
+    "change_pct": -3.668,
+    "industry": ""
+  },
+  {
+    "code": "600468",
+    "name": "百利电气",
+    "price": 5.78,
+    "change_pct": -3.6667,
+    "industry": ""
+  },
+  {
+    "code": "920002",
+    "name": "万达轴承",
+    "price": 52.6,
+    "change_pct": 3.6657,
+    "industry": ""
+  },
+  {
+    "code": "920856",
+    "name": "浩淼科技",
+    "price": 8.43,
+    "change_pct": -3.6571,
+    "industry": ""
+  },
+  {
+    "code": "002801",
+    "name": "微光股份",
+    "price": 29.22,
+    "change_pct": 3.6538,
+    "industry": ""
+  },
+  {
+    "code": "605288",
+    "name": "凯迪股份",
+    "price": 89.4,
+    "change_pct": 3.6522,
+    "industry": ""
+  },
+  {
+    "code": "002775",
+    "name": "文科股份",
+    "price": 3.69,
+    "change_pct": 3.6517,
+    "industry": ""
+  },
+  {
+    "code": "300929",
+    "name": "华骐环保",
+    "price": 11.36,
+    "change_pct": -3.6472,
+    "industry": ""
+  },
+  {
+    "code": "600428",
+    "name": "中远海特",
+    "price": 8.53,
+    "change_pct": 3.6452,
+    "industry": ""
+  },
+  {
+    "code": "300990",
+    "name": "同飞股份",
+    "price": 96.4,
+    "change_pct": -3.6385,
+    "industry": ""
+  },
+  {
+    "code": "605123",
+    "name": "派克新材",
+    "price": 95.6,
+    "change_pct": -3.629,
+    "industry": ""
+  },
+  {
+    "code": "300450",
+    "name": "先导智能",
+    "price": 38.52,
+    "change_pct": -3.6036,
+    "industry": ""
+  },
+  {
+    "code": "600843",
+    "name": "上工申贝",
+    "price": 8.63,
+    "change_pct": -3.5754,
+    "industry": ""
+  },
+  {
+    "code": "600525",
+    "name": "ST长园",
+    "price": 5.22,
+    "change_pct": 3.5714,
+    "industry": ""
+  },
+  {
+    "code": "601615",
+    "name": "明阳智能",
+    "price": 11.16,
+    "change_pct": -3.5436,
+    "industry": ""
+  },
+  {
+    "code": "300614",
+    "name": "百川畅银",
+    "price": 9.6,
+    "change_pct": -3.5176,
+    "industry": ""
+  },
+  {
+    "code": "300159",
+    "name": "新研股份",
+    "price": 3.3,
+    "change_pct": -3.5088,
+    "industry": ""
+  },
+  {
+    "code": "600482",
+    "name": "中国动力",
+    "price": 31.92,
+    "change_pct": -3.5067,
+    "industry": ""
+  },
+  {
+    "code": "002372",
+    "name": "伟星新材",
+    "price": 8.57,
+    "change_pct": 3.5024,
+    "industry": ""
+  },
+  {
+    "code": "001393",
+    "name": "维通利",
+    "price": 52.97,
+    "change_pct": -3.4979,
+    "industry": ""
+  },
+  {
+    "code": "300068",
+    "name": "ST南都",
+    "price": 4.15,
+    "change_pct": -3.4884,
+    "industry": ""
+  },
+  {
+    "code": "600176",
+    "name": "中国巨石",
+    "price": 67.82,
+    "change_pct": -3.4866,
+    "industry": ""
+  },
+  {
+    "code": "920895",
+    "name": "花溪科技",
+    "price": 11.63,
+    "change_pct": -3.4855,
+    "industry": ""
+  },
+  {
+    "code": "300581",
+    "name": "晨曦航空",
+    "price": 11.1,
+    "change_pct": -3.4783,
+    "industry": ""
+  },
+  {
+    "code": "002021",
+    "name": "中捷资源",
+    "price": 2.5,
+    "change_pct": -3.4749,
+    "industry": ""
+  },
+  {
+    "code": "603185",
+    "name": "弘元绿能",
+    "price": 16.12,
+    "change_pct": -3.4731,
+    "industry": ""
+  },
+  {
+    "code": "600233",
+    "name": "圆通速递",
+    "price": 17.93,
+    "change_pct": 3.4622,
+    "industry": ""
+  },
+  {
+    "code": "688113",
+    "name": "联测科技",
+    "price": 36.78,
+    "change_pct": 3.4599,
+    "industry": ""
+  },
+  {
+    "code": "301259",
+    "name": "艾布鲁",
+    "price": 27.87,
+    "change_pct": 3.4521,
+    "industry": ""
+  },
+  {
+    "code": "600288",
+    "name": "大恒科技",
+    "price": 12.6,
+    "change_pct": -3.4483,
+    "industry": ""
+  },
+  {
+    "code": "688248",
+    "name": "南网科技",
+    "price": 65.3,
+    "change_pct": -3.4452,
+    "industry": ""
+  },
+  {
+    "code": "688308",
+    "name": "欧科亿",
+    "price": 176.92,
+    "change_pct": -3.4279,
+    "industry": ""
+  },
+  {
+    "code": "600875",
+    "name": "东方电气",
+    "price": 27.91,
+    "change_pct": -3.4256,
+    "industry": ""
+  },
+  {
+    "code": "688257",
+    "name": "新锐股份",
+    "price": 108.49,
+    "change_pct": 3.4223,
+    "industry": ""
+  },
+  {
+    "code": "603131",
+    "name": "上海沪工",
+    "price": 18.08,
+    "change_pct": -3.4188,
+    "industry": ""
+  },
+  {
+    "code": "688360",
+    "name": "德马科技",
+    "price": 18.49,
+    "change_pct": 3.4116,
+    "industry": ""
+  },
+  {
+    "code": "300946",
+    "name": "恒而达",
+    "price": 41.5,
+    "change_pct": 3.3881,
+    "industry": ""
+  },
+  {
+    "code": "002606",
+    "name": "大连电瓷",
+    "price": 13.48,
+    "change_pct": 3.3742,
+    "industry": ""
+  },
+  {
+    "code": "603090",
+    "name": "宏盛股份",
+    "price": 49.38,
+    "change_pct": -3.3659,
+    "industry": ""
+  },
+  {
+    "code": "001332",
+    "name": "锡装股份",
+    "price": 36.06,
+    "change_pct": -3.3503,
+    "industry": ""
+  },
+  {
+    "code": "002023",
+    "name": "海特高新",
+    "price": 13.03,
+    "change_pct": -3.3383,
+    "industry": ""
+  },
+  {
+    "code": "688165",
+    "name": "埃夫特",
+    "price": 21.17,
+    "change_pct": -3.3333,
+    "industry": ""
+  },
+  {
+    "code": "300953",
+    "name": "震裕科技",
+    "price": 138.6,
+    "change_pct": 3.3249,
+    "industry": ""
+  },
+  {
+    "code": "601106",
+    "name": "中国一重",
+    "price": 3.2,
+    "change_pct": -3.3233,
+    "industry": ""
+  },
+  {
+    "code": "688102",
+    "name": "斯瑞新材",
+    "price": 46.28,
+    "change_pct": -3.3215,
+    "industry": ""
+  },
+  {
+    "code": "000425",
+    "name": "徐工机械",
+    "price": 8.4,
+    "change_pct": 3.321,
+    "industry": ""
+  },
+  {
+    "code": "300161",
+    "name": "华中数控",
+    "price": 30.8,
+    "change_pct": 3.321,
+    "industry": ""
+  },
+  {
+    "code": "003009",
+    "name": "中天火箭",
+    "price": 60.3,
+    "change_pct": -3.3189,
+    "industry": ""
+  },
+  {
+    "code": "301115",
+    "name": "联检科技",
+    "price": 34.1,
+    "change_pct": -3.3173,
+    "industry": ""
+  },
+  {
+    "code": "300444",
+    "name": "双杰电气",
+    "price": 11.99,
+    "change_pct": -3.3065,
+    "industry": ""
+  },
+  {
+    "code": "002541",
+    "name": "鸿路钢构",
+    "price": 18.15,
+    "change_pct": 3.3011,
+    "industry": ""
+  },
+  {
+    "code": "920396",
+    "name": "常辅股份",
+    "price": 21.7,
+    "change_pct": -3.2977,
+    "industry": ""
+  },
+  {
+    "code": "300938",
+    "name": "信测标准",
+    "price": 54.3,
+    "change_pct": 3.2909,
+    "industry": ""
+  },
+  {
+    "code": "300423",
+    "name": "昇辉科技",
+    "price": 5.62,
+    "change_pct": -3.2702,
+    "industry": ""
+  },
+  {
+    "code": "002418",
+    "name": "康盛股份",
+    "price": 3.85,
+    "change_pct": -3.2663,
+    "industry": ""
+  },
+  {
+    "code": "688057",
+    "name": "金达莱",
+    "price": 16.62,
+    "change_pct": -3.2596,
+    "industry": ""
+  },
+  {
+    "code": "000738",
+    "name": "航发控制",
+    "price": 17.82,
+    "change_pct": -3.2573,
+    "industry": ""
+  },
+  {
+    "code": "603903",
+    "name": "中持股份",
+    "price": 13.09,
+    "change_pct": -3.252,
+    "industry": ""
+  },
+  {
+    "code": "920662",
+    "name": "方盛股份",
+    "price": 25.81,
+    "change_pct": -3.2246,
+    "industry": ""
+  },
+  {
+    "code": "688316",
+    "name": "青云科技",
+    "price": 53.52,
+    "change_pct": -3.2188,
+    "industry": ""
+  },
+  {
+    "code": "688679",
+    "name": "通源环境",
+    "price": 39.01,
+    "change_pct": -3.201,
+    "industry": ""
+  },
+  {
+    "code": "301557",
+    "name": "常友科技",
+    "price": 88.1,
+    "change_pct": -3.1975,
+    "industry": ""
+  },
+  {
+    "code": "600562",
+    "name": "国睿科技",
+    "price": 21.2,
+    "change_pct": -3.1963,
+    "industry": ""
+  },
+  {
+    "code": "300421",
+    "name": "力星股份",
+    "price": 19.5,
+    "change_pct": 3.1746,
+    "industry": ""
+  },
+  {
+    "code": "920717",
+    "name": "瑞星股份",
+    "price": 6.41,
+    "change_pct": -3.1722,
+    "industry": ""
+  },
+  {
+    "code": "301024",
+    "name": "霍普股份",
+    "price": 35.73,
+    "change_pct": -3.1707,
+    "industry": ""
+  },
+  {
+    "code": "688558",
+    "name": "国盛智科",
+    "price": 35.37,
+    "change_pct": 3.1496,
+    "industry": ""
+  },
+  {
+    "code": "601882",
+    "name": "海天精工",
+    "price": 20.76,
+    "change_pct": 3.1297,
+    "industry": ""
+  },
+  {
+    "code": "600499",
+    "name": "科达制造",
+    "price": 14.52,
+    "change_pct": 3.125,
+    "industry": ""
+  },
+  {
+    "code": "002691",
+    "name": "*ST冀凯",
+    "price": 4.3,
+    "change_pct": 3.1175,
+    "industry": ""
+  },
+  {
+    "code": "603667",
+    "name": "五洲新春",
+    "price": 70.18,
+    "change_pct": 3.1149,
+    "industry": ""
+  },
+  {
+    "code": "001226",
+    "name": "拓山重工",
+    "price": 47.36,
+    "change_pct": 3.091,
+    "industry": ""
+  },
+  {
+    "code": "688071",
+    "name": "华依科技",
+    "price": 35.29,
+    "change_pct": -3.0761,
+    "industry": ""
+  },
+  {
+    "code": "600169",
+    "name": "ST太重",
+    "price": 2.02,
+    "change_pct": 3.0612,
+    "industry": ""
+  },
+  {
+    "code": "603066",
+    "name": "音飞储存",
+    "price": 10.47,
+    "change_pct": 3.0512,
+    "industry": ""
+  },
+  {
+    "code": "601179",
+    "name": "中国西电",
+    "price": 14.06,
+    "change_pct": -3.0345,
+    "industry": ""
+  },
+  {
+    "code": "301007",
+    "name": "德迈仕",
+    "price": 34.47,
+    "change_pct": 3.0185,
+    "industry": ""
+  },
+  {
+    "code": "603680",
+    "name": "今创集团",
+    "price": 9.98,
+    "change_pct": -3.0126,
+    "industry": ""
+  },
+  {
+    "code": "300902",
+    "name": "国安达",
+    "price": 15.86,
+    "change_pct": -2.9969,
+    "industry": ""
+  },
+  {
+    "code": "300718",
+    "name": "长盛轴承",
+    "price": 64.36,
+    "change_pct": 2.9925,
+    "industry": ""
+  },
+  {
+    "code": "300545",
+    "name": "联得装备",
+    "price": 41.88,
+    "change_pct": -2.9882,
+    "industry": ""
+  },
+  {
+    "code": "688028",
+    "name": "沃尔德",
+    "price": 145.5,
+    "change_pct": -2.9871,
+    "industry": ""
+  },
+  {
+    "code": "603058",
+    "name": "永吉股份",
+    "price": 8.79,
+    "change_pct": -2.9801,
+    "industry": ""
+  },
+  {
+    "code": "002903",
+    "name": "宇环数控",
+    "price": 42.4,
+    "change_pct": -2.9748,
+    "industry": ""
+  },
+  {
+    "code": "603611",
+    "name": "诺力股份",
+    "price": 17.32,
+    "change_pct": 2.9727,
+    "industry": ""
+  },
+  {
+    "code": "301028",
+    "name": "鼎熔岩",
+    "price": 17.02,
+    "change_pct": 2.9643,
+    "industry": ""
+  },
+  {
+    "code": "300499",
+    "name": "高澜股份",
+    "price": 36.15,
+    "change_pct": -2.953,
+    "industry": ""
+  },
+  {
+    "code": "002816",
+    "name": "*ST和科",
+    "price": 28.68,
+    "change_pct": -2.9442,
+    "industry": ""
+  },
+  {
+    "code": "301027",
+    "name": "华蓝集团",
+    "price": 21.15,
+    "change_pct": -2.9371,
+    "industry": ""
+  },
+  {
+    "code": "600984",
+    "name": "建设机械",
+    "price": 3.65,
+    "change_pct": -2.9255,
+    "industry": ""
+  },
+  {
+    "code": "301023",
+    "name": "奕帆传动",
+    "price": 33.9,
+    "change_pct": -2.921,
+    "industry": ""
+  },
+  {
+    "code": "300195",
+    "name": "长荣股份",
+    "price": 5.67,
+    "change_pct": -2.911,
+    "industry": ""
+  },
+  {
+    "code": "605389",
+    "name": "长龄液压",
+    "price": 97,
+    "change_pct": -2.8932,
+    "industry": ""
+  },
+  {
+    "code": "600316",
+    "name": "洪都航空",
+    "price": 29.19,
+    "change_pct": 2.8904,
+    "industry": ""
+  },
+  {
+    "code": "600496",
+    "name": "精工钢构",
+    "price": 3.21,
+    "change_pct": 2.8846,
+    "industry": ""
+  },
+  {
+    "code": "300034",
+    "name": "钢研高纳",
+    "price": 16.9,
+    "change_pct": -2.8736,
+    "industry": ""
+  },
+  {
+    "code": "002414",
+    "name": "高德红外",
+    "price": 12.51,
+    "change_pct": -2.8727,
+    "industry": ""
+  },
+  {
+    "code": "002963",
+    "name": "豪尔赛",
+    "price": 20.65,
+    "change_pct": -2.8692,
+    "industry": ""
+  },
+  {
+    "code": "002927",
+    "name": "泰永长征",
+    "price": 18.35,
+    "change_pct": -2.8587,
+    "industry": ""
+  },
+  {
+    "code": "000039",
+    "name": "中集集团",
+    "price": 7.86,
+    "change_pct": -2.843,
+    "industry": ""
+  },
+  {
+    "code": "688333",
+    "name": "铂力特",
+    "price": 110.1,
+    "change_pct": 2.8203,
+    "industry": ""
+  },
+  {
+    "code": "300153",
+    "name": "科泰电源",
+    "price": 22.18,
+    "change_pct": -2.8046,
+    "industry": ""
+  },
+  {
+    "code": "002471",
+    "name": "中超控股",
+    "price": 5.92,
+    "change_pct": -2.7915,
+    "industry": ""
+  },
+  {
+    "code": "920061",
+    "name": "西磁科技",
+    "price": 21,
+    "change_pct": 2.79,
+    "industry": ""
+  },
+  {
+    "code": "300129",
+    "name": "泰胜风能",
+    "price": 8.86,
+    "change_pct": 2.7842,
+    "industry": ""
+  },
+  {
+    "code": "688226",
+    "name": "威腾电气",
+    "price": 41.9,
+    "change_pct": -2.7842,
+    "industry": ""
+  },
+  {
+    "code": "603277",
+    "name": "银都股份",
+    "price": 10.35,
+    "change_pct": 2.7805,
+    "industry": ""
+  },
+  {
+    "code": "600153",
+    "name": "建发股份",
+    "price": 8.15,
+    "change_pct": 2.7743,
+    "industry": ""
+  },
+  {
+    "code": "601156",
+    "name": "东航物流",
+    "price": 17.81,
+    "change_pct": 2.7698,
+    "industry": ""
+  },
+  {
+    "code": "002046",
+    "name": "国机精工",
+    "price": 72.4,
+    "change_pct": 2.7679,
+    "industry": ""
+  },
+  {
+    "code": "601177",
+    "name": "杭齿前进",
+    "price": 13.01,
+    "change_pct": 2.7646,
+    "industry": ""
+  },
+  {
+    "code": "002534",
+    "name": "西子洁能",
+    "price": 16.54,
+    "change_pct": -2.7631,
+    "industry": ""
+  },
+  {
+    "code": "688239",
+    "name": "航宇科技",
+    "price": 58.83,
+    "change_pct": -2.7603,
+    "industry": ""
+  },
+  {
+    "code": "600990",
+    "name": "四创电子",
+    "price": 17.39,
+    "change_pct": -2.7405,
+    "industry": ""
+  },
+  {
+    "code": "003035",
+    "name": "南网能源",
+    "price": 5.68,
+    "change_pct": -2.7397,
+    "industry": ""
+  },
+  {
+    "code": "600039",
+    "name": "四川路桥",
+    "price": 8.28,
+    "change_pct": 2.7295,
+    "industry": ""
+  },
+  {
+    "code": "002298",
+    "name": "中电鑫龙",
+    "price": 7.51,
+    "change_pct": -2.7202,
+    "industry": ""
+  },
+  {
+    "code": "603200",
+    "name": "上海洗霸",
+    "price": 42.45,
+    "change_pct": -2.7046,
+    "industry": ""
+  },
+  {
+    "code": "603373",
+    "name": "安邦护卫",
+    "price": 37,
+    "change_pct": 2.6922,
+    "industry": ""
+  },
+  {
+    "code": "002639",
+    "name": "雪人集团",
+    "price": 13.74,
+    "change_pct": -2.6912,
+    "industry": ""
+  },
+  {
+    "code": "688255",
+    "name": "凯尔达",
+    "price": 29.04,
+    "change_pct": 2.6874,
+    "industry": ""
+  },
+  {
+    "code": "300670",
+    "name": "大烨智能",
+    "price": 6.9,
+    "change_pct": -2.6798,
+    "industry": ""
+  },
+  {
+    "code": "000056",
+    "name": "*ST皇庭",
+    "price": 2.18,
+    "change_pct": -2.6786,
+    "industry": ""
+  },
+  {
+    "code": "002822",
+    "name": "ST中装",
+    "price": 3.27,
+    "change_pct": -2.6786,
+    "industry": ""
+  },
+  {
+    "code": "300097",
+    "name": "智云股份",
+    "price": 9.46,
+    "change_pct": -2.6749,
+    "industry": ""
+  },
+  {
+    "code": "002342",
+    "name": "巨力索具",
+    "price": 11.55,
+    "change_pct": 2.6667,
+    "industry": ""
+  },
+  {
+    "code": "600710",
+    "name": "苏美达",
+    "price": 10.01,
+    "change_pct": 2.6667,
+    "industry": ""
+  },
+  {
+    "code": "300736",
+    "name": "百邦科技",
+    "price": 29.38,
+    "change_pct": -2.6508,
+    "industry": ""
+  },
+  {
+    "code": "300001",
+    "name": "特锐德",
+    "price": 33.81,
+    "change_pct": -2.649,
+    "industry": ""
+  },
+  {
+    "code": "600302",
+    "name": "ST标准",
+    "price": 8.63,
+    "change_pct": 2.6159,
+    "industry": ""
+  },
+  {
+    "code": "688511",
+    "name": "天微电子",
+    "price": 31,
+    "change_pct": -2.6076,
+    "industry": ""
+  },
+  {
+    "code": "300490",
+    "name": "华自科技",
+    "price": 13.11,
+    "change_pct": -2.6003,
+    "industry": ""
+  },
+  {
+    "code": "920046",
+    "name": "亿能电力",
+    "price": 22.1,
+    "change_pct": -2.6003,
+    "industry": ""
+  },
+  {
+    "code": "688659",
+    "name": "元琛科技",
+    "price": 10.12,
+    "change_pct": -2.5987,
+    "industry": ""
+  },
+  {
+    "code": "300276",
+    "name": "三丰智能",
+    "price": 7.13,
+    "change_pct": -2.5956,
+    "industry": ""
+  },
+  {
+    "code": "301203",
+    "name": "国泰环保",
+    "price": 40.75,
+    "change_pct": 2.5932,
+    "industry": ""
+  },
+  {
+    "code": "600388",
+    "name": "龙净环保",
+    "price": 15.04,
+    "change_pct": 2.5921,
+    "industry": ""
+  },
+  {
+    "code": "688557",
+    "name": "兰剑智能",
+    "price": 32.92,
+    "change_pct": 2.5865,
+    "industry": ""
+  },
+  {
+    "code": "300778",
+    "name": "新城市",
+    "price": 9.42,
+    "change_pct": -2.5853,
+    "industry": ""
+  },
+  {
+    "code": "002438",
+    "name": "江苏神通",
+    "price": 14.33,
+    "change_pct": -2.5833,
+    "industry": ""
+  },
+  {
+    "code": "301148",
+    "name": "嘉戎技术",
+    "price": 52.08,
+    "change_pct": -2.5814,
+    "industry": ""
+  },
+  {
+    "code": "688017",
+    "name": "绿的谐波",
+    "price": 413.05,
+    "change_pct": -2.578,
+    "industry": ""
+  },
+  {
+    "code": "300722",
+    "name": "新余国科",
+    "price": 22.01,
+    "change_pct": -2.5675,
+    "industry": ""
+  },
+  {
+    "code": "688092",
+    "name": "爱科科技",
+    "price": 22.42,
+    "change_pct": 2.5618,
+    "industry": ""
+  },
+  {
+    "code": "600783",
+    "name": "鲁信创投",
+    "price": 21.35,
+    "change_pct": -2.5559,
+    "industry": ""
+  },
+  {
+    "code": "001225",
+    "name": "和泰机电",
+    "price": 42.19,
+    "change_pct": 2.5523,
+    "industry": ""
+  },
+  {
+    "code": "301127",
+    "name": "武汉天源",
+    "price": 20.3,
+    "change_pct": -2.5444,
+    "industry": ""
+  },
+  {
+    "code": "300145",
+    "name": "南方泵业",
+    "price": 5.39,
+    "change_pct": -2.5316,
+    "industry": ""
+  },
+  {
+    "code": "920351",
+    "name": "华光源海",
+    "price": 11.59,
+    "change_pct": -2.5231,
+    "industry": ""
+  },
+  {
+    "code": "002833",
+    "name": "弘亚数控",
+    "price": 18.55,
+    "change_pct": -2.5223,
+    "industry": ""
+  },
+  {
+    "code": "605222",
+    "name": "起帆电缆",
+    "price": 24.02,
+    "change_pct": 2.5181,
+    "industry": ""
+  },
+  {
+    "code": "300442",
+    "name": "润泽科技",
+    "price": 87.8,
+    "change_pct": -2.5094,
+    "industry": ""
+  },
+  {
+    "code": "301309",
+    "name": "万得凯",
+    "price": 31.9,
+    "change_pct": 2.5064,
+    "industry": ""
+  },
+  {
+    "code": "301390",
+    "name": "经纬股份",
+    "price": 32.78,
+    "change_pct": 2.5016,
+    "industry": ""
+  },
+  {
+    "code": "301056",
+    "name": "森赫股份",
+    "price": 11.31,
+    "change_pct": -2.5,
+    "industry": ""
+  },
+  {
+    "code": "603092",
+    "name": "德力佳",
+    "price": 52.74,
+    "change_pct": -2.4958,
+    "industry": ""
+  },
+  {
+    "code": "002685",
+    "name": "华东重机",
+    "price": 6.27,
+    "change_pct": -2.4883,
+    "industry": ""
+  },
+  {
+    "code": "603488",
+    "name": "展鹏科技",
+    "price": 9.84,
+    "change_pct": -2.4777,
+    "industry": ""
+  },
+  {
+    "code": "301053",
+    "name": "远信工业",
+    "price": 36.85,
+    "change_pct": 2.475,
+    "industry": ""
+  },
+  {
+    "code": "603060",
+    "name": "国检集团",
+    "price": 5.8,
+    "change_pct": 2.4735,
+    "industry": ""
+  },
+  {
+    "code": "002928",
+    "name": "华夏航空",
+    "price": 7.11,
+    "change_pct": -2.4691,
+    "industry": ""
+  },
+  {
+    "code": "603017",
+    "name": "中衡设计",
+    "price": 9.91,
+    "change_pct": -2.4606,
+    "industry": ""
+  },
+  {
+    "code": "600269",
+    "name": "赣粤高速",
+    "price": 4.17,
+    "change_pct": 2.457,
+    "industry": ""
+  },
+  {
+    "code": "600894",
+    "name": "广日股份",
+    "price": 7.93,
+    "change_pct": 2.4548,
+    "industry": ""
+  },
+  {
+    "code": "000429",
+    "name": "粤高速A",
+    "price": 13.81,
+    "change_pct": 2.4481,
+    "industry": ""
+  },
+  {
+    "code": "301305",
+    "name": "朗坤科技",
+    "price": 29.35,
+    "change_pct": 2.4433,
+    "industry": ""
+  },
+  {
+    "code": "301161",
+    "name": "唯万密封",
+    "price": 39.17,
+    "change_pct": -2.4408,
+    "industry": ""
+  },
+  {
+    "code": "603815",
+    "name": "交建股份",
+    "price": 5.47,
+    "change_pct": 2.4345,
+    "industry": ""
+  },
+  {
+    "code": "603097",
+    "name": "江苏华辰",
+    "price": 26.15,
+    "change_pct": -2.4254,
+    "industry": ""
+  },
+  {
+    "code": "600879",
+    "name": "航天电子",
+    "price": 20.93,
+    "change_pct": -2.4242,
+    "industry": ""
+  },
+  {
+    "code": "000533",
+    "name": "顺钠股份",
+    "price": 9.3,
+    "change_pct": -2.4134,
+    "industry": ""
+  },
+  {
+    "code": "920418",
+    "name": "苏轴股份",
+    "price": 20.37,
+    "change_pct": 2.4133,
+    "industry": ""
+  },
+  {
+    "code": "600379",
+    "name": "宝光股份",
+    "price": 15.01,
+    "change_pct": -2.4057,
+    "industry": ""
+  },
+  {
+    "code": "600841",
+    "name": "动力新科",
+    "price": 6.1,
+    "change_pct": -2.4,
+    "industry": ""
+  },
+  {
+    "code": "920931",
+    "name": "无锡鼎邦",
+    "price": 9.39,
+    "change_pct": 2.3991,
+    "industry": ""
+  },
+  {
+    "code": "603167",
+    "name": "渤海轮渡",
+    "price": 8.97,
+    "change_pct": 2.3973,
+    "industry": ""
+  },
+  {
+    "code": "601000",
+    "name": "唐山港",
+    "price": 4.29,
+    "change_pct": 2.3866,
+    "industry": ""
+  },
+  {
+    "code": "920943",
+    "name": "优机股份",
+    "price": 13.09,
+    "change_pct": -2.3863,
+    "industry": ""
+  },
+  {
+    "code": "920370",
+    "name": "新安洁",
+    "price": 2.46,
+    "change_pct": -2.381,
+    "industry": ""
+  },
+  {
+    "code": "600501",
+    "name": "航天晨光",
+    "price": 15.6,
+    "change_pct": -2.378,
+    "industry": ""
+  },
+  {
+    "code": "300123",
+    "name": "ST亚光",
+    "price": 3.7,
+    "change_pct": -2.3747,
+    "industry": ""
+  },
+  {
+    "code": "300925",
+    "name": "法本信息",
+    "price": 14.8,
+    "change_pct": -2.3747,
+    "industry": ""
+  },
+  {
+    "code": "002346",
+    "name": "柘中股份",
+    "price": 20.15,
+    "change_pct": -2.374,
+    "industry": ""
+  },
+  {
+    "code": "300152",
+    "name": "*ST动力",
+    "price": 1.65,
+    "change_pct": -2.3669,
+    "industry": ""
+  },
+  {
+    "code": "600150",
+    "name": "中国船舶",
+    "price": 34.36,
+    "change_pct": -2.3586,
+    "industry": ""
+  },
+  {
+    "code": "300527",
+    "name": "ST应急",
+    "price": 6.96,
+    "change_pct": 2.3529,
+    "industry": ""
+  },
+  {
+    "code": "605318",
+    "name": "法狮龙",
+    "price": 107.3,
+    "change_pct": -2.348,
+    "industry": ""
+  },
+  {
+    "code": "002997",
+    "name": "瑞鹄模具",
+    "price": 28.85,
+    "change_pct": 2.3413,
+    "industry": ""
+  },
+  {
+    "code": "301288",
+    "name": "清研环境",
+    "price": 17.21,
+    "change_pct": -2.3269,
+    "industry": ""
+  },
+  {
+    "code": "300660",
+    "name": "江苏雷利",
+    "price": 29.11,
+    "change_pct": 2.3199,
+    "industry": ""
+  },
+  {
+    "code": "300844",
+    "name": "山水比德",
+    "price": 22.34,
+    "change_pct": -2.3174,
+    "industry": ""
+  },
+  {
+    "code": "301082",
+    "name": "久盛电气",
+    "price": 8.86,
+    "change_pct": -2.3153,
+    "industry": ""
+  },
+  {
+    "code": "603967",
+    "name": "中创物流",
+    "price": 11.05,
+    "change_pct": 2.3148,
+    "industry": ""
+  },
+  {
+    "code": "002026",
+    "name": "山东威达",
+    "price": 11.08,
+    "change_pct": 2.3084,
+    "industry": ""
+  },
+  {
+    "code": "603637",
+    "name": "镇海股份",
+    "price": 14.65,
+    "change_pct": 2.3045,
+    "industry": ""
+  },
+  {
+    "code": "601399",
+    "name": "国机重装",
+    "price": 3.4,
+    "change_pct": -2.2989,
+    "industry": ""
+  },
+  {
+    "code": "002383",
+    "name": "合众思壮",
+    "price": 6.83,
+    "change_pct": -2.289,
+    "industry": ""
+  },
+  {
+    "code": "603298",
+    "name": "杭叉集团",
+    "price": 25.07,
+    "change_pct": 2.2848,
+    "industry": ""
+  },
+  {
+    "code": "000779",
+    "name": "甘咨询",
+    "price": 8.12,
+    "change_pct": 2.267,
+    "industry": ""
+  },
+  {
+    "code": "300690",
+    "name": "双一科技",
+    "price": 22.48,
+    "change_pct": -2.2609,
+    "industry": ""
+  },
+  {
+    "code": "300865",
+    "name": "大宏立",
+    "price": 22.62,
+    "change_pct": 2.2604,
+    "industry": ""
+  },
+  {
+    "code": "688510",
+    "name": "航亚科技",
+    "price": 25.56,
+    "change_pct": -2.2562,
+    "industry": ""
+  },
+  {
+    "code": "603082",
+    "name": "北自科技",
+    "price": 41.1,
+    "change_pct": -2.236,
+    "industry": ""
+  },
+  {
+    "code": "603344",
+    "name": "星德胜",
+    "price": 24.72,
+    "change_pct": 2.2333,
+    "industry": ""
+  },
+  {
+    "code": "301261",
+    "name": "恒工精密",
+    "price": 82.64,
+    "change_pct": 2.2266,
+    "industry": ""
+  },
+  {
+    "code": "300040",
+    "name": "九洲集团",
+    "price": 5.71,
+    "change_pct": -2.226,
+    "industry": ""
+  },
+  {
+    "code": "920011",
+    "name": "晨光电机",
+    "price": 21.65,
+    "change_pct": 2.2191,
+    "industry": ""
+  },
+  {
+    "code": "002890",
+    "name": "弘宇股份",
+    "price": 15.23,
+    "change_pct": 2.2148,
+    "industry": ""
+  },
+  {
+    "code": "688178",
+    "name": "万德斯",
+    "price": 34.5,
+    "change_pct": -2.2109,
+    "industry": ""
+  },
+  {
+    "code": "002774",
+    "name": "快意电梯",
+    "price": 14.19,
+    "change_pct": -2.2054,
+    "industry": ""
+  },
+  {
+    "code": "605066",
+    "name": "天正电气",
+    "price": 6.96,
+    "change_pct": 2.2026,
+    "industry": ""
+  },
+  {
+    "code": "688701",
+    "name": "卓锦股份",
+    "price": 7.55,
+    "change_pct": -2.2021,
+    "industry": ""
+  },
+  {
+    "code": "300472",
+    "name": "*ST新元",
+    "price": 6.97,
+    "change_pct": 2.1994,
+    "industry": ""
+  },
+  {
+    "code": "300004",
+    "name": "南风股份",
+    "price": 9.79,
+    "change_pct": -2.1978,
+    "industry": ""
+  },
+  {
+    "code": "603356",
+    "name": "华菱精工",
+    "price": 17.21,
+    "change_pct": 2.1971,
+    "industry": ""
+  },
+  {
+    "code": "300457",
+    "name": "赢合科技",
+    "price": 20.97,
+    "change_pct": -2.1922,
+    "industry": ""
+  },
+  {
+    "code": "300569",
+    "name": "天能重工",
+    "price": 4.91,
+    "change_pct": -2.1912,
+    "industry": ""
+  },
+  {
+    "code": "301125",
+    "name": "腾亚精工",
+    "price": 13.41,
+    "change_pct": -2.1882,
+    "industry": ""
+  },
+  {
+    "code": "600846",
+    "name": "同济科技",
+    "price": 10.77,
+    "change_pct": 2.1822,
+    "industry": ""
+  },
+  {
+    "code": "000809",
+    "name": "和展能源",
+    "price": 3.14,
+    "change_pct": -2.1807,
+    "industry": ""
+  },
+  {
+    "code": "600855",
+    "name": "航天长峰",
+    "price": 14,
+    "change_pct": -2.1663,
+    "industry": ""
+  },
+  {
+    "code": "688698",
+    "name": "伟创电气",
+    "price": 55.3,
+    "change_pct": 2.1615,
+    "industry": ""
+  },
+  {
+    "code": "300376",
+    "name": "易事特",
+    "price": 5,
+    "change_pct": -2.1526,
+    "industry": ""
+  },
+  {
+    "code": "000903",
+    "name": "ST云动",
+    "price": 1.91,
+    "change_pct": 2.139,
+    "industry": ""
+  },
+  {
+    "code": "002713",
+    "name": "*ST东易",
+    "price": 12.42,
+    "change_pct": 2.1382,
+    "industry": ""
+  },
+  {
+    "code": "300257",
+    "name": "开山股份",
+    "price": 28.83,
+    "change_pct": 2.1254,
+    "industry": ""
+  },
+  {
+    "code": "300103",
+    "name": "达刚控股",
+    "price": 7.69,
+    "change_pct": 2.1248,
+    "industry": ""
+  },
+  {
+    "code": "600033",
+    "name": "福建高速",
+    "price": 3.37,
+    "change_pct": 2.1212,
+    "industry": ""
+  },
+  {
+    "code": "600580",
+    "name": "卧龙电驱",
+    "price": 33.95,
+    "change_pct": 2.1053,
+    "industry": ""
+  },
+  {
+    "code": "688297",
+    "name": "中无人机",
+    "price": 41.59,
+    "change_pct": -2.0951,
+    "industry": ""
+  },
+  {
+    "code": "300864",
+    "name": "南大环境",
+    "price": 19.17,
+    "change_pct": -2.094,
+    "industry": ""
+  },
+  {
+    "code": "603725",
+    "name": "天安新材",
+    "price": 12.69,
+    "change_pct": 2.0917,
+    "industry": ""
+  },
+  {
+    "code": "300447",
+    "name": "全信股份",
+    "price": 14.59,
+    "change_pct": -2.0805,
+    "industry": ""
+  },
+  {
+    "code": "000755",
+    "name": "山西高速",
+    "price": 4.42,
+    "change_pct": 2.0785,
+    "industry": ""
+  },
+  {
+    "code": "300900",
+    "name": "广联航空",
+    "price": 38.18,
+    "change_pct": -2.0775,
+    "industry": ""
+  },
+  {
+    "code": "002135",
+    "name": "东南网架",
+    "price": 6.6,
+    "change_pct": -2.0772,
+    "industry": ""
+  },
+  {
+    "code": "300827",
+    "name": "上能电气",
+    "price": 28.3,
+    "change_pct": -2.0761,
+    "industry": ""
+  },
+  {
+    "code": "600768",
+    "name": "宁波富邦",
+    "price": 15.74,
+    "change_pct": 2.0752,
+    "industry": ""
+  },
+  {
+    "code": "002091",
+    "name": "江苏国泰",
+    "price": 7.39,
+    "change_pct": 2.0718,
+    "industry": ""
+  },
+  {
+    "code": "688211",
+    "name": "中科微至",
+    "price": 35.55,
+    "change_pct": 2.0672,
+    "industry": ""
+  },
+  {
+    "code": "920855",
+    "name": "浙江大农",
+    "price": 11.41,
+    "change_pct": -2.0601,
+    "industry": ""
+  },
+  {
+    "code": "603162",
+    "name": "海通发展",
+    "price": 9.43,
+    "change_pct": 2.0563,
+    "industry": ""
+  },
+  {
+    "code": "300923",
+    "name": "研奥股份",
+    "price": 21.99,
+    "change_pct": -2.049,
+    "industry": ""
+  },
+  {
+    "code": "300681",
+    "name": "英搏尔",
+    "price": 29.19,
+    "change_pct": -2.047,
+    "industry": ""
+  },
+  {
+    "code": "600817",
+    "name": "宇通重工",
+    "price": 8.98,
+    "change_pct": 2.0455,
+    "industry": ""
+  },
+  {
+    "code": "603656",
+    "name": "泰禾智能",
+    "price": 17.24,
+    "change_pct": -2.0455,
+    "industry": ""
+  },
+  {
+    "code": "688081",
+    "name": "兴图新科",
+    "price": 38.87,
+    "change_pct": -2.0413,
+    "industry": ""
+  },
+  {
+    "code": "000045",
+    "name": "深纺织A",
+    "price": 10.08,
+    "change_pct": -2.0408,
+    "industry": ""
+  },
+  {
+    "code": "002887",
+    "name": "绿茵生态",
+    "price": 10.58,
+    "change_pct": 2.0251,
+    "industry": ""
+  },
+  {
+    "code": "603606",
+    "name": "东方电缆",
+    "price": 43.36,
+    "change_pct": 2.0235,
+    "industry": ""
+  },
+  {
+    "code": "002564",
+    "name": "天沃科技",
+    "price": 4.36,
+    "change_pct": -2.0225,
+    "industry": ""
+  },
+  {
+    "code": "601872",
+    "name": "招商轮船",
+    "price": 16.53,
+    "change_pct": -2.0154,
+    "industry": ""
+  },
+  {
+    "code": "300719",
+    "name": "安达维尔",
+    "price": 11.67,
+    "change_pct": -2.0151,
+    "industry": ""
+  },
+  {
+    "code": "600215",
+    "name": "派斯林",
+    "price": 6.09,
+    "change_pct": 2.0101,
+    "industry": ""
+  },
+  {
+    "code": "920781",
+    "name": "瑞奇智造",
+    "price": 5.38,
+    "change_pct": -2.0036,
+    "industry": ""
+  },
+  {
+    "code": "920475",
+    "name": "三友科技",
+    "price": 11.77,
+    "change_pct": -1.9983,
+    "industry": ""
+  },
+  {
+    "code": "300441",
+    "name": "鲍斯股份",
+    "price": 6.64,
+    "change_pct": 1.9969,
+    "industry": ""
+  },
+  {
+    "code": "920368",
+    "name": "连城数控",
+    "price": 29.45,
+    "change_pct": -1.9967,
+    "industry": ""
+  },
+  {
+    "code": "301279",
+    "name": "金道科技",
+    "price": 26.6,
+    "change_pct": 1.9939,
+    "industry": ""
+  },
+  {
+    "code": "600970",
+    "name": "中材国际",
+    "price": 7.19,
+    "change_pct": 1.9858,
+    "industry": ""
+  },
+  {
+    "code": "688586",
+    "name": "江航装备",
+    "price": 11.4,
+    "change_pct": -1.9776,
+    "industry": ""
+  },
+  {
+    "code": "300582",
+    "name": "英飞特",
+    "price": 11.9,
+    "change_pct": -1.9769,
+    "industry": ""
+  },
+  {
+    "code": "300775",
+    "name": "三角防务",
+    "price": 21.82,
+    "change_pct": -1.9766,
+    "industry": ""
+  },
+  {
+    "code": "000900",
+    "name": "现代投资",
+    "price": 3.62,
+    "change_pct": 1.9718,
+    "industry": ""
+  },
+  {
+    "code": "600382",
+    "name": "广东明珠",
+    "price": 6.48,
+    "change_pct": -1.9667,
+    "industry": ""
+  },
+  {
+    "code": "002663",
+    "name": "普邦股份",
+    "price": 1.5,
+    "change_pct": -1.9608,
+    "industry": ""
+  },
+  {
+    "code": "002498",
+    "name": "汉缆股份",
+    "price": 6.51,
+    "change_pct": -1.9578,
+    "industry": ""
+  },
+  {
+    "code": "600192",
+    "name": "长城电工",
+    "price": 6.52,
+    "change_pct": -1.9549,
+    "industry": ""
+  },
+  {
+    "code": "603885",
+    "name": "吉祥航空",
+    "price": 10.54,
+    "change_pct": -1.9535,
+    "industry": ""
+  },
+  {
+    "code": "601107",
+    "name": "四川成渝",
+    "price": 5.22,
+    "change_pct": 1.9531,
+    "industry": ""
+  },
+  {
+    "code": "300197",
+    "name": "节能铁汉",
+    "price": 2.01,
+    "change_pct": -1.9512,
+    "industry": ""
+  },
+  {
+    "code": "603269",
+    "name": "海鸥股份",
+    "price": 16.08,
+    "change_pct": -1.9512,
+    "industry": ""
+  },
+  {
+    "code": "920392",
+    "name": "佳合科技",
+    "price": 14.07,
+    "change_pct": -1.9512,
+    "industry": ""
+  },
+  {
+    "code": "600031",
+    "name": "三一重工",
+    "price": 17.77,
+    "change_pct": 1.9507,
+    "industry": ""
+  },
+  {
+    "code": "603421",
+    "name": "鼎信通讯",
+    "price": 6.04,
+    "change_pct": -1.9481,
+    "industry": ""
+  },
+  {
+    "code": "688070",
+    "name": "纵横股份",
+    "price": 36.77,
+    "change_pct": -1.9467,
+    "industry": ""
+  },
+  {
+    "code": "002645",
+    "name": "华宏科技",
+    "price": 25.25,
+    "change_pct": -1.9417,
+    "industry": ""
+  },
+  {
+    "code": "002896",
+    "name": "中大力德",
+    "price": 77.84,
+    "change_pct": 1.9382,
+    "industry": ""
+  },
+  {
+    "code": "300478",
+    "name": "杭州高新",
+    "price": 37.56,
+    "change_pct": -1.9321,
+    "industry": ""
+  },
+  {
+    "code": "600089",
+    "name": "特变电工",
+    "price": 21.83,
+    "change_pct": -1.9317,
+    "industry": ""
+  },
+  {
+    "code": "300210",
+    "name": "森远股份",
+    "price": 8.64,
+    "change_pct": -1.9296,
+    "industry": ""
+  },
+  {
+    "code": "300854",
+    "name": "中兰环保",
+    "price": 20.1,
+    "change_pct": 1.927,
+    "industry": ""
+  },
+  {
+    "code": "603350",
+    "name": "安乃达",
+    "price": 31.09,
+    "change_pct": -1.9243,
+    "industry": ""
+  },
+  {
+    "code": "920149",
+    "name": "旭杰科技",
+    "price": 7.66,
+    "change_pct": -1.9206,
+    "industry": ""
+  },
+  {
+    "code": "301187",
+    "name": "欧圣电气",
+    "price": 15.4,
+    "change_pct": 1.9193,
+    "industry": ""
+  },
+  {
+    "code": "002364",
+    "name": "中恒电气",
+    "price": 50.85,
+    "change_pct": -1.9097,
+    "industry": ""
+  },
+  {
+    "code": "300382",
+    "name": "斯莱克",
+    "price": 22.64,
+    "change_pct": -1.9064,
+    "industry": ""
+  },
+  {
+    "code": "001266",
+    "name": "宏英智能",
+    "price": 46.83,
+    "change_pct": -1.9062,
+    "industry": ""
+  },
+  {
+    "code": "300370",
+    "name": "安控科技",
+    "price": 2.06,
+    "change_pct": -1.9048,
+    "industry": ""
+  },
+  {
+    "code": "300949",
+    "name": "奥雅股份",
+    "price": 20.78,
+    "change_pct": -1.8886,
+    "industry": ""
+  },
+  {
+    "code": "000035",
+    "name": "中国天楹",
+    "price": 4.71,
+    "change_pct": -1.875,
+    "industry": ""
+  },
+  {
+    "code": "601326",
+    "name": "秦港股份",
+    "price": 3.26,
+    "change_pct": 1.875,
+    "industry": ""
+  },
+  {
+    "code": "002625",
+    "name": "光启技术",
+    "price": 30.47,
+    "change_pct": -1.868,
+    "industry": ""
+  },
+  {
+    "code": "603209",
+    "name": "兴通股份",
+    "price": 13.09,
+    "change_pct": 1.8677,
+    "industry": ""
+  },
+  {
+    "code": "920706",
+    "name": "铁拓机械",
+    "price": 16.29,
+    "change_pct": -1.8675,
+    "industry": ""
+  },
+  {
+    "code": "601975",
+    "name": "招商南油",
+    "price": 3.68,
+    "change_pct": -1.8667,
+    "industry": ""
+  },
+  {
+    "code": "601226",
+    "name": "华电科工",
+    "price": 6.31,
+    "change_pct": -1.8663,
+    "industry": ""
+  },
+  {
+    "code": "300415",
+    "name": "伊之密",
+    "price": 20.22,
+    "change_pct": 1.864,
+    "industry": ""
+  },
+  {
+    "code": "002163",
+    "name": "海南发展",
+    "price": 8.75,
+    "change_pct": 1.8626,
+    "industry": ""
+  },
+  {
+    "code": "920802",
+    "name": "保丽洁",
+    "price": 10.02,
+    "change_pct": -1.8609,
+    "industry": ""
+  },
+  {
+    "code": "601727",
+    "name": "上海电气",
+    "price": 6.88,
+    "change_pct": -1.8545,
+    "industry": ""
+  },
+  {
+    "code": "301533",
+    "name": "威马农机",
+    "price": 24.75,
+    "change_pct": 1.8519,
+    "industry": ""
+  },
+  {
+    "code": "688543",
+    "name": "国科军工",
+    "price": 39.22,
+    "change_pct": -1.8519,
+    "industry": ""
+  },
+  {
+    "code": "002933",
+    "name": "新兴装备",
+    "price": 26.41,
+    "change_pct": 1.8511,
+    "industry": ""
+  },
+  {
+    "code": "601126",
+    "name": "四方股份",
+    "price": 57.51,
+    "change_pct": -1.8266,
+    "industry": ""
+  },
+  {
+    "code": "603568",
+    "name": "伟明环保",
+    "price": 15.6,
+    "change_pct": -1.825,
+    "industry": ""
+  },
+  {
+    "code": "603617",
+    "name": "君禾股份",
+    "price": 7,
+    "change_pct": -1.8233,
+    "industry": ""
+  },
+  {
+    "code": "600654",
+    "name": "中安科",
+    "price": 2.7,
+    "change_pct": -1.8182,
+    "industry": ""
+  },
+  {
+    "code": "603856",
+    "name": "东宏股份",
+    "price": 13.51,
+    "change_pct": -1.8169,
+    "industry": ""
+  },
+  {
+    "code": "600372",
+    "name": "中航机载",
+    "price": 10.81,
+    "change_pct": -1.8165,
+    "industry": ""
+  },
+  {
+    "code": "301548",
+    "name": "崇德科技",
+    "price": 90.49,
+    "change_pct": -1.8121,
+    "industry": ""
+  },
+  {
+    "code": "000680",
+    "name": "山推股份",
+    "price": 10.12,
+    "change_pct": 1.8109,
+    "industry": ""
+  },
+  {
+    "code": "301291",
+    "name": "明阳电气",
+    "price": 34.75,
+    "change_pct": -1.8084,
+    "industry": ""
+  },
+  {
+    "code": "300669",
+    "name": "沪宁股份",
+    "price": 26.07,
+    "change_pct": -1.8079,
+    "industry": ""
+  },
+  {
+    "code": "600558",
+    "name": "大西洋",
+    "price": 5.07,
+    "change_pct": 1.8072,
+    "industry": ""
+  },
+  {
+    "code": "600548",
+    "name": "深高速",
+    "price": 8.46,
+    "change_pct": 1.8051,
+    "industry": ""
+  },
+  {
+    "code": "688480",
+    "name": "赛恩斯",
+    "price": 84.53,
+    "change_pct": -1.8007,
+    "industry": ""
+  },
+  {
+    "code": "688569",
+    "name": "铁科轨道",
+    "price": 16.96,
+    "change_pct": 1.8007,
+    "industry": ""
+  },
+  {
+    "code": "601083",
+    "name": "锦江航运",
+    "price": 10.18,
+    "change_pct": 1.8,
+    "industry": ""
+  },
+  {
+    "code": "300008",
+    "name": "天海防务",
+    "price": 6.01,
+    "change_pct": -1.7974,
+    "industry": ""
+  },
+  {
+    "code": "688032",
+    "name": "禾迈股份",
+    "price": 82.62,
+    "change_pct": -1.7948,
+    "industry": ""
+  },
+  {
+    "code": "001239",
+    "name": "永达股份",
+    "price": 13.14,
+    "change_pct": -1.7937,
+    "industry": ""
+  },
+  {
+    "code": "000768",
+    "name": "中航西飞",
+    "price": 20.32,
+    "change_pct": -1.7883,
+    "industry": ""
+  },
+  {
+    "code": "300947",
+    "name": "德必集团",
+    "price": 13.2,
+    "change_pct": -1.7857,
+    "industry": ""
+  },
+  {
+    "code": "301356",
+    "name": "天振股份",
+    "price": 27.51,
+    "change_pct": -1.7851,
+    "industry": ""
+  },
+  {
+    "code": "000880",
+    "name": "潍柴重机",
+    "price": 22.57,
+    "change_pct": -1.7842,
+    "industry": ""
+  },
+  {
+    "code": "603370",
+    "name": "华新精科",
+    "price": 37.14,
+    "change_pct": 1.7813,
+    "industry": ""
+  },
+  {
+    "code": "600115",
+    "name": "中国东航",
+    "price": 3.86,
+    "change_pct": -1.7812,
+    "industry": ""
+  },
+  {
+    "code": "603378",
+    "name": "*ST亚士",
+    "price": 5.15,
+    "change_pct": 1.7787,
+    "industry": ""
+  },
+  {
+    "code": "301306",
+    "name": "西测测试",
+    "price": 169.41,
+    "change_pct": 1.7783,
+    "industry": ""
+  },
+  {
+    "code": "600893",
+    "name": "航发动力",
+    "price": 37.06,
+    "change_pct": -1.7758,
+    "industry": ""
+  },
+  {
+    "code": "603757",
+    "name": "大元泵业",
+    "price": 74.07,
+    "change_pct": 1.7725,
+    "industry": ""
+  },
+  {
+    "code": "600435",
+    "name": "北方导航",
+    "price": 11.09,
+    "change_pct": -1.7715,
+    "industry": ""
+  },
+  {
+    "code": "920896",
+    "name": "旺成科技",
+    "price": 12.7,
+    "change_pct": 1.7628,
+    "industry": ""
+  },
+  {
+    "code": "301213",
+    "name": "观想科技",
+    "price": 48.55,
+    "change_pct": -1.7604,
+    "industry": ""
+  },
+  {
+    "code": "002248",
+    "name": "华东数控",
+    "price": 9.25,
+    "change_pct": 1.7602,
+    "industry": ""
+  },
+  {
+    "code": "300011",
+    "name": "鼎汉技术",
+    "price": 6.16,
+    "change_pct": -1.7544,
+    "industry": ""
+  },
+  {
+    "code": "002789",
+    "name": "*ST建艺",
+    "price": 11.79,
+    "change_pct": -1.75,
+    "industry": ""
+  },
+  {
+    "code": "003013",
+    "name": "地铁设计",
+    "price": 14.63,
+    "change_pct": -1.7461,
+    "industry": ""
+  },
+  {
+    "code": "300388",
+    "name": "节能国祯",
+    "price": 6.42,
+    "change_pct": 1.7433,
+    "industry": ""
+  },
+  {
+    "code": "000922",
+    "name": "佳电股份",
+    "price": 13.54,
+    "change_pct": -1.7417,
+    "industry": ""
+  },
+  {
+    "code": "603813",
+    "name": "原尚股份",
+    "price": 35.7,
+    "change_pct": 1.7384,
+    "industry": ""
+  },
+  {
+    "code": "002245",
+    "name": "蔚蓝锂芯",
+    "price": 19.35,
+    "change_pct": 1.735,
+    "industry": ""
+  },
+  {
+    "code": "603312",
+    "name": "西典新能",
+    "price": 34.12,
+    "change_pct": 1.7293,
+    "industry": ""
+  },
+  {
+    "code": "000019",
+    "name": "深粮控股",
+    "price": 5.9,
+    "change_pct": 1.7241,
+    "industry": ""
+  },
+  {
+    "code": "002389",
+    "name": "航天彩虹",
+    "price": 17.67,
+    "change_pct": -1.7241,
+    "industry": ""
+  },
+  {
+    "code": "600009",
+    "name": "上海机场",
+    "price": 23.03,
+    "change_pct": -1.7072,
+    "industry": ""
+  },
+  {
+    "code": "301105",
+    "name": "鸿铭股份",
+    "price": 43.84,
+    "change_pct": -1.704,
+    "industry": ""
+  },
+  {
+    "code": "002112",
+    "name": "三变科技",
+    "price": 16.17,
+    "change_pct": -1.7021,
+    "industry": ""
+  },
+  {
+    "code": "002884",
+    "name": "凌霄泵业",
+    "price": 15.54,
+    "change_pct": 1.7016,
+    "industry": ""
+  },
+  {
+    "code": "002006",
+    "name": "精工科技",
+    "price": 15.6,
+    "change_pct": -1.7013,
+    "industry": ""
+  },
+  {
+    "code": "002367",
+    "name": "康力电梯",
+    "price": 7.18,
+    "change_pct": 1.6997,
+    "industry": ""
+  },
+  {
+    "code": "002452",
+    "name": "长高电气",
+    "price": 12.57,
+    "change_pct": 1.699,
+    "industry": ""
+  },
+  {
+    "code": "601789",
+    "name": "宁波建工",
+    "price": 4.05,
+    "change_pct": -1.699,
+    "industry": ""
+  },
+  {
+    "code": "688237",
+    "name": "超卓航科",
+    "price": 52.69,
+    "change_pct": -1.6978,
+    "industry": ""
+  },
+  {
+    "code": "002514",
+    "name": "*ST宝馨",
+    "price": 2.32,
+    "change_pct": -1.6949,
+    "industry": ""
+  },
+  {
+    "code": "603577",
+    "name": "汇金通",
+    "price": 9.6,
+    "change_pct": 1.6949,
+    "industry": ""
+  },
+  {
+    "code": "300141",
+    "name": "和顺电气",
+    "price": 9.61,
+    "change_pct": 1.6931,
+    "industry": ""
+  },
+  {
+    "code": "688563",
+    "name": "航材股份",
+    "price": 50.54,
+    "change_pct": -1.6923,
+    "industry": ""
+  },
+  {
+    "code": "603507",
+    "name": "振江股份",
+    "price": 32.54,
+    "change_pct": -1.6918,
+    "industry": ""
+  },
+  {
+    "code": "000404",
+    "name": "长虹华意",
+    "price": 8.15,
+    "change_pct": -1.6888,
+    "industry": ""
+  },
+  {
+    "code": "002357",
+    "name": "富临运业",
+    "price": 9.05,
+    "change_pct": 1.6854,
+    "industry": ""
+  },
+  {
+    "code": "600029",
+    "name": "南方航空",
+    "price": 5.26,
+    "change_pct": -1.6822,
+    "industry": ""
+  },
+  {
+    "code": "603316",
+    "name": "诚邦股份",
+    "price": 21.63,
+    "change_pct": -1.6818,
+    "industry": ""
+  },
+  {
+    "code": "001208",
+    "name": "华菱线缆",
+    "price": 14.04,
+    "change_pct": -1.6807,
+    "industry": ""
+  },
+  {
+    "code": "002930",
+    "name": "宏川智慧",
+    "price": 9.95,
+    "change_pct": -1.6798,
+    "industry": ""
+  },
+  {
+    "code": "301310",
+    "name": "鑫宏业",
+    "price": 53.9,
+    "change_pct": 1.6789,
+    "industry": ""
+  },
+  {
+    "code": "300674",
+    "name": "宇信科技",
+    "price": 15.23,
+    "change_pct": -1.6785,
+    "industry": ""
+  },
+  {
+    "code": "300600",
+    "name": "国瑞科技",
+    "price": 9.41,
+    "change_pct": -1.6719,
+    "industry": ""
+  },
+  {
+    "code": "603248",
+    "name": "锡华科技",
+    "price": 20.79,
+    "change_pct": -1.6556,
+    "industry": ""
+  },
+  {
+    "code": "300887",
+    "name": "谱尼测试",
+    "price": 7.16,
+    "change_pct": -1.6484,
+    "industry": ""
+  },
+  {
+    "code": "603819",
+    "name": "神力股份",
+    "price": 11.76,
+    "change_pct": 1.6422,
+    "industry": ""
+  },
+  {
+    "code": "002441",
+    "name": "众业达",
+    "price": 7.82,
+    "change_pct": -1.6352,
+    "industry": ""
+  },
+  {
+    "code": "920062",
+    "name": "科润智控",
+    "price": 9.03,
+    "change_pct": -1.634,
+    "industry": ""
+  },
+  {
+    "code": "300635",
+    "name": "中达安",
+    "price": 11.54,
+    "change_pct": -1.6198,
+    "industry": ""
+  },
+  {
+    "code": "300384",
+    "name": "三联虹普",
+    "price": 11.96,
+    "change_pct": 1.6143,
+    "industry": ""
+  },
+  {
+    "code": "300933",
+    "name": "中辰股份",
+    "price": 6.1,
+    "change_pct": -1.6129,
+    "industry": ""
+  },
+  {
+    "code": "301138",
+    "name": "华研精机",
+    "price": 31.39,
+    "change_pct": -1.5987,
+    "industry": ""
+  },
+  {
+    "code": "600072",
+    "name": "中船科技",
+    "price": 8.64,
+    "change_pct": -1.5945,
+    "industry": ""
+  },
+  {
+    "code": "000151",
+    "name": "中成股份",
+    "price": 10.5,
+    "change_pct": -1.5933,
+    "industry": ""
+  },
+  {
+    "code": "688681",
+    "name": "科汇股份",
+    "price": 14.74,
+    "change_pct": 1.5851,
+    "industry": ""
+  },
+  {
+    "code": "600889",
+    "name": "*ST京化",
+    "price": 16.06,
+    "change_pct": 1.5813,
+    "industry": ""
+  },
+  {
+    "code": "301031",
+    "name": "中熔电气",
+    "price": 112.3,
+    "change_pct": -1.5776,
+    "industry": ""
+  },
+  {
+    "code": "603966",
+    "name": "法兰泰克",
+    "price": 8.39,
+    "change_pct": 1.5738,
+    "industry": ""
+  },
+  {
+    "code": "601598",
+    "name": "中国外运",
+    "price": 5.18,
+    "change_pct": 1.5686,
+    "industry": ""
+  },
+  {
+    "code": "688335",
+    "name": "复洁科技",
+    "price": 23.88,
+    "change_pct": -1.5664,
+    "industry": ""
+  },
+  {
+    "code": "300443",
+    "name": "金雷股份",
+    "price": 21.47,
+    "change_pct": -1.5589,
+    "industry": ""
+  },
+  {
+    "code": "603173",
+    "name": "福斯达",
+    "price": 37.87,
+    "change_pct": 1.5554,
+    "industry": ""
+  },
+  {
+    "code": "002320",
+    "name": "海峡股份",
+    "price": 6.53,
+    "change_pct": 1.5552,
+    "industry": ""
+  },
+  {
+    "code": "600611",
+    "name": "大众交通",
+    "price": 3.8,
+    "change_pct": -1.5544,
+    "industry": ""
+  },
+  {
+    "code": "002686",
+    "name": "亿利达",
+    "price": 5.28,
+    "change_pct": 1.5385,
+    "industry": ""
+  },
+  {
+    "code": "002010",
+    "name": "传化智联",
+    "price": 4.65,
+    "change_pct": 1.5284,
+    "industry": ""
+  },
+  {
+    "code": "300411",
+    "name": "金盾股份",
+    "price": 7.1,
+    "change_pct": -1.5257,
+    "industry": ""
+  },
+  {
+    "code": "300351",
+    "name": "永贵电器",
+    "price": 16.66,
+    "change_pct": 1.5235,
+    "industry": ""
+  },
+  {
+    "code": "920870",
+    "name": "恒进感应",
+    "price": 12.75,
+    "change_pct": 1.5127,
+    "industry": ""
+  },
+  {
+    "code": "600416",
+    "name": "湘电股份",
+    "price": 9.77,
+    "change_pct": -1.5121,
+    "industry": ""
+  },
+  {
+    "code": "920689",
+    "name": "克莱特",
+    "price": 21.55,
+    "change_pct": -1.5082,
+    "industry": ""
+  },
+  {
+    "code": "002698",
+    "name": "博实股份",
+    "price": 13.48,
+    "change_pct": 1.506,
+    "industry": ""
+  },
+  {
+    "code": "002061",
+    "name": "浙江交科",
+    "price": 3.4,
+    "change_pct": 1.4925,
+    "industry": ""
+  },
+  {
+    "code": "300471",
+    "name": "厚普股份",
+    "price": 9.24,
+    "change_pct": -1.4925,
+    "industry": ""
+  },
+  {
+    "code": "688611",
+    "name": "杭州柯林",
+    "price": 69.33,
+    "change_pct": -1.4919,
+    "industry": ""
+  },
+  {
+    "code": "920112",
+    "name": "巴兰仕",
+    "price": 15.9,
+    "change_pct": -1.487,
+    "industry": ""
+  },
+  {
+    "code": "688309",
+    "name": "恒誉环保",
+    "price": 62.82,
+    "change_pct": 1.4863,
+    "industry": ""
+  },
+  {
+    "code": "002672",
+    "name": "东江环保",
+    "price": 3.42,
+    "change_pct": 1.4837,
+    "industry": ""
+  },
+  {
+    "code": "603226",
+    "name": "菲林格尔",
+    "price": 52.57,
+    "change_pct": -1.4805,
+    "industry": ""
+  },
+  {
+    "code": "920080",
+    "name": "奥美森",
+    "price": 22.66,
+    "change_pct": -1.4783,
+    "industry": ""
+  },
+  {
+    "code": "300772",
+    "name": "运达股份",
+    "price": 12.01,
+    "change_pct": -1.4766,
+    "industry": ""
+  },
+  {
+    "code": "301030",
+    "name": "*ST仕净",
+    "price": 10.03,
+    "change_pct": -1.4735,
+    "industry": ""
+  },
+  {
+    "code": "300984",
+    "name": "金沃股份",
+    "price": 59.95,
+    "change_pct": 1.4726,
+    "industry": ""
+  },
+  {
+    "code": "601008",
+    "name": "连云港",
+    "price": 4.15,
+    "change_pct": 1.467,
+    "industry": ""
+  },
+  {
+    "code": "001391",
+    "name": "国货航",
+    "price": 4.16,
+    "change_pct": 1.4634,
+    "industry": ""
+  },
+  {
+    "code": "300989",
+    "name": "蕾奥规划",
+    "price": 13.18,
+    "change_pct": 1.4627,
+    "industry": ""
+  },
+  {
+    "code": "300992",
+    "name": "泰福泵业",
+    "price": 24.42,
+    "change_pct": -1.4528,
+    "industry": ""
+  },
+  {
+    "code": "920124",
+    "name": "南特科技",
+    "price": 13.27,
+    "change_pct": 1.4526,
+    "industry": ""
+  },
+  {
+    "code": "002649",
+    "name": "博彦科技",
+    "price": 8.19,
+    "change_pct": -1.444,
+    "industry": ""
+  },
+  {
+    "code": "601111",
+    "name": "中国国航",
+    "price": 6.15,
+    "change_pct": -1.4423,
+    "industry": ""
+  },
+  {
+    "code": "603016",
+    "name": "新宏泰",
+    "price": 33.91,
+    "change_pct": 1.4358,
+    "industry": ""
+  },
+  {
+    "code": "600320",
+    "name": "振华重工",
+    "price": 4.12,
+    "change_pct": -1.4354,
+    "industry": ""
+  },
+  {
+    "code": "600114",
+    "name": "东睦股份",
+    "price": 36.78,
+    "change_pct": 1.4341,
+    "industry": ""
+  },
+  {
+    "code": "002164",
+    "name": "宁波东力",
+    "price": 12.03,
+    "change_pct": 1.4334,
+    "industry": ""
+  },
+  {
+    "code": "001965",
+    "name": "招商公路",
+    "price": 9.24,
+    "change_pct": 1.427,
+    "industry": ""
+  },
+  {
+    "code": "301202",
+    "name": "朗威股份",
+    "price": 32.48,
+    "change_pct": -1.4264,
+    "industry": ""
+  },
+  {
+    "code": "300355",
+    "name": "蒙草生态",
+    "price": 2.85,
+    "change_pct": 1.4235,
+    "industry": ""
+  },
+  {
+    "code": "603159",
+    "name": "上海亚虹",
+    "price": 18.64,
+    "change_pct": 1.4146,
+    "industry": ""
+  },
+  {
+    "code": "000400",
+    "name": "许继电气",
+    "price": 20.96,
+    "change_pct": -1.4111,
+    "industry": ""
+  },
+  {
+    "code": "688501",
+    "name": "青达环保",
+    "price": 19.5,
+    "change_pct": 1.4041,
+    "industry": ""
+  },
+  {
+    "code": "300488",
+    "name": "恒锋工具",
+    "price": 47.15,
+    "change_pct": -1.4011,
+    "industry": ""
+  },
+  {
+    "code": "002270",
+    "name": "华明装备",
+    "price": 18.31,
+    "change_pct": -1.4001,
+    "industry": ""
+  },
+  {
+    "code": "601033",
+    "name": "永兴股份",
+    "price": 13.8,
+    "change_pct": 1.396,
+    "industry": ""
+  },
+  {
+    "code": "300083",
+    "name": "创世纪",
+    "price": 13.47,
+    "change_pct": -1.3909,
+    "industry": ""
+  },
+  {
+    "code": "688069",
+    "name": "德林海",
+    "price": 37.19,
+    "change_pct": 1.3904,
+    "industry": ""
+  },
+  {
+    "code": "603933",
+    "name": "睿能科技",
+    "price": 22.77,
+    "change_pct": -1.3859,
+    "industry": ""
+  },
+  {
+    "code": "000626",
+    "name": "远大控股",
+    "price": 6.41,
+    "change_pct": -1.3846,
+    "industry": ""
+  },
+  {
+    "code": "002823",
+    "name": "凯中精密",
+    "price": 14.7,
+    "change_pct": 1.3793,
+    "industry": ""
+  },
+  {
+    "code": "300817",
+    "name": "双飞集团",
+    "price": 16.18,
+    "change_pct": 1.3784,
+    "industry": ""
+  },
+  {
+    "code": "000519",
+    "name": "中兵红箭",
+    "price": 20.64,
+    "change_pct": 1.3752,
+    "industry": ""
+  },
+  {
+    "code": "603909",
+    "name": "建发合诚",
+    "price": 8.86,
+    "change_pct": 1.373,
+    "industry": ""
+  },
+  {
+    "code": "300621",
+    "name": "维业股份",
+    "price": 6.49,
+    "change_pct": -1.3678,
+    "industry": ""
+  },
+  {
+    "code": "600668",
+    "name": "尖峰集团",
+    "price": 7.45,
+    "change_pct": 1.3605,
+    "industry": ""
+  },
+  {
+    "code": "600765",
+    "name": "中航重机",
+    "price": 13.06,
+    "change_pct": -1.3595,
+    "industry": ""
+  },
+  {
+    "code": "301505",
+    "name": "苏州规划",
+    "price": 16,
+    "change_pct": -1.3564,
+    "industry": ""
+  },
+  {
+    "code": "300904",
+    "name": "威力传动",
+    "price": 40.9,
+    "change_pct": -1.3507,
+    "industry": ""
+  },
+  {
+    "code": "300983",
+    "name": "尤安设计",
+    "price": 36.02,
+    "change_pct": -1.3421,
+    "industry": ""
+  },
+  {
+    "code": "002531",
+    "name": "天顺风能",
+    "price": 8.2,
+    "change_pct": -1.3237,
+    "industry": ""
+  },
+  {
+    "code": "920160",
+    "name": "北矿检测",
+    "price": 20.18,
+    "change_pct": -1.3203,
+    "industry": ""
+  },
+  {
+    "code": "002307",
+    "name": "北新路桥",
+    "price": 2.99,
+    "change_pct": -1.3201,
+    "industry": ""
+  },
+  {
+    "code": "002121",
+    "name": "科陆电子",
+    "price": 5.24,
+    "change_pct": -1.3183,
+    "industry": ""
+  },
+  {
+    "code": "601117",
+    "name": "中国化学",
+    "price": 7.49,
+    "change_pct": -1.3175,
+    "industry": ""
+  },
+  {
+    "code": "601700",
+    "name": "风范股份",
+    "price": 4.64,
+    "change_pct": 1.31,
+    "industry": ""
+  },
+  {
+    "code": "301449",
+    "name": "天溯计量",
+    "price": 38.43,
+    "change_pct": -1.3097,
+    "industry": ""
+  },
+  {
+    "code": "600106",
+    "name": "重庆路桥",
+    "price": 4.54,
+    "change_pct": -1.3043,
+    "industry": ""
+  },
+  {
+    "code": "920174",
+    "name": "五新智能",
+    "price": 31.2,
+    "change_pct": 1.2987,
+    "industry": ""
+  },
+  {
+    "code": "603177",
+    "name": "德创环保",
+    "price": 8.38,
+    "change_pct": -1.2956,
+    "industry": ""
+  },
+  {
+    "code": "000090",
+    "name": "天健集团",
+    "price": 3.05,
+    "change_pct": -1.2945,
+    "industry": ""
+  },
+  {
+    "code": "600377",
+    "name": "宁沪高速",
+    "price": 11.77,
+    "change_pct": 1.2909,
+    "industry": ""
+  },
+  {
+    "code": "601022",
+    "name": "宁波远洋",
+    "price": 7.85,
+    "change_pct": 1.2903,
+    "industry": ""
+  },
+  {
+    "code": "688059",
+    "name": "华锐精密",
+    "price": 217.77,
+    "change_pct": 1.2884,
+    "industry": ""
+  },
+  {
+    "code": "300823",
+    "name": "建科智能",
+    "price": 15.05,
+    "change_pct": 1.2786,
+    "industry": ""
+  },
+  {
+    "code": "603126",
+    "name": "中材节能",
+    "price": 6.18,
+    "change_pct": -1.278,
+    "industry": ""
+  },
+  {
+    "code": "600057",
+    "name": "厦门象屿",
+    "price": 5.57,
+    "change_pct": 1.2727,
+    "industry": ""
+  },
+  {
+    "code": "301109",
+    "name": "军信股份",
+    "price": 12.78,
+    "change_pct": 1.2678,
+    "industry": ""
+  },
+  {
+    "code": "000609",
+    "name": "*ST中迪",
+    "price": 13.6,
+    "change_pct": 1.2658,
+    "industry": ""
+  },
+  {
+    "code": "603076",
+    "name": "乐惠国际",
+    "price": 21.85,
+    "change_pct": -1.2653,
+    "industry": ""
+  },
+  {
+    "code": "002334",
+    "name": "英威腾",
+    "price": 7.04,
+    "change_pct": -1.2623,
+    "industry": ""
+  },
+  {
+    "code": "002857",
+    "name": "三晖电气",
+    "price": 17.21,
+    "change_pct": -1.2622,
+    "industry": ""
+  },
+  {
+    "code": "000816",
+    "name": "智慧农业",
+    "price": 2.41,
+    "change_pct": 1.2605,
+    "industry": ""
+  },
+  {
+    "code": "002333",
+    "name": "罗普斯金",
+    "price": 4.82,
+    "change_pct": 1.2605,
+    "industry": ""
+  },
+  {
+    "code": "002358",
+    "name": "森源电气",
+    "price": 5.51,
+    "change_pct": -1.2545,
+    "industry": ""
+  },
+  {
+    "code": "300532",
+    "name": "今天国际",
+    "price": 6.47,
+    "change_pct": 1.252,
+    "industry": ""
+  },
+  {
+    "code": "600629",
+    "name": "华建集团",
+    "price": 12.14,
+    "change_pct": 1.251,
+    "industry": ""
+  },
+  {
+    "code": "603915",
+    "name": "国茂股份",
+    "price": 14.57,
+    "change_pct": 1.2509,
+    "industry": ""
+  },
+  {
+    "code": "601018",
+    "name": "宁波港",
+    "price": 3.24,
+    "change_pct": 1.25,
+    "industry": ""
+  },
+  {
+    "code": "301609",
+    "name": "山大电力",
+    "price": 33.2,
+    "change_pct": -1.2493,
+    "industry": ""
+  },
+  {
+    "code": "920263",
+    "name": "中航泰达",
+    "price": 7.3,
+    "change_pct": 1.2483,
+    "industry": ""
+  },
+  {
+    "code": "603339",
+    "name": "四方科技",
+    "price": 14.28,
+    "change_pct": -1.2448,
+    "industry": ""
+  },
+  {
+    "code": "920873",
+    "name": "中设咨询",
+    "price": 7.16,
+    "change_pct": -1.2414,
+    "industry": ""
+  },
+  {
+    "code": "300594",
+    "name": "ST朗进",
+    "price": 14.69,
+    "change_pct": 1.2405,
+    "industry": ""
+  },
+  {
+    "code": "920703",
+    "name": "广厦环能",
+    "price": 9.58,
+    "change_pct": -1.2371,
+    "industry": ""
+  },
+  {
+    "code": "688053",
+    "name": "ST思科瑞",
+    "price": 37.59,
+    "change_pct": -1.2349,
+    "industry": ""
+  },
+  {
+    "code": "600295",
+    "name": "鄂尔多斯",
+    "price": 11.51,
+    "change_pct": 1.2313,
+    "industry": ""
+  },
+  {
+    "code": "300070",
+    "name": "碧水源",
+    "price": 3.3,
+    "change_pct": 1.227,
+    "industry": ""
+  },
+  {
+    "code": "002031",
+    "name": "巨轮智能",
+    "price": 5.8,
+    "change_pct": 1.2216,
+    "industry": ""
+  },
+  {
+    "code": "600862",
+    "name": "中航高科",
+    "price": 17.79,
+    "change_pct": -1.2215,
+    "industry": ""
+  },
+  {
+    "code": "001205",
+    "name": "盛航股份",
+    "price": 13.75,
+    "change_pct": -1.2213,
+    "industry": ""
+  },
+  {
+    "code": "301607",
+    "name": "富特科技",
+    "price": 52.22,
+    "change_pct": 1.2212,
+    "industry": ""
+  },
+  {
+    "code": "920553",
+    "name": "凯腾精工",
+    "price": 6.48,
+    "change_pct": -1.2195,
+    "industry": ""
+  },
+  {
+    "code": "603111",
+    "name": "康尼机电",
+    "price": 5.83,
+    "change_pct": 1.2153,
+    "industry": ""
+  },
+  {
+    "code": "600760",
+    "name": "中航沈飞",
+    "price": 40.78,
+    "change_pct": -1.2112,
+    "industry": ""
+  },
+  {
+    "code": "301500",
+    "name": "飞南资源",
+    "price": 29.26,
+    "change_pct": 1.2107,
+    "industry": ""
+  },
+  {
+    "code": "300190",
+    "name": "维尔利",
+    "price": 4.09,
+    "change_pct": -1.2077,
+    "industry": ""
+  },
+  {
+    "code": "601890",
+    "name": "亚星锚链",
+    "price": 8.2,
+    "change_pct": -1.2048,
+    "industry": ""
+  },
+  {
+    "code": "300746",
+    "name": "汉嘉数智",
+    "price": 10.7,
+    "change_pct": -1.2004,
+    "industry": ""
+  },
+  {
+    "code": "600026",
+    "name": "中远海能",
+    "price": 16.5,
+    "change_pct": -1.1976,
+    "industry": ""
+  },
+  {
+    "code": "605196",
+    "name": "华通线缆",
+    "price": 25.78,
+    "change_pct": -1.1882,
+    "industry": ""
+  },
+  {
+    "code": "001379",
+    "name": "腾达科技",
+    "price": 15.81,
+    "change_pct": -1.1875,
+    "industry": ""
+  },
+  {
+    "code": "003025",
+    "name": "思进智能",
+    "price": 14.53,
+    "change_pct": 1.1838,
+    "industry": ""
+  },
+  {
+    "code": "000055",
+    "name": "方大集团",
+    "price": 3.36,
+    "change_pct": -1.1765,
+    "industry": ""
+  },
+  {
+    "code": "600592",
+    "name": "龙溪股份",
+    "price": 14.65,
+    "change_pct": 1.174,
+    "industry": ""
+  },
+  {
+    "code": "920121",
+    "name": "江天科技",
+    "price": 28.66,
+    "change_pct": -1.1724,
+    "industry": ""
+  },
+  {
+    "code": "301668",
+    "name": "昊创瑞通",
+    "price": 32.93,
+    "change_pct": -1.1705,
+    "industry": ""
+  },
+  {
+    "code": "001288",
+    "name": "运机集团",
+    "price": 24.3,
+    "change_pct": 1.1657,
+    "industry": ""
+  },
+  {
+    "code": "300879",
+    "name": "大叶股份",
+    "price": 16.55,
+    "change_pct": 1.1614,
+    "industry": ""
+  },
+  {
+    "code": "301586",
+    "name": "佳力奇",
+    "price": 33.31,
+    "change_pct": -1.1573,
+    "industry": ""
+  },
+  {
+    "code": "002973",
+    "name": "侨银股份",
+    "price": 10.52,
+    "change_pct": 1.1538,
+    "industry": ""
+  },
+  {
+    "code": "601218",
+    "name": "吉鑫科技",
+    "price": 4.3,
+    "change_pct": -1.1494,
+    "industry": ""
+  },
+  {
+    "code": "603279",
+    "name": "景津装备",
+    "price": 12.35,
+    "change_pct": 1.1466,
+    "industry": ""
+  },
+  {
+    "code": "300536",
+    "name": "农尚环境",
+    "price": 8.85,
+    "change_pct": 1.1429,
+    "industry": ""
+  },
+  {
+    "code": "603112",
+    "name": "华翔股份",
+    "price": 16.51,
+    "change_pct": -1.1377,
+    "industry": ""
+  },
+  {
+    "code": "603648",
+    "name": "畅联股份",
+    "price": 8.98,
+    "change_pct": 1.1261,
+    "industry": ""
+  },
+  {
+    "code": "002642",
+    "name": "荣联科技",
+    "price": 6.16,
+    "change_pct": -1.1236,
+    "industry": ""
+  },
+  {
+    "code": "603959",
+    "name": "ST百利",
+    "price": 4.52,
+    "change_pct": 1.1186,
+    "industry": ""
+  },
+  {
+    "code": "601868",
+    "name": "中国能建",
+    "price": 2.66,
+    "change_pct": -1.1152,
+    "industry": ""
+  },
+  {
+    "code": "920223",
+    "name": "荣亿精密",
+    "price": 13.34,
+    "change_pct": -1.1119,
+    "industry": ""
+  },
+  {
+    "code": "002987",
+    "name": "京北方",
+    "price": 9.79,
+    "change_pct": -1.1111,
+    "industry": ""
+  },
+  {
+    "code": "300234",
+    "name": "开尔新材",
+    "price": 11.6,
+    "change_pct": -1.1083,
+    "industry": ""
+  },
+  {
+    "code": "001386",
+    "name": "马可波罗",
+    "price": 14.31,
+    "change_pct": -1.1057,
+    "industry": ""
+  },
+  {
+    "code": "301359",
+    "name": "东南电子",
+    "price": 16.2,
+    "change_pct": -1.0989,
+    "industry": ""
+  },
+  {
+    "code": "603195",
+    "name": "公牛集团",
+    "price": 37.8,
+    "change_pct": -1.0989,
+    "industry": ""
+  },
+  {
+    "code": "920091",
+    "name": "大鹏工业",
+    "price": 37.9,
+    "change_pct": -1.096,
+    "industry": ""
+  },
+  {
+    "code": "002111",
+    "name": "威海广泰",
+    "price": 9.05,
+    "change_pct": -1.0929,
+    "industry": ""
+  },
+  {
+    "code": "002127",
+    "name": "南极电商",
+    "price": 2.78,
+    "change_pct": 1.0909,
+    "industry": ""
+  },
+  {
+    "code": "600218",
+    "name": "全柴动力",
+    "price": 7.26,
+    "change_pct": -1.0899,
+    "industry": ""
+  },
+  {
+    "code": "603153",
+    "name": "上海建科",
+    "price": 13.04,
+    "change_pct": 1.0853,
+    "industry": ""
+  },
+  {
+    "code": "300266",
+    "name": "兴源环境",
+    "price": 1.83,
+    "change_pct": -1.0811,
+    "industry": ""
+  },
+  {
+    "code": "601827",
+    "name": "三峰环境",
+    "price": 7.49,
+    "change_pct": 1.0796,
+    "industry": ""
+  },
+  {
+    "code": "603679",
+    "name": "华体科技",
+    "price": 20.23,
+    "change_pct": -1.0758,
+    "industry": ""
+  },
+  {
+    "code": "002918",
+    "name": "蒙娜丽莎",
+    "price": 10.14,
+    "change_pct": -1.0732,
+    "industry": ""
+  },
+  {
+    "code": "603218",
+    "name": "日月股份",
+    "price": 10.14,
+    "change_pct": -1.0732,
+    "industry": ""
+  },
+  {
+    "code": "688420",
+    "name": "美腾科技",
+    "price": 21.27,
+    "change_pct": -1.0698,
+    "industry": ""
+  },
+  {
+    "code": "300293",
+    "name": "蓝英装备",
+    "price": 19.45,
+    "change_pct": -1.0682,
+    "industry": ""
+  },
+  {
+    "code": "300374",
+    "name": "中铁装配",
+    "price": 10.2,
+    "change_pct": -1.0669,
+    "industry": ""
+  },
+  {
+    "code": "000757",
+    "name": "浩物股份",
+    "price": 3.79,
+    "change_pct": 1.0667,
+    "industry": ""
+  },
+  {
+    "code": "001256",
+    "name": "炜冈科技",
+    "price": 29.7,
+    "change_pct": -1.066,
+    "industry": ""
+  },
+  {
+    "code": "300906",
+    "name": "日月明",
+    "price": 25.16,
+    "change_pct": -1.0617,
+    "industry": ""
+  },
+  {
+    "code": "300062",
+    "name": "中能电气",
+    "price": 5.63,
+    "change_pct": -1.0545,
+    "industry": ""
+  },
+  {
+    "code": "600058",
+    "name": "五矿发展",
+    "price": 11.28,
+    "change_pct": -1.0526,
+    "industry": ""
+  },
+  {
+    "code": "000570",
+    "name": "苏常柴A",
+    "price": 4.83,
+    "change_pct": 1.046,
+    "industry": ""
+  },
+  {
+    "code": "600517",
+    "name": "国网英大",
+    "price": 4.75,
+    "change_pct": -1.0417,
+    "industry": ""
+  },
+  {
+    "code": "002692",
+    "name": "远程股份",
+    "price": 3.81,
+    "change_pct": -1.039,
+    "industry": ""
+  },
+  {
+    "code": "601200",
+    "name": "上海环境",
+    "price": 6.82,
+    "change_pct": 1.037,
+    "industry": ""
+  },
+  {
+    "code": "002301",
+    "name": "齐心集团",
+    "price": 7.81,
+    "change_pct": 1.0349,
+    "industry": ""
+  },
+  {
+    "code": "688789",
+    "name": "宏华数科",
+    "price": 51.77,
+    "change_pct": 1.0343,
+    "industry": ""
+  },
+  {
+    "code": "000498",
+    "name": "山东路桥",
+    "price": 4.89,
+    "change_pct": 1.0331,
+    "industry": ""
+  },
+  {
+    "code": "600268",
+    "name": "国电南自",
+    "price": 11.5,
+    "change_pct": -1.0327,
+    "industry": ""
+  },
+  {
+    "code": "301252",
+    "name": "同星科技",
+    "price": 37.6,
+    "change_pct": -1.0266,
+    "industry": ""
+  },
+  {
+    "code": "000826",
+    "name": "*ST启环",
+    "price": 1.93,
+    "change_pct": -1.0256,
+    "industry": ""
+  },
+  {
+    "code": "001395",
+    "name": "亚联机械",
+    "price": 23.77,
+    "change_pct": 1.02,
+    "industry": ""
+  },
+  {
+    "code": "605305",
+    "name": "中际联合",
+    "price": 41.8,
+    "change_pct": -1.0182,
+    "industry": ""
+  },
+  {
+    "code": "002724",
+    "name": "海洋王",
+    "price": 4.98,
+    "change_pct": 1.0142,
+    "industry": ""
+  },
+  {
+    "code": "002347",
+    "name": "泰尔股份",
+    "price": 5.88,
+    "change_pct": -1.0101,
+    "industry": ""
+  },
+  {
+    "code": "300424",
+    "name": "航新科技",
+    "price": 15.69,
+    "change_pct": -1.0095,
+    "industry": ""
+  },
+  {
+    "code": "301151",
+    "name": "冠龙节能",
+    "price": 17.82,
+    "change_pct": -1,
+    "industry": ""
+  },
+  {
+    "code": "000905",
+    "name": "厦门港务",
+    "price": 8.09,
+    "change_pct": 0.9988,
+    "industry": ""
+  },
+  {
+    "code": "603686",
+    "name": "福龙马",
+    "price": 13.19,
+    "change_pct": 0.9954,
+    "industry": ""
+  },
+  {
+    "code": "300385",
+    "name": "ST雪浪",
+    "price": 12.22,
+    "change_pct": 0.9917,
+    "industry": ""
+  },
+  {
+    "code": "002717",
+    "name": "*ST岭南",
+    "price": 1.02,
+    "change_pct": 0.9901,
+    "industry": ""
+  },
+  {
+    "code": "601606",
+    "name": "长城军工",
+    "price": 28.58,
+    "change_pct": 0.9894,
+    "industry": ""
+  },
+  {
+    "code": "301502",
+    "name": "华阳智能",
+    "price": 71.55,
+    "change_pct": 0.988,
+    "industry": ""
+  },
+  {
+    "code": "603012",
+    "name": "创力集团",
+    "price": 8.02,
+    "change_pct": -0.9877,
+    "industry": ""
+  },
+  {
+    "code": "300500",
+    "name": "启迪设计",
+    "price": 9.05,
+    "change_pct": -0.9847,
+    "industry": ""
+  },
+  {
+    "code": "920833",
+    "name": "美心翼申",
+    "price": 9.25,
+    "change_pct": 0.9825,
+    "industry": ""
+  },
+  {
+    "code": "920156",
+    "name": "海昌智能",
+    "price": 50.42,
+    "change_pct": 0.9814,
+    "industry": ""
+  },
+  {
+    "code": "301446",
+    "name": "福事特",
+    "price": 36.41,
+    "change_pct": -0.9791,
+    "industry": ""
+  },
+  {
+    "code": "603275",
+    "name": "众辰科技",
+    "price": 40.28,
+    "change_pct": 0.9777,
+    "industry": ""
+  },
+  {
+    "code": "301388",
+    "name": "欣灵电气",
+    "price": 23.78,
+    "change_pct": 0.9766,
+    "industry": ""
+  },
+  {
+    "code": "603565",
+    "name": "中谷物流",
+    "price": 10.38,
+    "change_pct": 0.9728,
+    "industry": ""
+  },
+  {
+    "code": "603128",
+    "name": "华贸物流",
+    "price": 5.2,
+    "change_pct": 0.9709,
+    "industry": ""
+  },
+  {
+    "code": "300779",
+    "name": "惠城环保",
+    "price": 49.39,
+    "change_pct": -0.9625,
+    "industry": ""
+  },
+  {
+    "code": "600339",
+    "name": "中油工程",
+    "price": 3.1,
+    "change_pct": -0.9585,
+    "industry": ""
+  },
+  {
+    "code": "300151",
+    "name": "昌红科技",
+    "price": 24.93,
+    "change_pct": -0.9535,
+    "industry": ""
+  },
+  {
+    "code": "601021",
+    "name": "春秋航空",
+    "price": 46.77,
+    "change_pct": -0.953,
+    "industry": ""
+  },
+  {
+    "code": "600897",
+    "name": "厦门空港",
+    "price": 14.84,
+    "change_pct": 0.9524,
+    "industry": ""
+  },
+  {
+    "code": "920779",
+    "name": "武汉蓝电",
+    "price": 23.32,
+    "change_pct": 0.9524,
+    "industry": ""
+  },
+  {
+    "code": "600577",
+    "name": "精达股份",
+    "price": 9.39,
+    "change_pct": -0.9494,
+    "industry": ""
+  },
+  {
+    "code": "600281",
+    "name": "华阳新材",
+    "price": 4.28,
+    "change_pct": 0.9434,
+    "industry": ""
+  },
+  {
+    "code": "300713",
+    "name": "英可瑞",
+    "price": 12.67,
+    "change_pct": -0.9382,
+    "industry": ""
+  },
+  {
+    "code": "603069",
+    "name": "海汽集团",
+    "price": 12.93,
+    "change_pct": 0.9368,
+    "industry": ""
+  },
+  {
+    "code": "000812",
+    "name": "陕西金叶",
+    "price": 3.18,
+    "change_pct": -0.9346,
+    "industry": ""
+  },
+  {
+    "code": "300407",
+    "name": "凯发电气",
+    "price": 10.61,
+    "change_pct": -0.9337,
+    "industry": ""
+  },
+  {
+    "code": "002249",
+    "name": "大洋电机",
+    "price": 7.57,
+    "change_pct": 0.9333,
+    "industry": ""
+  },
+  {
+    "code": "002204",
+    "name": "大连重工",
+    "price": 5.32,
+    "change_pct": -0.9311,
+    "industry": ""
+  },
+  {
+    "code": "300422",
+    "name": "博世科",
+    "price": 4.29,
+    "change_pct": -0.9238,
+    "industry": ""
+  },
+  {
+    "code": "300173",
+    "name": "ST福能",
+    "price": 3.28,
+    "change_pct": 0.9231,
+    "industry": ""
+  },
+  {
+    "code": "002985",
+    "name": "北摩高科",
+    "price": 26.92,
+    "change_pct": -0.9201,
+    "industry": ""
+  },
+  {
+    "code": "600874",
+    "name": "创业环保",
+    "price": 5.49,
+    "change_pct": 0.9191,
+    "industry": ""
+  },
+  {
+    "code": "300095",
+    "name": "华伍股份",
+    "price": 8.67,
+    "change_pct": -0.9143,
+    "industry": ""
+  },
+  {
+    "code": "300589",
+    "name": "江龙船艇",
+    "price": 11.94,
+    "change_pct": -0.9129,
+    "industry": ""
+  },
+  {
+    "code": "603095",
+    "name": "越剑智能",
+    "price": 14.17,
+    "change_pct": -0.9091,
+    "industry": ""
+  },
+  {
+    "code": "600967",
+    "name": "内蒙一机",
+    "price": 10.92,
+    "change_pct": -0.9074,
+    "industry": ""
+  },
+  {
+    "code": "000582",
+    "name": "北部湾港",
+    "price": 11.17,
+    "change_pct": 0.9033,
+    "industry": ""
+  },
+  {
+    "code": "600603",
+    "name": "广汇物流",
+    "price": 4.47,
+    "change_pct": 0.9029,
+    "industry": ""
+  },
+  {
+    "code": "301048",
+    "name": "金鹰重工",
+    "price": 8.79,
+    "change_pct": -0.9019,
+    "industry": ""
+  },
+  {
+    "code": "301232",
+    "name": "飞沃科技",
+    "price": 162.95,
+    "change_pct": 0.8978,
+    "industry": ""
+  },
+  {
+    "code": "300960",
+    "name": "通业科技",
+    "price": 15.46,
+    "change_pct": -0.8974,
+    "industry": ""
+  },
+  {
+    "code": "600170",
+    "name": "上海建工",
+    "price": 2.22,
+    "change_pct": -0.8929,
+    "industry": ""
+  },
+  {
+    "code": "600528",
+    "name": "中铁工业",
+    "price": 6.78,
+    "change_pct": 0.8929,
+    "industry": ""
+  },
+  {
+    "code": "600463",
+    "name": "空港股份",
+    "price": 7.85,
+    "change_pct": -0.8838,
+    "industry": ""
+  },
+  {
+    "code": "920570",
+    "name": "坤博精工",
+    "price": 24.68,
+    "change_pct": -0.8835,
+    "industry": ""
+  },
+  {
+    "code": "301058",
+    "name": "中粮科工",
+    "price": 8,
+    "change_pct": 0.8827,
+    "industry": ""
+  },
+  {
+    "code": "601816",
+    "name": "京沪高铁",
+    "price": 4.58,
+    "change_pct": 0.8811,
+    "industry": ""
+  },
+  {
+    "code": "600368",
+    "name": "五洲交通",
+    "price": 3.45,
+    "change_pct": 0.8772,
+    "industry": ""
+  },
+  {
+    "code": "002747",
+    "name": "埃斯顿",
+    "price": 40.7,
+    "change_pct": -0.8768,
+    "industry": ""
+  },
+  {
+    "code": "301079",
+    "name": "邵阳液压",
+    "price": 35.06,
+    "change_pct": -0.8764,
+    "industry": ""
+  },
+  {
+    "code": "301368",
+    "name": "丰立智能",
+    "price": 43.81,
+    "change_pct": 0.875,
+    "industry": ""
+  },
+  {
+    "code": "002375",
+    "name": "亚厦股份",
+    "price": 3.47,
+    "change_pct": 0.8721,
+    "industry": ""
+  },
+  {
+    "code": "600550",
+    "name": "保变电气",
+    "price": 11.43,
+    "change_pct": -0.8673,
+    "industry": ""
+  },
+  {
+    "code": "603329",
+    "name": "上海雅仕",
+    "price": 9.33,
+    "change_pct": 0.8649,
+    "industry": ""
+  },
+  {
+    "code": "002892",
+    "name": "科力尔",
+    "price": 9.34,
+    "change_pct": 0.8639,
+    "industry": ""
+  },
+  {
+    "code": "001277",
+    "name": "速达股份",
+    "price": 28.3,
+    "change_pct": 0.8553,
+    "industry": ""
+  },
+  {
+    "code": "000927",
+    "name": "中国铁物",
+    "price": 2.33,
+    "change_pct": -0.8511,
+    "industry": ""
+  },
+  {
+    "code": "600477",
+    "name": "杭萧钢构",
+    "price": 2.34,
+    "change_pct": -0.8475,
+    "industry": ""
+  },
+  {
+    "code": "300126",
+    "name": "锐奇股份",
+    "price": 5.86,
+    "change_pct": -0.846,
+    "industry": ""
+  },
+  {
+    "code": "300092",
+    "name": "科新机电",
+    "price": 11.73,
+    "change_pct": -0.8453,
+    "industry": ""
+  },
+  {
+    "code": "920571",
+    "name": "国航远洋",
+    "price": 8.38,
+    "change_pct": 0.8424,
+    "industry": ""
+  },
+  {
+    "code": "300771",
+    "name": "智莱科技",
+    "price": 10.82,
+    "change_pct": 0.8388,
+    "industry": ""
+  },
+  {
+    "code": "601956",
+    "name": "东贝集团",
+    "price": 4.81,
+    "change_pct": 0.8386,
+    "industry": ""
+  },
+  {
+    "code": "603029",
+    "name": "天鹅股份",
+    "price": 14.63,
+    "change_pct": 0.827,
+    "industry": ""
+  },
+  {
+    "code": "603988",
+    "name": "中电电机",
+    "price": 17.07,
+    "change_pct": 0.8269,
+    "industry": ""
+  },
+  {
+    "code": "600876",
+    "name": "凯盛新能",
+    "price": 7.22,
+    "change_pct": -0.8242,
+    "industry": ""
+  },
+  {
+    "code": "920942",
+    "name": "恒立钻具",
+    "price": 18.05,
+    "change_pct": -0.8242,
+    "industry": ""
+  },
+  {
+    "code": "300780",
+    "name": "德恩精工",
+    "price": 34.38,
+    "change_pct": 0.8211,
+    "industry": ""
+  },
+  {
+    "code": "000099",
+    "name": "中信海直",
+    "price": 14.51,
+    "change_pct": -0.8202,
+    "industry": ""
+  },
+  {
+    "code": "688009",
+    "name": "中国通号",
+    "price": 4.92,
+    "change_pct": 0.8197,
+    "industry": ""
+  },
+  {
+    "code": "001872",
+    "name": "招商港口",
+    "price": 19.8,
+    "change_pct": 0.8147,
+    "industry": ""
+  },
+  {
+    "code": "688190",
+    "name": "云路股份",
+    "price": 86.49,
+    "change_pct": -0.8142,
+    "industry": ""
+  },
+  {
+    "code": "601618",
+    "name": "中国中冶",
+    "price": 2.49,
+    "change_pct": 0.8097,
+    "industry": ""
+  },
+  {
+    "code": "300091",
+    "name": "*ST金灵",
+    "price": 2.46,
+    "change_pct": -0.8065,
+    "industry": ""
+  },
+  {
+    "code": "603208",
+    "name": "江山欧派",
+    "price": 11.25,
+    "change_pct": 0.8065,
+    "industry": ""
+  },
+  {
+    "code": "920018",
+    "name": "宏远股份",
+    "price": 14.76,
+    "change_pct": -0.8065,
+    "industry": ""
+  },
+  {
+    "code": "600861",
+    "name": "北京人力",
+    "price": 12.52,
+    "change_pct": 0.8052,
+    "industry": ""
+  },
+  {
+    "code": "000546",
+    "name": "金圆股份",
+    "price": 4.95,
+    "change_pct": -0.8016,
+    "industry": ""
+  },
+  {
+    "code": "603221",
+    "name": "爱丽家居",
+    "price": 10.08,
+    "change_pct": 0.8,
+    "industry": ""
+  },
+  {
+    "code": "002730",
+    "name": "电光科技",
+    "price": 28.62,
+    "change_pct": -0.7972,
+    "industry": ""
+  },
+  {
+    "code": "600606",
+    "name": "绿地控股",
+    "price": 1.25,
+    "change_pct": -0.7937,
+    "industry": ""
+  },
+  {
+    "code": "000421",
+    "name": "南京公用",
+    "price": 5.14,
+    "change_pct": 0.7843,
+    "industry": ""
+  },
+  {
+    "code": "300334",
+    "name": "津膜科技",
+    "price": 10.28,
+    "change_pct": 0.7843,
+    "industry": ""
+  },
+  {
+    "code": "301268",
+    "name": "铭利达",
+    "price": 14.14,
+    "change_pct": -0.7719,
+    "industry": ""
+  },
+  {
+    "code": "002576",
+    "name": "通达动力",
+    "price": 14.38,
+    "change_pct": 0.7708,
+    "industry": ""
+  },
+  {
+    "code": "000906",
+    "name": "浙商中拓",
+    "price": 5.15,
+    "change_pct": -0.7707,
+    "industry": ""
+  },
+  {
+    "code": "600125",
+    "name": "铁龙物流",
+    "price": 5.23,
+    "change_pct": 0.7707,
+    "industry": ""
+  },
+  {
+    "code": "002641",
+    "name": "公元股份",
+    "price": 3.93,
+    "change_pct": 0.7692,
+    "industry": ""
+  },
+  {
+    "code": "300703",
+    "name": "创源股份",
+    "price": 13.11,
+    "change_pct": 0.7686,
+    "industry": ""
+  },
+  {
+    "code": "605155",
+    "name": "西大门",
+    "price": 13.12,
+    "change_pct": 0.768,
+    "industry": ""
+  },
+  {
+    "code": "603797",
+    "name": "联泰环保",
+    "price": 3.88,
+    "change_pct": -0.7673,
+    "industry": ""
+  },
+  {
+    "code": "603018",
+    "name": "华设集团",
+    "price": 5.18,
+    "change_pct": -0.7663,
+    "industry": ""
+  },
+  {
+    "code": "600820",
+    "name": "隧道股份",
+    "price": 5.3,
+    "change_pct": 0.7605,
+    "industry": ""
+  },
+  {
+    "code": "301265",
+    "name": "华新科技",
+    "price": 27.58,
+    "change_pct": -0.7557,
+    "industry": ""
+  },
+  {
+    "code": "600717",
+    "name": "天津港",
+    "price": 4,
+    "change_pct": 0.7557,
+    "industry": ""
+  },
+  {
+    "code": "601298",
+    "name": "青岛港",
+    "price": 8.05,
+    "change_pct": 0.7509,
+    "industry": ""
+  },
+  {
+    "code": "603223",
+    "name": "恒通股份",
+    "price": 13.46,
+    "change_pct": 0.7485,
+    "industry": ""
+  },
+  {
+    "code": "603855",
+    "name": "华荣股份",
+    "price": 17.55,
+    "change_pct": 0.7463,
+    "industry": ""
+  },
+  {
+    "code": "920082",
+    "name": "方正阀门",
+    "price": 8.11,
+    "change_pct": 0.7453,
+    "industry": ""
+  },
+  {
+    "code": "301215",
+    "name": "中汽股份",
+    "price": 5.36,
+    "change_pct": -0.7407,
+    "industry": ""
+  },
+  {
+    "code": "600685",
+    "name": "中船防务",
+    "price": 25.51,
+    "change_pct": -0.7393,
+    "industry": ""
+  },
+  {
+    "code": "920837",
+    "name": "华原股份",
+    "price": 9.6,
+    "change_pct": 0.7345,
+    "industry": ""
+  },
+  {
+    "code": "001316",
+    "name": "润贝航科",
+    "price": 32.95,
+    "change_pct": 0.7337,
+    "industry": ""
+  },
+  {
+    "code": "300013",
+    "name": "新宁物流",
+    "price": 4.07,
+    "change_pct": -0.7317,
+    "industry": ""
+  },
+  {
+    "code": "603569",
+    "name": "长久物流",
+    "price": 5.51,
+    "change_pct": 0.7313,
+    "industry": ""
+  },
+  {
+    "code": "600248",
+    "name": "陕建股份",
+    "price": 2.76,
+    "change_pct": 0.7299,
+    "industry": ""
+  },
+  {
+    "code": "002120",
+    "name": "韵达股份",
+    "price": 6.93,
+    "change_pct": 0.7267,
+    "industry": ""
+  },
+  {
+    "code": "002941",
+    "name": "新疆交建",
+    "price": 9.73,
+    "change_pct": 0.7246,
+    "industry": ""
+  },
+  {
+    "code": "600221",
+    "name": "海航控股",
+    "price": 1.37,
+    "change_pct": -0.7246,
+    "industry": ""
+  },
+  {
+    "code": "920027",
+    "name": "交大铁发",
+    "price": 10.97,
+    "change_pct": -0.724,
+    "industry": ""
+  },
+  {
+    "code": "002108",
+    "name": "沧州明珠",
+    "price": 4.12,
+    "change_pct": -0.7229,
+    "industry": ""
+  },
+  {
+    "code": "601188",
+    "name": "龙江交通",
+    "price": 2.79,
+    "change_pct": 0.722,
+    "industry": ""
+  },
+  {
+    "code": "002323",
+    "name": "*ST雅博",
+    "price": 1.4,
+    "change_pct": 0.7194,
+    "industry": ""
+  },
+  {
+    "code": "688448",
+    "name": "磁谷科技",
+    "price": 58,
+    "change_pct": -0.7189,
+    "industry": ""
+  },
+  {
+    "code": "002529",
+    "name": "海源复材",
+    "price": 7.02,
+    "change_pct": 0.7174,
+    "industry": ""
+  },
+  {
+    "code": "002339",
+    "name": "积成电子",
+    "price": 6.95,
+    "change_pct": -0.7143,
+    "industry": ""
+  },
+  {
+    "code": "601880",
+    "name": "辽港股份",
+    "price": 1.39,
+    "change_pct": -0.7143,
+    "industry": ""
+  },
+  {
+    "code": "601333",
+    "name": "广深铁路",
+    "price": 2.85,
+    "change_pct": 0.7067,
+    "industry": ""
+  },
+  {
+    "code": "603500",
+    "name": "祥和实业",
+    "price": 11.44,
+    "change_pct": 0.7042,
+    "industry": ""
+  },
+  {
+    "code": "600860",
+    "name": "京城股份",
+    "price": 8.47,
+    "change_pct": -0.7034,
+    "industry": ""
+  },
+  {
+    "code": "301632",
+    "name": "广东建科",
+    "price": 15.59,
+    "change_pct": -0.7006,
+    "industry": ""
+  },
+  {
+    "code": "601228",
+    "name": "广州港",
+    "price": 2.89,
+    "change_pct": 0.6969,
+    "industry": ""
+  },
+  {
+    "code": "002445",
+    "name": "中南文化",
+    "price": 2.87,
+    "change_pct": -0.692,
+    "industry": ""
+  },
+  {
+    "code": "002575",
+    "name": "群兴玩具",
+    "price": 5.76,
+    "change_pct": -0.6897,
+    "industry": ""
+  },
+  {
+    "code": "002352",
+    "name": "顺丰控股",
+    "price": 32.42,
+    "change_pct": 0.6832,
+    "industry": ""
+  },
+  {
+    "code": "300171",
+    "name": "东富龙",
+    "price": 11.65,
+    "change_pct": -0.682,
+    "industry": ""
+  },
+  {
+    "code": "603583",
+    "name": "捷昌驱动",
+    "price": 23.66,
+    "change_pct": 0.6809,
+    "industry": ""
+  },
+  {
+    "code": "601668",
+    "name": "中国建筑",
+    "price": 4.44,
+    "change_pct": 0.6803,
+    "industry": ""
+  },
+  {
+    "code": "000856",
+    "name": "冀东装备",
+    "price": 7.41,
+    "change_pct": 0.6793,
+    "industry": ""
+  },
+  {
+    "code": "603530",
+    "name": "神马电力",
+    "price": 48.95,
+    "change_pct": 0.6787,
+    "industry": ""
+  },
+  {
+    "code": "002487",
+    "name": "大金重工",
+    "price": 54.67,
+    "change_pct": -0.6722,
+    "industry": ""
+  },
+  {
+    "code": "600582",
+    "name": "天地科技",
+    "price": 4.5,
+    "change_pct": 0.6711,
+    "industry": ""
+  },
+  {
+    "code": "002350",
+    "name": "北京科锐",
+    "price": 13.56,
+    "change_pct": 0.6682,
+    "industry": ""
+  },
+  {
+    "code": "600794",
+    "name": "保税科技",
+    "price": 2.98,
+    "change_pct": -0.6667,
+    "industry": ""
+  },
+  {
+    "code": "002337",
+    "name": "赛象科技",
+    "price": 4.54,
+    "change_pct": 0.6652,
+    "industry": ""
+  },
+  {
+    "code": "002573",
+    "name": "清新环境",
+    "price": 3.03,
+    "change_pct": 0.6645,
+    "industry": ""
+  },
+  {
+    "code": "002722",
+    "name": "物产金轮",
+    "price": 12.14,
+    "change_pct": 0.6633,
+    "industry": ""
+  },
+  {
+    "code": "920682",
+    "name": "球冠电缆",
+    "price": 6.07,
+    "change_pct": 0.6633,
+    "industry": ""
+  },
+  {
+    "code": "000619",
+    "name": "海螺新材",
+    "price": 4.5,
+    "change_pct": -0.6623,
+    "industry": ""
+  },
+  {
+    "code": "300850",
+    "name": "新强联",
+    "price": 27,
+    "change_pct": -0.6623,
+    "industry": ""
+  },
+  {
+    "code": "301289",
+    "name": "国缆检测",
+    "price": 46.53,
+    "change_pct": -0.6618,
+    "industry": ""
+  },
+  {
+    "code": "001279",
+    "name": "强邦新材",
+    "price": 27.07,
+    "change_pct": -0.6606,
+    "industry": ""
+  },
+  {
+    "code": "300263",
+    "name": "隆华科技",
+    "price": 16.6,
+    "change_pct": -0.6583,
+    "industry": ""
+  },
+  {
+    "code": "001202",
+    "name": "炬申股份",
+    "price": 13.9,
+    "change_pct": 0.6517,
+    "industry": ""
+  },
+  {
+    "code": "603357",
+    "name": "设计总院",
+    "price": 6.24,
+    "change_pct": 0.6452,
+    "industry": ""
+  },
+  {
+    "code": "000089",
+    "name": "深圳机场",
+    "price": 6.26,
+    "change_pct": 0.6431,
+    "industry": ""
+  },
+  {
+    "code": "605598",
+    "name": "上海港湾",
+    "price": 39.24,
+    "change_pct": 0.6412,
+    "industry": ""
+  },
+  {
+    "code": "300818",
+    "name": "耐普矿机",
+    "price": 18.94,
+    "change_pct": 0.6376,
+    "industry": ""
+  },
+  {
+    "code": "603070",
+    "name": "万控智造",
+    "price": 12.49,
+    "change_pct": -0.6364,
+    "industry": ""
+  },
+  {
+    "code": "300048",
+    "name": "合康新能",
+    "price": 4.69,
+    "change_pct": -0.6356,
+    "industry": ""
+  },
+  {
+    "code": "300875",
+    "name": "捷强装备",
+    "price": 29.78,
+    "change_pct": -0.634,
+    "industry": ""
+  },
+  {
+    "code": "920496",
+    "name": "许昌智能",
+    "price": 6.29,
+    "change_pct": -0.6319,
+    "industry": ""
+  },
+  {
+    "code": "001380",
+    "name": "华纬科技",
+    "price": 15.96,
+    "change_pct": 0.6305,
+    "industry": ""
+  },
+  {
+    "code": "002272",
+    "name": "川润股份",
+    "price": 23.96,
+    "change_pct": 0.63,
+    "industry": ""
+  },
+  {
+    "code": "300510",
+    "name": "金冠股份",
+    "price": 3.16,
+    "change_pct": -0.6289,
+    "industry": ""
+  },
+  {
+    "code": "601669",
+    "name": "中国电建",
+    "price": 4.74,
+    "change_pct": -0.6289,
+    "industry": ""
+  },
+  {
+    "code": "300420",
+    "name": "五洋自控",
+    "price": 9.5,
+    "change_pct": -0.6276,
+    "industry": ""
+  },
+  {
+    "code": "600038",
+    "name": "中直股份",
+    "price": 25.39,
+    "change_pct": -0.6262,
+    "industry": ""
+  },
+  {
+    "code": "601886",
+    "name": "江河集团",
+    "price": 7.95,
+    "change_pct": -0.625,
+    "industry": ""
+  },
+  {
+    "code": "920892",
+    "name": "广咨国际",
+    "price": 11.18,
+    "change_pct": -0.6222,
+    "industry": ""
+  },
+  {
+    "code": "688565",
+    "name": "力源科技",
+    "price": 9.6,
+    "change_pct": -0.6211,
+    "industry": ""
+  },
+  {
+    "code": "301136",
+    "name": "招标股份",
+    "price": 11.38,
+    "change_pct": 0.6189,
+    "industry": ""
+  },
+  {
+    "code": "603955",
+    "name": "大千生态",
+    "price": 19.57,
+    "change_pct": -0.6094,
+    "industry": ""
+  },
+  {
+    "code": "001396",
+    "name": "誉帆科技",
+    "price": 36.05,
+    "change_pct": -0.6066,
+    "industry": ""
+  },
+  {
+    "code": "600648",
+    "name": "外高桥",
+    "price": 8.32,
+    "change_pct": 0.6046,
+    "industry": ""
+  },
+  {
+    "code": "300193",
+    "name": "佳士科技",
+    "price": 8.24,
+    "change_pct": -0.6031,
+    "industry": ""
+  },
+  {
+    "code": "002951",
+    "name": "金时科技",
+    "price": 13.43,
+    "change_pct": 0.5993,
+    "industry": ""
+  },
+  {
+    "code": "301049",
+    "name": "超越科技",
+    "price": 18.27,
+    "change_pct": -0.5985,
+    "industry": ""
+  },
+  {
+    "code": "300402",
+    "name": "宝色股份",
+    "price": 15.01,
+    "change_pct": -0.596,
+    "industry": ""
+  },
+  {
+    "code": "000697",
+    "name": "炼石航空",
+    "price": 10.01,
+    "change_pct": -0.5958,
+    "industry": ""
+  },
+  {
+    "code": "301098",
+    "name": "金埔园林",
+    "price": 8.49,
+    "change_pct": -0.5855,
+    "industry": ""
+  },
+  {
+    "code": "002227",
+    "name": "*ST特迅",
+    "price": 6.88,
+    "change_pct": 0.5848,
+    "industry": ""
+  },
+  {
+    "code": "000925",
+    "name": "众合科技",
+    "price": 10.21,
+    "change_pct": -0.5842,
+    "industry": ""
+  },
+  {
+    "code": "000652",
+    "name": "泰达股份",
+    "price": 3.43,
+    "change_pct": -0.5797,
+    "industry": ""
+  },
+  {
+    "code": "605287",
+    "name": "德才股份",
+    "price": 43.45,
+    "change_pct": 0.5787,
+    "industry": ""
+  },
+  {
+    "code": "601616",
+    "name": "广电电气",
+    "price": 3.44,
+    "change_pct": -0.578,
+    "industry": ""
+  },
+  {
+    "code": "300554",
+    "name": "三超新材",
+    "price": 27.95,
+    "change_pct": 0.5757,
+    "industry": ""
+  },
+  {
+    "code": "300795",
+    "name": "米奥会展",
+    "price": 8.66,
+    "change_pct": -0.5741,
+    "industry": ""
+  },
+  {
+    "code": "000803",
+    "name": "山高环能",
+    "price": 6.96,
+    "change_pct": -0.5714,
+    "industry": ""
+  },
+  {
+    "code": "300240",
+    "name": "飞力达",
+    "price": 5.29,
+    "change_pct": 0.5703,
+    "industry": ""
+  },
+  {
+    "code": "600212",
+    "name": "绿能慧充",
+    "price": 5.25,
+    "change_pct": -0.5682,
+    "industry": ""
+  },
+  {
+    "code": "000557",
+    "name": "西部创业",
+    "price": 3.55,
+    "change_pct": 0.5666,
+    "industry": ""
+  },
+  {
+    "code": "002265",
+    "name": "建设工业",
+    "price": 17.56,
+    "change_pct": -0.5663,
+    "industry": ""
+  },
+  {
+    "code": "002073",
+    "name": "软控股份",
+    "price": 5.33,
+    "change_pct": 0.566,
+    "industry": ""
+  },
+  {
+    "code": "300965",
+    "name": "恒宇信通",
+    "price": 42.38,
+    "change_pct": -0.5631,
+    "industry": ""
+  },
+  {
+    "code": "688570",
+    "name": "天玛智控",
+    "price": 14.54,
+    "change_pct": 0.5533,
+    "industry": ""
+  },
+  {
+    "code": "300307",
+    "name": "慈星股份",
+    "price": 7.22,
+    "change_pct": -0.551,
+    "industry": ""
+  },
+  {
+    "code": "300774",
+    "name": "倍杰特",
+    "price": 10.95,
+    "change_pct": 0.551,
+    "industry": ""
+  },
+  {
+    "code": "688280",
+    "name": "精进电动",
+    "price": 5.52,
+    "change_pct": 0.5464,
+    "industry": ""
+  },
+  {
+    "code": "605001",
+    "name": "威奥股份",
+    "price": 5.61,
+    "change_pct": 0.5376,
+    "industry": ""
+  },
+  {
+    "code": "920003",
+    "name": "中诚咨询",
+    "price": 26.5,
+    "change_pct": 0.5311,
+    "industry": ""
+  },
+  {
+    "code": "603699",
+    "name": "纽威股份",
+    "price": 48.72,
+    "change_pct": -0.5308,
+    "industry": ""
+  },
+  {
+    "code": "600560",
+    "name": "金自天正",
+    "price": 11.25,
+    "change_pct": -0.5305,
+    "industry": ""
+  },
+  {
+    "code": "002893",
+    "name": "京能热力",
+    "price": 9.49,
+    "change_pct": 0.5297,
+    "industry": ""
+  },
+  {
+    "code": "600375",
+    "name": "汉马科技",
+    "price": 3.78,
+    "change_pct": -0.5263,
+    "industry": ""
+  },
+  {
+    "code": "301311",
+    "name": "昆船智能",
+    "price": 13.29,
+    "change_pct": -0.524,
+    "industry": ""
+  },
+  {
+    "code": "605050",
+    "name": "福然德",
+    "price": 9.6,
+    "change_pct": 0.5236,
+    "industry": ""
+  },
+  {
+    "code": "688155",
+    "name": "先惠技术",
+    "price": 79.98,
+    "change_pct": -0.5224,
+    "industry": ""
+  },
+  {
+    "code": "300707",
+    "name": "威唐工业",
+    "price": 11.43,
+    "change_pct": -0.5222,
+    "industry": ""
+  },
+  {
+    "code": "920522",
+    "name": "纳科诺尔",
+    "price": 23.13,
+    "change_pct": 0.5215,
+    "industry": ""
+  },
+  {
+    "code": "688101",
+    "name": "三达膜",
+    "price": 17.25,
+    "change_pct": -0.519,
+    "industry": ""
+  },
+  {
+    "code": "600512",
+    "name": "腾达建设",
+    "price": 1.94,
+    "change_pct": 0.5181,
+    "industry": ""
+  },
+  {
+    "code": "002800",
+    "name": "天顺股份",
+    "price": 13.61,
+    "change_pct": 0.517,
+    "industry": ""
+  },
+  {
+    "code": "003001",
+    "name": "中岩大地",
+    "price": 13.5,
+    "change_pct": -0.5158,
+    "industry": ""
+  },
+  {
+    "code": "603381",
+    "name": "永臻股份",
+    "price": 15.43,
+    "change_pct": -0.5158,
+    "industry": ""
+  },
+  {
+    "code": "603194",
+    "name": "中力股份",
+    "price": 35.1,
+    "change_pct": 0.5155,
+    "industry": ""
+  },
+  {
+    "code": "601800",
+    "name": "中国交建",
+    "price": 5.87,
+    "change_pct": 0.5137,
+    "industry": ""
+  },
+  {
+    "code": "600822",
+    "name": "上海物贸",
+    "price": 7.86,
+    "change_pct": 0.5115,
+    "industry": ""
+  },
+  {
+    "code": "002965",
+    "name": "祥鑫科技",
+    "price": 51.18,
+    "change_pct": 0.5106,
+    "industry": ""
+  },
+  {
+    "code": "002627",
+    "name": "三峡旅游",
+    "price": 5.85,
+    "change_pct": -0.5102,
+    "industry": ""
+  },
+  {
+    "code": "301295",
+    "name": "美硕科技",
+    "price": 43.34,
+    "change_pct": 0.5102,
+    "industry": ""
+  },
+  {
+    "code": "001382",
+    "name": "新亚电缆",
+    "price": 15.86,
+    "change_pct": 0.507,
+    "industry": ""
+  },
+  {
+    "code": "300360",
+    "name": "炬华科技",
+    "price": 11.83,
+    "change_pct": -0.5046,
+    "industry": ""
+  },
+  {
+    "code": "301012",
+    "name": "扬电科技",
+    "price": 23.93,
+    "change_pct": 0.504,
+    "industry": ""
+  },
+  {
+    "code": "605259",
+    "name": "绿田机械",
+    "price": 17.97,
+    "change_pct": 0.5034,
+    "industry": ""
+  },
+  {
+    "code": "600012",
+    "name": "皖通高速",
+    "price": 15.98,
+    "change_pct": 0.5031,
+    "industry": ""
+  },
+  {
+    "code": "600650",
+    "name": "锦江在线",
+    "price": 9.89,
+    "change_pct": -0.503,
+    "industry": ""
+  },
+  {
+    "code": "301601",
+    "name": "惠通科技",
+    "price": 15.86,
+    "change_pct": -0.5019,
+    "industry": ""
+  },
+  {
+    "code": "600133",
+    "name": "东湖高新",
+    "price": 7.95,
+    "change_pct": -0.5006,
+    "industry": ""
+  },
+  {
+    "code": "601186",
+    "name": "中国铁建",
+    "price": 6.08,
+    "change_pct": 0.4959,
+    "industry": ""
+  },
+  {
+    "code": "300675",
+    "name": "建科院",
+    "price": 12.06,
+    "change_pct": -0.495,
+    "industry": ""
+  },
+  {
+    "code": "688425",
+    "name": "铁建重工",
+    "price": 4.09,
+    "change_pct": 0.4914,
+    "industry": ""
+  },
+  {
+    "code": "301010",
+    "name": "晶雪节能",
+    "price": 16.28,
+    "change_pct": -0.489,
+    "industry": ""
+  },
+  {
+    "code": "000088",
+    "name": "盐田港",
+    "price": 4.13,
+    "change_pct": 0.4866,
+    "industry": ""
+  },
+  {
+    "code": "600835",
+    "name": "上海机电",
+    "price": 20.74,
+    "change_pct": -0.4798,
+    "industry": ""
+  },
+  {
+    "code": "002658",
+    "name": "雪迪龙",
+    "price": 8.38,
+    "change_pct": 0.4796,
+    "industry": ""
+  },
+  {
+    "code": "600805",
+    "name": "悦达投资",
+    "price": 4.17,
+    "change_pct": -0.4773,
+    "industry": ""
+  },
+  {
+    "code": "000548",
+    "name": "湖南投资",
+    "price": 4.18,
+    "change_pct": -0.4762,
+    "industry": ""
+  },
+  {
+    "code": "300172",
+    "name": "中电环保",
+    "price": 4.23,
+    "change_pct": 0.4751,
+    "industry": ""
+  },
+  {
+    "code": "300619",
+    "name": "金银河",
+    "price": 31.81,
+    "change_pct": 0.4738,
+    "industry": ""
+  },
+  {
+    "code": "688370",
+    "name": "丛麟科技",
+    "price": 21.38,
+    "change_pct": 0.4699,
+    "industry": ""
+  },
+  {
+    "code": "300486",
+    "name": "东杰智能",
+    "price": 21.66,
+    "change_pct": -0.4596,
+    "industry": ""
+  },
+  {
+    "code": "301029",
+    "name": "怡合达",
+    "price": 30.44,
+    "change_pct": -0.4578,
+    "industry": ""
+  },
+  {
+    "code": "603176",
+    "name": "汇通集团",
+    "price": 4.35,
+    "change_pct": -0.4577,
+    "industry": ""
+  },
+  {
+    "code": "300664",
+    "name": "鹏鹞环保",
+    "price": 4.4,
+    "change_pct": 0.4566,
+    "industry": ""
+  },
+  {
+    "code": "600502",
+    "name": "安徽建工",
+    "price": 4.37,
+    "change_pct": -0.4556,
+    "industry": ""
+  },
+  {
+    "code": "001325",
+    "name": "元创股份",
+    "price": 37.5,
+    "change_pct": 0.4554,
+    "industry": ""
+  },
+  {
+    "code": "300958",
+    "name": "建工修复",
+    "price": 11,
+    "change_pct": -0.4525,
+    "industry": ""
+  },
+  {
+    "code": "688597",
+    "name": "煜邦电力",
+    "price": 6.67,
+    "change_pct": 0.4518,
+    "industry": ""
+  },
+  {
+    "code": "002081",
+    "name": "金螳螂",
+    "price": 4.46,
+    "change_pct": 0.4505,
+    "industry": ""
+  },
+  {
+    "code": "300198",
+    "name": "*ST纳川",
+    "price": 2.21,
+    "change_pct": -0.4505,
+    "industry": ""
+  },
+  {
+    "code": "301272",
+    "name": "英华特",
+    "price": 33.2,
+    "change_pct": -0.4498,
+    "industry": ""
+  },
+  {
+    "code": "001336",
+    "name": "楚环科技",
+    "price": 22.26,
+    "change_pct": -0.4472,
+    "industry": ""
+  },
+  {
+    "code": "920119",
+    "name": "美德乐",
+    "price": 51.2,
+    "change_pct": -0.4472,
+    "industry": ""
+  },
+  {
+    "code": "002300",
+    "name": "太阳电缆",
+    "price": 6.78,
+    "change_pct": -0.4405,
+    "industry": ""
+  },
+  {
+    "code": "601866",
+    "name": "中远海发",
+    "price": 2.28,
+    "change_pct": 0.4405,
+    "industry": ""
+  },
+  {
+    "code": "000701",
+    "name": "厦门信达",
+    "price": 4.57,
+    "change_pct": 0.4396,
+    "industry": ""
+  },
+  {
+    "code": "300612",
+    "name": "宣亚国际",
+    "price": 11.33,
+    "change_pct": -0.4394,
+    "industry": ""
+  },
+  {
+    "code": "002535",
+    "name": "林州重机",
+    "price": 2.31,
+    "change_pct": 0.4348,
+    "industry": ""
+  },
+  {
+    "code": "002811",
+    "name": "郑中设计",
+    "price": 11.45,
+    "change_pct": -0.4348,
+    "industry": ""
+  },
+  {
+    "code": "601006",
+    "name": "大秦铁路",
+    "price": 4.62,
+    "change_pct": 0.4348,
+    "industry": ""
+  },
+  {
+    "code": "600761",
+    "name": "安徽合力",
+    "price": 16.22,
+    "change_pct": 0.4334,
+    "industry": ""
+  },
+  {
+    "code": "300512",
+    "name": "中亚股份",
+    "price": 6.91,
+    "change_pct": -0.4323,
+    "industry": ""
+  },
+  {
+    "code": "603300",
+    "name": "海南华铁",
+    "price": 4.61,
+    "change_pct": -0.432,
+    "industry": ""
+  },
+  {
+    "code": "002520",
+    "name": "日发精机",
+    "price": 7.02,
+    "change_pct": -0.4255,
+    "industry": ""
+  },
+  {
+    "code": "603829",
+    "name": "洛凯股份",
+    "price": 16.57,
+    "change_pct": 0.4242,
+    "industry": ""
+  },
+  {
+    "code": "300105",
+    "name": "龙源技术",
+    "price": 7.16,
+    "change_pct": 0.4208,
+    "industry": ""
+  },
+  {
+    "code": "600335",
+    "name": "国机汽车",
+    "price": 4.79,
+    "change_pct": 0.4193,
+    "industry": ""
+  },
+  {
+    "code": "300693",
+    "name": "盛弘股份",
+    "price": 45.23,
+    "change_pct": -0.4183,
+    "industry": ""
+  },
+  {
+    "code": "300837",
+    "name": "浙矿股份",
+    "price": 23.81,
+    "change_pct": -0.4182,
+    "industry": ""
+  },
+  {
+    "code": "600018",
+    "name": "上港集团",
+    "price": 4.83,
+    "change_pct": 0.4158,
+    "industry": ""
+  },
+  {
+    "code": "301353",
+    "name": "普莱得",
+    "price": 16.93,
+    "change_pct": -0.4118,
+    "industry": ""
+  },
+  {
+    "code": "920111",
+    "name": "聚星科技",
+    "price": 34.25,
+    "change_pct": 0.4104,
+    "industry": ""
+  },
+  {
+    "code": "000065",
+    "name": "北方国际",
+    "price": 9.8,
+    "change_pct": -0.4065,
+    "industry": ""
+  },
+  {
+    "code": "301063",
+    "name": "海锅股份",
+    "price": 17.35,
+    "change_pct": 0.4051,
+    "industry": ""
+  },
+  {
+    "code": "601877",
+    "name": "正泰电器",
+    "price": 24.72,
+    "change_pct": -0.4029,
+    "industry": ""
+  },
+  {
+    "code": "002611",
+    "name": "东方精工",
+    "price": 17.4,
+    "change_pct": -0.4007,
+    "industry": ""
+  },
+  {
+    "code": "002276",
+    "name": "万马股份",
+    "price": 10.1,
+    "change_pct": -0.3945,
+    "industry": ""
+  },
+  {
+    "code": "300140",
+    "name": "节能环境",
+    "price": 5.06,
+    "change_pct": -0.3937,
+    "industry": ""
+  },
+  {
+    "code": "300284",
+    "name": "苏交科",
+    "price": 5.06,
+    "change_pct": -0.3937,
+    "industry": ""
+  },
+  {
+    "code": "300477",
+    "name": "ST合纵",
+    "price": 2.55,
+    "change_pct": 0.3937,
+    "industry": ""
+  },
+  {
+    "code": "002034",
+    "name": "旺能环境",
+    "price": 15.31,
+    "change_pct": 0.3934,
+    "industry": ""
+  },
+  {
+    "code": "001360",
+    "name": "南矿集团",
+    "price": 17.73,
+    "change_pct": -0.3933,
+    "industry": ""
+  },
+  {
+    "code": "002040",
+    "name": "南京港",
+    "price": 7.71,
+    "change_pct": 0.3906,
+    "industry": ""
+  },
+  {
+    "code": "301386",
+    "name": "未来电器",
+    "price": 20.47,
+    "change_pct": -0.3893,
+    "industry": ""
+  },
+  {
+    "code": "600017",
+    "name": "日照港",
+    "price": 2.58,
+    "change_pct": 0.3891,
+    "industry": ""
+  },
+  {
+    "code": "603320",
+    "name": "迪贝电气",
+    "price": 18.02,
+    "change_pct": -0.387,
+    "industry": ""
+  },
+  {
+    "code": "688151",
+    "name": "华强科技",
+    "price": 15.45,
+    "change_pct": -0.3868,
+    "industry": ""
+  },
+  {
+    "code": "002009",
+    "name": "天奇股份",
+    "price": 20.9,
+    "change_pct": -0.3813,
+    "industry": ""
+  },
+  {
+    "code": "002526",
+    "name": "山东矿机",
+    "price": 2.64,
+    "change_pct": 0.3802,
+    "industry": ""
+  },
+  {
+    "code": "605069",
+    "name": "正和生态",
+    "price": 15.89,
+    "change_pct": 0.379,
+    "industry": ""
+  },
+  {
+    "code": "002209",
+    "name": "达意隆",
+    "price": 10.53,
+    "change_pct": -0.3784,
+    "industry": ""
+  },
+  {
+    "code": "601766",
+    "name": "中国中车",
+    "price": 5.33,
+    "change_pct": 0.3766,
+    "industry": ""
+  },
+  {
+    "code": "000530",
+    "name": "冰山冷热",
+    "price": 5.36,
+    "change_pct": -0.3717,
+    "industry": ""
+  },
+  {
+    "code": "603289",
+    "name": "泰瑞机器",
+    "price": 8.15,
+    "change_pct": -0.3667,
+    "industry": ""
+  },
+  {
+    "code": "688633",
+    "name": "星球石墨",
+    "price": 29.93,
+    "change_pct": -0.3662,
+    "industry": ""
+  },
+  {
+    "code": "603728",
+    "name": "鸣志电器",
+    "price": 63.37,
+    "change_pct": 0.3643,
+    "industry": ""
+  },
+  {
+    "code": "002309",
+    "name": "中利集团",
+    "price": 2.77,
+    "change_pct": -0.3597,
+    "industry": ""
+  },
+  {
+    "code": "301519",
+    "name": "舜禹股份",
+    "price": 11.09,
+    "change_pct": -0.3594,
+    "industry": ""
+  },
+  {
+    "code": "603901",
+    "name": "永创智能",
+    "price": 11.19,
+    "change_pct": -0.3562,
+    "industry": ""
+  },
+  {
+    "code": "300185",
+    "name": "通裕重工",
+    "price": 2.84,
+    "change_pct": -0.3509,
+    "industry": ""
+  },
+  {
+    "code": "300732",
+    "name": "设研院",
+    "price": 5.72,
+    "change_pct": 0.3509,
+    "industry": ""
+  },
+  {
+    "code": "002690",
+    "name": "美亚光电",
+    "price": 14.42,
+    "change_pct": 0.3479,
+    "industry": ""
+  },
+  {
+    "code": "600051",
+    "name": "宁波联合",
+    "price": 5.87,
+    "change_pct": 0.3419,
+    "industry": ""
+  },
+  {
+    "code": "600751",
+    "name": "海航科技",
+    "price": 2.96,
+    "change_pct": 0.339,
+    "industry": ""
+  },
+  {
+    "code": "603899",
+    "name": "晨光股份",
+    "price": 21.07,
+    "change_pct": -0.3311,
+    "industry": ""
+  },
+  {
+    "code": "002523",
+    "name": "天桥起重",
+    "price": 3.04,
+    "change_pct": 0.33,
+    "industry": ""
+  },
+  {
+    "code": "600520",
+    "name": "三佳科技",
+    "price": 36.68,
+    "change_pct": -0.3261,
+    "industry": ""
+  },
+  {
+    "code": "300517",
+    "name": "海波重科",
+    "price": 9.21,
+    "change_pct": -0.3247,
+    "industry": ""
+  },
+  {
+    "code": "600798",
+    "name": "宁波海运",
+    "price": 3.13,
+    "change_pct": 0.3205,
+    "industry": ""
+  },
+  {
+    "code": "300800",
+    "name": "力合科技",
+    "price": 9.5,
+    "change_pct": -0.3148,
+    "industry": ""
+  },
+  {
+    "code": "301167",
+    "name": "建研设计",
+    "price": 12.7,
+    "change_pct": -0.314,
+    "industry": ""
+  },
+  {
+    "code": "688033",
+    "name": "*ST天宜",
+    "price": 6.39,
+    "change_pct": 0.314,
+    "industry": ""
+  },
+  {
+    "code": "300281",
+    "name": "金明精机",
+    "price": 6.46,
+    "change_pct": 0.3106,
+    "industry": ""
+  },
+  {
+    "code": "688466",
+    "name": "金科环境",
+    "price": 13.25,
+    "change_pct": 0.3028,
+    "industry": ""
+  },
+  {
+    "code": "002879",
+    "name": "长缆科技",
+    "price": 13.32,
+    "change_pct": -0.2994,
+    "industry": ""
+  },
+  {
+    "code": "300950",
+    "name": "德固特",
+    "price": 16.69,
+    "change_pct": -0.2987,
+    "industry": ""
+  },
+  {
+    "code": "600834",
+    "name": "申通地铁",
+    "price": 6.74,
+    "change_pct": 0.2976,
+    "industry": ""
+  },
+  {
+    "code": "300815",
+    "name": "玉禾田",
+    "price": 16.85,
+    "change_pct": -0.2959,
+    "industry": ""
+  },
+  {
+    "code": "002949",
+    "name": "华阳国际",
+    "price": 10.16,
+    "change_pct": -0.2944,
+    "industry": ""
+  },
+  {
+    "code": "600035",
+    "name": "楚天高速",
+    "price": 3.41,
+    "change_pct": 0.2941,
+    "industry": ""
+  },
+  {
+    "code": "300124",
+    "name": "汇川技术",
+    "price": 68.4,
+    "change_pct": 0.2933,
+    "industry": ""
+  },
+  {
+    "code": "001213",
+    "name": "中铁特货",
+    "price": 3.43,
+    "change_pct": 0.2924,
+    "industry": ""
+  },
+  {
+    "code": "600312",
+    "name": "平高电气",
+    "price": 17.23,
+    "change_pct": -0.2894,
+    "industry": ""
+  },
+  {
+    "code": "002530",
+    "name": "金财互联",
+    "price": 6.92,
+    "change_pct": -0.2882,
+    "industry": ""
+  },
+  {
+    "code": "603117",
+    "name": "万林物流",
+    "price": 3.49,
+    "change_pct": 0.2874,
+    "industry": ""
+  },
+  {
+    "code": "000157",
+    "name": "中联重科",
+    "price": 6.98,
+    "change_pct": -0.2857,
+    "industry": ""
+  },
+  {
+    "code": "920679",
+    "name": "前进科技",
+    "price": 14.46,
+    "change_pct": -0.2759,
+    "industry": ""
+  },
+  {
+    "code": "000786",
+    "name": "北新建材",
+    "price": 18.25,
+    "change_pct": 0.2747,
+    "industry": ""
+  },
+  {
+    "code": "603183",
+    "name": "建研院",
+    "price": 3.68,
+    "change_pct": 0.2725,
+    "industry": ""
+  },
+  {
+    "code": "002097",
+    "name": "山河智能",
+    "price": 7.34,
+    "change_pct": -0.2717,
+    "industry": ""
+  },
+  {
+    "code": "002546",
+    "name": "新联电子",
+    "price": 7.39,
+    "change_pct": 0.2714,
+    "industry": ""
+  },
+  {
+    "code": "600020",
+    "name": "中原高速",
+    "price": 3.72,
+    "change_pct": -0.2681,
+    "industry": ""
+  },
+  {
+    "code": "002671",
+    "name": "龙泉股份",
+    "price": 3.75,
+    "change_pct": -0.266,
+    "industry": ""
+  },
+  {
+    "code": "000777",
+    "name": "中核科技",
+    "price": 18.84,
+    "change_pct": -0.2647,
+    "industry": ""
+  },
+  {
+    "code": "002651",
+    "name": "利君股份",
+    "price": 7.6,
+    "change_pct": 0.2639,
+    "industry": ""
+  },
+  {
+    "code": "300988",
+    "name": "津荣天宇",
+    "price": 15.9,
+    "change_pct": 0.2522,
+    "industry": ""
+  },
+  {
+    "code": "300021",
+    "name": "大禹节水",
+    "price": 3.98,
+    "change_pct": -0.2506,
+    "industry": ""
+  },
+  {
+    "code": "000885",
+    "name": "城发环境",
+    "price": 12.29,
+    "change_pct": 0.2447,
+    "industry": ""
+  },
+  {
+    "code": "600662",
+    "name": "外服控股",
+    "price": 4.11,
+    "change_pct": 0.2439,
+    "industry": ""
+  },
+  {
+    "code": "600526",
+    "name": "菲达环保",
+    "price": 4.18,
+    "change_pct": 0.2398,
+    "industry": ""
+  },
+  {
+    "code": "601390",
+    "name": "中国中铁",
+    "price": 4.26,
+    "change_pct": 0.2353,
+    "industry": ""
+  },
+  {
+    "code": "300564",
+    "name": "筑博设计",
+    "price": 12.8,
+    "change_pct": 0.2349,
+    "industry": ""
+  },
+  {
+    "code": "300509",
+    "name": "新美星",
+    "price": 8.58,
+    "change_pct": 0.2336,
+    "industry": ""
+  },
+  {
+    "code": "601096",
+    "name": "宏盛华源",
+    "price": 4.29,
+    "change_pct": -0.2326,
+    "industry": ""
+  },
+  {
+    "code": "600787",
+    "name": "中储股份",
+    "price": 4.36,
+    "change_pct": -0.2288,
+    "industry": ""
+  },
+  {
+    "code": "002682",
+    "name": "龙洲股份",
+    "price": 4.37,
+    "change_pct": -0.2283,
+    "industry": ""
+  },
+  {
+    "code": "601919",
+    "name": "中远海控",
+    "price": 13.19,
+    "change_pct": 0.228,
+    "industry": ""
+  },
+  {
+    "code": "002953",
+    "name": "日丰股份",
+    "price": 8.83,
+    "change_pct": -0.226,
+    "industry": ""
+  },
+  {
+    "code": "300809",
+    "name": "华辰装备",
+    "price": 27.11,
+    "change_pct": 0.2218,
+    "industry": ""
+  },
+  {
+    "code": "300826",
+    "name": "测绘股份",
+    "price": 13.69,
+    "change_pct": -0.2187,
+    "industry": ""
+  },
+  {
+    "code": "002757",
+    "name": "南兴股份",
+    "price": 18.36,
+    "change_pct": 0.2183,
+    "industry": ""
+  },
+  {
+    "code": "301508",
+    "name": "中机认检",
+    "price": 23.28,
+    "change_pct": -0.2143,
+    "industry": ""
+  },
+  {
+    "code": "002297",
+    "name": "博云新材",
+    "price": 28.22,
+    "change_pct": 0.2131,
+    "industry": ""
+  },
+  {
+    "code": "000507",
+    "name": "珠海港",
+    "price": 4.74,
+    "change_pct": 0.2114,
+    "industry": ""
+  },
+  {
+    "code": "300867",
+    "name": "圣元环保",
+    "price": 18.88,
+    "change_pct": -0.2114,
+    "industry": ""
+  },
+  {
+    "code": "600796",
+    "name": "钱江生化",
+    "price": 4.75,
+    "change_pct": 0.211,
+    "industry": ""
+  },
+  {
+    "code": "601608",
+    "name": "中信重工",
+    "price": 4.77,
+    "change_pct": 0.2101,
+    "industry": ""
+  },
+  {
+    "code": "920427",
+    "name": "华维设计",
+    "price": 9.61,
+    "change_pct": 0.2086,
+    "industry": ""
+  },
+  {
+    "code": "600720",
+    "name": "中交设计",
+    "price": 4.91,
+    "change_pct": 0.2041,
+    "industry": ""
+  },
+  {
+    "code": "300971",
+    "name": "博亚精工",
+    "price": 19.69,
+    "change_pct": 0.2036,
+    "industry": ""
+  },
+  {
+    "code": "600284",
+    "name": "浦东建设",
+    "price": 4.96,
+    "change_pct": -0.2012,
+    "industry": ""
+  },
+  {
+    "code": "002483",
+    "name": "润邦股份",
+    "price": 4.97,
+    "change_pct": -0.2008,
+    "industry": ""
+  },
+  {
+    "code": "000928",
+    "name": "中钢国际",
+    "price": 5,
+    "change_pct": -0.1996,
+    "industry": ""
+  },
+  {
+    "code": "301175",
+    "name": "中科环保",
+    "price": 5.03,
+    "change_pct": 0.1992,
+    "industry": ""
+  },
+  {
+    "code": "688616",
+    "name": "西力科技",
+    "price": 10.3,
+    "change_pct": 0.1946,
+    "industry": ""
+  },
+  {
+    "code": "600561",
+    "name": "江西长运",
+    "price": 5.16,
+    "change_pct": -0.1934,
+    "industry": ""
+  },
+  {
+    "code": "002599",
+    "name": "盛通股份",
+    "price": 5.25,
+    "change_pct": 0.1908,
+    "industry": ""
+  },
+  {
+    "code": "002778",
+    "name": "中晟高科",
+    "price": 15.7,
+    "change_pct": -0.1907,
+    "industry": ""
+  },
+  {
+    "code": "603098",
+    "name": "森特股份",
+    "price": 10.55,
+    "change_pct": 0.1899,
+    "industry": ""
+  },
+  {
+    "code": "300272",
+    "name": "开能健康",
+    "price": 5.39,
+    "change_pct": -0.1852,
+    "industry": ""
+  },
+  {
+    "code": "002628",
+    "name": "成都路桥",
+    "price": 5.41,
+    "change_pct": -0.1845,
+    "industry": ""
+  },
+  {
+    "code": "001228",
+    "name": "永泰运",
+    "price": 27.2,
+    "change_pct": 0.1842,
+    "industry": ""
+  },
+  {
+    "code": "002492",
+    "name": "恒基达鑫",
+    "price": 5.48,
+    "change_pct": -0.1821,
+    "industry": ""
+  },
+  {
+    "code": "600755",
+    "name": "厦门国贸",
+    "price": 5.52,
+    "change_pct": 0.1815,
+    "industry": ""
+  },
+  {
+    "code": "003037",
+    "name": "三和管桩",
+    "price": 5.57,
+    "change_pct": -0.1792,
+    "industry": ""
+  },
+  {
+    "code": "920455",
+    "name": "汇隆活塞",
+    "price": 5.83,
+    "change_pct": 0.1718,
+    "industry": ""
+  },
+  {
+    "code": "300662",
+    "name": "科锐国际",
+    "price": 17.5,
+    "change_pct": 0.1717,
+    "industry": ""
+  },
+  {
+    "code": "300899",
+    "name": "上海凯鑫",
+    "price": 29.21,
+    "change_pct": 0.1715,
+    "industry": ""
+  },
+  {
+    "code": "002103",
+    "name": "广博股份",
+    "price": 6.11,
+    "change_pct": -0.1634,
+    "industry": ""
+  },
+  {
+    "code": "920608",
+    "name": "丰安股份",
+    "price": 12.35,
+    "change_pct": -0.1617,
+    "industry": ""
+  },
+  {
+    "code": "603535",
+    "name": "嘉诚国际",
+    "price": 6.21,
+    "change_pct": -0.1608,
+    "industry": ""
+  },
+  {
+    "code": "600292",
+    "name": "电投水电",
+    "price": 12.51,
+    "change_pct": 0.1601,
+    "industry": ""
+  },
+  {
+    "code": "920639",
+    "name": "晨光电缆",
+    "price": 6.26,
+    "change_pct": 0.16,
+    "industry": ""
+  },
+  {
+    "code": "920208",
+    "name": "青矩技术",
+    "price": 12.55,
+    "change_pct": 0.1596,
+    "industry": ""
+  },
+  {
+    "code": "002882",
+    "name": "金龙羽",
+    "price": 18.9,
+    "change_pct": -0.1585,
+    "industry": ""
+  },
+  {
+    "code": "688282",
+    "name": "理工导航",
+    "price": 64.66,
+    "change_pct": -0.1544,
+    "industry": ""
+  },
+  {
+    "code": "301299",
+    "name": "卓创资讯",
+    "price": 45.73,
+    "change_pct": 0.1533,
+    "industry": ""
+  },
+  {
+    "code": "600262",
+    "name": "北方股份",
+    "price": 20.13,
+    "change_pct": -0.1488,
+    "industry": ""
+  },
+  {
+    "code": "002761",
+    "name": "浙江建投",
+    "price": 6.75,
+    "change_pct": 0.1484,
+    "industry": ""
+  },
+  {
+    "code": "002791",
+    "name": "坚朗五金",
+    "price": 13.48,
+    "change_pct": -0.1481,
+    "industry": ""
+  },
+  {
+    "code": "300797",
+    "name": "钢研纳克",
+    "price": 13.85,
+    "change_pct": -0.1442,
+    "industry": ""
+  },
+  {
+    "code": "002451",
+    "name": "摩恩电气",
+    "price": 7.11,
+    "change_pct": 0.1408,
+    "industry": ""
+  },
+  {
+    "code": "000544",
+    "name": "中原环保",
+    "price": 7.11,
+    "change_pct": -0.1404,
+    "industry": ""
+  },
+  {
+    "code": "002795",
+    "name": "永和智控",
+    "price": 7.23,
+    "change_pct": -0.1381,
+    "industry": ""
+  },
+  {
+    "code": "688285",
+    "name": "高铁电气",
+    "price": 7.32,
+    "change_pct": -0.1364,
+    "industry": ""
+  },
+  {
+    "code": "300889",
+    "name": "爱克股份",
+    "price": 22.25,
+    "change_pct": 0.135,
+    "industry": ""
+  },
+  {
+    "code": "600004",
+    "name": "白云机场",
+    "price": 7.41,
+    "change_pct": -0.1348,
+    "industry": ""
+  },
+  {
+    "code": "688395",
+    "name": "正弦电气",
+    "price": 22.34,
+    "change_pct": 0.1345,
+    "industry": ""
+  },
+  {
+    "code": "920039",
+    "name": "国义招标",
+    "price": 7.57,
+    "change_pct": 0.1323,
+    "industry": ""
+  },
+  {
+    "code": "002786",
+    "name": "银宝山新",
+    "price": 7.81,
+    "change_pct": 0.1282,
+    "industry": ""
+  },
+  {
+    "code": "300982",
+    "name": "苏文电能",
+    "price": 15.77,
+    "change_pct": -0.1267,
+    "industry": ""
+  },
+  {
+    "code": "002117",
+    "name": "东港股份",
+    "price": 7.94,
+    "change_pct": -0.1258,
+    "industry": ""
+  },
+  {
+    "code": "002315",
+    "name": "焦点科技",
+    "price": 24,
+    "change_pct": 0.1252,
+    "industry": ""
+  },
+  {
+    "code": "301038",
+    "name": "深水规院",
+    "price": 16.36,
+    "change_pct": -0.1221,
+    "industry": ""
+  },
+  {
+    "code": "002140",
+    "name": "东华科技",
+    "price": 9.13,
+    "change_pct": -0.1094,
+    "industry": ""
+  },
+  {
+    "code": "688334",
+    "name": "西高院",
+    "price": 18.48,
+    "change_pct": 0.1083,
+    "industry": ""
+  },
+  {
+    "code": "920118",
+    "name": "太湖远大",
+    "price": 18.88,
+    "change_pct": 0.106,
+    "industry": ""
+  },
+  {
+    "code": "001220",
+    "name": "世盟股份",
+    "price": 29.17,
+    "change_pct": -0.1027,
+    "industry": ""
+  },
+  {
+    "code": "300403",
+    "name": "汉宇集团",
+    "price": 9.92,
+    "change_pct": -0.1007,
+    "industry": ""
+  },
+  {
+    "code": "920169",
+    "name": "七丰精工",
+    "price": 20.86,
+    "change_pct": 0.096,
+    "industry": ""
+  },
+  {
+    "code": "920026",
+    "name": "卓兆点胶",
+    "price": 20.97,
+    "change_pct": -0.0953,
+    "industry": ""
+  },
+  {
+    "code": "002818",
+    "name": "富森美",
+    "price": 10.5,
+    "change_pct": -0.0951,
+    "industry": ""
+  },
+  {
+    "code": "688367",
+    "name": "工大高科",
+    "price": 31.92,
+    "change_pct": 0.0941,
+    "industry": ""
+  },
+  {
+    "code": "002533",
+    "name": "金杯电工",
+    "price": 10.66,
+    "change_pct": 0.0939,
+    "industry": ""
+  },
+  {
+    "code": "301155",
+    "name": "海力风电",
+    "price": 43.09,
+    "change_pct": -0.0927,
+    "industry": ""
+  },
+  {
+    "code": "688663",
+    "name": "新风光",
+    "price": 86.27,
+    "change_pct": -0.0926,
+    "industry": ""
+  },
+  {
+    "code": "300712",
+    "name": "永福股份",
+    "price": 21.68,
+    "change_pct": 0.0923,
+    "industry": ""
+  },
+  {
+    "code": "002158",
+    "name": "汉钟精机",
+    "price": 36.39,
+    "change_pct": -0.0824,
+    "industry": ""
+  },
+  {
+    "code": "920006",
+    "name": "晟楠科技",
+    "price": 15.14,
+    "change_pct": 0.0661,
+    "industry": ""
+  },
+  {
+    "code": "002633",
+    "name": "申科股份",
+    "price": 15.17,
+    "change_pct": -0.0659,
+    "industry": ""
+  },
+  {
+    "code": "301456",
+    "name": "盘古智能",
+    "price": 23.36,
+    "change_pct": -0.0428,
+    "industry": ""
+  },
+  {
+    "code": "603280",
+    "name": "南方路机",
+    "price": 25.57,
+    "change_pct": 0.0391,
+    "industry": ""
+  },
+  {
+    "code": "301357",
+    "name": "北方长龙",
+    "price": 81.8,
+    "change_pct": -0.0367,
+    "industry": ""
+  },
+  {
+    "code": "301361",
+    "name": "众智科技",
+    "price": 29.87,
+    "change_pct": -0.0335,
+    "industry": ""
+  },
+  {
+    "code": "920640",
+    "name": "富士达",
+    "price": 32,
+    "change_pct": 0.0313,
+    "industry": ""
+  },
+  {
+    "code": "920200",
+    "name": "振宏股份",
+    "price": 32.34,
+    "change_pct": 0.0309,
+    "industry": ""
+  },
+  {
+    "code": "001326",
+    "name": "联域股份",
+    "price": 59.14,
+    "change_pct": -0.0169,
+    "industry": ""
+  },
+  {
+    "code": "000009",
+    "name": "中国宝安",
+    "price": 6.27,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "000638",
+    "name": "*ST万方",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "000828",
+    "name": "东莞控股",
+    "price": 9.71,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002011",
+    "name": "盾安环境",
+    "price": 10.73,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002060",
+    "name": "广东建工",
+    "price": 3.07,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002116",
+    "name": "中国海诚",
+    "price": 6.86,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002210",
+    "name": "飞马国际",
+    "price": 2.2,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002247",
+    "name": "聚力文化",
+    "price": 2.19,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002282",
+    "name": "博深股份",
+    "price": 5.72,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002480",
+    "name": "新筑股份",
+    "price": 5.25,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002482",
+    "name": "广田集团",
+    "price": 1.23,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002560",
+    "name": "通达股份",
+    "price": 7.39,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002630",
+    "name": "*ST华西",
+    "price": 1.77,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002729",
+    "name": "好利科技",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002760",
+    "name": "凤形股份",
+    "price": 16.75,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "002935",
+    "name": "天奥电子",
+    "price": 23.02,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "300425",
+    "name": "中建环能",
+    "price": 3.85,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "300549",
+    "name": "优德精密",
+    "price": 13.44,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "301032",
+    "name": "新柴股份",
+    "price": 9.58,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "301559",
+    "name": "中集环科",
+    "price": 12.58,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600193",
+    "name": "退市创兴",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600202",
+    "name": "哈空调",
+    "price": 4.63,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600278",
+    "name": "东方创业",
+    "price": 6.18,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600313",
+    "name": "农发种业",
+    "price": 5.35,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600406",
+    "name": "国电南瑞",
+    "price": 22.67,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600444",
+    "name": "国机通用",
+    "price": 13.17,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600495",
+    "name": "晋西车轴",
+    "price": 3.55,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600608",
+    "name": "退市沪科",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600698",
+    "name": "湖南天雁",
+    "price": 6.04,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600704",
+    "name": "物产中大",
+    "price": 4.79,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600764",
+    "name": "中国海防",
+    "price": 18.08,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600853",
+    "name": "龙建股份",
+    "price": 3.11,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "600939",
+    "name": "重庆建工",
+    "price": 2.41,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "601002",
+    "name": "晋亿实业",
+    "price": 4.37,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "601068",
+    "name": "中铝国际",
+    "price": 4.35,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "601330",
+    "name": "绿色动力",
+    "price": 7.06,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "601369",
+    "name": "陕鼓动力",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "601518",
+    "name": "吉林高速",
+    "price": 2.82,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "603088",
+    "name": "宁波精达",
+    "price": 10,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "603321",
+    "name": "梅轮电梯",
+    "price": 5.86,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "603776",
+    "name": "永安行",
+    "price": 21.8,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "603817",
+    "name": "海峡环保",
+    "price": 5.3,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "603860",
+    "name": "中公高科",
+    "price": 24.7,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "605081",
+    "name": "退市太和",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "688287",
+    "name": "退市观典",
+    "price": 0,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "688718",
+    "name": "唯赛勃",
+    "price": 16.56,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "920068",
+    "name": "天工股份",
+    "price": 16.55,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "920101",
+    "name": "志高机械",
+    "price": 17.86,
+    "change_pct": 0,
+    "industry": ""
+  },
+  {
+    "code": "920961",
+    "name": "创远信科",
+    "price": 24.08,
+    "change_pct": 0,
+    "industry": ""
+  }
+]

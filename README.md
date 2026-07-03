@@ -1,0 +1,125 @@
+# AI Stock App 后端
+
+> AI 投资助手 App 后端，基于 Express + TypeScript，集成 Agent + Skills 智能体架构。
+
+## 快速开始
+
+```bash
+# 安装依赖
+pnpm install
+
+# 开发模式（tsx watch 热重载）
+pnpm dev
+
+# TypeScript 编译
+npx tsc --noEmit
+
+# 生产模式
+pnpm build && pnpm start
+```
+
+### 环境变量
+复制 `.env.example` 为 `.env`，填入以下配置：
+- `DATABASE_URL` — PostgreSQL 连接串
+- `REDIS_URL` — Redis 连接串
+- `WECHAT_APPID` / `WECHAT_SECRET` — 微信公众号配置
+- `JWT_SECRET` — JWT 签名密钥
+- `LLM_API_KEY` — LLM API 密钥（DeepSeek/OpenAI）
+
+本地开发无数据库时，服务自动进入降级模式（使用内存缓存和 mock 数据）。
+
+## 项目架构
+
+### 三层模块化设计
+
+```
+src/
+├── shared/              # 共享层（组长维护）
+│   ├── types/           # 全局类型、接口定义
+│   ├── middleware/      # 中间件（auth、error handling）
+│   └── utils/           # 工具函数
+├── core/                # 基础设施（组长维护）
+│   ├── index.ts         # Express 入口
+│   ├── db.ts / redis.ts # 数据库连接
+│   ├── routes/          # 路由注册
+│   └── ws/              # WebSocket 服务
+├── modules/             # 业务模块层（每人负责一个模块）
+│   ├── quote/           # 行情模块
+│   ├── agent/           # Agent 智能体模块
+│   ├── push/            # 推送模块
+│   ├── auth/            # 认证模块
+│   ├── monitor/         # 监控模块
+│   └── crawler/         # 爬虫模块
+```
+
+### 模块负责人
+
+| 模块 | 目录 | 功能范围 |
+|------|------|---------|
+| 行情 | modules/quote | 腾讯行情、K线、指数 |
+| Agent | modules/agent | 智能体调度、Skills、LLM 对话 |
+| 推送 | modules/push | 微信模板消息、定时推送 |
+| 认证 | modules/auth | 扫码登录、微信授权 |
+| 监控 | modules/monitor | 股票异动监控、特别提醒 |
+| 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
+
+## 开发规范
+
+### 模块依赖规则
+- ✅ modules/* → shared/（允许）
+- ❌ modules/A → modules/B（禁止）
+- ✅ core/ → shared/（允许）
+- ✅ core/ → modules/*（仅路由注册时）
+
+### 后端硬约束
+- 分层架构：Types → Service → Route → Agent → Skill（禁止反向依赖）
+- 行情用腾讯 API，龙头用同花顺，禁止东方财富
+- cron 必须加 `{ timezone: 'Asia/Shanghai' }`
+- LLM 调用失败时跳过，返回纯数据，不重试
+- 微信 API 用原生 fetch，不用 sessionFetch
+
+### Skill 开发规范
+- 每个 Skill 必须实现 `Skill` 接口（见 `modules/agent/skills/types.ts`）
+- **必须复用现有 services**，禁止重复实现
+- 在 `modules/agent/skills/registry.ts` 中注册新 Skill
+- 参数必须定义 Schema
+
+### Agent 开发规范
+- 每个 Agent 必须实现 `Agent` 接口
+- Agent 的 `handle` 方法应为 AsyncGenerator（流式输出）
+- 提示词放在 `modules/agent/prompts/` 目录
+
+## API 路由
+
+| 路径 | 功能 |
+|------|------|
+| `/api/agent/chat` | Agent 对话 |
+| `/api/agent/skills` | Skills 列表 |
+| `/api/cn/stock-quote/*` | 行情接口 |
+| `/api/cn/wind-leaders` | 龙头股接口 |
+| `/api/cn/trend-hotspots/*` | 重磅消息接口 |
+| `/api/auth/wechat/*` | 微信认证接口 |
+
+## Vibecoding 工作流
+
+本项目使用 aistock-workflow rules 规范 AI 辅助开发流程。在 Trae IDE 中开发时，AI 自动执行 9 步流程：上下文加载→需求确认→编码→跨端同步检查→验证→文档维护→用户验收→技能缺口记录→修改记录。
+
+详见：[Vibecoding 工作流文档](../docs/vibecoding-workflow.md)
+
+## 部署
+
+```bash
+# 编译
+npx tsc
+
+# PM2 启动
+pm2 start ecosystem.config.json
+
+# 查看日志
+pm2 logs aistock-api
+```
+
+## 相关项目
+
+- [aistock-app-frontend](../aistock-app-frontend) — App 前端
+- [aistock-api](../aistock-api) — 原 PC Web 后端

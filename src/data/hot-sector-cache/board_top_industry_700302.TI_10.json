@@ -1,0 +1,92 @@
+[
+  {
+    "code": "301019",
+    "name": "宁波色母",
+    "price": 21.53,
+    "change_pct": 20.0111,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "301092",
+    "name": "争光股份",
+    "price": 58.91,
+    "change_pct": 20.0041,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "300706",
+    "name": "阿石创",
+    "price": 77.13,
+    "change_pct": -12.808,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "301373",
+    "name": "凌玮科技",
+    "price": 146.62,
+    "change_pct": -11.3436,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688545",
+    "name": "兴福电子",
+    "price": 125.57,
+    "change_pct": -10.8801,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688603",
+    "name": "天承科技",
+    "price": 175.33,
+    "change_pct": -10.8416,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688077",
+    "name": "大地熊",
+    "price": 29.81,
+    "change_pct": 10.7355,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688548",
+    "name": "广钢气体",
+    "price": 49.2,
+    "change_pct": -10.5455,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688268",
+    "name": "华特气体",
+    "price": 249,
+    "change_pct": -10.4155,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "300481",
+    "name": "濮阳惠成",
+    "price": 20.48,
+    "change_pct": -10.2542,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  }
+]
