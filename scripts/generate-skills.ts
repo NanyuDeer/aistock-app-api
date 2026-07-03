@@ -20,38 +20,47 @@ function findSkillFiles(): string[] {
     .sort()
 }
 
+/** 从 .skill.ts 文件读取实际导出的 Skill 变量名 */
+function collectExportNames(files: string[]): Record<string, string> {
+  const exportMap: Record<string, string> = {}
+  for (const f of files) {
+    const filePath = path.join(SKILLS_DIR, f)
+    const objects = extractExportObjects(filePath, 'Skill')
+    if (objects.length > 0) {
+      exportMap[f] = objects[0].name
+    }
+  }
+  return exportMap
+}
+
 /** 生成 import 语句 */
-function generateImports(files: string[]): string {
+function generateImports(files: string[], exportMap: Record<string, string>): string {
   return files
     .map(f => {
-      const varName = path.basename(f, '.skill.ts').replace(/[.-]/g, '_')
+      const varName = exportMap[f]
       const importPath = `./${f.replace(/\.ts$/, '')}`
       return `import { ${varName} } from '${importPath}'`
     })
     .join('\n')
 }
 
-/** 从文件路径提取变量名 */
-function varNameFromFile(file: string): string {
-  return path.basename(file, '.skill.ts').replace(/[.-]/g, '_')
-}
-
 /** 生成 SKILL_LOADERS 映射 */
-function generateLoaders(files: string[]): string {
+function generateLoaders(files: string[], exportMap: Record<string, string>): string {
   const entries = files.map(f => {
     const name = path.basename(f, '.skill.ts')
     const modPath = `./${f.replace(/\.ts$/, '')}`
-    return `  '${name}': () => import('${modPath}'),`
+    const varName = exportMap[f]
+    return `  '${name}': () => import('${modPath}').then(m => m.${varName}),`
   })
   return entries.join('\n')
 }
 
 /** 生成完整的文件内容 */
-function generateContent(files: string[]): string {
+function generateContent(files: string[], exportMap: Record<string, string>): string {
   const timestamp = new Date().toISOString()
 
   const registryEntries = files.map(f => {
-    const varName = varNameFromFile(f)
+    const varName = exportMap[f]
     return `  {
     name: ${varName}.name,
     description: ${varName}.description,
@@ -64,7 +73,7 @@ function generateContent(files: string[]): string {
 // 生成命令：npm run generate:skills
 // 生成时间：${timestamp}
 
-${generateImports(files)}
+${generateImports(files, exportMap)}
 import type { Skill } from './types'
 
 // Skill 元数据注册表（不含执行逻辑，用于 LLM 发现）
@@ -73,8 +82,8 @@ ${registryEntries.join(',\n')},
 ]
 
 // 懒加载映射（运行时按需加载 execute）
-export const SKILL_LOADERS: Record<string, () => Promise<{ default: Skill }>> = {
-${generateLoaders(files)}
+export const SKILL_LOADERS: Record<string, () => Promise<Skill>> = {
+${generateLoaders(files, exportMap)}
 }
 
 export const REGISTERED_SKILL_COUNT = ${files.length}
@@ -130,7 +139,11 @@ function run() {
     process.exit(1)
   }
 
-  const content = generateContent(files)
+  // 从文件读取实际导出的变量名
+  const exportMap = collectExportNames(files)
+  console.log('[generate-skills] 导出名映射:', exportMap)
+
+  const content = generateContent(files, exportMap)
   fs.writeFileSync(OUTPUT_FILE, content, 'utf-8')
   console.log(`[generate-skills] 生成完成: ${OUTPUT_FILE} (${content.split('\n').length} 行)`)
 
