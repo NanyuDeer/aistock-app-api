@@ -9,8 +9,11 @@ import { getSystemPrompt } from '../orchestrator'
 export const generalAgent: Agent = {
   id: 'general',
   name: '通用对话',
+  description: '通用对话 Agent，处理所有非特定意图的对话',
+  routingPrompt: '处理股票查询、资金流向、龙头股等通用股票分析问题',
+  category: 'general',
   systemPrompt: getSystemPrompt(),
-  availableSkills: ['stock_quote', 'capital_flow', 'leader_stock'],
+  allowedSkills: ['stock_quote', 'capital_flow', 'leader_stock'],
 
   async *handle(message: string, context?: ChatContext): AsyncGenerator<string> {
     const stream = handleMessageStream(message, context)
