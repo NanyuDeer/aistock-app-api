@@ -3,9 +3,9 @@
  * 所有 Skills 在此注册，供 Agent 按需调用
  */
 import type { Skill } from './types'
-import { stockQuoteSkill } from './stock-quote'
-import { capitalFlowSkill } from './capital-flow'
-import { leaderStockSkill } from './leader-stock'
+import { stockQuoteSkill } from './stock-quote.skill'
+import { capitalFlowSkill } from './capital-flow.skill'
+import { leaderStockSkill } from './leader-stock.skill'
 
 // Skills 注册表
 const registry = new Map<string, Skill>()

@@ -8,6 +8,8 @@ import { TencentQuoteService } from '../../quote/TencentQuoteService'
 export const stockQuoteSkill: Skill = {
   name: 'stock_quote',
   description: '查询个股实时行情，包括当前价、涨跌幅、成交量等',
+  tags: ['market', 'realtime'],
+  priority: 0,
   parameters: {
     type: 'object',
     properties: {
