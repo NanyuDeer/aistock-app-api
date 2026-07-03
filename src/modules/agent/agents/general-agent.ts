@@ -6,7 +6,7 @@
  * 需要的 helper 函数在此内联实现。
  */
 import type { Agent, ChatContext } from '../skills/types'
-import { getSkill } from '../skills/registry'
+import { executeSkill } from '../skills/registry'
 
 // 内联 helper：从消息中提取股票代码（避免循环依赖 orchestrator）
 function extractSymbol(message: string): string | null {
@@ -37,36 +37,27 @@ export const generalAgent: Agent = {
       const symbol = extractSymbol(message)
 
       if (/资金|流入|流出/.test(message) && symbol) {
-        const skill = getSkill('capital_flow')
-        if (skill) {
-          try {
-            const result = await skill.execute({ symbol })
-            narrative = result.narrative
-          } catch (e: any) {
-            console.error('[GeneralAgent] capital_flow skill error:', e.message)
-          }
+        try {
+          const result = await executeSkill(generalAgent, 'capital_flow', { symbol })
+          narrative = result.narrative
+        } catch (e: any) {
+          console.error('[GeneralAgent] capital_flow skill error:', e.message)
         }
       } else if (symbol) {
-        const skill = getSkill('stock_quote')
-        if (skill) {
-          try {
-            const result = await skill.execute({ symbol })
-            narrative = result.narrative
-          } catch (e: any) {
-            console.error('[GeneralAgent] stock_quote skill error:', e.message)
-          }
+        try {
+          const result = await executeSkill(generalAgent, 'stock_quote', { symbol })
+          narrative = result.narrative
+        } catch (e: any) {
+          console.error('[GeneralAgent] stock_quote skill error:', e.message)
         }
       }
     } else if (/龙头|板块|概念/.test(message)) {
       const tagCode = extractTagCode(message) || 'BK0475' // 默认白酒
-      const skill = getSkill('leader_stock')
-      if (skill) {
-        try {
-          const result = await skill.execute({ tagCode })
-          narrative = result.narrative
-        } catch (e: any) {
-          console.error('[GeneralAgent] leader_stock skill error:', e.message)
-        }
+      try {
+        const result = await executeSkill(generalAgent, 'leader_stock', { tagCode })
+        narrative = result.narrative
+      } catch (e: any) {
+        console.error('[GeneralAgent] leader_stock skill error:', e.message)
       }
     }
 
