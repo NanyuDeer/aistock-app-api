@@ -1,6 +1,6 @@
 // ===== 自动生成，请勿手动修改 =====
 // 生成命令：npm run generate:skills
-// 生成时间：2026-07-03T14:03:36.815Z
+// 生成时间：2026-07-03T14:35:15.161Z
 
 import { capitalFlowSkill } from './capital-flow.skill'
 import { leaderStockSkill } from './leader-stock.skill'

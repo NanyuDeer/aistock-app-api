@@ -1,6 +1,6 @@
 // ===== 自动生成，请勿手动修改 =====
 // 生成命令：npm run generate:agents
-// 生成时间：2026-07-03T14:10:51.149Z
+// 生成时间：2026-07-03T14:35:15.795Z
 
 import { generalAgent } from './general-agent'
 
