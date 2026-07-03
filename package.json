@@ -4,9 +4,14 @@
   "description": "AI Stock App API - Express + Agent + Skills 智能体后端",
   "main": "dist/index.js",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "generate": "npm run generate:skills && npm run generate:agents",
+    "generate:skills": "tsx scripts/generate-skills.ts",
+    "generate:agents": "tsx scripts/generate-agents.ts",
+    "prebuild": "npm run generate",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "dev": "concurrently -k -n app,skill,agent \"tsx watch src/index.ts\" \"tsx scripts/generate-skills.ts --watch\" \"tsx scripts/generate-agents.ts --watch\"",
+    "start": "node dist/index.js",
+    "check:generated": "npm run generate && git diff --exit-code src/modules/agent/skills/skills.generated.ts src/modules/agent/agents/agents.generated.ts"
   },
   "keywords": [
     "ai-stock",
@@ -39,6 +44,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/pg": "^8.15.0",
     "@types/ws": "^8.5.13",
+    "concurrently": "^10.0.3",
     "ts-node-dev": "^2.0.0",
     "tsx": "^4.22.3",
     "typescript": "^5.8.0"

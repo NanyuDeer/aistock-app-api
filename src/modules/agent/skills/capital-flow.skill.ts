@@ -8,6 +8,8 @@ import { getSinaMoneyflow } from '../../quote/SinaMoneyFlowService'
 export const capitalFlowSkill: Skill = {
   name: 'capital_flow',
   description: '查询个股主力资金流向，包括主力净流入、超大单/大单/中单/小单分布',
+  tags: ['market', 'fund-flow'],
+  priority: 1,
   parameters: {
     type: 'object',
     properties: {

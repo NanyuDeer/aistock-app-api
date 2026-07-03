@@ -9,6 +9,8 @@ import { TushareTagLeaderService } from '../../quote/TushareTagLeaderService'
 export const leaderStockSkill: Skill = {
   name: 'leader_stock',
   description: '查询板块龙头股，按概念或行业分类筛选领涨股',
+  tags: ['sector', 'leader'],
+  priority: 1,
   parameters: {
     type: 'object',
     properties: {

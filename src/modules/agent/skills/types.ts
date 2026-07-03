@@ -23,10 +23,22 @@ export interface Skill {
   name: string
   /** 功能描述（供 LLM 选择 Skill 时参考） */
   description: string
+  /** 技能标签（供分类/筛选使用，如 'market', 'realtime', 'analysis'） */
+  tags?: string[]
+  /** 优先级（数值越小优先级越高，同场景下优先展示高优先级 Skill） */
+  priority?: number
   /** 参数 Schema（Zod 校验） */
   parameters: any // ZodSchema
   /** 执行逻辑 */
   execute(params: any): Promise<SkillResult>
+}
+
+/** Skill 元数据（不含执行逻辑，用于 LLM 发现和 prompt 构建） */
+export interface SkillMetadata {
+  name: string
+  description: string
+  tags: string[]
+  priority: number
 }
 
 /**
@@ -37,10 +49,16 @@ export interface Agent {
   id: string
   /** 显示名称 */
   name: string
+  /** 简短描述，用于列表展示 */
+  description: string
+  /** 路由提示词：描述这个 Agent 擅长处理什么类型的用户请求，给 LLM 路由用 */
+  routingPrompt: string
+  /** 路由分类标签（Phase 4 启用，用于二级路由） */
+  category: string
   /** 系统提示词 */
   systemPrompt: string
-  /** 可调用的 Skills 列表 */
-  availableSkills: string[]
+  /** 白名单：该 Agent 能调用哪些全局 Skills */
+  allowedSkills: string[]
   /** 处理消息（流式输出） */
   handle(message: string, context?: ChatContext): AsyncGenerator<string>
 }
