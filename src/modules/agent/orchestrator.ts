@@ -104,5 +104,14 @@ export async function* handleMessageStream(
  */
 export async function getSystemPrompt(): Promise<string> {
   await ensureInit()
-  return SYSTEM_PROMPT.replace('{{SKILLS_DESCRIPTION}}', getSkillsDescription())
+
+  // Build agent descriptions from registry (same pattern as LLM router)
+  const agents = agentRegistry.getAllAgents()
+  const agentDescriptions = agents
+    .map(a => `ID: ${a.id}\n名称: ${a.name}\n能力: ${a.routingPrompt}`)
+    .join('\n\n---\n\n')
+
+  return SYSTEM_PROMPT
+    .replace('{{SKILLS_DESCRIPTION}}', getSkillsDescription())
+    .replace('{{AGENTS_DESCRIPTION}}', agentDescriptions)
 }
