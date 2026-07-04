@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 data/hot-sector-cache/
 .trae/
+changelog-pending.md
