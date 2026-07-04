@@ -23,6 +23,9 @@ import { StockAnalysisController } from './modules/quote/analysisController';
 // agent 智能体模块
 import agentRouter from './core/routes/agent';
 
+// internal 内部API（Python Agent 服务专用）
+import internalRouter from './core/routes/internal';
+
 // push 推送模块
 import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
@@ -460,6 +463,9 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 
 // ==================== Agent 智能体路由 ====================
 app.use('/api/agent', agentRouter);
+
+// ==================== Internal API（Python Agent 服务专用） ====================
+app.use('/internal', internalRouter);
 
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
