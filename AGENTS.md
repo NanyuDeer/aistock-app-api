@@ -40,6 +40,7 @@ src/
 │   ├── redis.ts            # Redis 连接
 │   ├── routes/             # 路由注册
 │   │   ├── agent.ts        # Agent 路由
+│   │   ├── internal.ts     # Internal API（Python Agent 服务专用）
 │   │   └── configController.ts # 配置接口
 │   └── ws/                 # WebSocket 服务
 │       ├── handler.ts      # 连接管理 + 事件分发
