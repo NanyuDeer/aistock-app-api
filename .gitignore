@@ -9,3 +9,4 @@ __pycache__/
 data/hot-sector-cache/
 .trae/
 changelog-pending.md
+AGENTS.md
