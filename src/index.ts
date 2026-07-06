@@ -303,6 +303,16 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
 });
 
 app.get('/api/potential-stocks/push-history', (req, res, next) => PotentialStockPushController.getHistory(req, res, next));
+
+// 临时测试端点：手动触发推送历史价格更新
+app.post('/api/internal/update-push-history-prices', async (req, res) => {
+    try {
+        await WindLeaderService.updatePushHistoryPrices();
+        res.json({ code: 200, message: '推送历史价格更新成功' });
+    } catch (err: any) {
+        res.status(500).json({ code: 500, message: err?.message || '更新失败' });
+    }
+});
 app.get('/api/potential-stocks/push-ranking', (req, res, next) => PotentialStockPushController.getRanking(req, res, next));
 
 app.get('/api/cn/stocks', (req, res, next) => StockListController.getStockList(req, res, next));
