@@ -423,7 +423,7 @@ export class WindLeaderService {
 
     /**
      * 更新推送历史记录的最新价格（每天收盘后执行）
-     * 使用腾讯实时行情接口获取最新价格
+     * 使用 Tushare 获取最新日行情数据
      */
     static async updatePushHistoryPrices(): Promise<void> {
         console.log('[WindLeaderService] 开始更新推送历史价格...');
@@ -434,6 +434,11 @@ export class WindLeaderService {
             return;
         }
 
+        // 获取最近60天的交易日期（确保有足够数据覆盖节假日）
+        const today = new Date();
+        const startDate = new Date(today.getTime() - 60 * 24 * 60 * 60 * 1000);
+        const startDateStr = startDate.toISOString().split('T')[0].replace(/-/g, '');
+
         // 提取所有股票代码
         const stockCodes = new Set<string>();
         history.forEach(record => {
@@ -442,26 +447,26 @@ export class WindLeaderService {
 
         console.log(`[WindLeaderService] 需更新 ${stockCodes.size} 只股票的最新价格`);
 
-        // 批量获取实时行情
-        const priceMap = new Map<string, { price: number; pct_chg: number; time: string }>();
+        // 批量获取最新行情
+        const priceMap = new Map<string, { close: number; pct_chg: number; trade_date: string }>();
         
         for (const stockCode of Array.from(stockCodes)) {
             try {
-                // 使用腾讯实时行情接口
-                const quote = await TencentQuoteService.getQuote(stockCode, 'activity');
-                const latestPrice = quote['最新价'];
-                const pctChg = quote['涨跌幅'];
-                
-                if (latestPrice && !isNaN(latestPrice)) {
+                const rows = await getDailyPrices(stockCode, startDateStr);
+                if (rows && rows.length > 0) {
+                    // 取最新一条（按日期降序）
+                    const latest = rows.sort((a, b) => 
+                        String(b.trade_date).localeCompare(String(a.trade_date))
+                    )[0];
                     priceMap.set(stockCode, {
-                        price: latestPrice,
-                        pct_chg: pctChg || 0,
-                        time: new Date().toISOString(),
+                        close: latest.close,
+                        pct_chg: latest.pct_chg,
+                        trade_date: latest.trade_date,
                     });
-                    console.log(`[WindLeaderService] ${stockCode}: 价格=${latestPrice}, 涨跌幅=${pctChg}%`);
+                    console.log(`[WindLeaderService] ${stockCode}: 价格=${latest.close}, 涨跌幅=${latest.pct_chg}%, 日期=${latest.trade_date}`);
                 }
             } catch (err) {
-                console.warn(`[WindLeaderService] 获取 ${stockCode} 实时行情失败:`, (err as Error).message);
+                console.warn(`[WindLeaderService] 获取 ${stockCode} 行情失败:`, (err as Error).message);
             }
         }
 
@@ -472,13 +477,14 @@ export class WindLeaderService {
 
             return {
                 ...record,
-                latest_price: priceData.price,
+                latest_price: priceData.close,
                 latest_change_pct: priceData.pct_chg,
-                realtime_time: priceData.time,
+                latest_trade_date: priceData.trade_date,
                 // 计算收益率（相对于推送价格）
                 realtime_return_pct: record.push_price && record.push_price > 0
-                    ? Number(((priceData.price - record.push_price) / record.push_price * 100).toFixed(2))
+                    ? Number(((priceData.close - record.push_price) / record.push_price * 100).toFixed(2))
                     : null,
+                realtime_time: new Date().toISOString(),
             };
         });
 
