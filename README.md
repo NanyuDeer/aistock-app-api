@@ -1,6 +1,6 @@
 # AI Stock App 后端
 
-> AI 投资助手 App 后端，基于 Express + TypeScript，集成 Agent + Skills 智能体架构。
+> AI 投资助手 App 后端，基于 Express + TypeScript。
 
 ## 快速开始
 
@@ -24,7 +24,7 @@ pnpm build && pnpm start
 - `REDIS_URL` — Redis 连接串
 - `WECHAT_APPID` / `WECHAT_SECRET` — 微信公众号配置
 - `JWT_SECRET` — JWT 签名密钥
-- `LLM_API_KEY` — LLM API 密钥（DeepSeek/OpenAI）
+- `OPENAI_API_KEY` — LLM API 密钥（DeepSeek/OpenAI）
 
 本地开发无数据库时，服务自动进入降级模式（使用内存缓存和 mock 数据）。
 
@@ -45,7 +45,6 @@ src/
 │   └── ws/              # WebSocket 服务
 ├── modules/             # 业务模块层（每人负责一个模块）
 │   ├── quote/           # 行情模块
-│   ├── agent/           # Agent 智能体模块
 │   ├── push/            # 推送模块
 │   ├── auth/            # 认证模块
 │   ├── monitor/         # 监控模块
@@ -56,8 +55,7 @@ src/
 
 | 模块 | 目录 | 功能范围 |
 |------|------|---------|
-| 行情 | modules/quote | 腾讯行情、K线、指数 |
-| Agent | modules/agent | 智能体调度、Skills、LLM 对话 |
+| 行情 | modules/quote | 腾讯行情、K线、指数、个股分析 |
 | 推送 | modules/push | 微信模板消息、定时推送 |
 | 认证 | modules/auth | 扫码登录、微信授权 |
 | 监控 | modules/monitor | 股票异动监控、特别提醒 |
@@ -72,33 +70,20 @@ src/
 - ✅ core/ → modules/*（仅路由注册时）
 
 ### 后端硬约束
-- 分层架构：Types → Service → Route → Agent → Skill（禁止反向依赖）
 - 行情用腾讯 API，龙头用同花顺，禁止东方财富
 - cron 必须加 `{ timezone: 'Asia/Shanghai' }`
 - LLM 调用失败时跳过，返回纯数据，不重试
 - 微信 API 用原生 fetch，不用 sessionFetch
 
-### Skill 开发规范
-- 每个 Skill 必须实现 `Skill` 接口（见 `modules/agent/skills/types.ts`）
-- **必须复用现有 services**，禁止重复实现
-- 在 `modules/agent/skills/registry.ts` 中注册新 Skill
-- 参数必须定义 Schema
-
-### Agent 开发规范
-- 每个 Agent 必须实现 `Agent` 接口
-- Agent 的 `handle` 方法应为 AsyncGenerator（流式输出）
-- 提示词放在 `modules/agent/prompts/` 目录
-
 ## API 路由
 
 | 路径 | 功能 |
 |------|------|
-| `/api/agent/chat` | Agent 对话 |
-| `/api/agent/skills` | Skills 列表 |
 | `/api/cn/stock-quote/*` | 行情接口 |
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/trend-hotspots/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
+| `/internal/*` | Python Agent 服务专用内部接口 |
 
 ## Vibecoding 工作流
 
@@ -122,4 +107,5 @@ pm2 logs aistock-api
 ## 相关项目
 
 - [aistock-app-frontend](../aistock-app-frontend) — App 前端
+- [aistock-agent-py](../aistock-agent-py) — Python Agent 推理服务
 - [aistock-api](../aistock-api) — 原 PC Web 后端

@@ -31,7 +31,9 @@
 - `modules/monitor/ThsService` — 同花顺数据（分析用）
 - `modules/monitor/ClsStockNewsService` — 财联社新闻
 - `modules/monitor/TenxScoreService` — 十字评分
-- `modules/agent/services/*` — Agent 工具
+
+## 内部子模块
+- `analysis-agent/` — 个股分析 Agent 工具（tools/prompts/types）
 
 ## 开发注意事项
 - 行情数据必须使用腾讯行情 API，禁止东方财富

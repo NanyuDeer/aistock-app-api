@@ -11,7 +11,6 @@ import {
   pushQuoteUpdate as _pushQuoteUpdate
 } from './channels/quote-channel'
 import { pushAlert as _pushAlert, pushAlertToUser as _pushAlertToUser } from './channels/alert-channel'
-import { handleChatMessage } from './channels/chat-channel'
 
 /**
  * 初始化 WebSocket 服务
@@ -57,12 +56,6 @@ export function initWebSocket(server: Server): WebSocketServer {
 async function dispatchMessage(ws: WebSocket, msg: any) {
   // 1. 行情订阅频道
   if (handleQuoteMessage(ws, msg)) return
-
-  // 2. 对话频道
-  if (msg.type === 'chat') {
-    await handleChatMessage(ws, { message: msg.message, session_id: msg.session_id })
-    return
-  }
 
   // 未知类型
   ws.send(JSON.stringify({ type: 'error', message: `未知消息类型: ${msg.type}` }))

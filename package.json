@@ -1,22 +1,15 @@
 {
   "name": "aistock-app-api",
   "version": "2.0.0",
-  "description": "AI Stock App API - Express + Agent + Skills 智能体后端",
+  "description": "AI Stock App API - Express + 智能体后端",
   "main": "dist/index.js",
   "scripts": {
-    "generate": "npm run generate:skills && npm run generate:agents",
-    "generate:skills": "tsx scripts/generate-skills.ts",
-    "generate:agents": "tsx scripts/generate-agents.ts",
-    "prebuild": "npm run generate",
     "build": "tsc",
-    "dev": "concurrently -k -n app,skill,agent \"tsx watch src/index.ts\" \"tsx scripts/generate-skills.ts --watch\" \"tsx scripts/generate-agents.ts --watch\"",
-    "start": "node dist/index.js",
-    "check:generated": "npm run generate && git diff --exit-code src/modules/agent/skills/skills.generated.ts src/modules/agent/agents/agents.generated.ts"
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js"
   },
   "keywords": [
     "ai-stock",
-    "agent",
-    "skills",
     "express"
   ],
   "author": "",

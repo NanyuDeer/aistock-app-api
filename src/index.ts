@@ -20,9 +20,6 @@ import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
 
-// agent 智能体模块
-import agentRouter from './core/routes/agent';
-
 // internal 内部API（Python Agent 服务专用）
 import internalRouter from './core/routes/internal';
 
@@ -460,9 +457,6 @@ app.get('/api/kg/subgraph', (req, res, next) => IndustryKGController.getSubGraph
 app.get('/api/kg/concepts', (req, res, next) => IndustryKGController.getConcepts(req, res, next));
 app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGController.getIndustryStocks(req, res, next));
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
-
-// ==================== Agent 智能体路由 ====================
-app.use('/api/agent', agentRouter);
 
 // ==================== Internal API（Python Agent 服务专用） ====================
 app.use('/internal', internalRouter);

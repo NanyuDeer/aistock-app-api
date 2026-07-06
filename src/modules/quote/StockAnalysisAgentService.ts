@@ -1,12 +1,12 @@
-import { AGENT_TOOL_DEFINITIONS, executeToolCall } from '../agent/services/tools';
-import { AGENT_SYSTEM_PROMPT, buildAgentUserPrompt } from '../agent/services/prompts';
+import { AGENT_TOOL_DEFINITIONS, executeToolCall } from './analysis-agent/tools';
+import { AGENT_SYSTEM_PROMPT, buildAgentUserPrompt } from './analysis-agent/prompts';
 import type {
   AgentConfig,
   AgentContext,
   AgentToolCall,
   AgentProgressEvent,
   AgentAnalysisResult,
-} from '../agent/services/types';
+} from './analysis-agent/types';
 import { formatToChinaTime } from '../../shared/utils/datetime';
 import pool from '../../core/db';
 import { setAiIndicatorScores } from '../monitor/TenxScoreService';

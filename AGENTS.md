@@ -39,12 +39,11 @@ src/
 │   ├── db.ts               # PostgreSQL 连接池
 │   ├── redis.ts            # Redis 连接
 │   ├── routes/             # 路由注册
-│   │   ├── agent.ts        # Agent 路由
 │   │   ├── internal.ts     # Internal API（Python Agent 服务专用）
 │   │   └── configController.ts # 配置接口
 │   └── ws/                 # WebSocket 服务
 │       ├── handler.ts      # 连接管理 + 事件分发
-│       └── channels/       # 频道（alert/chat/quote）
+│       └── channels/       # 频道（alert/quote）
 ├── modules/
 │   ├── quote/              # 行情模块
 │   │   ├── controller.ts   # StockQuoteController
@@ -62,14 +61,9 @@ src/
 │   │   ├── TushareTagLeaderService.ts # Tushare 龙头
 │   │   ├── SinaMoneyFlowService.ts # 新浪资金流
 │   │   ├── StockAnalysisService.ts # 股票分析
+│   │   ├── StockAnalysisAgentService.ts # 个股分析 Agent
+│   │   ├── analysis-agent/ # 个股分析 Agent 工具
 │   │   ├── EmTagLeaderService.ts # EM 板块龙头
-│   │   └── AGENTS.md
-│   ├── agent/              # Agent 智能体模块
-│   │   ├── orchestrator.ts # Agent 调度器
-│   │   ├── agents/         # Agent 实现
-│   │   ├── skills/         # 可插拔 Skills + 注册中心
-│   │   ├── prompts/        # 提示词模板
-│   │   ├── services/       # Agent 服务层
 │   │   └── AGENTS.md
 │   ├── push/               # 推送模块
 │   │   ├── controller.ts   # PotentialStockPushController
@@ -118,19 +112,7 @@ src/
 - 模块间通过 `../模块名/文件` 引用，禁止循环依赖
 - 新增功能优先归入已有模块，必要时新建模块
 
-### 2. Skills 开发规范
-- 每个 Skill 必须实现 `Skill` 接口（见 `modules/agent/skills/types.ts`）
-- **必须复用现有 services**，禁止重复实现数据获取逻辑
-- 在 `modules/agent/skills/registry.ts` 中注册新 Skill
-- 参数必须定义 Schema
-
-### 3. Agent 开发规范
-- 每个 Agent 必须实现 `Agent` 接口
-- Agent 的 `handle` 方法应为 AsyncGenerator（流式输出）
-- 提示词放在 `modules/agent/prompts/` 目录
-
-### 4. 路由规范
-- Agent 相关路由统一前缀 `/api/agent/`
+### 2. 路由规范
 - 新增路由在 `core/routes/` 中添加
 - 必须在 `index.ts` 中挂载
 
@@ -145,7 +127,6 @@ pnpm start    # 生产模式启动
 - 行情数据必须使用腾讯行情 API
 - 东方财富不允许使用
 - 龙头股数据必须来自同花顺
-- Skills 必须复用现有 services，禁止重复实现
 - 向量检索使用 pgvector，不引入独立向量数据库
 - LLM 调用失败时跳过，返回纯数据，不重试（防烧钱）
 

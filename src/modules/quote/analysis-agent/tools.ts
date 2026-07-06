@@ -1,6 +1,6 @@
 import { ClsStockNewsService } from '../../monitor/ClsStockNewsService';
 import { ThsService } from '../../monitor/ThsService';
-import { TencentQuoteService } from '../../quote/TencentQuoteService';
+import { TencentQuoteService } from '../TencentQuoteService';
 import type { AgentToolCall, AgentToolResult, AgentContext } from './types';
 
 /** OpenAI Function Calling 工具定义 */
