@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { TencentKlineService } from '../quote/TencentKlineService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
-import { tushareRequest } from '../quote/TushareService';
+import { tushareRequest, getDailyPrices } from '../quote/TushareService';
 import { getStockIdentity } from '../../shared/utils/stock';
 
 // 使用项目根目录的data文件夹（而不是相对于编译代码的路径）
@@ -419,5 +419,75 @@ export class WindLeaderService {
         });
 
         writePushHistoryFile(records);
+    }
+
+    /**
+     * 更新推送历史记录的最新价格（每天收盘后执行）
+     * 使用 Tushare 获取最新日行情数据
+     */
+    static async updatePushHistoryPrices(): Promise<void> {
+        console.log('[WindLeaderService] 开始更新推送历史价格...');
+        
+        const history = readPushHistoryFile();
+        if (!history.length) {
+            console.log('[WindLeaderService] 无推送历史记录，跳过更新');
+            return;
+        }
+
+        // 获取最近30天的交易日期
+        const today = new Date();
+        const startDate = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+        const startDateStr = startDate.toISOString().split('T')[0].replace(/-/g, '');
+
+        // 提取所有股票代码
+        const stockCodes = new Set<string>();
+        history.forEach(record => {
+            if (record.stock_code) stockCodes.add(record.stock_code);
+        });
+
+        console.log(`[WindLeaderService] 需更新 ${stockCodes.size} 只股票的最新价格`);
+
+        // 批量获取最新行情
+        const priceMap = new Map<string, { close: number; pct_chg: number; trade_date: string }>();
+        
+        for (const stockCode of Array.from(stockCodes)) {
+            try {
+                const rows = await getDailyPrices(stockCode, startDateStr);
+                if (rows && rows.length > 0) {
+                    // 取最新一条（按日期降序）
+                    const latest = rows.sort((a, b) => 
+                        String(b.trade_date).localeCompare(String(a.trade_date))
+                    )[0];
+                    priceMap.set(stockCode, {
+                        close: latest.close,
+                        pct_chg: latest.pct_chg,
+                        trade_date: latest.trade_date,
+                    });
+                }
+            } catch (err) {
+                console.warn(`[WindLeaderService] 获取 ${stockCode} 行情失败:`, (err as Error).message);
+            }
+        }
+
+        // 更新历史记录
+        const updated = history.map(record => {
+            const priceData = priceMap.get(record.stock_code);
+            if (!priceData) return record;
+
+            return {
+                ...record,
+                latest_price: priceData.close,
+                latest_change_pct: priceData.pct_chg,
+                latest_trade_date: priceData.trade_date,
+                // 计算收益率（相对于推送价格）
+                realtime_return_pct: record.push_price && record.push_price > 0
+                    ? Number(((priceData.close - record.push_price) / record.push_price * 100).toFixed(2))
+                    : null,
+                realtime_time: new Date().toISOString(),
+            };
+        });
+
+        writePushHistoryFile(updated);
+        console.log(`[WindLeaderService] 已更新 ${priceMap.size} 只股票的最新价格`);
     }
 }

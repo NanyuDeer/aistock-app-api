@@ -48,6 +48,7 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TenxBatchService } from './modules/monitor/TenxBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
+import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { StockSyncService } from './modules/monitor/StockSyncService';
@@ -604,6 +605,17 @@ cron.schedule('5 0 * * *', async () => {
         console.log(`[StockSyncCron] 完成: 新增=${result.inserted}, 更新=${result.updated}, 总计=${result.total}`);
     } catch (err: any) {
         console.error('[StockSyncCron] 执行失败:', err?.message || err);
+    }
+});
+
+// 每天 17:30 收盘后更新推送历史记录的最新价格
+cron.schedule('30 17 * * 1-5', async () => {
+    console.log('[PushHistoryPriceCron] 开始更新推送历史价格');
+    try {
+        await WindLeaderService.updatePushHistoryPrices();
+        console.log('[PushHistoryPriceCron] 推送历史价格更新完成');
+    } catch (err: any) {
+        console.error('[PushHistoryPriceCron] 执行失败:', err?.message || err);
     }
 });
 
