@@ -103,6 +103,22 @@ export class ClsStockNewsService {
     static async getStockNews(symbol: string, options: ClsStockNewsOptions): Promise<ClsStockNewsResult> {
         const { limit, lastTime } = options;
         const { keyword, stockName } = await this.resolveStockKeyword(symbol);
+        return this.fetchAndParseNews(keyword, stockName, limit, lastTime);
+    }
+
+    /**
+     * 获取财联社最新快讯（不带股票关键词，用于晨报）
+     */
+    static async getLatestNews(limit: number = 10): Promise<ClsStockNewsResult> {
+        return this.fetchAndParseNews('', '', limit, 0);
+    }
+
+    private static async fetchAndParseNews(
+        keyword: string,
+        stockName: string,
+        limit: number,
+        lastTime: number,
+    ): Promise<ClsStockNewsResult> {
         const payload = {
             'lastTime': lastTime,
             'keyword': keyword,

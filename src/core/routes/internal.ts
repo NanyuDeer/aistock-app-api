@@ -17,7 +17,8 @@ import { isValidTagCode } from '../../shared/utils/validator'
 const router: Router = Router()
 
 // 内网鉴权中间件
-const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || 'change-me-in-production'
+// 优先 INTERNAL_API_TOKEN（Python agent-py 用的变量名），兼容 INTERNAL_TOKEN（其他模块旧约定）
+const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production'
 
 function verifyInternalToken(req: Request, res: Response, next: Function): void {
     const token = req.headers['x-internal-token']
@@ -116,6 +117,22 @@ router.get('/news/search/:symbol', async (req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: any) {
         console.error(`[Internal] news/search/${symbol} error:`, err.message)
+        res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/news/latest
+ * 财联社最新快讯（晨报用，不带股票关键词）
+ */
+router.get('/news/latest', async (req: Request, res: Response) => {
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50)
+
+    try {
+        const data = await ClsStockNewsService.getLatestNews(limit)
+        res.json({ code: 200, data })
+    } catch (err: any) {
+        console.error('[Internal] news/latest error:', err.message)
         res.status(500).json({ code: 500, message: err.message })
     }
 })
