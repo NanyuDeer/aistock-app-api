@@ -391,7 +391,15 @@ export class WindLeaderService {
             merged.set(record.push_id, mergePushRecord(merged.get(record.push_id), record));
         });
 
-        return Array.from(merged.values()).sort((a, b) => {
+        // 过滤：只返回有价格更新的记录（避免盘中显示未收盘数据）
+        // 要求 realtime_time 存在且日期 >= push_date
+        const filtered = Array.from(merged.values()).filter(record => {
+            if (!record.realtime_time) return false;
+            const realtimeDate = new Date(record.realtime_time).toISOString().split('T')[0];
+            return realtimeDate >= record.push_date;
+        });
+
+        return filtered.sort((a, b) => {
             if (a.push_date !== b.push_date) {
                 return String(b.push_date).localeCompare(String(a.push_date));
             }
