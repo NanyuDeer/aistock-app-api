@@ -131,6 +131,23 @@ src/
 | `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
 | `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
 
+### Internal API 接口详情
+
+| 路径 | 功能 | 参数 |
+|------|------|------|
+| `/internal/quote/:symbol` | 个股实时行情（腾讯数据源） | symbol: A股代码 |
+| `/internal/flow/:symbol` | 个股资金流向（新浪+Tushare双源） | symbol: A股代码 |
+| `/internal/leader/:tagCode` | 板块龙头股（Tushare数据源） | tagCode: 板块代码（如BK0475） |
+| `/internal/news/search/:symbol` | 财联社个股相关新闻 | symbol: A股代码, limit: 返回数量 |
+| `/internal/news/latest` | 财联社最新快讯 | limit: 返回数量 |
+| `/internal/news/fulltext/:id` | 财联社新闻全文 | id: 新闻ID |
+| `/internal/forecast/:symbol` | 机构盈利预测（同花顺数据源） | symbol: A股代码 |
+| `/internal/wind-leaders` | **长线风口数据**（供Python Agent调用） | limit: 返回板块数量（默认8，最大20） |
+| `/internal/institution-research` | **机构调研热门股**（供Python Agent调用） | hours: 最近N小时（默认6，最大72）, min_resonance: 最小共振数 |
+| `/internal/monitor/:symbol` | **个股监控事件**（供团队成员使用） | symbol: A股代码, cycle: 周期, limit: 返回数量 |
+
+> 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
+
 ## Vibecoding 工作流
 
 本项目使用 aistock-workflow rules 规范 AI 辅助开发流程。在 Trae IDE 中开发时，AI 自动执行 9 步流程：上下文加载→需求确认→编码→跨端同步检查→验证→文档维护→用户验收→技能缺口记录→修改记录。
