@@ -118,6 +118,24 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
       res.writeHead(status, respHeaders);
       // 直接 pipe：不缓冲，SSE chunk 实时透传
       upstreamRes.pipe(res);
+
+      // 响应流错误处理：Node 的 pipe() 不会把源流的 'error' 转发到目标流，
+      // 也不会在源流出错时结束目标流。若上游连接在流式中途断开
+      // （ECONNRESET / socket 超时 / Python 在长 SSE 连接中崩溃），upstreamRes 会 emit 'error'。
+      // 若无监听器，Node 视为未捕获异常并抛出 → 整个 API 进程崩溃。
+      // 注意：upstreamReq.on('error', failWith502) 只覆盖连接/请求阶段错误；
+      // 进入响应阶段后 socket 错误由 upstreamRes 而非 upstreamReq emit（已通过调试脚本验证）。
+      upstreamRes.on('error', (err: NodeJS.ErrnoException) => {
+        logError(err, { method: req.method, url: req.originalUrl });
+        // 结束客户端响应，避免前端连接挂起（此时 writeHead 已发送，无法再改状态码）
+        if (!res.writableEnded) {
+          res.end();
+        }
+        // 销毁上游请求，释放 socket
+        if (!upstreamReq.destroyed) {
+          upstreamReq.destroy();
+        }
+      });
     });
 
     const failWith502 = (err: NodeJS.ErrnoException): void => {

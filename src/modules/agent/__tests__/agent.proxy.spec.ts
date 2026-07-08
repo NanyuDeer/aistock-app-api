@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
-import { createAgentProxy } from '../agent.proxy';
+import { createAgentProxy, type AgentProxyOptions } from '../agent.proxy';
 
 const INTERNAL_TOKEN = 'test-internal-token-xyz';
 
@@ -81,9 +81,9 @@ function startUpstream(
 }
 
 // ---------- 被测 Express app（仅挂载反代） ----------
-function buildApp(target: string): Express {
+function buildApp(target: string, onError?: AgentProxyOptions['onError']): Express {
   const app = express();
-  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN }));
+  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN, onError }));
   return app;
 }
 
@@ -297,5 +297,34 @@ describe('Agent reverse proxy', () => {
 
     assert.strictEqual(res.status, 403);
     assert.ok(res.text.includes('Forbidden'));
+  });
+
+  it('handles upstream response stream error without crashing the process (SSE mid-stream drop)', { timeout: 5000 }, async () => {
+    // 捕获代理内部错误日志，用于验证 upstreamRes 'error' 处理器被触发
+    const errors: NodeJS.ErrnoException[] = [];
+    const upstream = await startUpstream((_req, res) => {
+      // 发送响应头 + 部分数据，进入流式阶段（chunked 编码，未发送终止符）
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: partial\n\n');
+      // 等待数据 flush 到代理（确保代理已进入 'response' 处理器并开始 pipe），
+      // 然后销毁底层 socket —— 模拟 SSE 长连接中途断开（ECONNRESET / Python 崩溃 / socket 超时）。
+      // 注意：不调用 res.end()，响应被截断 → 代理侧 upstreamRes emit 'error'（ECONNRESET）。
+      setTimeout(() => {
+        res.socket?.destroy();
+      }, 30);
+    });
+
+    const app = buildApp(upstream.url, (err) => errors.push(err));
+    const res = await call(app, { method: 'GET', path: '/api/agent/chat/stream' });
+
+    // 1. 进程未崩溃：测试能执行到这里，说明没有未捕获的 'error' 事件。
+    //    若无 upstreamRes 'error' 监听器，Node 会抛出未捕获异常 → node:test 标记失败（或超时）。
+    // 2. 客户端响应已结束：call 通过 'end' resolve（代理在错误处理中 res.end()），未挂起。
+    assert.ok(res.status === 200, `expected status 200 (headers already sent), got ${res.status}`);
+    // 3. 错误处理回调被调用 → upstreamRes 'error' 被正确捕获并记录（证明错误路径被走到）
+    assert.ok(
+      errors.length >= 1,
+      'expected onError callback to fire for upstream response stream error',
+    );
   });
 });
