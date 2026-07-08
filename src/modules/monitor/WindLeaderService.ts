@@ -284,7 +284,7 @@ function mergePushRecord(existing: any, next: any): any {
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
-        hot_sectors: any[];
+        hot_sectors: unknown[];
     } | null> {
         const data = loadData();
         if (!data) return null;
@@ -419,5 +419,16 @@ export class WindLeaderService {
         });
 
         writePushHistoryFile(records);
+    }
+
+    /**
+     * 获取风口龙头分析数据（供 /internal/wind-leaders 接口调用）
+     * 包装 getAnalysis()，默认返回 top 8 热门板块及其龙头股
+     */
+    static async getWindLeaders(limit: number = 8): Promise<{
+        update_time: string;
+        hot_sectors: unknown[];
+    } | null> {
+        return this.getAnalysis(limit);
     }
 }

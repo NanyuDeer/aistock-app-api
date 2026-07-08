@@ -273,4 +273,25 @@ export class StockMonitorService {
             negative: Number(row.negative || 0),
         };
     }
+
+    /**
+     * 获取个股监控数据（供 /internal/monitor/:symbol 接口调用）
+     * 包装 getEventsByStockCode()，返回该股票的研判资讯事件列表
+     */
+    static async getMonitorData(symbol: string): Promise<MonitorEventItem[]> {
+        return this.getEventsByStockCode(symbol);
+    }
+
+    /**
+     * 获取告警历史（供 /internal/monitor/alerts 接口调用）
+     * 包装 getEvents()，返回全局研判资讯事件（分页）
+     */
+    static async getAlertHistory(query: {
+        cycle?: string;
+        change_type?: string;
+        limit?: number;
+        offset?: number;
+    }): Promise<{ total: number; events: MonitorEventItem[] }> {
+        return this.getEvents(query);
+    }
 }

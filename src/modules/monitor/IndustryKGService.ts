@@ -645,6 +645,31 @@ export class IndustryKGService {
         }));
     }
 
+    /**
+     * 获取所有概念列表（供 /internal/graph/concepts 接口调用）
+     * 包装 getAllConcepts()，异步接口便于统一 await 模式
+     */
+    static async getConcepts(): Promise<{ id: string; name: string; industryCount: number }[]> {
+        return this.getAllConcepts();
+    }
+
+    /**
+     * 根据概念获取产业链子图（供 /internal/graph/:concept 接口调用）
+     * 接受概念 ID（如 885641.TI）或概念名称（如 人工智能），自动解析
+     */
+    static async getGraphByConcept(concept: string): Promise<KGSubGraph> {
+        const graph = this.getFullGraph();
+        // 先按 ID 精确匹配，再按名称匹配
+        let conceptNode = graph.concepts.find(c => c.id === concept);
+        if (!conceptNode) {
+            conceptNode = graph.concepts.find(c => c.name === concept);
+        }
+        if (!conceptNode) {
+            throw new Error(`概念 ${concept} 不存在`);
+        }
+        return this.getSubGraphByConcept(conceptNode.id);
+    }
+
     // ==================== 内部方法 ====================
 
     /**
