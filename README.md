@@ -121,7 +121,8 @@ src/
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/trend-hotspots/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
-| `/internal/*` | Python Agent 服务专用内部接口 |
+| `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
+| `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
 
 ## Vibecoding 工作流
 

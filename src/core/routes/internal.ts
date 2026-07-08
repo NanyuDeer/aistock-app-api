@@ -1,7 +1,9 @@
 /**
  * Internal API 路由 — 仅供 Python Agent 服务内部调用
  *
- * 所有接口需要携带 X-Internal-Token header 进行鉴权。
+ * 除 /health 外，所有接口需要携带 X-Internal-Token header 进行鉴权。
+ * /internal/health 是例外：注册在鉴权中间件之前，无需 token，
+ * 作为轻量健康探针供 Python /health/ready 探测 Node.js 连通性。
  * 这些接口不对外暴露，Python 服务通过此接口获取 A 股数据。
  */
 import { Router, type Request, type Response } from 'express'
@@ -34,6 +36,18 @@ function param(req: Request, key: string): string {
     const val = req.params[key]
     return Array.isArray(val) ? val[0] : (val || '')
 }
+
+/**
+ * GET /internal/health
+ * 轻量健康探针，供 Python Agent 服务 /health/ready 探测 Node.js 连通性。
+ *
+ * 刻意注册在 verifyInternalToken 中间件之前：健康检查不应被鉴权阻断
+ * （Python 探针不携带 X-Internal-Token，避免探针因 token 配置漂移而误判）。
+ * 仅返回进程存活状态，不触达数据库/Redis，保持低延迟。
+ */
+router.get('/health', (_req: Request, res: Response) => {
+    res.status(200).json({ status: 'ok' })
+})
 
 router.use(verifyInternalToken)
 
