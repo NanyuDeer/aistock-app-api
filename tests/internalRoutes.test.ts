@@ -370,6 +370,36 @@ async function main(): Promise<void> {
         })
     })
 
+    await runAsyncTest('GET /internal/monitor/alerts returns 502 on service failure', async () => {
+        await withThrowingMock(StockMonitorService, 'getAlertHistory', async () => {
+            const res = await makeGetRequest(port, '/monitor/alerts', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+            assert.ok(body.message.includes('Service unavailable'))
+        })
+    })
+
+    await runAsyncTest('GET /internal/tenx/top returns 502 on service failure', async () => {
+        await withThrowingMock(TenxScoreService, 'getTopStocks', async () => {
+            const res = await makeGetRequest(port, '/tenx/top', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+            assert.ok(body.message.includes('Service unavailable'))
+        })
+    })
+
+    await runAsyncTest('GET /internal/graph/concepts returns 502 on service failure', async () => {
+        await withThrowingMock(IndustryKGService, 'getConcepts', async () => {
+            const res = await makeGetRequest(port, '/graph/concepts', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+            assert.ok(body.message.includes('Service unavailable'))
+        })
+    })
+
     // --- 查询参数测试 ---
     await runAsyncTest('GET /internal/tenx/top respects limit param (mock returns fixed)', async () => {
         const res = await makeGetRequest(port, '/tenx/top?limit=3', INTERNAL_TOKEN)

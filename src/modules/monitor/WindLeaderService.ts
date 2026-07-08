@@ -284,7 +284,7 @@ function mergePushRecord(existing: any, next: any): any {
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
-        hot_sectors: any[];
+        hot_sectors: unknown[];
     } | null> {
         const data = loadData();
         if (!data) return null;
@@ -427,7 +427,7 @@ export class WindLeaderService {
      */
     static async getWindLeaders(limit: number = 8): Promise<{
         update_time: string;
-        hot_sectors: any[];
+        hot_sectors: unknown[];
     } | null> {
         return this.getAnalysis(limit);
     }
