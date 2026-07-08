@@ -881,4 +881,31 @@ export class HotBurstService {
             return null;
         }
     }
+
+    /**
+     * 获取机构调研推荐热门股检测结果（供 /internal/institution-research 接口调用）
+     * 包装 getRecentBursts()，优先返回缓存，缓存过期则触发一次检测
+     */
+    static async getHotBurst(query: {
+        hours?: number;
+        minResonanceCount?: number;
+    }): Promise<HotBurstResult | null> {
+        return this.getRecentBursts(query.hours ?? 6, query.minResonanceCount ?? 0);
+    }
+
+    /**
+     * 获取机构调研推荐热门股历史记录（供 /internal/institution-research/history 接口调用）
+     * 包装 getHistory()，从数据库查询历史三源共振记录
+     */
+    static async getHotBurstHistory(query: {
+        limit?: number;
+        offset?: number;
+        minResonanceOnly?: boolean;
+    }): Promise<{ total: number; records: unknown[] }> {
+        return this.getHistory(
+            query.limit ?? 50,
+            query.offset ?? 0,
+            query.minResonanceOnly ?? true,
+        );
+    }
 }

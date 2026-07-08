@@ -420,4 +420,15 @@ export class WindLeaderService {
 
         writePushHistoryFile(records);
     }
+
+    /**
+     * 获取风口龙头分析数据（供 /internal/wind-leaders 接口调用）
+     * 包装 getAnalysis()，默认返回 top 8 热门板块及其龙头股
+     */
+    static async getWindLeaders(limit: number = 8): Promise<{
+        update_time: string;
+        hot_sectors: any[];
+    } | null> {
+        return this.getAnalysis(limit);
+    }
 }
