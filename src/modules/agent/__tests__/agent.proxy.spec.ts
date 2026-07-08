@@ -299,6 +299,103 @@ describe('Agent reverse proxy', () => {
     assert.ok(res.text.includes('Forbidden'));
   });
 
+  // ---------- Python 联调契约测试（Task 9）----------
+  // 与上游 generic 测试（{ok:true} / chunk-1-2-3）互补：这里用 Python FastAPI
+  // 实际产出的响应契约（ChatResponse JSON / SSE 事件序列），验证反代对真实
+  // Python 响应 wire-compatible —— body 与每个 SSE 事件的 JSON 均原样透传。
+
+  it('forwards Python ChatResponse JSON contract unmodified ({content, session_id})', async () => {
+    // Python POST /api/agent/chat/message 返回 ChatResponse(content, session_id)
+    const pythonBody = JSON.stringify({
+      content: '贵州茅台最新价1688元，涨幅0.75%。',
+      session_id: 'e2e-stock-9',
+    });
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, {
+        'content-type': 'application/json',
+        'x-request-id': 'py-rid-chat-9',
+      });
+      res.end(pythonBody);
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer user-9',
+        'x-request-id': 'client-rid-9',
+      },
+      body: JSON.stringify({ message: '分析 600519', session_id: 'e2e-stock-9' }),
+    });
+
+    // 状态 / content-type / Python 注入的 X-Request-ID 透传
+    assert.strictEqual(res.status, 200);
+    assert.match(header(res.headers, 'content-type'), /application\/json/);
+    assert.strictEqual(header(res.headers, 'x-request-id'), 'py-rid-chat-9');
+    // body 原样透传（ChatResponse 契约字段完整未改）
+    const body = JSON.parse(res.text) as { content: string; session_id: string };
+    assert.strictEqual(body.content, '贵州茅台最新价1688元，涨幅0.75%。');
+    assert.strictEqual(body.session_id, 'e2e-stock-9');
+    // 上游收到完整的 /api/agent 前缀路径 + 注入的内网 token + 透传的客户端头
+    assert.strictEqual(upstream.requests[0].url, '/api/agent/chat/message');
+    assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
+    assert.strictEqual(header(upstream.requests[0].headers, 'authorization'), 'Bearer user-9');
+    assert.strictEqual(header(upstream.requests[0].headers, 'x-request-id'), 'client-rid-9');
+  });
+
+  it('pipes Python morning SSE event sequence unmodified (tool_start/tool_end/text/done)', async () => {
+    // Python GET /api/agent/briefing/morning 产出 SSE：每个 data 行是一个 JSON 事件
+    // （type ∈ tool_start/tool_end/llm_start/text/done），与 constants.SSEEventType 对齐。
+    const sseEvents = [
+      { type: 'tool_start', label: '正在获取财联社资讯' },
+      { type: 'tool_end' },
+      { type: 'llm_start', label: '正在生成回复' },
+      { type: 'text', content: '今日晨报：市场震荡偏强。' },
+      { type: 'done' },
+    ];
+    const frames = sseEvents.map((e) => `data: ${JSON.stringify(e)}\n\n`);
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        'x-request-id': 'py-rid-sse-9',
+      });
+      let i = 0;
+      const timer = setInterval(() => {
+        if (i < frames.length) {
+          res.write(frames[i]);
+          i++;
+        } else {
+          clearInterval(timer);
+          res.end();
+        }
+      }, 25);
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, { method: 'GET', path: '/api/agent/briefing/morning' });
+
+    assert.strictEqual(res.status, 200);
+    assert.match(header(res.headers, 'content-type'), /text\/event-stream/);
+    assert.strictEqual(header(res.headers, 'x-request-id'), 'py-rid-sse-9');
+    // 全量内容原样透传（帧顺序与内容未改）
+    assert.strictEqual(res.text, frames.join(''));
+    // 流式（未缓冲）：多帧分多个 data 事件到达
+    assert.ok(res.dataEvents >= 2, `expected >=2 data events, got ${res.dataEvents}`);
+    // 逐帧解析：每个 data 行仍是合法 JSON，type 序列与 Python 契约一致
+    const parsed = res.text
+      .split('\n')
+      .filter((l) => l.startsWith('data:'))
+      .map((l) => JSON.parse(l.slice(5).trim()) as { type: string });
+    assert.deepStrictEqual(
+      parsed.map((p) => p.type),
+      ['tool_start', 'tool_end', 'llm_start', 'text', 'done'],
+    );
+  });
+
   it('handles upstream response stream error without crashing the process (SSE mid-stream drop)', { timeout: 5000 }, async () => {
     // 捕获代理内部错误日志，用于验证 upstreamRes 'error' 处理器被触发
     const errors: NodeJS.ErrnoException[] = [];
