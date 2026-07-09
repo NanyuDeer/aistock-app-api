@@ -356,6 +356,7 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
             minResonanceOnly: queryStr(req, 'min_resonance_only') !== 'false',
+            days: queryInt(req, 'days', 30),
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
@@ -373,6 +374,7 @@ router.get('/institution-research', async (req: Request, res: Response) => {
         const data = await HotBurstService.getHotBurst({
             hours: queryInt(req, 'hours', 6),
             minResonanceCount: queryInt(req, 'min_resonance_count', 0),
+            limit: queryInt(req, 'limit', 20),
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
