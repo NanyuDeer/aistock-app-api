@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-10 — 重构知识图谱数据源：AiGraphService改用IndustryKGService
+**开发者**: changer
+
+### 重构
+- `src/modules/monitor/AiGraphService.ts`：数据源从 AiGraphExcelSource 改为 IndustryKGService，直接读取完整的行业/概念/上下游关系数据
+- `src/modules/monitor/aiGraphController.ts`：删除 switchDataSource 接口和 DataSourceType 引用
+- `src/index.ts`：初始化顺序调整，IndustryKGService 先初始化，AiGraphService 后初始化
+
+### 删除
+- `src/modules/monitor/AiGraphDataSource.ts`：数据源接口和工厂（不再需要）
+- `src/modules/monitor/AiGraphExcelSource.ts`：Excel 数据源（无 Excel 文件，已废弃）
+
+---
+
 ## [changer] 2026-07-06 — 新增 /internal/news/latest 接口（支撑 agent-py 晨报工具）
 **开发者**: changer-collab
 

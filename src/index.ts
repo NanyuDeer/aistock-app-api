@@ -452,18 +452,16 @@ app.get('/api/news/:id', (req, res, next) => {
     NewsController.getNewsDetail(req, res, next);
 });
 
-// ==================== AI 知识图谱路由 ====================
-AiGraphService.initialize().catch((err: Error) => {
-    console.error('[AiGraph] 初始化失败:', err);
+// ==================== 行业知识图谱路由（IndustryKGService 必须先初始化） ====================
+IndustryKGService.initialize().then(() => {
+    // AiGraphService 依赖 IndustryKGService 的数据，在其初始化完成后再启动
+    return AiGraphService.initialize();
+}).catch((err: Error) => {
+    console.error('[KG/AiGraph] 初始化失败:', err);
 });
 app.get('/api/aigraph/concepts', (req, res, next) => AiGraphController.getConcepts(req, res, next));
 app.get('/api/aigraph/concept/:conceptCode', (req, res, next) => AiGraphController.getGraph(req, res, next));
 app.post('/api/aigraph/graph', (req, res, next) => AiGraphController.getGraph(req, res, next));
-
-// ==================== 行业知识图谱路由 ====================
-IndustryKGService.initialize().catch((err: Error) => {
-    console.error('[IndustryKG] 初始化失败:', err);
-});
 app.get('/api/kg/graph', (req, res, next) => IndustryKGController.getFullGraph(req, res, next));
 app.get('/api/kg/ai-graph', (req, res, next) => IndustryKGController.getAISubGraph(req, res, next));
 app.get('/api/kg/subgraph', (req, res, next) => IndustryKGController.getSubGraph(req, res, next));
