@@ -817,17 +817,50 @@ async function fetchBlockRotationData(days: number = 20): Promise<{
     const url = 'https://eq.10jqka.com.cn/pick/block/block_hotspot/hotspot/v1/hot_block_list?type=con&field=zf5';
     const headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Referer': 'https://l2.10jqka.com.cn/hottrack/public/dist/index.html',
+        'Referer': 'https://l2.10jqka.com.cn/hottrack/public/dist/index.html#/marketCondition',
         'Accept-Language': 'zh-CN,zh;q=0.9',
     };
 
     console.log('[HotSectorAnalyzer] 正在从同花顺板块轮动API获取数据...');
-    const response = await sessionFetch(url, { headers });
-    if (!response.ok) throw new Error(`同花顺板块轮动API请求失败: HTTP ${response.status}`);
+    
+    // 添加重试机制：最多重试 3 次
+    let response: Response | null = null;
+    let lastError: Error | null = null;
+    const MAX_RETRIES = 3;
+    
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            response = await sessionFetch(url, { headers });
+            if (response.ok) break; // 成功则跳出循环
+            
+            lastError = new Error(`同花顺板块轮动API请求失败: HTTP ${response.status}`);
+            console.warn(`[HotSectorAnalyzer] API请求失败 (尝试 ${attempt}/${MAX_RETRIES}): HTTP ${response.status}`);
+            
+            if (attempt < MAX_RETRIES) {
+                // 等待一段时间后重试
+                await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+            }
+        } catch (err) {
+            lastError = err as Error;
+            console.warn(`[HotSectorAnalyzer] API请求异常 (尝试 ${attempt}/${MAX_RETRIES}):`, (err as Error).message);
+            
+            if (attempt < MAX_RETRIES) {
+                await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+            }
+        }
+    }
+    
+    // 所有重试失败后，返回空数据而非抛出异常
+    if (!response || !response.ok) {
+        console.error('[HotSectorAnalyzer] 同花顺板块轮动API多次重试失败，返回空数据:', lastError?.message);
+        return { sectorStats: new Map(), rawData: [] };
+    }
+    
     const json = await response.json() as any;
 
     if (json.status_code !== 0 || !json.data?.data_list) {
-        throw new Error(`同花顺板块轮动API返回异常: ${json.status_msg}`);
+        console.error(`[HotSectorAnalyzer] 同花顺板块轮动API返回异常: ${json.status_msg}，返回空数据`);
+        return { sectorStats: new Map(), rawData: [] };
     }
 
     // 截取指定天数的数据
