@@ -2,8 +2,22 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-10 — Agent 报告持久化基础设施 + AGENTS.md 文档
+**开发者**: Aria
+
+### 新增
+- `AGENTS.md`：面向 AI 开发助手的入口地图（模块架构地图、开发规范、硬约束、降级策略、跨服务协作契约）
+- `docs/sql/agent_analysis_reports.sql`：Agent 分析报告持久化建表脚本（JSONB content + COALESCE 唯一索引解决 NULL user_id）
+- `src/core/routes/internal.ts`：新增 `/internal/analysis-reports/*` 4 个端点（POST upsert / GET 按类型+日期查询 / GET 用户专属查询 / DELETE 过期清理）
+- `src/index.ts`：新增 ReportCleanupCron（每日 03:00 清理 expires_at 过期的报告）
+
+### 文档
+- `README.md`：顶部添加 AGENTS.md 引用说明；精简开发规范部分（改为引用 AGENTS.md）；补充 Internal API 表格中遗漏的 `/internal/analysis-reports/*` 系列接口
+
+---
+
 ## [master] 2026-07-10 — 重构知识图谱数据源：AiGraphService改用IndustryKGService
-**开发者**: changer
+**开发者**: Aria
 
 ### 重构
 - `src/modules/monitor/AiGraphService.ts`：数据源从 AiGraphExcelSource 改为 IndustryKGService，直接读取完整的行业/概念/上下游关系数据

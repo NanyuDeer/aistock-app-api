@@ -618,6 +618,19 @@ cron.schedule('5 0 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// Agent 分析报告清理：每天凌晨 03:00 清理过期报告（expires_at < NOW()）
+cron.schedule('0 3 * * *', async () => {
+    console.log('[ReportCleanupCron] 开始清理过期的 Agent 分析报告');
+    try {
+        const result = await pool.query(
+            `DELETE FROM agent_analysis_reports WHERE expires_at < NOW() RETURNING id`
+        );
+        console.log(`[ReportCleanupCron] 完成: 删除 ${result.rows.length} 条过期报告`);
+    } catch (err: any) {
+        console.error('[ReportCleanupCron] 执行失败:', err?.message || err);
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 async function start() {
     try {
         await pool.query('SELECT 1');

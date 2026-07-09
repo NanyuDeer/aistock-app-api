@@ -7,6 +7,7 @@
  * 这些接口不对外暴露，Python 服务通过此接口获取 A 股数据。
  */
 import { Router, type Request, type Response } from 'express'
+import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
 import { getCapitalFlow } from '../../modules/quote/TushareCapitalFlowService'
@@ -20,6 +21,9 @@ import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+
+// Agent 报告类型枚举
+const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate']
 
 const router: Router = Router()
 
@@ -380,6 +384,169 @@ router.get('/institution-research', async (req: Request, res: Response) => {
     } catch (err: unknown) {
         console.error('[Internal] institution-research error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+// ==================== Agent 分析报告持久化接口 ====================
+
+/**
+ * POST /internal/analysis-reports
+ * 持久化 Agent 分析报告（upsert：存在则更新，不存在则插入）
+ *
+ * 请求体: { report_type, report_date, user_id?, content, data_source?, status?, generation_time_ms?, model_version?, error_message? }
+ */
+router.post('/analysis-reports', async (req: Request, res: Response) => {
+    const { report_type, report_date, content } = req.body
+    const user_id = req.body.user_id ?? null  // 公共报告 user_id 为 null
+    const data_source = req.body.data_source ?? null
+    const status = req.body.status ?? 'completed'
+    const generation_time_ms = req.body.generation_time_ms ?? null
+    const model_version = req.body.model_version ?? null
+    const error_message = req.body.error_message ?? null
+
+    // 参数校验
+    if (!VALID_REPORT_TYPES.includes(report_type)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    if (!report_date || !/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
+    }
+    if (content === undefined || content === null) {
+        return res.status(400).json({ code: 400, message: 'content is required' })
+    }
+
+    try {
+        // upsert：COALESCE 处理 NULL user_id（公共报告）
+        const result = await pool.query(
+            `INSERT INTO agent_analysis_reports
+                (report_type, report_date, user_id, content, data_source, status,
+                 generation_time_ms, model_version, error_message)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             ON CONFLICT (report_type, report_date, COALESCE(user_id, ''))
+             DO UPDATE SET
+                content = EXCLUDED.content,
+                data_source = EXCLUDED.data_source,
+                status = EXCLUDED.status,
+                generation_time_ms = EXCLUDED.generation_time_ms,
+                model_version = EXCLUDED.model_version,
+                error_message = EXCLUDED.error_message,
+                expires_at = NOW() + INTERVAL '7 days',
+                created_at = NOW()
+             RETURNING id, report_type, report_date, created_at`,
+            [report_type, report_date, user_id, JSON.stringify(content),
+             data_source, status, generation_time_ms, model_version, error_message]
+        )
+
+        res.status(201).json({
+            code: 201,
+            data: result.rows[0],
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] analysis-reports POST error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/analysis-reports/:type/:date
+ * 查询公共报告（user_id 为 NULL）
+ *
+ * 示例: GET /internal/analysis-reports/morning/2026-07-10
+ */
+router.get('/analysis-reports/:type/:date', async (req: Request, res: Response) => {
+    const report_type = param(req, 'type')
+    const report_date = param(req, 'date')
+
+    if (!VALID_REPORT_TYPES.includes(report_type)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date, content, data_source, status,
+                    generation_time_ms, model_version, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = $1 AND report_date = $2 AND user_id IS NULL
+             LIMIT 1`,
+            [report_type, report_date]
+        )
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ code: 404, message: 'Report not found' })
+        }
+
+        res.json({ code: 200, data: result.rows[0] })
+    } catch (err: unknown) {
+        console.error('[Internal] analysis-reports GET error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/analysis-reports/:type/:date/:userId
+ * 查询个性化报告（按用户ID）
+ *
+ * 示例: GET /internal/analysis-reports/stock/2026-07-10/user_123
+ */
+router.get('/analysis-reports/:type/:date/:userId', async (req: Request, res: Response) => {
+    const report_type = param(req, 'type')
+    const report_date = param(req, 'date')
+    const user_id = param(req, 'userId')
+
+    if (!VALID_REPORT_TYPES.includes(report_type)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
+    }
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date, content, data_source, status,
+                    generation_time_ms, model_version, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = $1 AND report_date = $2 AND user_id = $3
+             LIMIT 1`,
+            [report_type, report_date, user_id]
+        )
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ code: 404, message: 'Report not found' })
+        }
+
+        res.json({ code: 200, data: result.rows[0] })
+    } catch (err: unknown) {
+        console.error('[Internal] analysis-reports GET (user) error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * DELETE /internal/analysis-reports/cleanup
+ * 清理过期报告（expires_at < NOW()）
+ *
+ * 定时任务每天 03:00 自动执行，也可手动触发
+ */
+router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) => {
+    try {
+        const result = await pool.query(
+            `DELETE FROM agent_analysis_reports
+             WHERE expires_at < NOW()
+             RETURNING id`
+        )
+
+        const deletedCount = result.rows.length
+        console.log(`[Internal] cleanup: deleted ${deletedCount} expired reports`)
+        res.json({ code: 200, data: { deleted_count: deletedCount } })
+    } catch (err: unknown) {
+        console.error('[Internal] analysis-reports cleanup error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
     }
 })
 

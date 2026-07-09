@@ -1,6 +1,8 @@
 # AI Stock App 后端
 
 > AI 投资助手 App 后端，基于 Express + TypeScript。
+>
+> **AI 开发助手请先阅读 [AGENTS.md](./AGENTS.md)** — 模块架构地图、开发规范、硬约束、降级策略和跨服务协作契约。本 README 面向人类开发者，介绍项目全貌、快速开始和部署。
 
 ## 快速开始
 
@@ -97,6 +99,8 @@ src/
 
 ## 开发规范
 
+> 完整开发规范见 [AGENTS.md](./AGENTS.md)，包括模块依赖规则、新增模块/路由/Internal API 流程、硬约束和降级策略。以下为速览。
+
 ### 模块依赖规则
 - ✅ modules/* → shared/（允许）
 - ❌ modules/A → modules/B（禁止）
@@ -107,17 +111,6 @@ src/
 - 每个模块有独立的 `AGENTS.md`，说明功能、接口、依赖
 - 模块间通过 `../模块名/文件` 引用，禁止循环依赖
 - 新增功能优先归入已有模块，必要时新建模块
-
-### 路由规范
-- 新增路由在 `core/routes/` 中添加
-- 必须在 `index.ts` 中挂载
-
-### 后端硬约束
-- 行情用腾讯 API，龙头用同花顺，禁止东方财富
-- cron 必须加 `{ timezone: 'Asia/Shanghai' }`
-- LLM 调用失败时跳过，返回纯数据，不重试
-- 微信 API 用原生 fetch，不用 sessionFetch
-- 向量检索使用 pgvector，不引入独立向量数据库
 
 ## API 路由
 
@@ -145,8 +138,14 @@ src/
 | `/internal/wind-leaders` | **长线风口数据**（供Python Agent调用） | limit: 返回板块数量（默认8，最大20） |
 | `/internal/institution-research` | **机构调研热门股**（供Python Agent调用） | hours: 最近N小时（默认6，最大72）, min_resonance: 最小共振数 |
 | `/internal/monitor/:symbol` | **个股监控事件**（供团队成员使用） | symbol: A股代码, cycle: 周期, limit: 返回数量 |
+| `/internal/analysis-reports` | **Agent 分析报告持久化**（POST upsert） | report_type, report_date, content(JSONB), user_id?, expires_at? |
+| `/internal/analysis-reports/:type/:date` | **查询报告**（按类型+日期） | type: morning/wind_leader/hot_burst/review, date: YYYY-MM-DD |
+| `/internal/analysis-reports/:type/:date/:userId` | **查询用户专属报告** | userId: 用户ID |
+| `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
+>
+> 新增接口（2026-07-10）：`/internal/analysis-reports/*` 系列，供 Python Agent 持久化分析报告（scheduler 触发写入，broadcast_agent 读取），建表脚本见 `docs/sql/agent_analysis_reports.sql`
 
 ## Vibecoding 工作流
 
