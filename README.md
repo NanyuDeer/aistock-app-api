@@ -25,6 +25,8 @@ pnpm build && pnpm start
 - `WECHAT_APPID` / `WECHAT_SECRET` — 微信公众号配置
 - `JWT_SECRET` — JWT 签名密钥
 - `OPENAI_API_KEY` — LLM API 密钥（DeepSeek/OpenAI）
+- `AGENT_PY_URL` — Python Agent 服务地址（默认 `http://localhost:8000`，Phase 5）
+- `INTERNAL_API_TOKEN` — 内网鉴权 Token（`/internal/*` 接口校验，Phase 5）
 
 本地开发无数据库时，服务自动进入降级模式（使用内存缓存和 mock 数据）。
 
@@ -75,8 +77,11 @@ src/
 │   ├── quote/              # 行情模块
 │   ├── push/               # 推送模块
 │   ├── auth/               # 认证模块
-│   ├── monitor/            # 监控模块
-│   └── crawler/            # 爬虫模块
+│   ├── monitor/            # 监控模块（异动/风口/十倍股/知识图谱/机构调研）
+│   ├── crawler/            # 爬虫模块
+│   └── agent/              # Agent 反代模块（Phase 5）
+│       ├── agent.proxy.ts  # /api/agent/* → Python FastAPI 反向代理（SSE 透传）
+│       └── __tests__/      # 代理测试（JSON 转发 + SSE 流式 + 502 + 流错误）
 ```
 
 ### 模块负责人
@@ -86,8 +91,9 @@ src/
 | 行情 | modules/quote | 腾讯行情、K线、指数、个股分析 |
 | 推送 | modules/push | 微信模板消息、定时推送 |
 | 认证 | modules/auth | 扫码登录、微信授权 |
-| 监控 | modules/monitor | 股票异动监控、特别提醒 |
+| 监控 | modules/monitor | 股票异动监控、风口龙头、十倍股评分、知识图谱、机构调研热门股 |
 | 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
+| Agent | modules/agent | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） |
 
 ## 开发规范
 
@@ -121,7 +127,26 @@ src/
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/trend-hotspots/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
-| `/internal/*` | Python Agent 服务专用内部接口 |
+| `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
+| `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
+| `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
+
+### Internal API 接口详情
+
+| 路径 | 功能 | 参数 |
+|------|------|------|
+| `/internal/quote/:symbol` | 个股实时行情（腾讯数据源） | symbol: A股代码 |
+| `/internal/flow/:symbol` | 个股资金流向（新浪+Tushare双源） | symbol: A股代码 |
+| `/internal/leader/:tagCode` | 板块龙头股（Tushare数据源） | tagCode: 板块代码（如BK0475） |
+| `/internal/news/search/:symbol` | 财联社个股相关新闻 | symbol: A股代码, limit: 返回数量 |
+| `/internal/news/latest` | 财联社最新快讯 | limit: 返回数量 |
+| `/internal/news/fulltext/:id` | 财联社新闻全文 | id: 新闻ID |
+| `/internal/forecast/:symbol` | 机构盈利预测（同花顺数据源） | symbol: A股代码 |
+| `/internal/wind-leaders` | **长线风口数据**（供Python Agent调用） | limit: 返回板块数量（默认8，最大20） |
+| `/internal/institution-research` | **机构调研热门股**（供Python Agent调用） | hours: 最近N小时（默认6，最大72）, min_resonance: 最小共振数 |
+| `/internal/monitor/:symbol` | **个股监控事件**（供团队成员使用） | symbol: A股代码, cycle: 周期, limit: 返回数量 |
+
+> 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 
 ## Vibecoding 工作流
 

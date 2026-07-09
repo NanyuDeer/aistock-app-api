@@ -284,7 +284,7 @@ function mergePushRecord(existing: any, next: any): any {
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
-        hot_sectors: any[];
+        hot_sectors: unknown[];
     } | null> {
         const data = loadData();
         if (!data) return null;
@@ -435,7 +435,7 @@ export class WindLeaderService {
      */
     static async updatePushHistoryPrices(): Promise<void> {
         console.log('[WindLeaderService] 开始更新推送历史价格...');
-        
+
         const history = readPushHistoryFile();
         if (!history.length) {
             console.log('[WindLeaderService] 无推送历史记录，跳过更新');
@@ -457,13 +457,13 @@ export class WindLeaderService {
 
         // 批量获取最新行情
         const priceMap = new Map<string, { close: number; pct_chg: number; trade_date: string }>();
-        
+
         for (const stockCode of Array.from(stockCodes)) {
             try {
                 const rows = await getDailyPrices(stockCode, startDateStr);
                 if (rows && rows.length > 0) {
                     // 取最新一条（按日期降序）
-                    const latest = rows.sort((a, b) => 
+                    const latest = rows.sort((a, b) =>
                         String(b.trade_date).localeCompare(String(a.trade_date))
                     )[0];
                     priceMap.set(stockCode, {
@@ -498,5 +498,16 @@ export class WindLeaderService {
 
         writePushHistoryFile(updated);
         console.log(`[WindLeaderService] 已更新 ${priceMap.size} 只股票的最新价格`);
+    }
+
+    /**
+     * 获取风口龙头分析数据（供 /internal/wind-leaders 接口调用）
+     * 包装 getAnalysis()，默认返回 top 8 热门板块及其龙头股
+     */
+    static async getWindLeaders(limit: number = 8): Promise<{
+        update_time: string;
+        hot_sectors: unknown[];
+    } | null> {
+        return this.getAnalysis(limit);
     }
 }
