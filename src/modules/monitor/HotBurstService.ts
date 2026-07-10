@@ -622,19 +622,15 @@ export class HotBurstService {
     static async getHistory(
         limit: number = 50,
         offset: number = 0,
-        minResonanceOnly: boolean = true,
-        days: number = 30,
+        minResonanceOnly: boolean = true
     ): Promise<{ total: number; records: any[] }> {
         let total: number;
         let records: any[];
-        const safeDays = Math.min(Math.max(days, 1), 365);
 
         if (minResonanceOnly) {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE resonance_count >= 3
-                   AND detected_at >= NOW() - ($1::text || ' days')::interval`,
-                [safeDays]
+                 WHERE resonance_count >= 3`
             );
             total = countResult.rows[0]?.total || 0;
 
@@ -643,28 +639,22 @@ export class HotBurstService {
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= 3
-                   AND detected_at >= NOW() - ($3::text || ' days')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
-                [limit, offset, safeDays]
+                [limit, offset]
             );
             records = result.rows;
         } else {
-            const countResult = await pool.query(
-                `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE detected_at >= NOW() - ($1::text || ' days')::interval`,
-                [safeDays]
-            );
+            const countResult = await pool.query('SELECT COUNT(*)::int AS total FROM institution_research_history');
             total = countResult.rows[0]?.total || 0;
 
             const result = await pool.query(
                 `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE detected_at >= NOW() - ($3::text || ' days')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
-                [limit, offset, safeDays]
+                [limit, offset]
             );
             records = result.rows;
         }
@@ -890,41 +880,5 @@ export class HotBurstService {
             console.error('[HotBurst] getLatestFromDB 失败:', (err as Error).message);
             return null;
         }
-    }
-
-    /**
-     * 获取机构调研推荐热门股检测结果（供 /internal/institution-research 接口调用）
-     * 包装 getRecentBursts()，优先返回缓存，缓存过期则触发一次检测
-     */
-    static async getHotBurst(query: {
-        hours?: number;
-        minResonanceCount?: number;
-        limit?: number;
-    }): Promise<HotBurstResult | null> {
-        const result = await this.getRecentBursts(query.hours ?? 6, query.minResonanceCount ?? 0);
-        if (!result) return null;
-        const safeLimit = Math.min(Math.max(query.limit ?? 20, 1), 100);
-        return {
-            ...result,
-            outbreaks: result.outbreaks.slice(0, safeLimit),
-        };
-    }
-
-    /**
-     * 获取机构调研推荐热门股历史记录（供 /internal/institution-research/history 接口调用）
-     * 包装 getHistory()，从数据库查询历史三源共振记录
-     */
-    static async getHotBurstHistory(query: {
-        limit?: number;
-        offset?: number;
-        minResonanceOnly?: boolean;
-        days?: number;
-    }): Promise<{ total: number; records: unknown[] }> {
-        return this.getHistory(
-            query.limit ?? 50,
-            query.offset ?? 0,
-            query.minResonanceOnly ?? true,
-            query.days ?? 30,
-        );
     }
 }

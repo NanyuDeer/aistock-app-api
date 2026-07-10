@@ -20,11 +20,8 @@ import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
 
-// internal 内部API（Python Agent 服务专用）
-import internalRouter from './core/routes/internal';
-
-// agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
-import { createAgentProxy } from './modules/agent/agent.proxy';
+// agent 智能体模块
+import agentRouter from './core/routes/agent';
 
 // push 推送模块
 import { PotentialStockPushController } from './modules/push/controller';
@@ -50,8 +47,8 @@ import { IndustryKGController } from './modules/monitor/industryKGController';
 import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TenxBatchService } from './modules/monitor/TenxBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
-import { HotBurstService } from './modules/monitor/HotBurstService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import { HotBurstService } from './modules/monitor/HotBurstService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { StockSyncService } from './modules/monitor/StockSyncService';
@@ -90,16 +87,6 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-internal-token'],
     maxAge: 86400,
-}));
-
-// ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
-// 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
-// 导致 pipe 无数据可传。SSE 流式透传（upstreamRes.pipe(res) 不缓冲），自动注入 X-Internal-Token
-// （Python /api/agent/chat/* 鉴权）。路径保留 /api/agent 前缀，与 Python 路由一致。
-// AGENT_PY_URL（主）/ PYTHON_AGENT_URL（兼容 brief 命名）二选一，默认 http://localhost:8000。
-app.use('/api/agent', createAgentProxy({
-    target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8000',
-    internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -316,17 +303,31 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
 });
 
 app.get('/api/potential-stocks/push-history', (req, res, next) => PotentialStockPushController.getHistory(req, res, next));
+app.get('/api/potential-stocks/push-ranking', (req, res, next) => PotentialStockPushController.getRanking(req, res, next));
 
-// 临时测试端点：手动触发推送历史价格更新
-app.post('/api/internal/update-push-history-prices', async (req, res) => {
+// 临时API：手动触发风口龙头分析（生成推送数据）
+app.post('/api/admin/trigger-wind-leader-analysis', async (req, res) => {
     try {
-        await WindLeaderService.updatePushHistoryPrices();
-        res.json({ code: 200, message: '推送历史价格更新成功' });
+        console.log('[ManualTrigger] 手动触发风口龙头分析');
+        const result = await WindLeaderAnalyzerService.runFullAnalysis();
+        res.json({ code: 200, message: '触发成功', data: { hot_sectors_count: result.hot_sectors?.length || 0 } });
     } catch (err: any) {
-        res.status(500).json({ code: 500, message: err?.message || '更新失败' });
+        console.error('[ManualTrigger] 触发失败:', err?.message || err);
+        res.status(500).json({ code: 500, message: '触发失败', error: err?.message || err });
     }
 });
-app.get('/api/potential-stocks/push-ranking', (req, res, next) => PotentialStockPushController.getRanking(req, res, next));
+
+// 临时API：手动触发推送历史价格更新（计算收益率）
+app.post('/api/admin/trigger-price-update', async (req, res) => {
+    try {
+        console.log('[ManualTrigger] 手动触发推送历史价格更新');
+        await WindLeaderService.updatePushHistoryPrices();
+        res.json({ code: 200, message: '价格更新成功' });
+    } catch (err: any) {
+        console.error('[ManualTrigger] 价格更新失败:', err?.message || err);
+        res.status(500).json({ code: 500, message: '价格更新失败', error: err?.message || err });
+    }
+});
 
 app.get('/api/cn/stocks', (req, res, next) => StockListController.getStockList(req, res, next));
 app.get('/api/cn/stock/infos', (req, res, next) => StockInfoController.getBatchStockInfo(req, res, next));
@@ -482,8 +483,8 @@ app.get('/api/kg/concepts', (req, res, next) => IndustryKGController.getConcepts
 app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGController.getIndustryStocks(req, res, next));
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
 
-// ==================== Internal API（Python Agent 服务专用） ====================
-app.use('/internal', internalRouter);
+// ==================== Agent 智能体路由 ====================
+app.use('/api/agent', agentRouter);
 
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
@@ -620,6 +621,16 @@ cron.schedule('0 0 * * *', async () => {
     }
 });
 
+// 推送历史价格更新：每天 15:30 执行（A股15:00收盘，获取收盘价计算收益率）
+cron.schedule('30 15 * * *', async () => {
+    console.log('[PushHistoryPriceUpdateCron] 开始更新推送历史价格');
+    try {
+        await WindLeaderService.updatePushHistoryPrices();
+    } catch (err: any) {
+        console.error('[PushHistoryPriceUpdateCron] 更新失败:', err?.message || err);
+    }
+});
+
 // 股票基础数据同步：每天凌晨 00:05 执行（同步新股、更新行业等）
 cron.schedule('5 0 * * *', async () => {
     console.log('[StockSyncCron] 开始同步股票基础数据');
@@ -628,17 +639,6 @@ cron.schedule('5 0 * * *', async () => {
         console.log(`[StockSyncCron] 完成: 新增=${result.inserted}, 更新=${result.updated}, 总计=${result.total}`);
     } catch (err: any) {
         console.error('[StockSyncCron] 执行失败:', err?.message || err);
-    }
-});
-
-// 每天 17:30 收盘后更新推送历史记录的最新价格
-cron.schedule('30 17 * * 1-5', async () => {
-    console.log('[PushHistoryPriceCron] 开始更新推送历史价格');
-    try {
-        await WindLeaderService.updatePushHistoryPrices();
-        console.log('[PushHistoryPriceCron] 推送历史价格更新完成');
-    } catch (err: any) {
-        console.error('[PushHistoryPriceCron] 执行失败:', err?.message || err);
     }
 });
 

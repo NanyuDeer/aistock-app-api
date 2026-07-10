@@ -16,12 +16,10 @@
     "reason_tag": "昨日涨停",
     "push_price": 29.57,
     "latest_price": 29.57,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 10.0074,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -4.4,
     "raw_analysis_price": 28.27,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_600172_培育钻石_核心",
@@ -40,12 +38,10 @@
     "reason_tag": "昨日涨停",
     "push_price": 18.55,
     "latest_price": 18.55,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 10.0237,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 3.99,
     "raw_analysis_price": 19.29,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_603931_光刻胶_核心",
@@ -64,12 +60,10 @@
     "reason_tag": "昨日涨停",
     "push_price": 59.74,
     "latest_price": 59.74,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 9.9982,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -3.06,
     "raw_analysis_price": 57.91,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_600206_国家大基金持股_核心",
@@ -88,12 +82,10 @@
     "reason_tag": "量价齐升",
     "push_price": 50.89,
     "latest_price": 50.89,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -6.2799,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 10,
     "raw_analysis_price": 55.98,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_688432_存储芯片_核心",
@@ -112,12 +104,10 @@
     "reason_tag": "量价齐升",
     "push_price": 38.45,
     "latest_price": 38.45,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -8.8647,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 20,
     "raw_analysis_price": 46.14,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_688596_存储芯片_核心",
@@ -136,12 +126,10 @@
     "reason_tag": "量价齐升",
     "push_price": 71,
     "latest_price": 71,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -8.2806,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 14.75,
     "raw_analysis_price": 81.47,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_688689_先进封装_核心",
@@ -160,12 +148,10 @@
     "reason_tag": "",
     "push_price": 80.75,
     "latest_price": 80.75,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 18.6976,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -8.56,
     "raw_analysis_price": 73.84,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_920725_培育钻石_核心",
@@ -184,12 +170,10 @@
     "reason_tag": "量价齐升",
     "push_price": 110.09,
     "latest_price": 110.09,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 11.0898,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 8.01,
     "raw_analysis_price": 118.91,
-    "price_basis": "tushare_previous_trade_close_fallback",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tushare_previous_trade_close_fallback"
   },
   {
     "push_id": "windleader_20260707_002077_汽车芯片_核心",
@@ -208,12 +192,10 @@
     "reason_tag": "量价齐升",
     "push_price": 17.75,
     "latest_price": 17.75,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 1.5446,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 10.03,
     "raw_analysis_price": 19.53,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_600584_国家大基金持股_核心",
@@ -232,12 +214,10 @@
     "reason_tag": "量价齐升",
     "push_price": 95.09,
     "latest_price": 95.09,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 4.6325,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 5.93,
     "raw_analysis_price": 100.73,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_603928_先进封装_核心",
@@ -256,12 +236,10 @@
     "reason_tag": "",
     "push_price": 15.85,
     "latest_price": 15.85,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 7.8231,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -5.93,
     "raw_analysis_price": 14.91,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_300671_汽车芯片_核心",
@@ -280,12 +258,10 @@
     "reason_tag": "",
     "push_price": 102.32,
     "latest_price": 102.32,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 8.4473,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -5.49,
     "raw_analysis_price": 96.7,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_003043_光刻机_核心",
@@ -304,12 +280,10 @@
     "reason_tag": "量价齐升",
     "push_price": 93.86,
     "latest_price": 93.86,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -6.2057,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 5.28,
     "raw_analysis_price": 98.82,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_000576_第三代半导体_核心",
@@ -328,12 +302,10 @@
     "reason_tag": "",
     "push_price": 7.69,
     "latest_price": 7.69,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -5.5283,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": -4.42,
     "raw_analysis_price": 7.35,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_688409_光刻机_核心",
@@ -352,12 +324,10 @@
     "reason_tag": "",
     "push_price": 246.98,
     "latest_price": 246.98,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": 0.874,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 4.04,
     "raw_analysis_price": 256.97,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260707_001270_第三代半导体_核心",
@@ -376,12 +346,10 @@
     "reason_tag": "",
     "push_price": 159.39,
     "latest_price": 159.39,
-    "latest_trade_date": "20260706",
-    "latest_change_pct": -2.4063,
+    "latest_trade_date": "2026-07-07",
+    "latest_change_pct": 4,
     "raw_analysis_price": 165.77,
-    "price_basis": "tencent_previous_trade_close",
-    "realtime_return_pct": 0,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "price_basis": "tencent_previous_trade_close"
   },
   {
     "push_id": "windleader_20260703_002559_存储芯片_核心",
@@ -405,7 +373,7 @@
     "raw_analysis_price": 15.38,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -13.85,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_600641_存储芯片_核心",
@@ -429,7 +397,7 @@
     "raw_analysis_price": 48.24,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -9.95,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_603928_先进封装_核心",
@@ -453,7 +421,7 @@
     "raw_analysis_price": 15.84,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 0.06,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_600172_培育钻石_核心",
@@ -477,7 +445,7 @@
     "raw_analysis_price": 18.03,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 2.88,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_920725_培育钻石_核心",
@@ -501,7 +469,7 @@
     "raw_analysis_price": 106.45,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 3.42,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_002409_国家大基金持股_核心",
@@ -525,7 +493,7 @@
     "raw_analysis_price": 212.48,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -12.25,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_600584_国家大基金持股_核心",
@@ -549,7 +517,7 @@
     "raw_analysis_price": 95.98,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -0.93,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_600667_先进封装_核心",
@@ -573,7 +541,7 @@
     "raw_analysis_price": 28.89,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -5.12,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_688409_光刻机_核心",
@@ -597,7 +565,7 @@
     "raw_analysis_price": 248.07,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -0.44,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_688123_汽车芯片_核心",
@@ -621,7 +589,7 @@
     "raw_analysis_price": 195.99,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 9.69,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_002549_光刻机_核心",
@@ -645,7 +613,7 @@
     "raw_analysis_price": 20.88,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -15.66,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_603650_光刻胶_核心",
@@ -669,7 +637,7 @@
     "raw_analysis_price": 97.71,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -14.35,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_688596_第三代半导体_核心",
@@ -693,7 +661,7 @@
     "raw_analysis_price": 79.97,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": -11.22,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_688689_第三代半导体_核心",
@@ -717,7 +685,7 @@
     "raw_analysis_price": 80,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 0.94,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_301019_光刻胶_核心",
@@ -741,7 +709,7 @@
     "raw_analysis_price": 21.53,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 1.72,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   },
   {
     "push_id": "windleader_20260703_301008_汽车芯片_核心",
@@ -765,6 +733,6 @@
     "raw_analysis_price": 31.93,
     "price_basis": "tencent_previous_trade_close",
     "realtime_return_pct": 1.63,
-    "realtime_time": "2026-07-07T04:31:45.364Z"
+    "realtime_time": "2026-07-06T12:26:32.480Z"
   }
 ]

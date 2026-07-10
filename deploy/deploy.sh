@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_DIR="/home/aistock/aistock-app-api"
+APP_DIR="/home/aistock/aistock-api"
 FRONTEND_SRC="/home/aistock/aistock-frontend"
 FRONTEND_DIST="/var/www/aistock"
 

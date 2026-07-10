@@ -1307,36 +1307,4 @@ export class TenxScoreService {
             updatedAt: new Date().toISOString(),
         };
     }
-
-    /**
-     * 获取个股十倍股评分（供 /internal/tenx/score/:symbol 接口调用）
-     * 包装 calculateTenxScore()，执行完整的评分计算流程
-     */
-    static async getScore(symbol: string): Promise<TenxScoreResult> {
-        return this.calculateTenxScore(symbol);
-    }
-
-    /**
-     * 获取十倍股评分 Top 列表（供 /internal/tenx/top 接口调用）
-     *
-     * STUB: 批量全市场十倍股评分尚未实现（需遍历全市场股票，成本较高）。
-     * 当前返回固定占位数据，确保接口契约就绪，待后续迭代实现真实批量评分。
-     */
-    static async getTopStocks(query: { limit?: number }): Promise<{
-        stocks: Array<{ symbol: string; name: string; score: number; label: string }>;
-        note: string;
-    }> {
-        const limit = query.limit ?? 10;
-        const allStocks = [
-            { symbol: '300059', name: '东方财富', score: 85.2, label: 'S' },
-            { symbol: '600519', name: '贵州茅台', score: 82.1, label: 'S' },
-            { symbol: '000858', name: '五粮液', score: 78.5, label: 'A' },
-            { symbol: '002594', name: '比亚迪', score: 76.3, label: 'A' },
-            { symbol: '601012', name: '隆基绿能', score: 72.8, label: 'A' },
-        ];
-        return {
-            stocks: allStocks.slice(0, limit),
-            note: 'stub: batch tenx score not yet implemented',
-        };
-    }
 }

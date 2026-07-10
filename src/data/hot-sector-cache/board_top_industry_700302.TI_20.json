@@ -1,0 +1,182 @@
+[
+  {
+    "code": "301019",
+    "name": "宁波色母",
+    "price": 21.53,
+    "change_pct": 20.0111,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "301092",
+    "name": "争光股份",
+    "price": 58.91,
+    "change_pct": 20.0041,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "300706",
+    "name": "阿石创",
+    "price": 77.13,
+    "change_pct": -12.808,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "301373",
+    "name": "凌玮科技",
+    "price": 146.62,
+    "change_pct": -11.3436,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688545",
+    "name": "兴福电子",
+    "price": 125.57,
+    "change_pct": -10.8801,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688603",
+    "name": "天承科技",
+    "price": 175.33,
+    "change_pct": -10.8416,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688077",
+    "name": "大地熊",
+    "price": 29.81,
+    "change_pct": 10.7355,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688548",
+    "name": "广钢气体",
+    "price": 49.2,
+    "change_pct": -10.5455,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "688268",
+    "name": "华特气体",
+    "price": 249,
+    "change_pct": -10.4155,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "300481",
+    "name": "濮阳惠成",
+    "price": 20.48,
+    "change_pct": -10.2542,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600490",
+    "name": "鹏欣资源",
+    "price": 6.44,
+    "change_pct": 10.0855,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "002998",
+    "name": "优彩资源",
+    "price": 7.65,
+    "change_pct": 10.0719,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "000592",
+    "name": "平潭发展",
+    "price": 7.76,
+    "change_pct": 10.0709,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "300806",
+    "name": "斯迪克",
+    "price": 98.09,
+    "change_pct": -10.0587,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "002522",
+    "name": "浙江众成",
+    "price": 6.45,
+    "change_pct": -10.0418,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "600449",
+    "name": "宁夏建材",
+    "price": 12.39,
+    "change_pct": 10.0355,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "000506",
+    "name": "招金黄金",
+    "price": 12.61,
+    "change_pct": 10.0349,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "002392",
+    "name": "北京利尔",
+    "price": 8.78,
+    "change_pct": 10.0251,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "002258",
+    "name": "利尔化学",
+    "price": 13.83,
+    "change_pct": 10.0239,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  },
+  {
+    "code": "605006",
+    "name": "山东玻纤",
+    "price": 19.67,
+    "change_pct": -10.0183,
+    "industry": "",
+    "net_inflow": 0,
+    "turnover_rate": 0
+  }
+]
