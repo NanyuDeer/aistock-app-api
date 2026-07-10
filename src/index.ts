@@ -50,6 +50,7 @@ import { IndustryKGController } from './modules/monitor/industryKGController';
 import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TenxBatchService } from './modules/monitor/TenxBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
+import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
@@ -321,6 +322,17 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
 
 app.get('/api/potential-stocks/push-history', (req, res, next) => PotentialStockPushController.getHistory(req, res, next));
 app.get('/api/potential-stocks/push-ranking', (req, res, next) => PotentialStockPushController.getRanking(req, res, next));
+
+app.post('/api/admin/trigger-price-update', async (_req, res) => {
+    try {
+        console.log('[ManualTrigger] update push history prices');
+        await WindLeaderService.updatePushHistoryPrices();
+        res.json({ code: 200, message: 'price update succeeded' });
+    } catch (err: any) {
+        console.error('[ManualTrigger] price update failed:', err?.message || err);
+        res.status(500).json({ code: 500, message: 'price update failed', error: err?.message || err });
+    }
+});
 
 app.get('/api/cn/stocks', (req, res, next) => StockListController.getStockList(req, res, next));
 app.get('/api/cn/stock/infos', (req, res, next) => StockInfoController.getBatchStockInfo(req, res, next));
@@ -598,6 +610,15 @@ cron.schedule('0 15 * * *', async () => {
         console.log(`[CrawlCron] 尾盘完成: 抓取${result.crawler.submitted}条, 推送候选${result.push.candidates}条`);
     } catch (err: any) {
         console.error('[CrawlCron] 尾盘失败:', err?.message || err);
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+cron.schedule('30 15 * * *', async () => {
+    console.log('[PushHistoryPriceUpdateCron] update push history prices');
+    try {
+        await WindLeaderService.updatePushHistoryPrices();
+    } catch (err: any) {
+        console.error('[PushHistoryPriceUpdateCron] failed:', err?.message || err);
     }
 }, { timezone: 'Asia/Shanghai' });
 
