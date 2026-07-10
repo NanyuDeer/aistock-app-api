@@ -204,7 +204,16 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 > 数据库表：`agent_analysis_reports`，`content` 字段为 JSONB，唯一索引使用 `COALESCE(user_id, '')` 解决 NULL 问题。
 > 建表脚本：`docs/sql/agent_analysis_reports.sql`
 
-### 7.3 Agent 反代接口
+### 7.3 Agent 公开接口（前端直接调用，无需 X-Internal-Token）
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
+| `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
+
+> publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
+
+### 7.4 Agent 反代接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|

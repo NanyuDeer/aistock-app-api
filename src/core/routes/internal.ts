@@ -23,7 +23,7 @@ import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate']
+const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast']
 
 const router: Router = Router()
 
@@ -550,4 +550,91 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
     }
 })
 
+// =============================================================================
+// 公开路由（前端可直接调用，无需 X-Internal-Token）
+// 必须在 /api/agent 反代之前挂载，否则会被转发到 Python
+// =============================================================================
+
+import path from 'path'
+import fs from 'fs'
+
+const publicRouter: Router = Router()
+
+/** 查询公共分析报告（复用内部查询逻辑，user_id 为 NULL） */
+async function getAnalysisReport(report_type: string, report_date: string) {
+    const result = await pool.query(
+        `SELECT id, report_type, report_date, content, data_source, status,
+                generation_time_ms, model_version, created_at
+         FROM agent_analysis_reports
+         WHERE report_type = $1 AND report_date = $2 AND user_id IS NULL
+         LIMIT 1`,
+        [report_type, report_date]
+    )
+    return result.rows.length > 0 ? result.rows[0] : null
+}
+
+/**
+ * GET /api/agent/report/:intent/:date
+ * 获取 Agent 分析报告（公开接口，供前端调用）
+ *
+ * 路径参数：
+ * - intent: 报告类型 (morning/wind_leader/hot_burst/broadcast)
+ * - date: 报告日期 (YYYY-MM-DD)
+ *
+ * 响应：
+ * - 200: { code: 0, data: { report_type, report_date, content } | null }
+ * - 400: { code: -1, message: "Invalid intent" }
+ */
+publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) => {
+    const intent = param(req, 'intent')
+    const date = param(req, 'date')
+
+    if (!VALID_REPORT_TYPES.includes(intent)) {
+        res.status(400).json({ code: -1, message: `Invalid intent: ${intent}` })
+        return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+
+    try {
+        const result = await getAnalysisReport(intent, date)
+        res.json({ code: 0, data: result })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/audio/:filename
+ * 获取播报音频文件（公开接口）
+ *
+ * 环境变量：
+ * - AGENT_AUDIO_DIR: 音频文件目录（默认 /home/aistock/aistock-agent-py/data/audio）
+ */
+publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
+    const filename = param(req, 'filename')
+
+    // 防止路径遍历攻击
+    if (filename.includes('..') || filename.includes('/')) {
+        res.status(400).json({ code: -1, message: 'Invalid filename' })
+        return
+    }
+
+    const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+    const filePath = path.join(audioDir, filename)
+
+    if (!fs.existsSync(filePath)) {
+        res.status(404).json({ code: -1, message: 'Audio file not found' })
+        return
+    }
+
+    res.setHeader('Content-Type', 'audio/mpeg')
+    const stream = fs.createReadStream(filePath)
+    stream.pipe(res)
+})
+
+export { publicRouter }
 export default router

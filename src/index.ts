@@ -21,7 +21,7 @@ import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
 
 // internal 内部API（Python Agent 服务专用）
-import internalRouter from './core/routes/internal';
+import internalRouter, { publicRouter } from './core/routes/internal';
 
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
@@ -90,6 +90,11 @@ app.use(cors({
     allowedHeaders: ['Content-Type', 'Authorization', 'x-internal-token'],
     maxAge: 86400,
 }));
+
+// ==================== Agent 公开路由（前端直接调用，无需 X-Internal-Token） ====================
+// 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
+// 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
+app.use('/api/agent', publicRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
