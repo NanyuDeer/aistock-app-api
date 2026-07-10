@@ -431,4 +431,65 @@ export class WindLeaderService {
     } | null> {
         return this.getAnalysis(limit);
     }
+
+    static async updatePushHistoryPrices(): Promise<void> {
+        console.log('[PriceUpdate] update push history prices...');
+        try {
+            const history = readPushHistoryFile();
+            if (!history.length) {
+                console.log('[PriceUpdate] push history is empty, skip');
+                return;
+            }
+
+            const stockCodes = [
+                ...new Set(
+                    history
+                        .map(record => String(record.stock_code || '').trim())
+                        .filter(Boolean)
+                ),
+            ];
+            if (!stockCodes.length) {
+                console.log('[PriceUpdate] no stock codes, skip');
+                return;
+            }
+
+            const quotes = await TencentQuoteService.getBatchQuotes(stockCodes, 'core');
+            const quoteMap = new Map<string, Record<string, any>>();
+            quotes.forEach((quote, index) => {
+                const code = stockCodes[index];
+                if (code && quote && !('\u9519\u8bef' in quote)) {
+                    quoteMap.set(code, quote);
+                }
+            });
+
+            const now = new Date().toISOString();
+            const latestTradeDate = now.split('T')[0].replace(/-/g, '');
+            let updatedCount = 0;
+
+            const updatedRecords = history.map(record => {
+                const quote = quoteMap.get(record.stock_code);
+                const latestPrice = quote ? toFiniteNumber(quote['\u6700\u65b0\u4ef7']) : null;
+                if (latestPrice !== null && latestPrice > 0) {
+                    const pushPrice = Number(record.push_price) || 0;
+                    const returnPct = pushPrice > 0 ? ((latestPrice - pushPrice) / pushPrice * 100) : 0;
+
+                    updatedCount++;
+                    return {
+                        ...record,
+                        latest_price: latestPrice,
+                        latest_change_pct: quote ? toFiniteNumber(quote['\u6da8\u8dcc\u5e45']) : record.latest_change_pct,
+                        latest_trade_date: latestTradeDate,
+                        realtime_return_pct: Number(returnPct.toFixed(2)),
+                        realtime_time: now,
+                    };
+                }
+                return record;
+            });
+
+            writePushHistoryFile(updatedRecords);
+            console.log(`[PriceUpdate] done: ${updatedRecords.length} records, updated ${updatedCount}`);
+        } catch (err: any) {
+            console.error('[PriceUpdate] failed:', err?.message || err);
+        }
+    }
 }
