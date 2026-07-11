@@ -6,7 +6,7 @@
  * 作为轻量健康探针供 Python /health/ready 探测 Node.js 连通性。
  * 这些接口不对外暴露，Python 服务通过此接口获取 A 股数据。
  */
-import { Router, type Request, type Response } from 'express'
+import { json, Router, type Request, type Response } from 'express'
 import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
@@ -551,14 +551,34 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
 })
 
 // =============================================================================
-// 公开路由（前端可直接调用，无需 X-Internal-Token）
-// 必须在 /api/agent 反代之前挂载，否则会被转发到 Python
+// Agent 报告与音频路由
+// - 生成动作：internal router，供 Python Agent 调用并校验 X-Internal-Token
+// - 查询/播放：publicRouter，供前端读取
 // =============================================================================
 
 import path from 'path'
 import fs from 'fs'
+import { randomUUID } from 'crypto'
+import { AzureMultiVoiceTtsProvider, parseBroadcastDialogue } from '../services/tts.service'
+import { readVolcenginePodcastOptions, VolcenginePodcastProvider } from '../services/volcenginePodcast.service'
 
 const publicRouter: Router = Router()
+
+async function synthesizeBroadcast(lines: ReturnType<typeof parseBroadcastDialogue>): Promise<Buffer> {
+    const provider = process.env.TTS_PROVIDER || 'azure'
+    if (provider === 'volcengine_podcast') {
+        return new VolcenginePodcastProvider(readVolcenginePodcastOptions(process.env)).synthesize(lines)
+    }
+
+    if (provider === 'azure') {
+        const region = process.env.AZURE_SPEECH_REGION
+        const subscriptionKey = process.env.AZURE_SPEECH_KEY
+        if (!region || !subscriptionKey) throw new Error('缺少 AZURE_SPEECH_REGION 或 AZURE_SPEECH_KEY')
+        return new AzureMultiVoiceTtsProvider({ region, subscriptionKey }).synthesize(lines)
+    }
+
+    throw new Error(`不支持的 TTS_PROVIDER: ${provider}`)
+}
 
 /** 查询公共分析报告（复用内部查询逻辑，user_id 为 NULL） */
 async function getAnalysisReport(report_type: string, report_date: string) {
@@ -572,6 +592,48 @@ async function getAnalysisReport(report_type: string, report_date: string) {
     )
     return result.rows.length > 0 ? result.rows[0] : null
 }
+
+/**
+ * POST /internal/briefing/generate-audio
+ * 请求体: { date: 'YYYY-MM-DD' }。读取当天双人播报并生成完整 MP3。
+ */
+router.post('/briefing/generate-audio', json(), async (req: Request, res: Response) => {
+    const date = typeof req.body?.date === 'string' ? req.body.date : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: 400, message: 'date 必须是 YYYY-MM-DD' })
+        return
+    }
+
+    try {
+        const report = await getAnalysisReport('broadcast', date)
+        const text = (report?.content as { text?: unknown } | undefined)?.text
+        if (!report || !text) {
+            res.status(404).json({ code: 404, message: '播报报告不存在' })
+            return
+        }
+
+        const audio = await synthesizeBroadcast(parseBroadcastDialogue(text))
+        const filename = `broadcast-${date}.mp3`
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        const filePath = path.join(audioDir, filename)
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        await fs.promises.writeFile(tempPath, audio)
+        await fs.promises.rename(tempPath, filePath)
+
+        const audioPath = `/api/agent/audio/${filename}`
+        await pool.query(
+            `UPDATE agent_analysis_reports
+             SET content = jsonb_set(content, '{audio_path}', to_jsonb($2::text), true)
+             WHERE id = $1`,
+            [report.id, audioPath]
+        )
+        res.json({ code: 0, data: { audio_path: audioPath }, message: '' })
+    } catch (err: unknown) {
+        console.error('[Internal] briefing/generate-audio error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
 
 /**
  * GET /api/agent/report/:intent/:date
