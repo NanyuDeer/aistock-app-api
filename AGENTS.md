@@ -200,6 +200,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/internal/analysis-reports/:type/:date` | GET | 查询报告（按类型 + 日期） |
 | `/internal/analysis-reports/:type/:date/:userId` | GET | 查询用户专属报告 |
 | `/internal/analysis-reports/cleanup` | DELETE | 清理过期报告（`expires_at < NOW()`，定时 03:00 执行） |
+| `/internal/briefing/generate-audio` | POST | 根据 broadcast 报告生成 MP3，并写回 `content.audio_path` |
 
 > 数据库表：`agent_analysis_reports`，`content` 字段为 JSONB，唯一索引使用 `COALESCE(user_id, '')` 解决 NULL 问题。
 > 建表脚本：`docs/sql/agent_analysis_reports.sql`

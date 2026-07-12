@@ -142,6 +142,7 @@ src/
 | `/internal/analysis-reports/:type/:date` | **查询报告**（按类型+日期） | type: morning/wind_leader/hot_burst/review, date: YYYY-MM-DD |
 | `/internal/analysis-reports/:type/:date/:userId` | **查询用户专属报告** | userId: 用户ID |
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
+| `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
