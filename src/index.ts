@@ -657,6 +657,15 @@ cron.schedule('0 3 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 进程心跳：每10分钟输出一次进程状态，便于排查定时任务停止时间点
+cron.schedule('*/10 * * * *', () => {
+    const mem = process.memoryUsage();
+    const uptime = Math.floor(process.uptime() / 3600);
+    console.log(
+        `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
+    );
+}, { timezone: 'Asia/Shanghai' });
+
 async function start() {
     try {
         await pool.query('SELECT 1');
@@ -775,6 +784,48 @@ async function start() {
         syncStockConceptMapping().catch(err => {
             console.error('[Startup] stock_concept_mapping 同步失败:', err?.message || err);
         });
+        // 启动时：如果是交易日，清除可能残留的旧行情缓存，确保开盘后获取最新数据
+        (async () => {
+            try {
+                const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+                const isTradingDay = await isAShareTradingDay();
+                if (isTradingDay) {
+                    const { CacheService } = await import('./shared/utils/CacheService');
+                    // 清除行情相关缓存键前缀（Redis keys 命令对性能有影响，但启动时执行一次可接受）
+                    const patterns = ['stock_quote:core:*', 'stock_quote:activity:*', 'stock_quote:fundamental:*'];
+                    let cleared = 0;
+                    for (const pattern of patterns) {
+                        try {
+                            const keys = await redis.keys(pattern);
+                            if (keys.length > 0) {
+                                await redis.del(...keys);
+                                cleared += keys.length;
+                            }
+                        } catch { /* Redis不可用时跳过 */ }
+                    }
+                    if (cleared > 0) {
+                        console.log(`[Startup] 交易日启动，已清除 ${cleared} 个旧行情缓存条目`);
+                    } else {
+                        console.log('[Startup] 交易日启动，无旧行情缓存需清除');
+                    }
+                }
+            } catch (err) {
+                console.warn('[Startup] 交易日缓存清理失败:', (err as Error)?.message || err);
+            }
+        })();
+        // 启动时检查风口龙头数据，如果为空则自动触发一次分析（不阻塞启动）
+        WindLeaderService.getAnalysis().then(data => {
+            if (!data || !data.hot_sectors || data.hot_sectors.length === 0) {
+                console.log('[Startup] 风口龙头数据为空，自动触发一次分析...');
+                WindLeaderAnalyzerService.runFullAnalysis().then(result => {
+                    console.log(`[Startup] 风口龙头自动分析完成: ${result.hot_sectors?.length || 0} 个板块`);
+                }).catch(err => {
+                    console.error('[Startup] 风口龙头自动分析失败:', err?.message || err);
+                });
+            }
+        }).catch(err => {
+            console.warn('[Startup] 风口龙头数据检查失败:', err?.message || err);
+        });
     });
 
     // 初始化 WebSocket 服务（用于实时行情推送、异动提醒、对话流式输出）
@@ -790,5 +841,17 @@ function gracefulShutdown() {
 process.on('SIGINT', () => { gracefulShutdown(); process.exit(0); });
 process.on('SIGTERM', () => { gracefulShutdown(); process.exit(0); });
 process.on('exit', gracefulShutdown);
+
+// 防止未捕获的异常/Promise rejection导致进程崩溃
+// 这是定时任务在第三天停止的关键原因之一：DB断连等异常未被正确捕获时，Node.js v15+默认退出进程
+process.on('unhandledRejection', (reason: unknown) => {
+    console.error('[Process] unhandledRejection:', reason);
+    // 不退出进程，只记录日志——让cron任务的try/catch自行处理
+});
+process.on('uncaughtException', (err: Error) => {
+    console.error('[Process] uncaughtException:', err.message, err.stack);
+    // 记录日志但不退出，避免pm2 restart计数器递增
+    // 如果是致命错误（如OOM），pm2会通过max_memory_restart自动重启
+});
 
 export { app, pool, redis };

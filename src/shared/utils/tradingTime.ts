@@ -5,6 +5,8 @@ const INDEX_QUOTE_TRADING_TTL_JITTER_SECONDS = 5;
 const TRADING_OPEN_HOUR = 9;
 const TRADING_OPEN_MINUTE = 15;
 const NEXT_TRADING_SEARCH_MAX_DAYS = 30;
+// 非交易时段缓存 TTL 上限，防止跨天/跨周末缓存过长导致交易日开盘后仍返回旧数据
+const MAX_NON_TRADING_TTL_SECONDS = 4 * 60 * 60; // 4 小时
 
 interface HolidayApiResponse {
     code: number;
@@ -147,6 +149,24 @@ export async function getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds: number
     const inTradingWindows = isWithinTradingWindows(chinaParts);
     if (!weekend && !holiday && inTradingWindows && !isClosingRefreshMoment(chinaParts)) return resolvedTradingTtlSeconds;
 
+    // 交易日但不在交易窗口内：计算到同一日下一个交易窗口的短 TTL，避免午休/竞价间隙产生超长缓存
+    if (!weekend && !holiday) {
+        const seconds = chinaParts.hour * 3600 + chinaParts.minute * 60 + chinaParts.second;
+
+        // 盘前：00:00 - 09:15 → 缓存到 09:15 集合竞价
+        if (seconds < 9 * 3600 + 15 * 60) {
+            return Math.max(60, (9 * 3600 + 15 * 60) - seconds);
+        }
+        // 竞价与连续竞价之间：09:25 - 09:30 → 缓存到 09:30
+        if (seconds >= 9 * 3600 + 25 * 60 && seconds < 9 * 3600 + 30 * 60) {
+            return Math.max(60, (9 * 3600 + 30 * 60) - seconds);
+        }
+        // 午休：11:30 - 13:00 → 缓存到 13:00
+        if (seconds >= 11 * 3600 + 30 * 60 && seconds < 13 * 3600) {
+            return Math.max(60, (13 * 3600) - seconds);
+        }
+    }
+
     // 盘后定时更新逻辑：如果指定了 afterCloseUpdateTime，则计算到该时间点的 TTL
     if (options.afterCloseUpdateTime && !weekend && !holiday) {
         const { hour: updateHour, minute: updateMinute } = options.afterCloseUpdateTime;
@@ -165,7 +185,10 @@ export async function getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds: number
         return Math.max(60, ttl);
     }
 
-    return getSecondsUntilNextTradingOpen(nowDate, fetcher);
+    // 非交易日（周末/节假日）或盘后无 afterCloseUpdateTime：缓存到下一交易日开盘
+    // 但设置 TTL 上限，防止跨天/跨周末缓存过长导致交易日开盘后仍返回旧数据
+    const nextOpenTtl = await getSecondsUntilNextTradingOpen(nowDate, fetcher);
+    return Math.min(nextOpenTtl, MAX_NON_TRADING_TTL_SECONDS);
 }
 
 export async function getAShareIndexCacheTtlSeconds(options: AShareTradingTimeOptions = {}): Promise<number> {

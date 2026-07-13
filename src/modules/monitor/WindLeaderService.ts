@@ -289,6 +289,11 @@ export class WindLeaderService {
         const data = loadData();
         if (!data) return null;
 
+        // 数据文件中 hot_sectors 为空时视为无数据，避免前端展示空白
+        if (!data.hot_sectors || !Array.isArray(data.hot_sectors) || data.hot_sectors.length === 0) {
+            return null;
+        }
+
         const sectors = (data.hot_sectors || []).slice(0, limit).map((sector: any) => ({
             code: sector.code || '',
             name: sector.name,
