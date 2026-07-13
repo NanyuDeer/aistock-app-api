@@ -55,8 +55,9 @@ function buildSummary(records: PotentialPushRecord[]) {
     };
 }
 
-function getHistoryRecords(): PotentialPushRecord[] {
-    return WindLeaderService.getPotentialPushHistory().map(withReturn);
+async function getHistoryRecords(): Promise<PotentialPushRecord[]> {
+    const records = await WindLeaderService.getPotentialPushHistory();
+    return records.map(withReturn);
 }
 
 function filterRecords(
@@ -90,7 +91,7 @@ function sortRecords(records: PotentialPushRecord[]): PotentialPushRecord[] {
 export class PotentialStockPushController {
     static async getHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const filtered = sortRecords(filterRecords(getHistoryRecords(), req.query));
+            const filtered = sortRecords(filterRecords(await getHistoryRecords(), req.query));
 
             res.json({
                 code: 200,
@@ -107,7 +108,7 @@ export class PotentialStockPushController {
 
     static async getRanking(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const items = filterRecords(getHistoryRecords(), { date: req.query.date });
+            const items = filterRecords(await getHistoryRecords(), { date: req.query.date });
             const itemsWithReturn = items.filter(item => toFiniteNumber(item.return_pct) !== null);
             const topGainers = itemsWithReturn.slice().sort((a, b) => Number(b.return_pct) - Number(a.return_pct)).slice(0, 10);
             const topLosers = itemsWithReturn.slice().sort((a, b) => Number(a.return_pct) - Number(b.return_pct)).slice(0, 10);

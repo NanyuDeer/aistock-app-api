@@ -761,6 +761,44 @@ async function start() {
     }
 
     try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS wind_leader_push_history (
+                id SERIAL PRIMARY KEY,
+                push_id VARCHAR(100) NOT NULL,
+                push_batch_id VARCHAR(50) NOT NULL,
+                push_date DATE NOT NULL,
+                push_time VARCHAR(30) NOT NULL,
+                push_rank INT DEFAULT 0,
+                stock_code VARCHAR(20) NOT NULL,
+                stock_name VARCHAR(50) NOT NULL,
+                theme VARCHAR(100) NOT NULL,
+                reason TEXT DEFAULT '',
+                strategy_name VARCHAR(50) DEFAULT '',
+                score NUMERIC(10,2) DEFAULT 0,
+                chain_position VARCHAR(20) DEFAULT '',
+                source VARCHAR(50) DEFAULT '',
+                reason_tag VARCHAR(50) DEFAULT '',
+                push_price NUMERIC(12,4) DEFAULT 0,
+                latest_price NUMERIC(12,4) DEFAULT 0,
+                latest_trade_date VARCHAR(20) DEFAULT '',
+                latest_change_pct NUMERIC(8,4) DEFAULT 0,
+                raw_analysis_price NUMERIC(12,4) DEFAULT 0,
+                price_basis VARCHAR(50) DEFAULT '',
+                realtime_return_pct NUMERIC(8,4) DEFAULT 0,
+                realtime_time TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(push_id)
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_push_date ON wind_leader_push_history(push_date DESC)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_stock_code ON wind_leader_push_history(stock_code)');
+        console.log('[DB] wind_leader_push_history table ready');
+    } catch (err: any) {
+        console.warn('[DB] wind_leader_push_history table check:', err.message);
+    }
+
+    try {
         await redis.ping();
         console.log('[Redis] Connected successfully');
     } catch (err: any) {
