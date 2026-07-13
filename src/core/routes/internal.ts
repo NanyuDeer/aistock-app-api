@@ -550,6 +550,95 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
     }
 })
 
+// ==================== 行业向量搜索（pgvector） ====================
+
+/**
+ * POST /internal/industries/embeddings
+ * Upsert 行业 embedding（供 Python 初始化脚本批量写入）
+ *
+ * 请求体: { industry_code, industry_name, keywords?, description?, embedding }
+ * embedding 必须为 1536 维浮点数组（OpenAI text-embedding-3-small）
+ */
+router.post('/industries/embeddings', async (req: Request, res: Response) => {
+    const { industry_code, industry_name, keywords, description, embedding } = req.body
+
+    if (!industry_code || !industry_name || !embedding || !Array.isArray(embedding)) {
+        return res.status(400).json({ code: 400, message: '缺少必填字段：industry_code, industry_name, embedding' })
+    }
+    if (embedding.length !== 1536) {
+        return res.status(400).json({ code: 400, message: `embedding 必须为 1536 维浮点数组，当前 ${embedding.length} 维` })
+    }
+
+    try {
+        const vectorStr = `[${embedding.join(',')}]`
+        await pool.query(
+            `INSERT INTO industry_embeddings (industry_code, industry_name, keywords, description, embedding)
+             VALUES ($1, $2, $3, $4, $5::vector)
+             ON CONFLICT (industry_code)
+             DO UPDATE SET
+               industry_name = EXCLUDED.industry_name,
+               keywords = EXCLUDED.keywords,
+               description = EXCLUDED.description,
+               embedding = EXCLUDED.embedding,
+               updated_at = NOW()`,
+            [industry_code, industry_name, keywords || [], description || '', vectorStr]
+        )
+
+        res.json({ code: 200, data: { ok: true } })
+    } catch (err: unknown) {
+        console.error('[Internal] industries/embeddings error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/industries/semantic-search
+ * 接收 embedding 向量，在 industry_embeddings 表中做 cosine similarity 搜索
+ *
+ * 请求体: { embedding: number[], threshold?: number, limit?: number }
+ * - embedding: 1536 维查询向量
+ * - threshold: 相似度阈值（0-1），默认 0.7
+ * - limit: 返回数量上限，默认 5
+ *
+ * 响应: { code: 200, data: { industries: [{code, name, similarity}] } }
+ */
+router.post('/industries/semantic-search', async (req: Request, res: Response) => {
+    const { embedding, threshold = 0.7, limit = 5 } = req.body
+
+    if (!embedding || !Array.isArray(embedding)) {
+        return res.status(400).json({ code: 400, message: 'embedding 必须为浮点数组' })
+    }
+    if (embedding.length !== 1536) {
+        return res.status(400).json({ code: 400, message: `embedding 必须为 1536 维浮点数组，当前 ${embedding.length} 维` })
+    }
+
+    try {
+        // pgvector cosine similarity: 1 - (a <=> b)，<=> 为余弦距离运算符
+        const vectorStr = `[${embedding.join(',')}]`
+        const result = await pool.query(
+            `SELECT
+               industry_code AS code,
+               industry_name AS name,
+               1 - (embedding <=> $1::vector) AS similarity
+             FROM industry_embeddings
+             WHERE 1 - (embedding <=> $1::vector) > $2
+             ORDER BY similarity DESC
+             LIMIT $3`,
+            [vectorStr, threshold, limit]
+        )
+
+        res.json({
+            code: 200,
+            data: {
+                industries: result.rows,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industries/semantic-search error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
 // =============================================================================
 // Agent 报告与音频路由
 // - 生成动作：internal router，供 Python Agent 调用并校验 X-Internal-Token
