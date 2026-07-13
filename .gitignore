@@ -7,6 +7,8 @@ dist/
 __pycache__/
 *.pyc
 data/hot-sector-cache/
+data/hot-sectors.json
+data/potential-stock-push-history.json
 .trae/
 changelog-pending.md
 package-lock.json

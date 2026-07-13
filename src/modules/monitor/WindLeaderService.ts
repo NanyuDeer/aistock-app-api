@@ -1,12 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import pool from '../../core/db';
 import { TencentKlineService } from '../quote/TencentKlineService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { tushareRequest } from '../quote/TushareService';
 import { getStockIdentity } from '../../shared/utils/stock';
 
-// 使用项目根目录的data文件夹（而不是相对于编译代码的路径）
-// 文件位于 src/modules/monitor/，需往上三级才到项目根目录
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DATA_FILE = path.join(PROJECT_ROOT, 'data', 'hot-sectors.json');
 const PUSH_HISTORY_FILE = path.join(PROJECT_ROOT, 'data', 'potential-stock-push-history.json');
@@ -16,6 +15,21 @@ let cachedTime = 0;
 const CACHE_TTL = 60 * 1000;
 const HOME_SECTOR_LIMIT = 8;
 const HOME_MAX_STOCKS_PER_SECTOR = 2;
+
+let dbAvailable = false;
+
+async function checkDbAvailability(): Promise<boolean> {
+    if (dbAvailable) return true;
+    try {
+        await pool.query('SELECT 1');
+        dbAvailable = true;
+        console.log('[WindLeaderService] Database available, using PostgreSQL');
+    } catch {
+        dbAvailable = false;
+        console.log('[WindLeaderService] Database unavailable, falling back to file storage');
+    }
+    return dbAvailable;
+}
 
 function loadData(): any {
     const now = Date.now();
@@ -219,6 +233,107 @@ function writePushHistoryFile(records: any[]): void {
     fs.writeFileSync(PUSH_HISTORY_FILE, JSON.stringify(records, null, 2), 'utf-8');
 }
 
+async function readPushHistoryFromDb(): Promise<any[]> {
+    try {
+        const result = await pool.query(`
+            SELECT push_id, push_batch_id, push_date, push_time, push_rank,
+                   stock_code, stock_name, theme, reason, strategy_name,
+                   score, chain_position, source, reason_tag,
+                   push_price, latest_price, latest_trade_date, latest_change_pct,
+                   raw_analysis_price, price_basis, realtime_return_pct, realtime_time
+            FROM wind_leader_push_history
+            ORDER BY push_date DESC, score DESC
+        `);
+        return result.rows.map(row => ({
+            ...row,
+            push_date: row.push_date ? row.push_date.toISOString().slice(0, 10) : '',
+            realtime_time: row.realtime_time ? row.realtime_time.toISOString() : null,
+        }));
+    } catch (err) {
+        console.error('[WindLeaderService] read push history from DB failed:', err);
+        return [];
+    }
+}
+
+async function writePushHistoryToDb(records: any[]): Promise<void> {
+    if (!records.length) return;
+
+    try {
+        for (const record of records) {
+            await pool.query(`
+                INSERT INTO wind_leader_push_history (
+                    push_id, push_batch_id, push_date, push_time, push_rank,
+                    stock_code, stock_name, theme, reason, strategy_name,
+                    score, chain_position, source, reason_tag,
+                    push_price, latest_price, latest_trade_date, latest_change_pct,
+                    raw_analysis_price, price_basis, realtime_return_pct, realtime_time,
+                    updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+                    $11, $12, $13, $14, $15, $16, $17, $18,
+                    $19, $20, $21, $22, NOW()
+                ) ON CONFLICT (push_id) DO UPDATE SET
+                    push_batch_id = EXCLUDED.push_batch_id,
+                    push_date = EXCLUDED.push_date,
+                    push_time = EXCLUDED.push_time,
+                    push_rank = EXCLUDED.push_rank,
+                    stock_code = EXCLUDED.stock_code,
+                    stock_name = EXCLUDED.stock_name,
+                    theme = EXCLUDED.theme,
+                    reason = EXCLUDED.reason,
+                    strategy_name = EXCLUDED.strategy_name,
+                    score = EXCLUDED.score,
+                    chain_position = EXCLUDED.chain_position,
+                    source = EXCLUDED.source,
+                    reason_tag = EXCLUDED.reason_tag,
+                    push_price = EXCLUDED.push_price,
+                    latest_price = EXCLUDED.latest_price,
+                    latest_trade_date = EXCLUDED.latest_trade_date,
+                    latest_change_pct = EXCLUDED.latest_change_pct,
+                    raw_analysis_price = EXCLUDED.raw_analysis_price,
+                    price_basis = EXCLUDED.price_basis,
+                    realtime_return_pct = EXCLUDED.realtime_return_pct,
+                    realtime_time = EXCLUDED.realtime_time,
+                    updated_at = NOW()
+            `, [
+                record.push_id, record.push_batch_id, record.push_date, record.push_time, record.push_rank,
+                record.stock_code, record.stock_name, record.theme, record.reason, record.strategy_name,
+                record.score, record.chain_position, record.source, record.reason_tag,
+                record.push_price, record.latest_price, record.latest_trade_date, record.latest_change_pct,
+                record.raw_analysis_price, record.price_basis, record.realtime_return_pct, record.realtime_time,
+            ]);
+        }
+    } catch (err) {
+        console.error('[WindLeaderService] write push history to DB failed:', err);
+        throw err;
+    }
+}
+
+async function updatePushHistoryPricesInDb(updatedRecords: any[]): Promise<void> {
+    if (!updatedRecords.length) return;
+
+    try {
+        for (const record of updatedRecords) {
+            await pool.query(`
+                UPDATE wind_leader_push_history SET
+                    latest_price = $1,
+                    latest_change_pct = $2,
+                    latest_trade_date = $3,
+                    realtime_return_pct = $4,
+                    realtime_time = $5,
+                    updated_at = NOW()
+                WHERE push_id = $6
+            `, [
+                record.latest_price, record.latest_change_pct, record.latest_trade_date,
+                record.realtime_return_pct, record.realtime_time, record.push_id,
+            ]);
+        }
+    } catch (err) {
+        console.error('[WindLeaderService] update push history prices in DB failed:', err);
+        throw err;
+    }
+}
+
 async function getPreviousClosePrice(symbol: string, pushDate: string): Promise<{ price: number; basis: string } | null> {
     const rows = await TencentKlineService.getKLine({
         symbol,
@@ -319,7 +434,6 @@ export class WindLeaderService {
             leading_stock_info: sector.leading_stock_info || null,
         }));
 
-        // 用缓存行情实时刷新所有股票的价格和涨跌幅
         try {
             const stockLists = ['main_stocks', 'upstream_stocks', 'downstream_stocks'] as const;
             const allCodes: string[] = [];
@@ -383,8 +497,16 @@ export class WindLeaderService {
         }
     }
 
-    static getPotentialPushHistory(): any[] {
-        const history = readPushHistoryFile();
+    static async getPotentialPushHistory(): Promise<any[]> {
+        const isDbAvailable = await checkDbAvailability();
+        
+        let history: any[];
+        if (isDbAvailable) {
+            history = await readPushHistoryFromDb();
+        } else {
+            history = readPushHistoryFile();
+        }
+
         const latest = loadData();
         const latestRecords = latest ? collectPushRecordsFromData(latest) : [];
         const merged = new Map<string, any>();
@@ -408,8 +530,17 @@ export class WindLeaderService {
         const nextRecords = await enrichPushPricesWithPreviousClose(collectPushRecordsFromData(data));
         if (!nextRecords.length) return;
 
+        const isDbAvailable = await checkDbAvailability();
+        
+        let history: any[];
+        if (isDbAvailable) {
+            history = await readPushHistoryFromDb();
+        } else {
+            history = readPushHistoryFile();
+        }
+
         const merged = new Map<string, any>();
-        readPushHistoryFile().forEach(record => {
+        history.forEach(record => {
             if (record?.push_id) merged.set(record.push_id, record);
         });
         nextRecords.forEach(record => {
@@ -423,13 +554,13 @@ export class WindLeaderService {
             return (Number(b.score) || 0) - (Number(a.score) || 0);
         });
 
-        writePushHistoryFile(records);
+        if (isDbAvailable) {
+            await writePushHistoryToDb(records);
+        } else {
+            writePushHistoryFile(records);
+        }
     }
 
-    /**
-     * 获取风口龙头分析数据（供 /internal/wind-leaders 接口调用）
-     * 包装 getAnalysis()，默认返回 top 8 热门板块及其龙头股
-     */
     static async getWindLeaders(limit: number = 8): Promise<{
         update_time: string;
         hot_sectors: unknown[];
@@ -440,7 +571,15 @@ export class WindLeaderService {
     static async updatePushHistoryPrices(): Promise<void> {
         console.log('[PriceUpdate] update push history prices...');
         try {
-            const history = readPushHistoryFile();
+            const isDbAvailable = await checkDbAvailability();
+            
+            let history: any[];
+            if (isDbAvailable) {
+                history = await readPushHistoryFromDb();
+            } else {
+                history = readPushHistoryFile();
+            }
+
             if (!history.length) {
                 console.log('[PriceUpdate] push history is empty, skip');
                 return;
@@ -491,7 +630,12 @@ export class WindLeaderService {
                 return record;
             });
 
-            writePushHistoryFile(updatedRecords);
+            if (isDbAvailable) {
+                await updatePushHistoryPricesInDb(updatedRecords);
+            } else {
+                writePushHistoryFile(updatedRecords);
+            }
+
             console.log(`[PriceUpdate] done: ${updatedRecords.length} records, updated ${updatedCount}`);
         } catch (err: any) {
             console.error('[PriceUpdate] failed:', err?.message || err);
