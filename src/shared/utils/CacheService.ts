@@ -10,17 +10,29 @@ redis.on('error', () => { redisAvailable = false; });
 // 本地内存缓存（Redis 不可用时的降级方案）
 const localCache = new Map<string, { value: any; expiresAt: number }>();
 
+// 本地缓存最大条目数，防止内存无限增长
+const LOCAL_CACHE_MAX_SIZE = 5000;
+
 function cleanupLocalCache(): void {
     const now = Date.now();
+    // 先清理过期条目
     for (const [key, entry] of localCache.entries()) {
         if (entry.expiresAt < now) {
             localCache.delete(key);
         }
     }
+    // 如果仍然超过上限，按过期时间排序淘汰最早的
+    if (localCache.size > LOCAL_CACHE_MAX_SIZE) {
+        const entries = [...localCache.entries()].sort((a, b) => a[1].expiresAt - b[1].expiresAt);
+        const toRemove = localCache.size - LOCAL_CACHE_MAX_SIZE;
+        for (let i = 0; i < toRemove && i < entries.length; i++) {
+            localCache.delete(entries[i][0]);
+        }
+    }
 }
 
-// 每分钟清理过期缓存
-setInterval(cleanupLocalCache, 60_000);
+// 每5分钟清理过期缓存（减少CPU消耗）
+setInterval(cleanupLocalCache, 300_000);
 
 export class CacheService {
     static async get<T>(key: string): Promise<T | null> {
