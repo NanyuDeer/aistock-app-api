@@ -230,7 +230,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 00:05 | 数据同步 | — |
 | 03:00 | 报告清理 | 删除过期 Agent 分析报告（`expires_at < NOW()`） |
 | 03:00 | 知识图谱/其他 | — |
-| 04:00 | 风口龙头分析 | WindLeaderAnalyzerService |
+| 03:00 | 风口龙头分析 | WindLeaderAnalyzerService（空结果不覆盖旧数据） |
 | 04:30 | 十字评分批量 | TenxBatchService |
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |

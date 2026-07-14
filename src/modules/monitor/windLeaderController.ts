@@ -77,11 +77,29 @@ export class WindLeaderController {
      */
     static async refreshAnalysis(_req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
+            // 非交易日警告（不阻止执行，但提示调用方）
+            const { isAShareTradingDay } = await import('../../shared/utils/tradingTime');
+            const isTradingDay = await isAShareTradingDay();
+            if (!isTradingDay) {
+                console.warn('[WindLeaderController] 当前为非交易日，风口龙头分析可能产生空结果');
+            }
+
             console.log('[WindLeaderController] 触发TS分析引擎重新分析...');
             const result = await WindLeaderAnalyzerService.runFullAnalysis();
+
+            if (result.hot_sectors.length === 0) {
+                createResponse(res, 200, '分析完成但未产生风口数据（可能为非交易日或外部API无数据），已保留上次有效数据', {
+                    count: 0,
+                    update_time: result.update_time || '',
+                    trading_day: isTradingDay,
+                });
+                return;
+            }
+
             createResponse(res, 200, 'success', {
                 count: result.hot_sectors?.length || 0,
                 update_time: result.update_time || '',
+                trading_day: isTradingDay,
             });
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);

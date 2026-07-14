@@ -3167,8 +3167,13 @@ export class WindLeaderAnalyzerService {
             });
         }
 
-        await WindLeaderService.saveData(result);
-        console.log(`[WindLeaderAnalyzer] 风口龙头分析完成，共 ${result.hot_sectors.length} 个板块，结果已保存并追加历史表现`);
+        if (result.hot_sectors.length === 0) {
+            // 空结果不覆盖旧数据，避免因外部 API 暂时不可用导致历史数据丢失
+            console.warn('[WindLeaderAnalyzer] 风口龙头分析结果为空（可能外部 API 无数据或为非交易日），保留上次有效数据，不覆盖 hot-sectors.json');
+        } else {
+            await WindLeaderService.saveData(result);
+            console.log(`[WindLeaderAnalyzer] 风口龙头分析完成，共 ${result.hot_sectors.length} 个板块，结果已保存并追加历史表现`);
+        }
 
         return result;
     }
