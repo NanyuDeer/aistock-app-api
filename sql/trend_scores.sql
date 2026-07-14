@@ -30,5 +30,8 @@ CREATE TABLE IF NOT EXISTS trend_scores (
 CREATE INDEX IF NOT EXISTS idx_trend_scores_date ON trend_scores(score_date);
 CREATE INDEX IF NOT EXISTS idx_trend_scores_symbol ON trend_scores(symbol);
 
--- Step 3: 确认创建成功
+-- Step 3: 授予 aistock 用户对新表的权限
+GRANT SELECT, INSERT, UPDATE, DELETE ON trend_scores TO aistock;
+
+-- Step 4: 确认创建成功
 SELECT 'trend_scores 表创建完成' AS message;
