@@ -49,6 +49,10 @@ export interface TrackDetail {
     sectorName: string;
     marketRecognition: number;
     policyTrend: string;
+    // 以下字段为前端展示所需，当前为占位值，后续由后端增强实现
+    weeklyListingTrend?: number[];      // 近6周上榜次数 [5W前, 4W前, 3W前, 2W前, 上周, 本周]
+    sectorStrength?: string;            // 板块月涨幅，如 "+18.5%"
+    policyItems?: { name: string; desc: string; color: 'up' | 'gold' }[];  // 结构化政策趋势项
 }
 
 export interface NewsDetail {
@@ -203,6 +207,24 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[]): {
 
 // ==================== 行业赛道景气维度计算 ====================
 
+/**
+ * 根据60日总上榜次数生成近6周上榜趋势（占位实现）
+ * TODO: 后端增强 — 改为从 fetchBlockRotationData 获取真实周度数据
+ */
+function generateWeeklyTrend(total60d: number): number[] {
+    if (total60d <= 0) return [0, 0, 0, 0, 0, 0];
+    // 将总数大致均分到6周，加上递增趋势模拟
+    const avg = Math.max(1, Math.floor(total60d / 8));
+    return [
+        Math.max(0, avg - 2),
+        Math.max(0, avg - 1),
+        Math.max(0, avg),
+        Math.max(0, avg + 1),
+        Math.max(0, avg + 2),
+        Math.max(0, avg + 3),
+    ];
+}
+
 async function calcTrackDim(
     symbol: string,
     data: PrefetchedData,
@@ -260,6 +282,10 @@ async function calcTrackDim(
             sectorName,
             marketRecognition: trackIndScores['market_recognition'],
             policyTrend: String(trackRaw['policy_trend_score'] ?? ''),
+            // TODO: 后端增强 — 以下字段当前为占位值，需实现真实数据源
+            weeklyListingTrend: generateWeeklyTrend(sectorListCount60d),
+            sectorStrength: '--',  // TODO: 计算板块指数月涨幅
+            policyItems: [{ name: '政策趋势', desc: String(trackRaw['policy_trend_score'] ?? '暂无数据'), color: 'gold' as const }],
         },
     };
 }
