@@ -38,11 +38,17 @@ export class TrendScoreController {
 
             const row = result.rows[0] as Record<string, unknown>;
             const data = {
-                ...row,
-                dim_scores: JSON.parse(row.dim_scores as string || '[]'),
+                symbol: row.symbol,
+                score: Number(row.score),
+                scoreDate: row.score_date,
+                label: row.label,
+                expectedMultiple: row.expected_multiple,
+                description: row.description,
+                aiConclusion: row.ai_conclusion,
+                dimScores: JSON.parse(row.dim_scores as string || '[]'),
                 dimensions: JSON.parse(row.dimensions as string || '[]'),
+                updatedAt: row.updated_at,
             };
-            delete (data as Record<string, unknown>).raw_data;
 
             createResponse(res, 200, 'success', data);
         } catch (error: unknown) {
@@ -79,9 +85,16 @@ export class TrendScoreController {
             if (result.rows.length > 0) {
                 const row = result.rows[0] as Record<string, unknown>;
                 const data = {
-                    ...row,
-                    dim_scores: JSON.parse(row.dim_scores as string || '[]'),
+                    symbol: row.symbol,
+                    score: Number(row.score),
+                    scoreDate: row.score_date,
+                    label: row.label,
+                    expectedMultiple: row.expected_multiple,
+                    description: row.description,
+                    aiConclusion: row.ai_conclusion,
+                    dimScores: JSON.parse(row.dim_scores as string || '[]'),
                     dimensions: JSON.parse(row.dimensions as string || '[]'),
+                    updatedAt: row.updated_at,
                 };
                 createResponse(res, 200, 'success', data);
             } else {

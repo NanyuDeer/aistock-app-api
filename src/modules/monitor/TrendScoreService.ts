@@ -7,6 +7,7 @@ import {
     prefetchAllData, scoreIndicator, scoreAllIndicators, calcDimScore,
     vetoCheck, VetoError, getAiIndicatorScores, clearAiIndicatorScores,
 } from './TenxScoreService';
+import { ClsStockNewsService } from './ClsStockNewsService';
 
 // ==================== 类型定义 ====================
 
@@ -265,25 +266,49 @@ async function calcTrackDim(
 
 // ==================== 消息面催化维度计算 ====================
 
-function calcNewsDim(data: PrefetchedData): {
+async function calcNewsDim(symbol: string, data: PrefetchedData): Promise<{
     score: number;
     indicators: { name: string; key: string; value: string; score: number }[];
     detail: NewsDetail;
-} {
+}> {
     const newsRaw = calcNewsCatalyst(data);
+    const aiScores = getAiIndicatorScores(symbol);
+
+    // 使用 scoreIndicator 计算实际评分，而非硬编码 50
+    const newsKeys = ['research_visit_count', 'holder_change_rate', 'hard_catalyst'] as const;
+    const newsIndScores: Record<string, number> = {};
+    for (const key of newsKeys) {
+        newsIndScores[key] = scoreIndicator(key, newsRaw[key], aiScores);
+    }
+
     const indicators = [
-        { name: '近1月机构调研家数', key: 'research_visit_count', value: String(newsRaw['research_visit_count'] ?? '--'), score: 50 },
-        { name: '股东户数较上期变化率', key: 'holder_change_rate', value: String(newsRaw['holder_change_rate'] ?? '--'), score: 50 },
-        { name: '硬催化(政策/订单)', key: 'hard_catalyst', value: String(newsRaw['hard_catalyst'] ?? '--'), score: 50 },
+        { name: '近1月机构调研家数', key: 'research_visit_count', value: String(newsRaw['research_visit_count'] ?? '--'), score: newsIndScores['research_visit_count'] },
+        { name: '股东户数较上期变化率', key: 'holder_change_rate', value: String(newsRaw['holder_change_rate'] ?? '--'), score: newsIndScores['holder_change_rate'] },
+        { name: '硬催化(政策/订单)', key: 'hard_catalyst', value: String(newsRaw['hard_catalyst'] ?? '--'), score: newsIndScores['hard_catalyst'] },
     ];
 
     const score = Math.round(indicators.reduce((sum, ind) => sum + ind.score, 0) / indicators.length);
+
+    // 获取实际个股新闻（财联社数据源）
+    let news: NewsItem[] = [];
+    try {
+        const newsResult = await ClsStockNewsService.getStockNews(symbol, { limit: 10, lastTime: 0 });
+        news = newsResult.items.map(item => ({
+            title: item.title,
+            summary: item.content,
+            source: '财联社',
+            publishTime: item.time,
+            url: item.link,
+        }));
+    } catch (e) {
+        console.error('[TrendScore] fetchStockNews failed:', e);
+    }
 
     return {
         score,
         indicators,
         detail: {
-            news: [],
+            news,
             researchCount: Number(newsRaw['research_visit_count']) || 0,
             hardCatalyst: String(newsRaw['hard_catalyst'] ?? ''),
         },
@@ -429,7 +454,7 @@ export class TrendScoreService {
         const trackResult = await calcTrackDim(symbol, data, industryCache);
 
         // 3. 消息面催化维度
-        const newsResult = calcNewsDim(data);
+        const newsResult = await calcNewsDim(symbol, data);
 
         // 4. 基本面维度
         const fundamentalResult = calcFundamentalDim(data, aiScores);
