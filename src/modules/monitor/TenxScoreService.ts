@@ -111,7 +111,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
  * 百分制换算：原5分制 → 1分=20, 2分=40, 3分=60, 4分=80, 5分=100
  */
 
-interface DimDef {
+export interface DimDef {
     name: string;
     weight: number;
     indicators: { name: string; key: string }[];
@@ -278,11 +278,11 @@ function formatValue(key: string, raw: number | string | null | undefined): stri
     return raw.toFixed(2);
 }
 
-interface RawIndicators { [key: string]: number | string | null | undefined; stockName?: string; }
+export interface RawIndicators { [key: string]: number | string | null | undefined; stockName?: string; }
 
 export interface IndustryCache { [industryCode: string]: { industryName: string; market_recognition: number; policy_trend_score: number; members: string[]; }; }
 
-interface PrefetchedData {
+export interface PrefetchedData {
     income: TushareService.IncomeRow[]; fina: TushareService.FinaIndicatorRow[]; cashflow: TushareService.CashflowRow[];
     balance: TushareService.BalanceSheetRow[]; daily: TushareService.DailyBasicRow[];
     prices: TushareService.DailyPriceRow[];
@@ -300,7 +300,7 @@ interface PrefetchedData {
     kplConceptCons: TushareService.KplConceptConsRow[];
 }
 
-async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
+export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
     const threeYearsAgo = new Date(); threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 4);
     const startDate = threeYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
     const fiveYearsAgo = new Date(); fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
@@ -386,7 +386,7 @@ async function prefetchDynamicData(symbol: string, cached: PrefetchedData): Prom
  * 维度1：业绩爆发力 (30%)
  * 指标：未来2年预期净利润复合增速、最近单季营收同比增速、最近一季利润同比加速
  */
-function calcEarningsExplosion(data: PrefetchedData): RawIndicators {
+export function calcEarningsExplosion(data: PrefetchedData): RawIndicators {
     const { income, fina, forecast } = data;
 
     // ① 未来2年预期净利润复合增速
@@ -469,7 +469,7 @@ function calcEarningsExplosion(data: PrefetchedData): RawIndicators {
  * 维度2：赛道景气度 (25%)
  * 指标：市场认可度、行业渗透率位置、政策/产业趋势强度
  */
-async function calcIndustryTrack(symbol: string, data: PrefetchedData, industryCache?: IndustryCache): Promise<RawIndicators> {
+export async function calcIndustryTrack(symbol: string, data: PrefetchedData, industryCache?: IndustryCache): Promise<RawIndicators> {
     let industryCode = data.industry?.industry_code || '';
     let industryName = data.industry?.industry_name || '';
 
@@ -712,7 +712,7 @@ function calcPenetrationScore(industryName: string): number | null {
  * 维度3：估值弹性 (15%)
  * 指标：PEG、当前总市值、估值双击空间
  */
-function calcValuationElasticity(data: PrefetchedData): RawIndicators {
+export function calcValuationElasticity(data: PrefetchedData): RawIndicators {
     const daily = data.daily;
     const fina = data.fina;
     const forecast = data.forecast;
@@ -799,7 +799,7 @@ function calcValuationElasticity(data: PrefetchedData): RawIndicators {
  * 维度4：盈利质量 (15%)
  * 指标：毛利率、净利率同比提升幅度、经营现金流/净利润
  */
-function calcProfitQuality(data: PrefetchedData): RawIndicators {
+export function calcProfitQuality(data: PrefetchedData): RawIndicators {
     const { fina, cashflow, income } = data;
 
     // ① 毛利率(%)
@@ -849,7 +849,7 @@ function calcProfitQuality(data: PrefetchedData): RawIndicators {
  * 维度5：竞争壁垒 (10%)
  * 指标：细分赛道市占率趋势、合同负债环比增速、行业地位不可替代性
  */
-function calcCompetitiveMoat(data: PrefetchedData): RawIndicators {
+export function calcCompetitiveMoat(data: PrefetchedData): RawIndicators {
     const { balance, fina, income } = data;
 
     // ① 细分赛道市占率趋势 - 综合毛利率水平、营收增速、ROE判断
@@ -920,7 +920,7 @@ function calcCompetitiveMoat(data: PrefetchedData): RawIndicators {
  * 维度6：消息催化 (5%)
  * 指标：近1月机构调研家数、股东户数较上期变化率、硬催化
  */
-function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
+export function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
     const { holderNumber, forecast, survival, analystRating } = data;
 
     // ① 近1月机构调研家数 - 使用真实调研数据
@@ -1043,7 +1043,7 @@ export function clearAiIndicatorScores(symbol: string): void {
 /**
  * 计算单个指标的百分制评分
  */
-function scoreIndicator(key: string, rawValue: number | string | null | undefined, aiScores?: Record<string, number> | null): number {
+export function scoreIndicator(key: string, rawValue: number | string | null | undefined, aiScores?: Record<string, number> | null): number {
     // 优先使用AI资讯分析打分
     if (aiScores && aiScores[key] != null) {
         return Math.min(100, Math.max(0, Math.round(aiScores[key])));
@@ -1063,7 +1063,7 @@ function scoreIndicator(key: string, rawValue: number | string | null | undefine
     return Math.min(100, Math.max(0, scoreByRange(rawValue, ranges)));
 }
 
-function scoreAllIndicators(raw: RawIndicators, aiScores?: Record<string, number> | null): Record<string, number> {
+export function scoreAllIndicators(raw: RawIndicators, aiScores?: Record<string, number> | null): Record<string, number> {
     const result: Record<string, number> = {};
     for (const dim of TENX_DIMS) {
         for (const ind of dim.indicators) {
@@ -1073,7 +1073,7 @@ function scoreAllIndicators(raw: RawIndicators, aiScores?: Record<string, number
     return result;
 }
 
-function calcDimScore(dim: DimDef, indScores: Record<string, number>): number {
+export function calcDimScore(dim: DimDef, indScores: Record<string, number>): number {
     const scores = dim.indicators.map(ind => indScores[ind.key]);
     return Math.round(avg(scores));
 }
