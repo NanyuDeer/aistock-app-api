@@ -803,7 +803,7 @@ async function isAIRelatedSector(name: string): Promise<boolean> {
 }
 
 /** 从同花顺板块轮动API获取板块轮动数据（截取指定天数） */
-async function fetchBlockRotationData(days: number = 20): Promise<{
+export async function fetchBlockRotationData(days: number = 20): Promise<{
     sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
     rawData: any[];
 }> {
@@ -1066,7 +1066,7 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
     }
 }
 
-async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, days: number = 10): Promise<HotConcept[]> {
+async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, days: number = 20): Promise<HotConcept[]> {
     const cacheKey = `hot_concepts_${days}_${minFrequency}_${topN}`;
     const cached = cacheGet(cacheKey);
     if (cached) {
@@ -1123,7 +1123,7 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             today_change: Math.round(sector.latestZf5 * 100) / 100,
             amount_trend: 0,
             net_inflow: 0,
-            driver: `10日板块轮动上榜${sector.frequency}次`,
+            driver: `20日板块轮动上榜${sector.frequency}次`,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -1777,8 +1777,8 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
 ## 概念板块数据
 - 概念名称：${sectorName}
 - 板块评分：${sectorData.score}分（综合频次、涨幅、资金等因素）
-- 近10日上榜频次：${sectorData.frequency}天
-- 10日平均涨幅：${sectorData.avg_change}%
+- 近20日上榜频次：${sectorData.frequency}天
+- 近20日平均涨幅：${sectorData.avg_change}%
 - 今日涨幅：${sectorData.today_change}%
 - 主力净流入：${sectorData.amount_trend}万元
 - 板块净流入：${sectorData.net_inflow}万元
@@ -2733,10 +2733,10 @@ export class WindLeaderAnalyzerService {
         clearAllCache();
 
         // 1. 识别风口概念板块
-        let hotConcepts = await identifyHotConcepts(8, 2, 10);
+        let hotConcepts = await identifyHotConcepts(8, 2, 20);
         if (hotConcepts.length === 0) {
             console.log('[HotSectorAnalyzer] 未识别到风口概念，降低筛选条件重试');
-            hotConcepts = await identifyHotConcepts(8, 1, 10);
+            hotConcepts = await identifyHotConcepts(8, 1, 20);
         }
 
         const result: FullAnalysisResult = {
