@@ -33,7 +33,7 @@ export interface TrendDimension {
 
 export interface TechnicalDetail {
     kline: { dates: string[]; ohlc: [number, number, number, number][] };
-    conceptKline: { name: string; dates: string[]; close: number[] };
+    conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] };
     indicators: {
         lowPointGain: number;
         ma60Position: 'above' | 'below';
@@ -460,7 +460,7 @@ export class TrendScoreService {
         const techResult = calcTechnicalDim(prices);
 
         // 获取概念指数K线（用于展开详情）
-        let conceptKline: { name: string; dates: string[]; close: number[] } = { name: '', dates: [], close: [] };
+        let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };
         try {
             if (data.industry?.industry_code) {
                 const indexDaily = await TushareService.getIndexDaily(data.industry.industry_code, startDateStr);
@@ -469,7 +469,7 @@ export class TrendScoreService {
                 conceptKline = {
                     name: data.industry.industry_name || '',
                     dates: recent.map(d => d.trade_date),
-                    close: recent.map(d => d.close),
+                    ohlc: recent.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
                 };
             }
         } catch (e) {
