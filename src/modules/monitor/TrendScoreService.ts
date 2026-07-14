@@ -292,15 +292,25 @@ async function calcTrackDim(
     try {
         const { sectorStats, rawData } = await fetchBlockRotationData(60);
         rotationRawData = rawData;
+        // 安全获取板块统计（缓存可能返回普通对象而非Map）
+        const getSectorStat = (name: string): { frequency: number } | undefined => {
+            if (!name) return undefined;
+            if (sectorStats instanceof Map) return sectorStats.get(name);
+            // 缓存反序列化后为普通对象
+            const obj = (sectorStats as any)[name];
+            return obj ? { frequency: obj.frequency || 0 } : undefined;
+        };
         // 先尝试行业名匹配
-        if (data.industry?.industry_name && sectorStats.has(data.industry.industry_name)) {
-            sectorListCount60d = sectorStats.get(data.industry.industry_name)!.frequency;
+        if (data.industry?.industry_name) {
+            const stat = getSectorStat(data.industry.industry_name);
+            if (stat && stat.frequency > 0) sectorListCount60d = stat.frequency;
         }
         // 再尝试概念名匹配
         if (sectorListCount60d === 0 && data.kplConceptCons.length > 0) {
             for (const con of data.kplConceptCons) {
-                if (con.con_name && sectorStats.has(con.con_name)) {
-                    sectorListCount60d = sectorStats.get(con.con_name)!.frequency;
+                const stat = getSectorStat(con.con_name);
+                if (stat && stat.frequency > 0) {
+                    sectorListCount60d = stat.frequency;
                     sectorName = con.con_name;
                     break;
                 }
@@ -316,12 +326,30 @@ async function calcTrackDim(
         { name: '政策/产业趋势强度', key: 'policy_trend_score', value: String(trackRaw['policy_trend_score'] ?? '--'), score: trackIndScores['policy_trend_score'] },
     ];
 
-    // 收集所有需要匹配的板块名
+    // 收集所有需要匹配的板块名（含模糊匹配）
     const sectorNamesForMatch: string[] = [];
     if (data.industry?.industry_name) sectorNamesForMatch.push(data.industry.industry_name);
     for (const con of data.kplConceptCons) {
         if (con.con_name) sectorNamesForMatch.push(con.con_name);
     }
+    // 从轮动rawData中收集所有板块名，用于模糊匹配
+    const allRotationNames: string[] = [];
+    for (const dayData of rotationRawData) {
+        const blockList = dayData?.block_list || [];
+        for (const block of blockList) {
+            if (block.name) allRotationNames.push(block.name);
+        }
+    }
+    // 模糊匹配：如果stock的板块名包含轮动中的某个板块名（或反之），也算匹配
+    const fuzzyMatchNames = new Set<string>();
+    for (const stockName of sectorNamesForMatch) {
+        for (const rotName of allRotationNames) {
+            if (stockName.includes(rotName) || rotName.includes(stockName)) {
+                fuzzyMatchNames.add(rotName);
+            }
+        }
+    }
+    const allMatchNames = [...new Set([...sectorNamesForMatch, ...fuzzyMatchNames])];
 
     return {
         score: trackDimScore,
@@ -331,7 +359,7 @@ async function calcTrackDim(
             sectorName,
             marketRecognition: trackIndScores['market_recognition'],
             policyTrend: String(trackRaw['policy_trend_score'] ?? ''),
-            weeklyListingTrend: extractWeeklyTrend(rotationRawData || [], sectorNamesForMatch),
+            weeklyListingTrend: extractWeeklyTrend(rotationRawData || [], allMatchNames),
             sectorStrength: sectorStrength || '--',
             policyItems: extractPolicyItems(newsItems || []),
         },
@@ -507,18 +535,51 @@ export class TrendScoreService {
         // 1. 技术面维度
         const techResult = calcTechnicalDim(prices);
 
-        // 获取概念指数K线（用于展开详情）
+        // 获取概念/行业指数K线（用于展开详情）
         let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };
         try {
-            if (data.industry?.industry_code) {
-                const indexDaily = await TushareService.getIndexDaily(data.industry.industry_code, startDateStr);
+            // 构建 板块名 → ts_code 的映射（从Tushare ths_index获取）
+            const conceptIndices = await TushareService.getThsIndex('N', 'A'); // 概念指数
+            const industryIndices = await TushareService.getThsIndex('I', 'A'); // 行业指数
+            const nameToCode = new Map<string, string>();
+            for (const idx of [...conceptIndices, ...industryIndices]) {
+                nameToCode.set(idx.name, idx.ts_code);
+            }
+
+            // 优先用概念名匹配，其次行业名
+            let matchedCode = '';
+            let matchedName = '';
+            // 先从概念列表中找匹配
+            for (const con of data.kplConceptCons) {
+                if (con.con_name && nameToCode.has(con.con_name)) {
+                    matchedCode = nameToCode.get(con.con_name)!;
+                    matchedName = con.con_name;
+                    break;
+                }
+            }
+            // 如果概念没匹配到，用行业名
+            if (!matchedCode && data.industry?.industry_name && nameToCode.has(data.industry.industry_name)) {
+                matchedCode = nameToCode.get(data.industry.industry_name)!;
+                matchedName = data.industry.industry_name;
+            }
+            // 如果还是没匹配，尝试用 industry_code
+            if (!matchedCode && data.industry?.industry_code) {
+                matchedCode = data.industry.industry_code;
+                matchedName = data.industry.industry_name || '';
+            }
+
+            if (matchedCode) {
+                const indexDaily = await TushareService.getIndexDaily(matchedCode, startDateStr);
                 const sorted = [...indexDaily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
                 const recent = sorted.slice(-120);
                 conceptKline = {
-                    name: data.industry.industry_name || '',
+                    name: matchedName,
                     dates: recent.map(d => d.trade_date),
                     ohlc: recent.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
                 };
+                console.log(`[TrendScore] 概念K线: ${matchedName}(${matchedCode}), ${recent.length}天`);
+            } else {
+                console.warn(`[TrendScore] 未找到匹配的概念/行业指数, kplCons=${data.kplConceptCons.length}, industry=${data.industry?.industry_name || 'N/A'}`);
             }
         } catch (e) {
             console.error('[TrendScore] concept index kline failed:', e);
