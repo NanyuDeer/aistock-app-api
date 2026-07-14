@@ -31,8 +31,9 @@ function cleanupLocalCache(): void {
     }
 }
 
-// 每5分钟清理过期缓存（减少CPU消耗）
-setInterval(cleanupLocalCache, 300_000);
+// 每分钟清理过期缓存
+// unref() 确保此定时器不会阻止 Node.js 进程退出（测试环境 / 进程关闭时）
+setInterval(cleanupLocalCache, 60_000).unref();
 
 export class CacheService {
     static async get<T>(key: string): Promise<T | null> {
