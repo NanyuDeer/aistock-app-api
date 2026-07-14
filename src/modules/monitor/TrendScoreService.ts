@@ -429,6 +429,18 @@ async function calcTrackDim(
     }
     const allMatchNames = [...new Set([...sectorNamesForMatch, ...fuzzyMatchNames, ...thsConceptNames])];
 
+    // 先计算 weeklyListingTrend，再用其结果修正 sectorListCount60d
+    const weeklyTrend = extractWeeklyTrend(rotationRawData || [], allMatchNames, sectorListCount60d);
+    const weeklySum = weeklyTrend.reduce((a: number, b: number) => a + b, 0);
+    // 如果 sectorStats 匹配失败但 weeklyListingTrend 有值，用周度趋势总和作为60日上榜次数
+    if (sectorListCount60d === 0 && weeklySum > 0) {
+        sectorListCount60d = weeklySum;
+        // 如果 sectorName 还是默认行业名，用第一个模糊匹配的轮动板块名
+        if (sectorName === (data.industry?.industry_name || '') && fuzzyMatchNames.size > 0) {
+            sectorName = [...fuzzyMatchNames][0];
+        }
+    }
+
     return {
         score: trackDimScore,
         indicators,
@@ -437,7 +449,7 @@ async function calcTrackDim(
             sectorName,
             marketRecognition: trackIndScores['market_recognition'],
             policyTrend: String(trackRaw['policy_trend_score'] ?? ''),
-            weeklyListingTrend: extractWeeklyTrend(rotationRawData || [], allMatchNames, sectorListCount60d),
+            weeklyListingTrend: weeklyTrend,
             sectorStrength: sectorStrength || '--',
             policyItems: extractPolicyItems(newsItems || []),
         },
