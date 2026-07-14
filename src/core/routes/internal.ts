@@ -23,7 +23,7 @@ import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast']
+const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction']
 
 const router: Router = Router()
 
@@ -397,7 +397,7 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  */
 router.post('/analysis-reports', async (req: Request, res: Response) => {
     const { report_type, report_date, content } = req.body
-    const user_id = req.body.user_id ?? null  // 公共报告 user_id 为 null
+    let user_id = req.body.user_id ?? null  // 公共报告 user_id 为 null
     const data_source = req.body.data_source ?? null
     const status = req.body.status ?? 'completed'
     const generation_time_ms = req.body.generation_time_ms ?? null
@@ -407,6 +407,15 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
     // 参数校验
     if (!VALID_REPORT_TYPES.includes(report_type)) {
         return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    // event_conduction：必填 event_id，复用 user_id 列做隔离键
+    // 同一 report_date 下：相同 event_id → upsert 更新；不同 event_id → 分别保存
+    if (report_type === 'event_conduction') {
+        const event_id = req.body.event_id
+        if (!event_id || typeof event_id !== 'string') {
+            return res.status(400).json({ code: 400, message: 'event_id is required for event_conduction report_type' })
+        }
+        user_id = event_id
     }
     if (!report_date || !/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
         return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
@@ -785,6 +794,104 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'audio/mpeg')
     const stream = fs.createReadStream(filePath)
     stream.pipe(res)
+})
+
+/**
+ * GET /api/agent/event/list
+ * 事件传导报告列表（公开接口，供前端调用）
+ *
+ * Query: page=1, pageSize=10
+ * 返回最小可展示元数据：eventId, title, source, publishTime, 摘要/结论
+ */
+publicRouter.get('/event/list', async (req: Request, res: Response) => {
+    const page = Math.max(1, queryInt(req, 'page', 1))
+    const pageSize = Math.min(Math.max(1, queryInt(req, 'pageSize', 10)), 100)
+    const offset = (page - 1) * pageSize
+
+    try {
+        const [dataResult, countResult] = await Promise.all([
+            pool.query(
+                `SELECT id, report_date, user_id, content, created_at
+                 FROM agent_analysis_reports
+                 WHERE report_type = 'event_conduction'
+                 ORDER BY created_at DESC
+                 LIMIT $1 OFFSET $2`,
+                [pageSize, offset]
+            ),
+            pool.query(
+                `SELECT COUNT(*) AS total FROM agent_analysis_reports
+                 WHERE report_type = 'event_conduction'`
+            ),
+        ])
+
+        const items = dataResult.rows.map((row: Record<string, unknown>) => {
+            const content = (row['content'] as Record<string, unknown>) || {}
+            const ar = (content['analysis_reports'] as Record<string, unknown>) || {}
+            const eu = (ar['event_understanding'] as Record<string, unknown>) || {}
+            const ei = (ar['event_investment'] as Record<string, unknown>) || {}
+            return {
+                eventId: content['eventId'] || row['user_id'] || '',
+                title: content['title'] || '',
+                source: content['source'] || '',
+                publishTime: content['publishTime'] || row['report_date'] || '',
+                summary: eu['summary'] || '',
+                conclusion: ei['conclusion'] || '',
+            }
+        })
+
+        const totalNum = parseInt(String((countResult.rows[0] as Record<string, unknown>)?.['total'] ?? '0'))
+        const hasMore = page * pageSize < totalNum
+
+        res.json({
+            code: 0,
+            data: {
+                events: items,
+                total: totalNum,
+                page,
+                pageSize,
+                hasMore,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/list error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/event/:eventId
+ * 事件传导报告详情（公开接口，供前端调用）
+ *
+ * 返回完整事件元数据和完整 analysis_reports（四模块 + event_podcast_brief）
+ */
+publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date, user_id, content, data_source, status,
+                    generation_time_ms, model_version, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'event_conduction' AND user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [eventId]
+        )
+
+        if (result.rows.length === 0) {
+            res.status(404).json({ code: -1, message: 'Event not found' })
+            return
+        }
+
+        res.json({ code: 0, data: result.rows[0] })
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/:eventId error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
 })
 
 export { publicRouter }
