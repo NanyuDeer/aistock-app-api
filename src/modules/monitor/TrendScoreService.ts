@@ -208,27 +208,67 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[]): {
 // ==================== 行业赛道景气维度计算 ====================
 
 /**
- * 根据60日总上榜次数生成近6周上榜趋势（占位实现）
- * TODO: 后端增强 — 改为从 fetchBlockRotationData 获取真实周度数据
+ * 从板块轮动rawData中提取近6周上榜趋势
+ * rawData 结构: [{ date, block_list: [{ name, code, info: { zf5 } }] }]
+ * 按每5个交易日一组分为6周，统计目标板块每周上榜次数
  */
-function generateWeeklyTrend(total60d: number): number[] {
-    if (total60d <= 0) return [0, 0, 0, 0, 0, 0];
-    // 将总数大致均分到6周，加上递增趋势模拟
-    const avg = Math.max(1, Math.floor(total60d / 8));
-    return [
-        Math.max(0, avg - 2),
-        Math.max(0, avg - 1),
-        Math.max(0, avg),
-        Math.max(0, avg + 1),
-        Math.max(0, avg + 2),
-        Math.max(0, avg + 3),
-    ];
+function extractWeeklyTrend(rawData: any[], sectorNames: string[]): number[] {
+    if (!rawData || !rawData.length || !sectorNames.length) return [0, 0, 0, 0, 0, 0];
+    const nameSet = new Set(sectorNames);
+    const totalDays = rawData.length;
+    const weekSize = Math.ceil(totalDays / 6);
+    const weekly: number[] = [];
+    for (let w = 0; w < 6; w++) {
+        const start = w * weekSize;
+        const end = Math.min(start + weekSize, totalDays);
+        let count = 0;
+        for (let i = start; i < end; i++) {
+            const blockList = rawData[i]?.block_list || [];
+            for (const block of blockList) {
+                if (nameSet.has(block.name)) { count++; break; }
+            }
+        }
+        weekly.push(count);
+    }
+    return weekly;
+}
+
+/** 政策/产业趋势关键词 */
+const POLICY_KEYWORDS = ['政策', '规划', '补贴', '支持', '鼓励', '改革', '推进', '发布', '印发', '通知', '方案', '意见', '条例', '办法', '战略', '纲要', '利好', '需求', '供给', '产能', '进口', '出口', '关税', '环保', '安监', '双碳', '新能源', '基建', '投资'];
+const POSITIVE_KEYWORDS = ['利好', '上涨', '增长', '突破', '加速', '提升', '超预期', '景气', '复苏', '改善'];
+
+/**
+ * 从新闻列表中提取政策/产业趋势项
+ * 阶段一：基于关键词匹配，无需LLM
+ * 阶段二（后续增强）：接入大模型提取更精准的结构化趋势项
+ */
+function extractPolicyItems(news: { title: string; summary?: string }[], maxItems: number = 5): { name: string; desc: string; color: 'up' | 'gold' }[] {
+    if (!news || !news.length) return [];
+    const items: { name: string; desc: string; color: 'up' | 'gold' }[] = [];
+    for (const item of news) {
+        const title = item.title || '';
+        const hasPolicy = POLICY_KEYWORDS.some(kw => title.includes(kw));
+        if (!hasPolicy) continue;
+        const isPositive = POSITIVE_KEYWORDS.some(kw => title.includes(kw));
+        // 标题作为name（截取前15字），摘要作为desc（截取前40字）
+        const name = title.length > 15 ? title.slice(0, 15) + '...' : title;
+        const desc = (item.summary || title).slice(0, 40);
+        items.push({ name, desc, color: isPositive ? 'up' : 'gold' });
+        if (items.length >= maxItems) break;
+    }
+    // 如果匹配不足3条，用默认占位
+    if (items.length < 3) {
+        items.push({ name: '暂无明显政策催化', desc: '近期无重大政策/产业趋势变化', color: 'gold' });
+    }
+    return items;
 }
 
 async function calcTrackDim(
     symbol: string,
     data: PrefetchedData,
     industryCache?: IndustryCache,
+    sectorStrength?: string,
+    newsItems?: { title: string; summary?: string }[],
 ): Promise<{
     score: number;
     indicators: { name: string; key: string; value: string; score: number }[];
@@ -248,8 +288,10 @@ async function calcTrackDim(
     // 获取60日板块轮动上榜次数
     let sectorListCount60d = 0;
     let sectorName = data.industry?.industry_name || '未知';
+    let rotationRawData: any[] = [];
     try {
-        const { sectorStats } = await fetchBlockRotationData(60);
+        const { sectorStats, rawData } = await fetchBlockRotationData(60);
+        rotationRawData = rawData;
         // 先尝试行业名匹配
         if (data.industry?.industry_name && sectorStats.has(data.industry.industry_name)) {
             sectorListCount60d = sectorStats.get(data.industry.industry_name)!.frequency;
@@ -274,6 +316,13 @@ async function calcTrackDim(
         { name: '政策/产业趋势强度', key: 'policy_trend_score', value: String(trackRaw['policy_trend_score'] ?? '--'), score: trackIndScores['policy_trend_score'] },
     ];
 
+    // 收集所有需要匹配的板块名
+    const sectorNamesForMatch: string[] = [];
+    if (data.industry?.industry_name) sectorNamesForMatch.push(data.industry.industry_name);
+    for (const con of data.kplConceptCons) {
+        if (con.con_name) sectorNamesForMatch.push(con.con_name);
+    }
+
     return {
         score: trackDimScore,
         indicators,
@@ -282,10 +331,9 @@ async function calcTrackDim(
             sectorName,
             marketRecognition: trackIndScores['market_recognition'],
             policyTrend: String(trackRaw['policy_trend_score'] ?? ''),
-            // TODO: 后端增强 — 以下字段当前为占位值，需实现真实数据源
-            weeklyListingTrend: generateWeeklyTrend(sectorListCount60d),
-            sectorStrength: '--',  // TODO: 计算板块指数月涨幅
-            policyItems: [{ name: '政策趋势', desc: String(trackRaw['policy_trend_score'] ?? '暂无数据'), color: 'gold' as const }],
+            weeklyListingTrend: extractWeeklyTrend(rotationRawData || [], sectorNamesForMatch),
+            sectorStrength: sectorStrength || '--',
+            policyItems: extractPolicyItems(newsItems || []),
         },
     };
 }
@@ -476,11 +524,23 @@ export class TrendScoreService {
             console.error('[TrendScore] concept index kline failed:', e);
         }
 
-        // 2. 行业赛道景气维度
-        const trackResult = await calcTrackDim(symbol, data, industryCache);
+        // 计算板块月涨幅
+        let sectorStrength = '--';
+        if (conceptKline.ohlc.length >= 21) { // 至少需要21个交易日（约1个月）
+            const currentClose = conceptKline.ohlc[conceptKline.ohlc.length - 1][1]; // [open, close, low, high]
+            const monthAgoClose = conceptKline.ohlc[conceptKline.ohlc.length - 21][1];
+            if (monthAgoClose > 0) {
+                const gainNum = (currentClose - monthAgoClose) / monthAgoClose * 100;
+                const gain = gainNum.toFixed(1);
+                sectorStrength = (gainNum >= 0 ? '+' : '') + gain + '%';
+            }
+        }
 
-        // 3. 消息面催化维度
+        // 3. 消息面催化维度（先计算，因为赛道维度需要复用新闻数据提取政策趋势）
         const newsResult = await calcNewsDim(symbol, data);
+
+        // 2. 行业赛道景气维度
+        const trackResult = await calcTrackDim(symbol, data, industryCache, sectorStrength, newsResult.detail.news);
 
         // 4. 基本面维度
         const fundamentalResult = calcFundamentalDim(data, aiScores);

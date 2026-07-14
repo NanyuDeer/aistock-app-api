@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-14 — 趋势股评分赛道维度数据源增强
+**开发者**: NanyuDeer
+
+### 改进
+- `src/modules/monitor/TrendScoreService.ts`：weeklyListingTrend 复用板块轮动 rawData 真实周度上榜次数（替换占位 generateWeeklyTrend）
+- `src/modules/monitor/TrendScoreService.ts`：sectorStrength 复用概念指数K线计算板块月涨幅（替换占位 '--'）
+- `src/modules/monitor/TrendScoreService.ts`：policyItems 复用财联社新闻关键词提取政策/产业趋势项（替换占位硬编码）
+
+---
+
 ## [master] 2026-07-10 — Agent 报告持久化基础设施 + AGENTS.md 文档
 **开发者**: Aria
 
