@@ -701,6 +701,16 @@ export async function getThsMember(tsCode: string): Promise<ThsMemberRow[]> {
     return rows as ThsMemberRow[];
 }
 
+/** 按股票代码反查所属概念/行业板块列表 */
+export async function getThsMemberByStock(conCode: string): Promise<ThsMemberRow[]> {
+    const rows = await tushareRequest(
+        'ths_member',
+        { con_code: conCode },
+        'ts_code,con_code,con_name,is_new',
+    );
+    return rows as ThsMemberRow[];
+}
+
 /** 按交易日期获取全市场股票日线行情（用于批量获取成分股涨幅）
  * 频率限制：500次/分钟，单次最大5000行
  */

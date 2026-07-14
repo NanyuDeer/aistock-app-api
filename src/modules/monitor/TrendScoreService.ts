@@ -306,6 +306,31 @@ async function calcTrackDim(
         (trackIndScores['market_recognition'] + trackIndScores['industry_penetration'] + trackIndScores['policy_trend_score']) / 3
     );
 
+    // 通过 ths_member 反查股票所属概念板块（与轮动API同源）
+    let thsConceptNames: string[] = [];
+    try {
+        const tsCode = symbol.startsWith('6') ? `${symbol}.SH` : `${symbol}.SZ`;
+        const members = await TushareService.getThsMemberByStock(tsCode);
+        if (members.length > 0) {
+            // 获取 ths_index 名称映射
+            const conceptIndices = await TushareService.getThsIndex('N', 'A');
+            const industryIndices = await TushareService.getThsIndex('I', 'A');
+            const codeToName = new Map<string, string>();
+            for (const idx of [...conceptIndices, ...industryIndices]) {
+                codeToName.set(idx.ts_code, idx.name);
+            }
+            // 将 member 的 ts_code 转为板块名
+            for (const m of members) {
+                if (m.is_new === 'N') continue; // 跳过已剔除的
+                const boardName = codeToName.get(m.ts_code);
+                if (boardName) thsConceptNames.push(boardName);
+            }
+            console.log(`[TrendScore] ${symbol} 所属THS概念板块: ${thsConceptNames.length}个 - ${thsConceptNames.slice(0, 5).join(', ')}`);
+        }
+    } catch (e) {
+        console.warn('[TrendScore] getThsMemberByStock failed:', (e as Error).message);
+    }
+
     // 获取60日板块轮动上榜次数
     let sectorListCount60d = 0;
     let sectorName = data.industry?.industry_name || '未知';
@@ -351,6 +376,17 @@ async function calcTrackDim(
                 }
             }
         }
+        // 再尝试THS概念板块名匹配
+        if (sectorListCount60d === 0 && thsConceptNames.length > 0) {
+            for (const conName of thsConceptNames) {
+                const stat = getSectorStat(conName);
+                if (stat && stat.frequency > 0) {
+                    sectorListCount60d = stat.frequency;
+                    sectorName = stat.matchedName || conName;
+                    break;
+                }
+            }
+        }
     } catch (e) {
         console.error('[TrendScore] fetchBlockRotationData(60) failed:', e);
     }
@@ -361,12 +397,19 @@ async function calcTrackDim(
         { name: '政策/产业趋势强度', key: 'policy_trend_score', value: String(trackRaw['policy_trend_score'] ?? '--'), score: trackIndScores['policy_trend_score'] },
     ];
 
-    // 收集所有需要匹配的板块名（含模糊匹配）
+    // 收集所有需要匹配的板块名
+    // 优先级：THS概念板块名（与轮动API同源）> 开盘啦概念名(name字段) > 行业名
     const sectorNamesForMatch: string[] = [];
-    if (data.industry?.industry_name) sectorNamesForMatch.push(data.industry.industry_name);
-    for (const con of data.kplConceptCons) {
-        if (con.con_name) sectorNamesForMatch.push(con.con_name);
+    // 1. THS概念板块名（最准确，与轮动API同源）
+    for (const name of thsConceptNames) {
+        sectorNamesForMatch.push(name);
     }
+    // 2. 开盘啦概念题材名（注意：用 con.name 不是 con.con_name）
+    for (const con of data.kplConceptCons) {
+        if (con.name) sectorNamesForMatch.push(con.name);
+    }
+    // 3. 行业名（兜底）
+    if (data.industry?.industry_name) sectorNamesForMatch.push(data.industry.industry_name);
     // 从轮动rawData中收集所有板块名，用于模糊匹配
     const allRotationNames: string[] = [];
     for (const dayData of rotationRawData) {
@@ -384,7 +427,7 @@ async function calcTrackDim(
             }
         }
     }
-    const allMatchNames = [...new Set([...sectorNamesForMatch, ...fuzzyMatchNames])];
+    const allMatchNames = [...new Set([...sectorNamesForMatch, ...fuzzyMatchNames, ...thsConceptNames])];
 
     return {
         score: trackDimScore,
