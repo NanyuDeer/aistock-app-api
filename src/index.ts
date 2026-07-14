@@ -44,6 +44,7 @@ import { WindLeaderController } from './modules/monitor/windLeaderController';
 import { NewsController } from './modules/monitor/newsController';
 import { ProfitForecastController } from './modules/monitor/profitForecastController';
 import { TenxScoreController } from './modules/monitor/tenxScoreController';
+import { TrendScoreController } from './modules/monitor/trendScoreController';
 import { AiGraphController } from './modules/monitor/aiGraphController';
 import { AiGraphService } from './modules/monitor/AiGraphService';
 import { IndustryKGController } from './modules/monitor/industryKGController';
@@ -455,6 +456,13 @@ app.get('/api/cn/stocks/:symbol/tenx-score/veto-check', (req, res, next) => {
 app.get('/api/cn/stocks/tenx-score/top', (req, res, next) => {
     TenxScoreController.getTopStocks(req, res, next);
 });
+
+// ==================== 趋势股评分路由 ====================
+app.get('/api/cn/stocks/trend-score/top', (req, res, next) => TrendScoreController.getTopStocks(req, res, next));
+app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreController.getScore(req, res, next));
+app.get('/api/cn/stocks/:symbol/trend-score/detail', (req, res, next) => TrendScoreController.getDetail(req, res, next));
+app.post('/api/cn/stocks/:symbol/trend-score/refresh', (req, res, next) => TrendScoreController.refreshScore(req, res, next));
+app.post('/api/cn/stocks/trend-score/batch', (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
 
 app.get('/api/news/headlines', (req, res, next) => NewsController.getHeadlines(req, res, next));
 app.get('/api/news/cn', (req, res, next) => NewsController.getCnNews(req, res, next));
