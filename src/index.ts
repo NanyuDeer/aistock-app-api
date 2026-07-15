@@ -465,6 +465,8 @@ app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreCont
 app.get('/api/cn/stocks/:symbol/trend-score/detail', (req, res, next) => TrendScoreController.getDetail(req, res, next));
 app.post('/api/cn/stocks/:symbol/trend-score/refresh', (req, res, next) => TrendScoreController.refreshScore(req, res, next));
 app.post('/api/cn/stocks/trend-score/batch', (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
+app.post('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
+app.get('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
 
 app.get('/api/news/headlines', (req, res, next) => NewsController.getHeadlines(req, res, next));
 app.get('/api/news/cn', (req, res, next) => NewsController.getCnNews(req, res, next));

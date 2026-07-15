@@ -186,16 +186,38 @@ export class ScanLoginController {
                 return;
             }
 
+            // 获取用户昵称和头像（通过公众号 user/info 接口）
+            let nickname = '';
+            let avatarUrl = '';
+            try {
+                const accessToken = await ScanLoginController.getServerAccessToken();
+                const userRes = await fetch(
+                    `https://api.weixin.qq.com/cgi-bin/user/info` +
+                    `?access_token=${accessToken}` +
+                    `&openid=${openid}` +
+                    `&lang=zh_CN`,
+                );
+                const userData: any = await userRes.json();
+                if (userData.nickname) nickname = userData.nickname;
+                if (userData.headimgurl) avatarUrl = userData.headimgurl;
+                ScanLoginController.log('scanEvent', '用户信息获取', { openid, nickname: nickname || '(空)', hasAvatar: !!avatarUrl });
+            } catch (userInfoErr) {
+                // 获取用户信息失败不中断登录流程，仅记录 openid
+                ScanLoginController.log('scanEvent', '⚠️ 获取用户信息失败，继续登录流程', { error: String(userInfoErr) });
+            }
+
             const now = Math.floor(Date.now() / 1000);
             const exp = now + 7 * 24 * 3600;
-            const jwt = signJwt({ openid, iat: now, exp }, process.env.JWT_SECRET!);
+            const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
 
             try {
                 await pool.query(
                     `INSERT INTO users (openid, nickname, avatar_url)
-                     VALUES ($1, '', '')
-                     ON CONFLICT(openid) DO UPDATE SET openid = EXCLUDED.openid`,
-                    [openid],
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT(openid) DO UPDATE SET
+                         nickname = CASE WHEN EXCLUDED.nickname != '' THEN EXCLUDED.nickname ELSE users.nickname END,
+                         avatar_url = CASE WHEN EXCLUDED.avatar_url != '' THEN EXCLUDED.avatar_url ELSE users.avatar_url END`,
+                    [openid, nickname, avatarUrl],
                 );
                 await pool.query(
                     `UPDATE scan_login_states SET status = 'confirmed', openid = $1, jwt = $2 WHERE state = $3`,
@@ -283,6 +305,7 @@ export class ScanLoginController {
             createResponse(res, 200, 'confirmed', {
                 status: 'confirmed',
                 openid: record.openid,
+                token: record.jwt,
                 timestamp: new Date().toISOString(),
             });
             return;

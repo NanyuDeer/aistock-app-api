@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { createResponse } from '../../shared/utils/response';
 import { TrendScoreService } from './TrendScoreService';
+import { TrendBatchService } from './TrendBatchService';
 import { VetoError } from './TenxScoreService';
 import pool from '../../core/db';
 
@@ -203,6 +204,37 @@ export class TrendScoreController {
             failed: symbols.length - successCount,
             results,
         });
+    }
+
+    /**
+     * 手动触发全量趋势股批量评分
+     * GET/POST /api/cn/stocks/trend-score/trigger-batch
+     * Query: force=true(默认) force=false跳过已评分; sync=true同步等待结果(默认async)
+     */
+    static async triggerBatch(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const force = req.query.force !== 'false';
+        const sync = req.query.sync === 'true';
+
+        if (TrendBatchService.isRunning()) {
+            createResponse(res, 200, '批量评分任务正在运行中', { running: true });
+            return;
+        }
+
+        if (sync) {
+            try {
+                const result = await TrendBatchService.run(force);
+                createResponse(res, 200, '批量评分完成', { ...result, force });
+            } catch (error: unknown) {
+                createResponse(res, 500, error instanceof Error ? error.message : '批量评分失败');
+            }
+            return;
+        }
+
+        // 异步模式：立即返回，后台执行
+        TrendBatchService.run(force).catch((err: unknown) => {
+            console.error('[TrendScore] 手动触发批量评分失败:', err instanceof Error ? err.message : err);
+        });
+        createResponse(res, 200, '批量评分已启动', { force, mode: 'async' });
     }
 
     private static async saveToDB(symbol: string, result: { score: number; label: string; expectedMultiple: string; description: string; aiConclusion: string; dimScores: number[]; dimensions: unknown[]; rawData: unknown; updatedAt: string }): Promise<void> {
