@@ -23,7 +23,7 @@ import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast']
+const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction']
 
 const router: Router = Router()
 
@@ -397,7 +397,7 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  */
 router.post('/analysis-reports', async (req: Request, res: Response) => {
     const { report_type, report_date, content } = req.body
-    const user_id = req.body.user_id ?? null  // 公共报告 user_id 为 null
+    let user_id = req.body.user_id ?? null  // 公共报告 user_id 为 null
     const data_source = req.body.data_source ?? null
     const status = req.body.status ?? 'completed'
     const generation_time_ms = req.body.generation_time_ms ?? null
@@ -407,6 +407,15 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
     // 参数校验
     if (!VALID_REPORT_TYPES.includes(report_type)) {
         return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    // event_conduction：必填 event_id，复用 user_id 列做隔离键
+    // 同一 report_date 下：相同 event_id → upsert 更新；不同 event_id → 分别保存
+    if (report_type === 'event_conduction') {
+        const event_id = req.body.event_id
+        if (!event_id || typeof event_id !== 'string') {
+            return res.status(400).json({ code: 400, message: 'event_id is required for event_conduction report_type' })
+        }
+        user_id = event_id
     }
     if (!report_date || !/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
         return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
@@ -546,6 +555,95 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
         res.json({ code: 200, data: { deleted_count: deletedCount } })
     } catch (err: unknown) {
         console.error('[Internal] analysis-reports cleanup error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+// ==================== 行业向量搜索（pgvector） ====================
+
+/**
+ * POST /internal/industries/embeddings
+ * Upsert 行业 embedding（供 Python 初始化脚本批量写入）
+ *
+ * 请求体: { industry_code, industry_name, keywords?, description?, embedding }
+ * embedding 必须为 1536 维浮点数组（OpenAI text-embedding-3-small）
+ */
+router.post('/industries/embeddings', async (req: Request, res: Response) => {
+    const { industry_code, industry_name, keywords, description, embedding } = req.body
+
+    if (!industry_code || !industry_name || !embedding || !Array.isArray(embedding)) {
+        return res.status(400).json({ code: 400, message: '缺少必填字段：industry_code, industry_name, embedding' })
+    }
+    if (embedding.length !== 1536) {
+        return res.status(400).json({ code: 400, message: `embedding 必须为 1536 维浮点数组，当前 ${embedding.length} 维` })
+    }
+
+    try {
+        const vectorStr = `[${embedding.join(',')}]`
+        await pool.query(
+            `INSERT INTO industry_embeddings (industry_code, industry_name, keywords, description, embedding)
+             VALUES ($1, $2, $3, $4, $5::vector)
+             ON CONFLICT (industry_code)
+             DO UPDATE SET
+               industry_name = EXCLUDED.industry_name,
+               keywords = EXCLUDED.keywords,
+               description = EXCLUDED.description,
+               embedding = EXCLUDED.embedding,
+               updated_at = NOW()`,
+            [industry_code, industry_name, keywords || [], description || '', vectorStr]
+        )
+
+        res.json({ code: 200, data: { ok: true } })
+    } catch (err: unknown) {
+        console.error('[Internal] industries/embeddings error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/industries/semantic-search
+ * 接收 embedding 向量，在 industry_embeddings 表中做 cosine similarity 搜索
+ *
+ * 请求体: { embedding: number[], threshold?: number, limit?: number }
+ * - embedding: 1536 维查询向量
+ * - threshold: 相似度阈值（0-1），默认 0.7
+ * - limit: 返回数量上限，默认 5
+ *
+ * 响应: { code: 200, data: { industries: [{code, name, similarity}] } }
+ */
+router.post('/industries/semantic-search', async (req: Request, res: Response) => {
+    const { embedding, threshold = 0.7, limit = 5 } = req.body
+
+    if (!embedding || !Array.isArray(embedding)) {
+        return res.status(400).json({ code: 400, message: 'embedding 必须为浮点数组' })
+    }
+    if (embedding.length !== 1536) {
+        return res.status(400).json({ code: 400, message: `embedding 必须为 1536 维浮点数组，当前 ${embedding.length} 维` })
+    }
+
+    try {
+        // pgvector cosine similarity: 1 - (a <=> b)，<=> 为余弦距离运算符
+        const vectorStr = `[${embedding.join(',')}]`
+        const result = await pool.query(
+            `SELECT
+               industry_code AS code,
+               industry_name AS name,
+               1 - (embedding <=> $1::vector) AS similarity
+             FROM industry_embeddings
+             WHERE 1 - (embedding <=> $1::vector) > $2
+             ORDER BY similarity DESC
+             LIMIT $3`,
+            [vectorStr, threshold, limit]
+        )
+
+        res.json({
+            code: 200,
+            data: {
+                industries: result.rows,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industries/semantic-search error:', errMsg(err))
         res.status(500).json({ code: 500, message: errMsg(err) })
     }
 })
@@ -696,6 +794,104 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
     res.setHeader('Content-Type', 'audio/mpeg')
     const stream = fs.createReadStream(filePath)
     stream.pipe(res)
+})
+
+/**
+ * GET /api/agent/event/list
+ * 事件传导报告列表（公开接口，供前端调用）
+ *
+ * Query: page=1, pageSize=10
+ * 返回最小可展示元数据：eventId, title, source, publishTime, 摘要/结论
+ */
+publicRouter.get('/event/list', async (req: Request, res: Response) => {
+    const page = Math.max(1, queryInt(req, 'page', 1))
+    const pageSize = Math.min(Math.max(1, queryInt(req, 'pageSize', 10)), 100)
+    const offset = (page - 1) * pageSize
+
+    try {
+        const [dataResult, countResult] = await Promise.all([
+            pool.query(
+                `SELECT id, report_date, user_id, content, created_at
+                 FROM agent_analysis_reports
+                 WHERE report_type = 'event_conduction'
+                 ORDER BY created_at DESC
+                 LIMIT $1 OFFSET $2`,
+                [pageSize, offset]
+            ),
+            pool.query(
+                `SELECT COUNT(*) AS total FROM agent_analysis_reports
+                 WHERE report_type = 'event_conduction'`
+            ),
+        ])
+
+        const items = dataResult.rows.map((row: Record<string, unknown>) => {
+            const content = (row['content'] as Record<string, unknown>) || {}
+            const ar = (content['analysis_reports'] as Record<string, unknown>) || {}
+            const eu = (ar['event_understanding'] as Record<string, unknown>) || {}
+            const ei = (ar['event_investment'] as Record<string, unknown>) || {}
+            return {
+                eventId: content['eventId'] || row['user_id'] || '',
+                title: content['title'] || '',
+                source: content['source'] || '',
+                publishTime: content['publishTime'] || row['report_date'] || '',
+                summary: eu['summary'] || '',
+                conclusion: ei['conclusion'] || '',
+            }
+        })
+
+        const totalNum = parseInt(String((countResult.rows[0] as Record<string, unknown>)?.['total'] ?? '0'))
+        const hasMore = page * pageSize < totalNum
+
+        res.json({
+            code: 0,
+            data: {
+                events: items,
+                total: totalNum,
+                page,
+                pageSize,
+                hasMore,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/list error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/event/:eventId
+ * 事件传导报告详情（公开接口，供前端调用）
+ *
+ * 返回完整事件元数据和完整 analysis_reports（四模块 + event_podcast_brief）
+ */
+publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date, user_id, content, data_source, status,
+                    generation_time_ms, model_version, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'event_conduction' AND user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [eventId]
+        )
+
+        if (result.rows.length === 0) {
+            res.status(404).json({ code: -1, message: 'Event not found' })
+            return
+        }
+
+        res.json({ code: 0, data: result.rows[0] })
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/:eventId error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
 })
 
 export { publicRouter }

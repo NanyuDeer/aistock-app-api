@@ -121,6 +121,8 @@ src/
 | `/api/cn/trend-hotspots/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
+| `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |
+| `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports） | eventId |
 | `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
 | `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
 
@@ -138,8 +140,8 @@ src/
 | `/internal/wind-leaders` | **长线风口数据**（供Python Agent调用） | limit: 返回板块数量（默认8，最大20） |
 | `/internal/institution-research` | **机构调研热门股**（供Python Agent调用） | hours: 最近N小时（默认6，最大72）, min_resonance: 最小共振数 |
 | `/internal/monitor/:symbol` | **个股监控事件**（供团队成员使用） | symbol: A股代码, cycle: 周期, limit: 返回数量 |
-| `/internal/analysis-reports` | **Agent 分析报告持久化**（POST upsert） | report_type, report_date, content(JSONB), user_id?, expires_at? |
-| `/internal/analysis-reports/:type/:date` | **查询报告**（按类型+日期） | type: morning/wind_leader/hot_burst/review, date: YYYY-MM-DD |
+| `/internal/analysis-reports` | **Agent 分析报告持久化**（POST upsert） | report_type, report_date, content(JSONB), user_id?, event_id?(event_conduction必填，复用 user_id 列做隔离), expires_at? |
+| `/internal/analysis-reports/:type/:date` | **查询报告**（按类型+日期） | type: morning/wind_leader/hot_burst/review/event_conduction, date: YYYY-MM-DD |
 | `/internal/analysis-reports/:type/:date/:userId` | **查询用户专属报告** | userId: 用户ID |
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
@@ -147,6 +149,8 @@ src/
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
 > 新增接口（2026-07-10）：`/internal/analysis-reports/*` 系列，供 Python Agent 持久化分析报告（scheduler 触发写入，broadcast_agent 读取），建表脚本见 `docs/sql/agent_analysis_reports.sql`
+>
+> 更新（2026-07-14）：`event_conduction` 加入报告白名单，POST 支持 `event_id` 作为隔离键（复用 `user_id` 列，同日不同事件分别保存、同事件重跑 upsert）；新增公开接口 `GET /api/agent/event/list`（分页列表，返回 eventId/title/source/publishTime/摘要/结论）和 `GET /api/agent/event/:eventId`（详情，返回完整 analysis_reports 含四模块 + event_podcast_brief）
 
 ## Vibecoding 工作流
 

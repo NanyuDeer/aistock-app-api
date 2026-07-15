@@ -20,6 +20,20 @@
 - `src/modules/monitor/TrendScoreService.ts`：sectorStrength 复用概念指数K线计算板块月涨幅（替换占位 '--'）
 - `src/modules/monitor/TrendScoreService.ts`：policyItems 复用财联社新闻关键词提取政策/产业趋势项（替换占位硬编码）
 
+## [changer] 2026-07-14 — Event Conduction 报告公开接口 + analysis_reports event_id 隔离
+**开发者**: 37588
+
+### 新增
+- `src/core/routes/internal.ts`：新增 `GET /api/agent/event/list`（公开，分页列表，返回 eventId/title/source/publishTime/摘要/结论）和 `GET /api/agent/event/:eventId`（公开，详情，返回完整 analysis_reports 四模块 + event_podcast_brief）
+- `src/core/routes/internal.ts`：POST analysis-reports 新增 event_conduction 报告类型校验（必填 event_id，复用 user_id 列做隔离键）
+
+### 改进
+- `src/core/routes/internal.ts`：VALID_REPORT_TYPES 白名单新增 event_conduction
+- `src/shared/utils/CacheService.ts`：setInterval 添加 `.unref()`，确保测试环境/进程关闭时定时器不阻止退出
+
+### 文档
+- `README.md`：API 路由表新增 `/api/agent/event/list` 和 `/api/agent/event/:eventId`；analysis-reports 接口文档补充 event_id 说明和 event_conduction 类型
+
 ---
 
 ## [master] 2026-07-10 — Agent 报告持久化基础设施 + AGENTS.md 文档
