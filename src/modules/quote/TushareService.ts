@@ -608,6 +608,7 @@ export interface DailyBasicFullRow {
     pb: number; ps: number; ps_ttm: number;
     total_share: number; float_share: number; free_share: number;
     total_mv: number; circ_mv: number;
+    is_st?: number;
 }
 
 /** 获取单日全市场每日指标（用于批量选股） */
@@ -615,7 +616,7 @@ export async function getDailyBasicByDate(tradeDate: string): Promise<DailyBasic
     const rows = await tushareRequest(
         'daily_basic',
         { trade_date: tradeDate },
-        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv',
+        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv,is_st',
     );
     return rows as DailyBasicFullRow[];
 }

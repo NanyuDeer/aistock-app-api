@@ -2,13 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
-## [master] 2026-07-15 — 手动触发趋势股批量评分接口 + App微信登录接口
+## [master] 2026-07-15 — 两阶段批量评分优化 + 手动触发接口 + App微信登录接口
 **开发者**: Aria
 
+### 重构
+- `src/modules/monitor/TrendBatchService.ts`：新增 `prefilterStocks()` 方法，用 bulk 接口一次性拉取全市场 daily_basic + daily 数据，在内存中快速筛选（非ST + 成交额>3000万 + 价格>2元 + 换手率>0.3% + 60日跌幅<10%），从 5000+ 股票筛至 ~300-800 只候选股
+- `src/modules/monitor/TrendBatchService.ts`：`run()` 改为两阶段流程，阶段1预筛选 → 阶段2仅对候选股跑完整评分，预计从 5+ 小时降到 30-60 分钟
+- `src/modules/monitor/TrendBatchService.ts`：已评分股票改为批量查询（`symbol = ANY($2)`）而非逐股查询，减少 DB 往返
+- `src/modules/quote/TushareService.ts`：`DailyBasicFullRow` 新增 `is_st` 字段，`getDailyBasicByDate` 请求字段增加 `is_st`
+
 ### 新增
-- `src/modules/monitor/TrendBatchService.ts`：新增 `isRunning()` 并发锁和 `TrendBatchResult` 返回类型，防止重复触发批量评分
-- `src/modules/monitor/trendScoreController.ts`：新增 `triggerBatch` 方法，支持 async/sync 两种模式和 force 参数，路由 `POST/GET /api/cn/stocks/trend-score/trigger-batch`
-- `src/index.ts`：注册 trigger-batch 路由（POST + GET）
+- `src/modules/monitor/trendScoreController.ts`：新增 `triggerBatch` 方法，支持 async/sync 两种模式和 force 参数
+- `src/index.ts`：注册 `POST/GET /api/cn/stocks/trend-score/trigger-batch` 路由
 - `src/modules/auth/controller.ts`：新增 `appWxLogin` 接口，App 端微信登录（uni.login code → 换取用户信息 → 签发 JWT）
 - `src/modules/auth/scanLoginController.ts`：扫码登录增强（HTTP 状态码检查、空响应校验、try-catch 错误处理）
 - `src/core/routes/internal.ts`：新增 event_conduction 公开接口和 event_id 隔离
