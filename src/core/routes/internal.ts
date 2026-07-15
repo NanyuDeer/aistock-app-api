@@ -812,14 +812,20 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
         const [dataResult, countResult] = await Promise.all([
             pool.query(
                 `SELECT id, report_date, user_id, content, created_at
-                 FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'
+                 FROM (
+                   SELECT DISTINCT ON (user_id)
+                     id, report_date, user_id, content, created_at
+                   FROM agent_analysis_reports
+                   WHERE report_type = 'event_conduction'
+                   ORDER BY user_id, created_at DESC
+                 ) AS deduped
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2`,
                 [pageSize, offset]
             ),
             pool.query(
-                `SELECT COUNT(*) AS total FROM agent_analysis_reports
+                `SELECT COUNT(DISTINCT user_id) AS total
+                 FROM agent_analysis_reports
                  WHERE report_type = 'event_conduction'`
             ),
         ])

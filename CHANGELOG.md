@@ -2,6 +2,17 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [changer] 2026-07-15 — event/list 去重修复
+**开发者**: 37588
+
+### 修复
+- `src/core/routes/internal.ts`：`GET /api/agent/event/list` 使用 `DISTINCT ON (user_id)` 去重（同一 eventId 只保留最新一条），COUNT 改为 `COUNT(DISTINCT user_id)` 避免分页计数偏差
+
+### 测试
+- `src/core/routes/__tests__/event_conduction.spec.ts`：新增去重测试用例（同一 eventId 多条记录场景）
+
+---
+
 ## [changer] 2026-07-14 — Event Conduction 报告公开接口 + analysis_reports event_id 隔离
 **开发者**: 37588
 
