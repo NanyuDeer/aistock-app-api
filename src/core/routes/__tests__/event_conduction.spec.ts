@@ -589,4 +589,113 @@ describe('Event Conduction Report API', () => {
         // Should not return 400 (whitelist accepts event_conduction)
         assert.notStrictEqual(res.status, 400);
     });
+
+    // ── 13. Dedup: same eventId multiple records → only latest in list ──
+
+    it('GET /api/agent/event/list deduplicates by user_id (eventId) — returns latest per eventId', async () => {
+        let listSql = '';
+        let countSql = '';
+        mockResponder = (sql: string) => {
+            if (sql.includes('COUNT')) {
+                countSql = sql;
+                return { rows: [{ total: 2 }] };
+            }
+            listSql = sql;
+            // Return the latest record for each of 2 eventIds
+            return {
+                rows: [
+                    {
+                        id: 3,
+                        report_date: '2026-07-15',
+                        user_id: 'evt_aaa',
+                        content: {
+                            eventId: 'evt_aaa',
+                            title: 'Event AAA (latest)',
+                            source: 'cls',
+                            publishTime: '2026-07-15T10:00:00',
+                            analysis_reports: {
+                                event_understanding: { summary: 'AAA latest' },
+                                event_investment: { conclusion: 'AAA conclusion' },
+                            },
+                        },
+                        created_at: '2026-07-15T10:00:00Z',
+                    },
+                    {
+                        id: 4,
+                        report_date: '2026-07-15',
+                        user_id: 'evt_bbb',
+                        content: {
+                            eventId: 'evt_bbb',
+                            title: 'Event BBB',
+                            source: 'sina',
+                            publishTime: '2026-07-15T09:00:00',
+                            analysis_reports: {
+                                event_understanding: { summary: 'BBB summary' },
+                                event_investment: { conclusion: 'BBB conclusion' },
+                            },
+                        },
+                        created_at: '2026-07-15T09:00:00Z',
+                    },
+                ],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/api/agent/event/list?page=1&pageSize=10',
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as {
+            data: { events: Record<string, unknown>[]; total: number; hasMore: boolean };
+        };
+        assert.strictEqual(body.data.events.length, 2);
+        assert.strictEqual(body.data.total, 2);
+        assert.strictEqual(body.data.hasMore, false);
+        // Verify SQL uses DISTINCT ON for deduplication
+        assert.match(listSql, /DISTINCT ON\s*\(user_id\)/i, 'SQL must use DISTINCT ON (user_id)');
+        // Verify count uses DISTINCT user_id
+        assert.match(countSql, /COUNT\s*\(\s*DISTINCT\s+user_id\s*\)/i, 'COUNT must use DISTINCT user_id');
+    });
+
+    // ── 14. Dedup: pagination works correctly on deduplicated results ──
+
+    it('GET /api/agent/event/list pagination after dedup — hasMore based on distinct count', async () => {
+        mockResponder = (sql: string) => {
+            if (sql.includes('COUNT')) {
+                // 5 unique eventIds total
+                return { rows: [{ total: 5 }] };
+            }
+            // pageSize=2 → return 2 unique events
+            return {
+                rows: [
+                    {
+                        id: 1, report_date: '2026-07-15', user_id: 'evt_01',
+                        content: { eventId: 'evt_01', title: 'E1', source: 'cls', publishTime: '2026-07-15T10:00:00' },
+                        created_at: '2026-07-15T10:00:00Z',
+                    },
+                    {
+                        id: 3, report_date: '2026-07-15', user_id: 'evt_02',
+                        content: { eventId: 'evt_02', title: 'E2', source: 'sina', publishTime: '2026-07-15T09:00:00' },
+                        created_at: '2026-07-15T09:00:00Z',
+                    },
+                ],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/api/agent/event/list?page=1&pageSize=2',
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as {
+            data: { events: unknown[]; total: number; hasMore: boolean };
+        };
+        assert.strictEqual(body.data.events.length, 2);
+        assert.strictEqual(body.data.total, 5);
+        assert.strictEqual(body.data.hasMore, true);
+    });
 });

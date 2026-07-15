@@ -17,13 +17,14 @@ import { ThsService } from '../../modules/monitor/ThsService'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TenxScoreService } from '../../modules/monitor/TenxScoreService'
+import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction']
+const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction', 'trend_score']
 
 const router: Router = Router()
 
@@ -310,6 +311,81 @@ router.get('/tenx/top', async (req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: unknown) {
         console.error('[Internal] tenx/top error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/trend/score/:symbol
+ * 个股趋势股评分（4维度百分制评分体系：技术面35%+赛道25%+消息20%+基本面20%）
+ */
+router.get('/trend/score/:symbol', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    try {
+        const data = await TrendScoreService.calculateTrendScore(symbol)
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] trend/score/${symbol} error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/trend/score/:symbol/detail
+ * 个股趋势股评分展开详情（含K线、概念板块K线、新闻、政策趋势等）
+ */
+router.get('/trend/score/:symbol/detail', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    try {
+        const data = await TrendScoreService.calculateTrendScore(symbol)
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] trend/score/${symbol}/detail error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/trend/top
+ * 趋势股评分 Top 列表（按总分降序，排除D级）
+ */
+router.get('/trend/top', async (req: Request, res: Response) => {
+    try {
+        const limit = queryInt(req, 'limit', 30)
+        const result = await pool.query(`
+            SELECT t.symbol, t.score, t.label, t.expected_multiple, t.score_date,
+                   t.dim_scores, t.description,
+                   COALESCE(s.name, '') as name,
+                   COALESCE(s.industry, '') as industry
+            FROM trend_scores t
+            LEFT JOIN stocks s ON t.symbol = s.symbol
+            WHERE t.score_date = (SELECT MAX(t2.score_date) FROM trend_scores t2)
+            AND t.label NOT IN ('D')
+            ORDER BY t.score DESC
+            LIMIT $1
+        `, [Math.min(50, Math.max(1, limit))])
+
+        const items = result.rows.map((r: Record<string, unknown>) => ({
+            symbol: r.symbol,
+            name: r.name,
+            industry: r.industry,
+            score: Number(r.score),
+            label: r.label,
+            expectedMultiple: r.expected_multiple,
+            scoreDate: r.score_date,
+            dimScores: JSON.parse(r.dim_scores as string || '[]'),
+            description: r.description,
+        }))
+
+        res.json({ code: 200, data: items })
+    } catch (err: unknown) {
+        console.error('[Internal] trend/top error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -812,14 +888,20 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
         const [dataResult, countResult] = await Promise.all([
             pool.query(
                 `SELECT id, report_date, user_id, content, created_at
-                 FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'
+                 FROM (
+                   SELECT DISTINCT ON (user_id)
+                     id, report_date, user_id, content, created_at
+                   FROM agent_analysis_reports
+                   WHERE report_type = 'event_conduction'
+                   ORDER BY user_id, created_at DESC
+                 ) AS deduped
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2`,
                 [pageSize, offset]
             ),
             pool.query(
-                `SELECT COUNT(*) AS total FROM agent_analysis_reports
+                `SELECT COUNT(DISTINCT user_id) AS total
+                 FROM agent_analysis_reports
                  WHERE report_type = 'event_conduction'`
             ),
         ])

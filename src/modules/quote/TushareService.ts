@@ -387,7 +387,7 @@ export async function getStkSurvival(symbol: string, startDate?: string): Promis
     const params: Record<string, any> = { ts_code: toTsCode(symbol) };
     if (startDate) params.start_date = startDate;
     const rows = await tushareRequest(
-        'stk_survival',
+        'stk_surv', // Tushare 官方接口名为 stk_surv（非 stk_survival）
         params,
         'ts_code,ann_date,visit_date,visitors,institution_name,institution_type',
     );
@@ -608,6 +608,7 @@ export interface DailyBasicFullRow {
     pb: number; ps: number; ps_ttm: number;
     total_share: number; float_share: number; free_share: number;
     total_mv: number; circ_mv: number;
+    is_st?: number;
 }
 
 /** 获取单日全市场每日指标（用于批量选股） */
@@ -615,7 +616,7 @@ export async function getDailyBasicByDate(tradeDate: string): Promise<DailyBasic
     const rows = await tushareRequest(
         'daily_basic',
         { trade_date: tradeDate },
-        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv',
+        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv,is_st',
     );
     return rows as DailyBasicFullRow[];
 }
@@ -701,6 +702,16 @@ export async function getThsMember(tsCode: string): Promise<ThsMemberRow[]> {
     return rows as ThsMemberRow[];
 }
 
+/** 按股票代码反查所属概念/行业板块列表 */
+export async function getThsMemberByStock(conCode: string): Promise<ThsMemberRow[]> {
+    const rows = await tushareRequest(
+        'ths_member',
+        { con_code: conCode },
+        'ts_code,con_code,con_name,is_new',
+    );
+    return rows as ThsMemberRow[];
+}
+
 /** 按交易日期获取全市场股票日线行情（用于批量获取成分股涨幅）
  * 频率限制：500次/分钟，单次最大5000行
  */
@@ -711,6 +722,24 @@ export async function getDailyByDate(tradeDate: string): Promise<DailyPriceRow[]
         'ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount',
     );
     return rows as DailyPriceRow[];
+}
+
+/** 全市场股票基本信息（含名称，用于 ST 识别） */
+export interface StockBasicRow {
+    ts_code: string;
+    symbol: string;
+    name: string;
+    industry: string;
+}
+
+/** 批量获取全市场股票基本信息（含 name 用于 ST 识别） */
+export async function getStockBasicBulk(): Promise<StockBasicRow[]> {
+    const rows = await tushareRequest(
+        'stock_basic',
+        { list_status: 'L' }, // L=上市
+        'ts_code,symbol,name,industry',
+    );
+    return rows as StockBasicRow[];
 }
 
 // ==================== 打板专题 & THS增强接口 ====================
