@@ -17,7 +17,7 @@ export interface TrendBatchResult {
  */
 const PREFILTER = {
     MIN_CLOSE: 2,                    // 最低股价 2 元
-    MIN_AVG_AMOUNT: 400000,          // 20日日均成交额 ≥ 400000千元（= 4000万元），与 vetoCheck 一致
+    MIN_AVG_AMOUNT: 500000,          // 20日日均成交额 ≥ 500000千元（= 5000万元），与 vetoCheck 一致
     MIN_TURNOVER_RATE: 0.3,          // 换手率 ≥ 0.3%
     AMOUNT_LOOKBACK_DAYS: 30,        // 拉取近 30 自然日 daily 数据（覆盖 ~20 交易日）
     MOMENTUM_DAYS: 60,               // 60 日动量检查
