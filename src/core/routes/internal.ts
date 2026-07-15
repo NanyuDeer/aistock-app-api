@@ -977,4 +977,81 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
 })
 
 export { publicRouter }
+
+/**
+ * POST /internal/push/market-event
+ * 市场事件推送 — Python morning_agent 生成晨报后触发。
+ *
+ * 接受结构化 payload { market, direction, indices, change_pct, cause,
+ * evidence_url, evidence_summary, title, event_time }，
+ * 通过 WechatPushService + MessagePushService 分别推送到微信和飞书。
+ *
+ * 需 X-Internal-Token 鉴权。
+ *
+ * 测试注入点：设置 __marketEventHandlers 可替换推送实现，避免 require.cache hack。
+ */
+export const __marketEventHandlers: {
+    dispatchWechat?: (payload: Record<string, unknown>) => Promise<{ sent: number; failed: number; skipped?: number; matched_users?: number; logs?: unknown[] }>;
+    dispatchFeishu?: (payload: Record<string, unknown>) => Promise<{ sent: number; failed: number }>;
+} = {};
+
+router.post('/push/market-event', json(), async (req: Request, res: Response) => {
+    const {
+        market, direction, indices, change_pct,
+        cause, evidence_url, evidence_summary,
+        title, event_time,
+    } = req.body || {}
+
+    if (!market || !title || !cause) {
+        res.status(400).json({ code: 400, message: '缺少必填字段: market, title, cause' })
+        return
+    }
+
+    try {
+        const payload = {
+            market: String(market),
+            direction: String(direction || ''),
+            indices: String(indices || ''),
+            change_pct: Number(change_pct || 0),
+            cause: String(cause),
+            evidence_url: String(evidence_url || ''),
+            evidence_summary: String(evidence_summary || ''),
+            title: String(title),
+            event_time: String(event_time || ''),
+        }
+
+        const handlers = __marketEventHandlers ?? {}
+
+        // 并行执行微信和飞书推送（任一失败不影响另一方）
+        // 测试可通过 __marketEventHandlers 注入 mock，避免 require.cache hack
+        const [wxResult, feishuResult] = await Promise.allSettled([
+            handlers?.dispatchWechat
+                ? handlers.dispatchWechat(payload)
+                : (await import('../../modules/push/WechatPushService')).WechatPushService.dispatchMarketEventPush(payload as any),
+            handlers?.dispatchFeishu
+                ? handlers.dispatchFeishu(payload)
+                : (await import('../../modules/push/MessagePushService')).MessagePushService.dispatchMarketEventToFeishu(payload as any),
+        ])
+
+        const wxSent = wxResult.status === 'fulfilled' ? (wxResult.value?.sent ?? 0) : 0
+        const feishuSent = feishuResult.status === 'fulfilled' ? (feishuResult.value?.sent ?? 0) : 0
+        const anySucceeded = wxSent > 0 || feishuSent > 0
+
+        console.log(
+            `[Internal] market-event push: ${title}, ` +
+            `wx=${wxResult.status === 'fulfilled' ? `sent=${wxSent}` : 'failed'}, ` +
+            `feishu=${feishuResult.status === 'fulfilled' ? `sent=${feishuSent}` : 'failed'}`
+        )
+
+        res.json({
+            code: 0,
+            data: { ok: anySucceeded, wx_sent: wxSent, feishu_sent: feishuSent },
+            message: anySucceeded ? '' : 'both channels failed to deliver',
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] market-event push error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 export default router

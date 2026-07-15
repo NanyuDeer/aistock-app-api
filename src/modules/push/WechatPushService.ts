@@ -147,7 +147,7 @@ export class WechatPushService {
         const result = await pool.query(
             `SELECT id
              FROM wechat_push_logs
-             WHERE event_id = $1 AND openid = $2
+             WHERE event_id = $1 AND openid = $2 AND status = 'sent'
              LIMIT 1`,
             [eventId, openid],
         );
@@ -812,6 +812,142 @@ export class WechatPushService {
                 responseJson ? JSON.stringify(responseJson) : null,
                 '',
                 'outbreak',
+            ],
+        );
+    }
+
+    // ==================== 市场事件推送 ====================
+
+    /** 市场事件推送载荷 */
+    static marketEventPayload?: {
+        market: string;
+        direction: string;
+        indices: string;
+        change_pct: number;
+        cause: string;
+        evidence_url: string;
+        evidence_summary: string;
+        title: string;
+        event_time: string;
+    };
+
+    static async dispatchMarketEventPush(payload: typeof WechatPushService.marketEventPayload): Promise<PushResult> {
+        // 推送给所有已注册的微信用户（市场事件属重大行情，全量推送）
+        const openids = await WechatPushService.getAllWechatOpenids();
+        const today = new Date().toISOString().slice(0, 10);
+        const eventId = `market_event:${today}:${payload?.title?.slice(0, 30) || 'unknown'}`;
+
+        const pushResult: PushResult = {
+            matched_users: openids.length,
+            sent: 0,
+            skipped: 0,
+            failed: 0,
+            logs: [],
+        };
+
+        if (!payload || !payload.title) return pushResult;
+
+        for (const openid of openids) {
+            if (await WechatPushService.hasPushed(eventId, openid)) {
+                pushResult.skipped += 1;
+                pushResult.logs.push({ openid, status: 'skipped', reason: 'duplicate_event' });
+                continue;
+            }
+
+            try {
+                const wxResponse = await WechatPushService.sendMarketEventTemplateMessage(payload, openid);
+                await WechatPushService.insertMarketEventPushLog(eventId, openid, 'sent', null, wxResponse, payload);
+                pushResult.sent += 1;
+                pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
+            } catch (err: any) {
+                const errorMsg = err instanceof Error ? err.message : String(err);
+                WechatPushService.log('market_event', 'template send failed', { openid, event_id: eventId, error: errorMsg });
+                await WechatPushService.insertMarketEventPushLog(eventId, openid, 'failed', errorMsg, null, payload);
+                pushResult.failed += 1;
+                pushResult.logs.push({ openid, status: 'failed', reason: errorMsg });
+            }
+        }
+
+        return pushResult;
+    }
+
+    private static async sendMarketEventTemplateMessage(
+        payload: NonNullable<typeof WechatPushService.marketEventPayload>,
+        openid: string,
+    ): Promise<any> {
+        const templateId = process.env.WECHAT_TEMPLATE_MARKET_EVENT || process.env.WECHAT_TEMPLATE_ID;
+        if (!templateId) throw new Error('WECHAT_TEMPLATE_MARKET_EVENT or WECHAT_TEMPLATE_ID is not configured');
+
+        const accessToken = await ScanLoginController.getServerAccessToken();
+        const directionLabel = payload.direction === 'up' ? '大涨' : payload.direction === 'down' ? '重挫' : '异动';
+        const changeStr = payload.change_pct
+            ? (payload.change_pct > 0 ? `+${payload.change_pct.toFixed(2)}%` : `${payload.change_pct.toFixed(2)}%`)
+            : '';
+
+        // 组装推送正文："原因：...；结果：..."
+        const pushContent = `原因：${payload.cause}；结果：${payload.indices}${changeStr ? ` ${changeStr}` : ''}`;
+
+        const res = await fetch(
+            `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${accessToken}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    touser: openid,
+                    template_id: templateId,
+                    url: payload.evidence_url || '',
+                    data: {
+                        stock: { value: `${payload.market} ${payload.indices}` },
+                        event_type: { value: `市场${directionLabel}` },
+                        level: { value: `${changeStr} - 重磅事件` },
+                        summary: { value: pushContent },
+                        time: { value: WechatPushService.formatEventTime(payload.event_time) },
+                    },
+                }),
+            },
+        );
+        const data: any = await res.json();
+        if (data.errcode && data.errcode !== 0) {
+            throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
+        }
+        return data;
+    }
+
+    private static async insertMarketEventPushLog(
+        eventId: string,
+        openid: string,
+        status: PushLogItem['status'],
+        errorMsg: string | null,
+        responseJson: any,
+        payload: NonNullable<typeof WechatPushService.marketEventPayload>,
+    ): Promise<void> {
+        // ON CONFLICT DO UPDATE 允许失败记录在重试成功后升级为 sent
+        await pool.query(
+            `INSERT INTO wechat_push_logs (
+                event_id, openid, symbol, stock_name, event_type, level, summary,
+                template_id, status, error_msg, wechat_response_json, click_url, push_type
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13)
+             ON CONFLICT(event_id, openid)
+             DO UPDATE SET
+                status = EXCLUDED.status,
+                error_msg = EXCLUDED.error_msg,
+                wechat_response_json = EXCLUDED.wechat_response_json,
+                sent_at = CASE WHEN EXCLUDED.status = 'sent' THEN NOW() ELSE wechat_push_logs.sent_at END`,
+            [
+                eventId,
+                openid,
+                '',
+                payload.indices || payload.market,
+                `市场${payload.direction === 'up' ? '大涨' : payload.direction === 'down' ? '重挫' : '异动'}`,
+                '重磅',
+                payload.title,
+                process.env.WECHAT_TEMPLATE_MARKET_EVENT || process.env.WECHAT_TEMPLATE_ID || '',
+                status,
+                errorMsg,
+                responseJson ? JSON.stringify(responseJson) : null,
+                payload.evidence_url || '',
+                'market_event',
             ],
         );
     }

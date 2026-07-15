@@ -576,4 +576,114 @@ export class MessagePushService {
             return { sent: 0, failed: 0 };
         }
     }
+
+    // ==================== 市场事件飞书推送 ====================
+
+    /** 市场事件推送载荷 */
+    static marketEventPayload?: {
+        market: string;
+        direction: string;
+        indices: string;
+        change_pct: number;
+        cause: string;
+        evidence_url: string;
+        evidence_summary: string;
+        title: string;
+        event_time: string;
+    };
+
+    static async dispatchMarketEventToFeishu(payload: typeof MessagePushService.marketEventPayload): Promise<{ sent: number; failed: number }> {
+        if (!payload || !payload.title) return { sent: 0, failed: 0 };
+
+        try {
+            // 市场事件属重大行情，推送给所有有飞书ID的已订阅用户
+            const result = await pool.query(
+                `SELECT DISTINCT us.feishu_open_id
+                 FROM user_subscriptions us
+                 WHERE us.status = 'subscribed'
+                   AND us.feishu_open_id IS NOT NULL
+                   AND us.feishu_open_id != ''`,
+            );
+            const rows = result.rows || [];
+            if (rows.length === 0) return { sent: 0, failed: 0 };
+
+            const card = buildMarketEventFeishuCard(payload as NonNullable<typeof MessagePushService.marketEventPayload>);
+            let sent = 0;
+            let failed = 0;
+
+            for (const row of rows) {
+                const openId = String(row.feishu_open_id);
+                const ok = await sendFeishuCard(openId, card);
+                if (ok) sent++;
+                else failed++;
+            }
+
+            console.log(`[MessagePush] 市场事件飞书推送: ${payload.title}, 发送${sent}, 失败${failed}`);
+            return { sent, failed };
+        } catch (err: any) {
+            console.error('[MessagePush] 市场事件飞书推送失败:', err.message);
+            return { sent: 0, failed: 0 };
+        }
+    }
+}
+
+/** 构建市场事件飞书卡片 */
+function buildMarketEventFeishuCard(payload: NonNullable<typeof MessagePushService.marketEventPayload>): any {
+    const directionLabel = payload.direction === 'up' ? '大涨' : payload.direction === 'down' ? '重挫' : '异动';
+    const directionSymbol = payload.direction === 'up' ? '↑' : payload.direction === 'down' ? '↓' : '→';
+    const changeStr = payload.change_pct
+        ? (payload.change_pct > 0 ? `+${payload.change_pct.toFixed(2)}%` : `${payload.change_pct.toFixed(2)}%`)
+        : '';
+    const changeColor = payload.change_pct > 0 ? 'red' : payload.change_pct < 0 ? 'green' : 'grey';
+
+    const elements: any[] = [];
+
+    elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `**${directionSymbol} ${payload.market}市场${directionLabel}**` },
+    });
+    elements.push({ tag: 'hr' });
+
+    elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `**${payload.title}**` },
+    });
+
+    elements.push({
+        tag: 'div',
+        text: {
+            tag: 'lark_md',
+            content: `${payload.indices} <font color="${changeColor}">${changeStr}</font>`,
+        },
+    });
+
+    elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: `**原因**：${payload.cause}` },
+    });
+
+    if (payload.evidence_summary) {
+        elements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `**依据**：${payload.evidence_summary}` },
+        });
+    }
+
+    elements.push({ tag: 'hr' });
+
+    if (payload.evidence_url) {
+        elements.push({
+            tag: 'div',
+            text: { tag: 'lark_md', content: `<font color="grey">[查看原文](${payload.evidence_url})</font>` },
+        });
+    }
+
+    return {
+        config: { wide_screen_mode: true },
+        header: {
+            title: { tag: 'plain_text', content: `【市场重磅事件】${payload.market}` },
+            template: payload.direction === 'up' ? 'red' : payload.direction === 'down' ? 'green' : 'blue',
+        },
+        elements,
+    };
 }
