@@ -1,5 +1,6 @@
 import * as TushareService from '../quote/TushareService';
 import { fetchBlockRotationData } from './WindLeaderAnalyzerService';
+import { getBestBoardForStock, ensureCacheBuilt } from './RotationBoardCache';
 import {
     PrefetchedData, RawIndicators, DimDef, IndustryCache,
     calcEarningsExplosion, calcValuationElasticity, calcProfitQuality,
@@ -306,6 +307,13 @@ async function findBestConceptBoard(
     rotationRawData: any[],
     fallbackIndustryName?: string,
 ): Promise<BoardMatchResult | null> {
+    // 优先从反向缓存中查找（零API调用）
+    const cached = getBestBoardForStock(symbol);
+    if (cached) {
+        console.log(`[TrendScore] ${symbol} 缓存命中: ${cached.boardName}(${cached.boardCode}), 60日上榜${cached.count60d}次`);
+        return cached;
+    }
+    console.log(`[TrendScore] ${symbol} 缓存未命中，回退到逐股 ths_member 查询`);
     try {
         const tsCode = symbol.startsWith('6') ? `${symbol}.SH` : `${symbol}.SZ`;
         const members = await TushareService.getThsMemberByStock(tsCode);

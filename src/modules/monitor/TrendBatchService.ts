@@ -1,10 +1,15 @@
 import pool from '../../core/db';
 import { TrendScoreService } from './TrendScoreService';
+import { ensureCacheBuilt } from './RotationBoardCache';
 
 export class TrendBatchService {
     static async run(force: boolean = false): Promise<void> {
         const today = new Date().toISOString().slice(0, 10);
         console.log(`[TrendBatch] 开始批量趋势股评分, force=${force}, date=${today}`);
+
+        // 预热板块轮动反向缓存（~112次 ths_member 调用，覆盖全市股票）
+        console.log('[TrendBatch] 预热板块轮动反向缓存...');
+        await ensureCacheBuilt();
 
         // 获取所有股票代码
         const stocksResult = await pool.query('SELECT symbol FROM stocks ORDER BY symbol');
