@@ -17,10 +17,11 @@ export interface TrendBatchResult {
  */
 const PREFILTER = {
     MIN_CLOSE: 2,                    // 最低股价 2 元
-    MIN_AVG_AMOUNT: 300000,          // 20日日均成交额 ≥ 300000千元（= 3000万元），与 vetoCheck 一致
+    MIN_AVG_AMOUNT: 400000,          // 20日日均成交额 ≥ 400000千元（= 4000万元），与 vetoCheck 一致
     MIN_TURNOVER_RATE: 0.3,          // 换手率 ≥ 0.3%
     AMOUNT_LOOKBACK_DAYS: 30,        // 拉取近 30 自然日 daily 数据（覆盖 ~20 交易日）
     MOMENTUM_DAYS: 60,               // 60 日动量检查
+    MIN_BOARD_COUNT_60D: 3,          // 60日板块上榜次数 ≥ 3
 };
 
 /** 交易日列表（YYYYMMDD 格式，近 N 自然日） */
@@ -202,8 +203,8 @@ export class TrendBatchService {
                 noBoardCount++;
                 continue;
             }
-            // 顺带过滤 60 日上榜次数过少的（<2 次）
-            if (bestBoard.count60d < 2) {
+            // 过滤 60 日上榜次数过少的（< MIN_BOARD_COUNT_60D 次）
+            if (bestBoard.count60d < PREFILTER.MIN_BOARD_COUNT_60D) {
                 noBoardCount++;
                 continue;
             }

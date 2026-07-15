@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-15 — 预筛选条件优化(成交额4000万+板块上榜≥3) + stk_surv接口修复
+**开发者**: Aria
+
+### 优化
+- `src/modules/monitor/TrendBatchService.ts`：20日日均成交额阈值从 3000 万提高到 4000 万（与 vetoCheck 同步）
+- `src/modules/monitor/TrendBatchService.ts`：板块 60 日上榜次数从 ≥2 提高到 ≥3
+- `src/modules/monitor/TenxScoreService.ts`：`AVG_AMOUNT_THRESHOLD` 从 300000 提高到 400000 千元（4000 万），错误提示文案同步更新
+
+### 修复
+- `src/modules/quote/TushareService.ts`：机构调研接口名 `stk_survival` → `stk_surv`（Tushare 官方正确名称）
+
+---
+
 ## [master] 2026-07-15 — 预筛选增加板块轮动过滤 + 进度日志增强
 **开发者**: Aria
 
