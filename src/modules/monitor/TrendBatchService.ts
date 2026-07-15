@@ -11,13 +11,28 @@ export interface TrendBatchResult {
     prefiltered?: number;
 }
 
-/** 预筛选条件常量 */
+/**
+ * 预筛选条件常量
+ * 成交额阈值与 TenxScoreService.AVG_AMOUNT_THRESHOLD 完全对齐（300000千元 = 3000万元）
+ */
 const PREFILTER = {
     MIN_CLOSE: 2,                    // 最低股价 2 元
-    MIN_AMOUNT_WAN: 3000,            // 日均成交额 ≥ 3000 万元（单位：千元，3000万 = 30000千元）
+    MIN_AVG_AMOUNT: 300000,          // 20日日均成交额 ≥ 300000千元（= 3000万元），与 vetoCheck 一致
     MIN_TURNOVER_RATE: 0.3,          // 换手率 ≥ 0.3%
+    AMOUNT_LOOKBACK_DAYS: 30,        // 拉取近 30 自然日 daily 数据（覆盖 ~20 交易日）
     MOMENTUM_DAYS: 60,               // 60 日动量检查
 };
+
+/** 交易日列表（YYYYMMDD 格式，近 N 自然日） */
+function getRecentCalendarDays(days: number): string[] {
+    const dates: string[] = [];
+    for (let i = 0; i <= days; i++) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        dates.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+    }
+    return dates;
+}
 
 export class TrendBatchService {
     private static running = false;
@@ -28,50 +43,92 @@ export class TrendBatchService {
 
     /**
      * 阶段 1：用 bulk 接口预筛选，快速排除 ST、低流动性、低价股
-     * 仅 2-3 次 API 调用即可覆盖全市场
+     *
+     * 筛选标准与 vetoCheck 完全对齐：
+     * - 20日日均成交额 ≥ 3000万（与 AVG_AMOUNT_THRESHOLD 一致）
+     * - 非 ST/*ST（与 getStStatus 一致，但用 stock_basic name 批量获取）
+     *
+     * 额外筛选（vetoCheck 不检查但有助于减少候选量）：
+     * - 股价 ≥ 2 元
+     * - 换手率 ≥ 0.3%
+     * - 60日跌幅不超过 10%
      */
     static async prefilterStocks(): Promise<string[]> {
         console.log('[TrendBatch] === 阶段1: 预筛选 ===');
 
-        // 找到最近的交易日（往前试 7 天）
+        // --- 1. 找到最近的交易日 ---
         let latestDate = '';
         let dailyBasic: TushareService.DailyBasicFullRow[] = [];
-        let dailyPrices: TushareService.DailyPriceRow[] = [];
 
-        for (let i = 0; i <= 7; i++) {
-            const d = new Date();
-            d.setDate(d.getDate() - i);
-            const dateStr = d.toISOString().slice(0, 10).replace(/-/g, '');
+        for (const dateStr of getRecentCalendarDays(7)) {
             try {
-                const [basic, daily] = await Promise.all([
-                    TushareService.getDailyBasicByDate(dateStr),
-                    TushareService.getDailyByDate(dateStr),
-                ]);
-                if (basic.length > 0 && daily.length > 0) {
+                const basic = await TushareService.getDailyBasicByDate(dateStr);
+                if (basic.length > 0) {
                     latestDate = dateStr;
                     dailyBasic = basic;
-                    dailyPrices = daily;
                     break;
                 }
-            } catch (e) {
-                // 继续试前一天
-            }
+            } catch { /* 继续试前一天 */ }
         }
 
         if (dailyBasic.length === 0) {
-            console.error('[TrendBatch] 预筛选失败: 无法获取近期交易日数据');
+            console.error('[TrendBatch] 预筛选失败: 无法获取近期交易日 daily_basic 数据');
             return [];
         }
 
-        console.log(`[TrendBatch] 预筛选数据日期: ${latestDate}, 全市场 ${dailyBasic.length} 只股票`);
+        console.log(`[TrendBatch] 最新交易日: ${latestDate}, 全市场 ${dailyBasic.length} 只股票`);
 
-        // 构建 amount 映射（daily 接口的 amount 单位：千元）
-        const amountMap = new Map<string, number>();
-        for (const row of dailyPrices) {
-            amountMap.set(row.ts_code, row.amount);
+        // --- 2. 批量获取 ST 股票名单（stock_basic 接口，1 次调用） ---
+        const stSet = new Set<string>();
+        try {
+            const stockBasic = await TushareService.getStockBasicBulk();
+            for (const row of stockBasic) {
+                if (row.name.includes('ST') || row.name.includes('*ST')) {
+                    stSet.add(row.ts_code);
+                }
+            }
+            console.log(`[TrendBatch] ST 股票名单: ${stSet.size} 只`);
+        } catch (e) {
+            console.warn('[TrendBatch] 获取 stock_basic 失败，跳过 ST 排除:', e instanceof Error ? e.message : e);
         }
 
-        // 构建 60 日前收盘价映射（用于动量筛选）
+        // --- 3. 批量计算 20 日日均成交额 ---
+        // 拉取近 30 个自然日的 daily 数据，按股票聚合 amount
+        const amountSumMap = new Map<string, number>(); // ts_code → 总成交额（千元）
+        const amountCountMap = new Map<string, number>(); // ts_code → 交易日天数
+
+        const lookbackDates = getRecentCalendarDays(PREFILTER.AMOUNT_LOOKBACK_DAYS);
+        let daysFetched = 0;
+
+        for (const dateStr of lookbackDates) {
+            if (dateStr === latestDate) continue; // 跳过当天，用 daily 接口的数据
+            try {
+                const daily = await TushareService.getDailyByDate(dateStr);
+                if (daily.length > 0) {
+                    daysFetched++;
+                    for (const row of daily) {
+                        amountSumMap.set(row.ts_code, (amountSumMap.get(row.ts_code) || 0) + (row.amount || 0));
+                        amountCountMap.set(row.ts_code, (amountCountMap.get(row.ts_code) || 0) + 1);
+                    }
+                }
+            } catch { /* 非交易日，跳过 */ }
+        }
+
+        // 也要加上当天的 daily 数据
+        try {
+            const todayDaily = await TushareService.getDailyByDate(latestDate);
+            if (todayDaily.length > 0) {
+                daysFetched++;
+                for (const row of todayDaily) {
+                    amountSumMap.set(row.ts_code, (amountSumMap.get(row.ts_code) || 0) + (row.amount || 0));
+                    amountCountMap.set(row.ts_code, (amountCountMap.get(row.ts_code) || 0) + 1);
+                }
+            }
+        } catch { /* ignore */ }
+
+        console.log(`[TrendBatch] 20日日均成交额: 获取了 ${daysFetched} 个交易日数据, 覆盖 ${amountSumMap.size} 只股票`);
+
+        // --- 4. 构建 60 日前收盘价映射（用于动量筛选） ---
         const momentumDate = new Date();
         momentumDate.setDate(momentumDate.getDate() - 90); // 90 自然日 ≈ 60 交易日
         const momentumDateStr = momentumDate.toISOString().slice(0, 10).replace(/-/g, '');
@@ -82,19 +139,19 @@ export class TrendBatchService {
                 close60dAgoMap.set(row.ts_code, row.close);
             }
             console.log(`[TrendBatch] 60日前(${momentumDateStr})数据: ${close60dAgoMap.size} 只`);
-        } catch (e) {
+        } catch {
             console.warn('[TrendBatch] 获取60日前数据失败，跳过动量筛选');
         }
 
-        // 筛选
+        // --- 5. 综合筛选 ---
         const candidates: string[] = [];
         let stCount = 0, lowAmountCount = 0, lowPriceCount = 0, noMomentumCount = 0;
 
         for (const row of dailyBasic) {
             const tsCode = row.ts_code;
 
-            // 排除 ST
-            if (row.is_st === 1) {
+            // 排除 ST（用 stock_basic name 匹配）
+            if (stSet.has(tsCode)) {
                 stCount++;
                 continue;
             }
@@ -105,9 +162,11 @@ export class TrendBatchService {
                 continue;
             }
 
-            // 排除低成交额（单位：千元，3000万 = 30000千元）
-            const amount = amountMap.get(tsCode) || 0;
-            if (amount < PREFILTER.MIN_AMOUNT_WAN * 10) {
+            // 排除低 20 日日均成交额（与 vetoCheck 阈值完全一致）
+            const sumAmount = amountSumMap.get(tsCode) || 0;
+            const cnt = amountCountMap.get(tsCode) || 0;
+            const avgAmount = cnt > 0 ? sumAmount / cnt : 0;
+            if (avgAmount < PREFILTER.MIN_AVG_AMOUNT) {
                 lowAmountCount++;
                 continue;
             }
@@ -118,13 +177,12 @@ export class TrendBatchService {
                 continue;
             }
 
-            // 动量筛选：60 日涨幅为正（如果数据可用）
+            // 动量筛选：60 日跌幅超过 10% 排除
             if (close60dAgoMap.size > 0) {
                 const close60dAgo = close60dAgoMap.get(tsCode);
                 if (close60dAgo && close60dAgo > 0) {
                     const changePct = (row.close - close60dAgo) / close60dAgo;
                     if (changePct < -0.1) {
-                        // 60 日跌幅超过 10% 排除
                         noMomentumCount++;
                         continue;
                     }
@@ -138,7 +196,7 @@ export class TrendBatchService {
 
         console.log(
             `[TrendBatch] 预筛选完成: ${candidates.length} 只候选股 ` +
-            `(排除: ST=${stCount}, 低价=${lowPriceCount}, 低流动=${lowAmountCount}, 弱动量=${noMomentumCount})`,
+            `(排除: ST=${stCount}, 低价=${lowPriceCount}, 低成交额/换手=${lowAmountCount}, 弱动量=${noMomentumCount})`,
         );
 
         return candidates;
@@ -169,10 +227,8 @@ export class TrendBatchService {
             let symbols: string[];
 
             if (force) {
-                // force 模式也用预筛选，但不过滤已评分
                 symbols = await TrendBatchService.prefilterStocks();
             } else {
-                // 先获取候选股，再过滤已评分的
                 const candidates = await TrendBatchService.prefilterStocks();
 
                 // 批量查询已评分的股票（一次查询，而非逐股查询）
@@ -199,7 +255,9 @@ export class TrendBatchService {
 
             for (const symbol of symbols) {
                 try {
-                    const result = await TrendScoreService.calculateTrendScore(symbol);
+                    // skipVeto=true：预筛选已用相同标准（20日日均成交额 + ST）过滤，
+                    // 无需在 calculateTrendScore 内部重复调用 vetoCheck
+                    const result = await TrendScoreService.calculateTrendScore(symbol, undefined, undefined, true);
                     const rawDataJson = result.rawData ? JSON.stringify(result.rawData) : null;
 
                     await pool.query(`

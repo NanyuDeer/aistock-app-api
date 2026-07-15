@@ -2,6 +2,17 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-15 — 预筛选对齐 vetoCheck + skipVeto 跳过重复否决
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/TrendBatchService.ts`：预筛选成交额从单日改为 20 日日均（拉取近 30 天 daily 数据聚合计算），与 vetoCheck 的 `AVG_AMOUNT_THRESHOLD`（300000 千元 = 3000 万）完全对齐
+- `src/modules/monitor/TrendBatchService.ts`：ST 排除改用 `stock_basic` 接口批量获取全市场股票名称（含 'ST'/'\*ST'），修复 daily_basic bulk 查询不返回 is_st 字段的问题
+- `src/modules/monitor/TrendBatchService.ts`：run() 传 `skipVeto=true`，预筛选已用相同标准过滤，无需在 calculateTrendScore 内部重复调用 vetoCheck（省 2 次 API/股）
+- `src/modules/quote/TushareService.ts`：新增 `getStockBasicBulk()` 函数，批量获取全市场股票基本信息
+
+---
+
 ## [master] 2026-07-15 — 两阶段批量评分优化 + 手动触发接口 + App微信登录接口
 **开发者**: Aria
 

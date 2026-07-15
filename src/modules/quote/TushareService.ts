@@ -724,6 +724,24 @@ export async function getDailyByDate(tradeDate: string): Promise<DailyPriceRow[]
     return rows as DailyPriceRow[];
 }
 
+/** 全市场股票基本信息（含名称，用于 ST 识别） */
+export interface StockBasicRow {
+    ts_code: string;
+    symbol: string;
+    name: string;
+    industry: string;
+}
+
+/** 批量获取全市场股票基本信息（含 name 用于 ST 识别） */
+export async function getStockBasicBulk(): Promise<StockBasicRow[]> {
+    const rows = await tushareRequest(
+        'stock_basic',
+        { list_status: 'L' }, // L=上市
+        'ts_code,symbol,name,industry',
+    );
+    return rows as StockBasicRow[];
+}
+
 // ==================== 打板专题 & THS增强接口 ====================
 
 /** 涨停板块统计 - 每天涨停股最多的概念板块 */
