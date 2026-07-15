@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-15 — 预筛选增加板块轮动过滤 + 进度日志增强
+**开发者**: Aria
+
+### 优化
+- `src/modules/monitor/TrendBatchService.ts`：预筛选增加板块轮动过滤，用 `getBestBoardForStock()` 检查股票是否属于 60 日上榜板块（上榜次数 ≥ 2），零额外 API 调用，预计候选股从 981 降到 ~300-400 只
+- `src/modules/monitor/TrendBatchService.ts`：进度日志从每 50 只改为每 10 只，增加单只股票评分成功日志（含分数/标签/板块/上榜次数），增加预计剩余时间
+- `src/modules/monitor/TrendBatchService.ts`：预筛选日志增加板块缓存覆盖统计和"不在上榜板块"排除数量
+
+---
+
 ## [master] 2026-07-15 — 预筛选对齐 vetoCheck + skipVeto 跳过重复否决
 **开发者**: Aria
 

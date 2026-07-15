@@ -1,6 +1,6 @@
 import pool from '../../core/db';
 import { TrendScoreService } from './TrendScoreService';
-import { ensureCacheBuilt } from './RotationBoardCache';
+import { ensureCacheBuilt, getBestBoardForStock, getCacheStatus } from './RotationBoardCache';
 import * as TushareService from '../quote/TushareService';
 
 export interface TrendBatchResult {
@@ -145,7 +145,11 @@ export class TrendBatchService {
 
         // --- 5. 综合筛选 ---
         const candidates: string[] = [];
-        let stCount = 0, lowAmountCount = 0, lowPriceCount = 0, noMomentumCount = 0;
+        let stCount = 0, lowAmountCount = 0, lowPriceCount = 0, noMomentumCount = 0, noBoardCount = 0;
+
+        // 打印板块缓存覆盖情况
+        const cacheStatus = getCacheStatus();
+        console.log(`[TrendBatch] 板块轮动缓存: ${cacheStatus.stockCount} 只股票, ${cacheStatus.boardCount} 个板块`);
 
         for (const row of dailyBasic) {
             const tsCode = row.ts_code;
@@ -191,12 +195,26 @@ export class TrendBatchService {
 
             // 转换 ts_code → symbol（去 .SH/.SZ 后缀）
             const symbol = tsCode.split('.')[0];
+
+            // 排除不在任何 60 日上榜板块中的股票（零 API 调用，纯内存查询）
+            const bestBoard = getBestBoardForStock(symbol);
+            if (!bestBoard) {
+                noBoardCount++;
+                continue;
+            }
+            // 顺带过滤 60 日上榜次数过少的（<2 次）
+            if (bestBoard.count60d < 2) {
+                noBoardCount++;
+                continue;
+            }
+
             candidates.push(symbol);
         }
 
         console.log(
             `[TrendBatch] 预筛选完成: ${candidates.length} 只候选股 ` +
-            `(排除: ST=${stCount}, 低价=${lowPriceCount}, 低成交额/换手=${lowAmountCount}, 弱动量=${noMomentumCount})`,
+            `(排除: ST=${stCount}, 低价=${lowPriceCount}, 低成交额/换手=${lowAmountCount}, ` +
+            `弱动量=${noMomentumCount}, 不在上榜板块=${noBoardCount})`,
         );
 
         return candidates;
@@ -252,6 +270,7 @@ export class TrendBatchService {
 
             // === 阶段 2：完整评分 ===
             console.log(`[TrendBatch] === 阶段2: 完整评分 (${symbols.length} 只待评分, ${skipCount} 只已跳过) ===`);
+            const phase2Start = Date.now();
 
             for (const symbol of symbols) {
                 try {
@@ -277,12 +296,27 @@ export class TrendBatchService {
                     ]);
                     successCount++;
 
-                    if (successCount % 50 === 0) {
-                        console.log(`[TrendBatch] 进度: ${successCount}/${symbols.length} 已完成`);
+                    // 单只股票评分成功日志（含分数和板块信息）
+                    const boardInfo = getBestBoardForStock(symbol);
+                    const boardStr = boardInfo ? `${boardInfo.boardName}, 上榜${boardInfo.count60d}次` : '无板块';
+                    console.log(
+                        `[TrendBatch] ✅ ${symbol} 完成 (score=${result.score.toFixed(1)}, ${result.label}, ${boardStr}) ` +
+                        `[${successCount}/${symbols.length}]`,
+                    );
+
+                    if (successCount % 10 === 0) {
+                        const elapsedSec = ((Date.now() - phase2Start) / 1000).toFixed(0);
+                        const avgSec = (Number(elapsedSec) / successCount).toFixed(1);
+                        const remaining = Math.round((Number(elapsedSec) / successCount) * (symbols.length - successCount));
+                        console.log(
+                            `[TrendBatch] --- 进度: ${successCount}/${symbols.length} ` +
+                            `(${(successCount / symbols.length * 100).toFixed(1)}%) ` +
+                            `已用${elapsedSec}s, 均${avgSec}s/只, 预计剩余${remaining}s ---`,
+                        );
                     }
                 } catch (err) {
                     failCount++;
-                    console.error(`[TrendBatch] ${symbol} 评分失败:`, err instanceof Error ? err.message : err);
+                    console.error(`[TrendBatch] ❌ ${symbol} 失败: ${err instanceof Error ? err.message : err} [${successCount + failCount}/${symbols.length}]`);
                 }
             }
 
