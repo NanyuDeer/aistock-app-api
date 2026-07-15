@@ -1,7 +1,7 @@
 # push 推送模块
 
 ## 功能
-微信模板消息推送、飞书卡片推送、龙头股/机构调研推荐推送。
+微信模板消息推送、飞书卡片推送、龙头股/机构调研推荐推送、市场事件重磅推送。
 
 ## 对外接口（路由）
 - `GET /api/potential-stocks/push-history` — 推送历史
@@ -9,13 +9,14 @@
 - `POST /api/internal/push-leader` — 手动触发龙头股推送
 - `POST /api/internal/push-institution-research` — 手动触发机构调研推送
 - `POST /api/internal/push-stock-info` — 手动触发自选股异动推送
+- `POST /internal/push/market-event` — Python Agent 触发的市场事件重磅推送（需 X-Internal-Token）
 - `ALL /api/auth/wechat/push` — 微信事件推送回调
 
 ## 核心文件
 - `controller.ts` — PotentialStockPushController
 - `wechatEventController.ts` — 微信事件处理
-- `MessagePushService.ts` — 消息推送服务（飞书定时调度）
-- `WechatPushService.ts` — 微信模板消息推送
+- `MessagePushService.ts` — 消息推送服务（飞书定时调度 + 市场事件飞书卡片）
+- `WechatPushService.ts` — 微信模板消息推送（含市场事件推送 `dispatchMarketEventPush()`）
 
 ## 依赖的 shared 类型
 - `shared/utils/response` — 统一响应
