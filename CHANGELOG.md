@@ -13,6 +13,36 @@
 
 ---
 
+## [master] 2026-07-15 — 手动触发趋势股批量评分接口 + App微信登录接口
+**开发者**: Aria
+
+### 新增
+- `src/modules/monitor/TrendBatchService.ts`：新增 `isRunning()` 并发锁和 `TrendBatchResult` 返回类型，防止重复触发批量评分
+- `src/modules/monitor/trendScoreController.ts`：新增 `triggerBatch` 方法，支持 async/sync 两种模式和 force 参数，路由 `POST/GET /api/cn/stocks/trend-score/trigger-batch`
+- `src/index.ts`：注册 trigger-batch 路由（POST + GET）
+- `src/modules/auth/controller.ts`：新增 `appWxLogin` 接口，App 端微信登录（uni.login code → 换取用户信息 → 签发 JWT）
+- `src/modules/auth/scanLoginController.ts`：扫码登录增强（HTTP 状态码检查、空响应校验、try-catch 错误处理）
+- `src/core/routes/internal.ts`：新增 event_conduction 公开接口和 event_id 隔离
+
+---
+
+## [master] 2026-07-15 — 统一最佳概念板块选择,逐板统计轮动上榜次数选最多
+**开发者**: NanyuDeer
+
+### 重构
+- `src/modules/monitor/TrendScoreService.ts`：新增 `findBestConceptBoard` 函数，对股票所属每个 THS 概念板块独立统计 60 日轮动上榜次数，选上榜最多的单一板块统一用于概念 K 线 / sectorStrength / sectorName / weeklyListingTrend / sectorListCount60d
+- `src/modules/monitor/TrendScoreService.ts`：`calcTrackDim` 新增 `bestBoard` 参数，移除原 ths_member 反查 + 多板块累加匹配逻辑，bestBoard 为空时回退到 sectorStats 行业/概念名匹配
+- `src/modules/monitor/TrendScoreService.ts`：主函数概念 K 线获取改用最佳板块 ts_code 直接拉取 getThsDaily，无数据时回退行业名精确/模糊匹配
+
+---
+
+## [master] 2026-07-14 — 趋势股评分赛道维度数据源增强
+**开发者**: NanyuDeer
+
+### 改进
+- `src/modules/monitor/TrendScoreService.ts`：weeklyListingTrend 复用板块轮动 rawData 真实周度上榜次数（替换占位 generateWeeklyTrend）
+- `src/modules/monitor/TrendScoreService.ts`：sectorStrength 复用概念指数K线计算板块月涨幅（替换占位 '--'）
+- `src/modules/monitor/TrendScoreService.ts`：policyItems 复用财联社新闻关键词提取政策/产业趋势项（替换占位硬编码）
 ## [changer] 2026-07-14 — Event Conduction 报告公开接口 + analysis_reports event_id 隔离
 **开发者**: 37588
 

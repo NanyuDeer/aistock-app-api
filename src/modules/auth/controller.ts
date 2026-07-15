@@ -122,6 +122,66 @@ export class AuthController {
         createResponse(res, 200, 'success', null);
     }
 
+    /**
+     * App 端微信登录（uni.login → code → 换取用户信息 → 签发 JWT）
+     * 与网页 OAuth callback 不同，这里返回 JSON 而非 302 跳转。
+     */
+    static async appWxLogin(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const code = req.body?.code as string;
+
+        AuthController.log('appWxLogin', '收到 App 微信登录请求', { code: code ? `${code.slice(0, 8)}...` : null });
+
+        if (!code) {
+            createResponse(res, 400, '缺少 code 参数');
+            return;
+        }
+
+        try {
+            // ① 用 code 换取 access_token + openid
+            AuthController.log('appWxLogin', '① 用 code 换取 access_token');
+            const tokenData = await AuthController.exchangeCodeForToken(code);
+            if (tokenData.errcode) {
+                AuthController.log('appWxLogin', '❌ 换取 access_token 失败', { errcode: tokenData.errcode, errmsg: tokenData.errmsg });
+                createResponse(res, 400, `微信授权失败: ${tokenData.errmsg}`);
+                return;
+            }
+
+            const { access_token, openid } = tokenData;
+            AuthController.log('appWxLogin', '✅ 换取成功', { openid });
+
+            // ② 拉取用户信息（昵称、头像）
+            AuthController.log('appWxLogin', '② 拉取用户信息');
+            const userInfo = await AuthController.fetchWechatUserInfo(access_token, openid);
+            const nickname = userInfo.nickname || '';
+            const avatarUrl = userInfo.headimgurl || '';
+            AuthController.log('appWxLogin', '✅ 用户信息', { openid, nickname: nickname || '(空)' });
+
+            // ③ 写入用户表（UPSERT）
+            AuthController.log('appWxLogin', '③ 写入用户表');
+            await AuthController.upsertUser(openid, nickname, avatarUrl);
+
+            // ④ 签发 JWT
+            const now = Math.floor(Date.now() / 1000);
+            const exp = now + 7 * 24 * 3600;
+            const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
+            AuthController.log('appWxLogin', '✅ JWT 签发成功');
+
+            // ⑤ 返回 token + 用户信息（前端存储 token，后续请求用 Authorization 头）
+            createResponse(res, 200, 'success', {
+                token: jwt,
+                userInfo: {
+                    openid,
+                    nickname,
+                    avatar: avatarUrl,
+                },
+            });
+        } catch (err: any) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            AuthController.log('appWxLogin', '❌ 登录流程异常', { error: errMsg });
+            createResponse(res, 500, `微信登录失败: ${errMsg}`);
+        }
+    }
+
     private static async exchangeCodeForToken(code: string): Promise<any> {
         const res = await fetch(
             `https://api.weixin.qq.com/sns/oauth2/access_token` +
