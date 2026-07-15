@@ -16,7 +16,17 @@
 - `src/index.ts`：注册 `POST/GET /api/cn/stocks/trend-score/trigger-batch` 路由
 - `src/modules/auth/controller.ts`：新增 `appWxLogin` 接口，App 端微信登录（uni.login code → 换取用户信息 → 签发 JWT）
 - `src/modules/auth/scanLoginController.ts`：扫码登录增强（HTTP 状态码检查、空响应校验、try-catch 错误处理）
-- `src/core/routes/internal.ts`：新增 event_conduction 公开接口和 event_id 隔离
+
+---
+
+## [changer] 2026-07-15 — event/list 去重修复
+**开发者**: 37588
+
+### 修复
+- `src/core/routes/internal.ts`：`GET /api/agent/event/list` 使用 `DISTINCT ON (user_id)` 去重（同一 eventId 只保留最新一条），COUNT 改为 `COUNT(DISTINCT user_id)` 避免分页计数偏差
+
+### 测试
+- `src/core/routes/__tests__/event_conduction.spec.ts`：新增去重测试用例（同一 eventId 多条记录场景）
 
 ---
 
@@ -37,7 +47,6 @@
 - `src/modules/monitor/TrendScoreService.ts`：weeklyListingTrend 复用板块轮动 rawData 真实周度上榜次数（替换占位 generateWeeklyTrend）
 - `src/modules/monitor/TrendScoreService.ts`：sectorStrength 复用概念指数K线计算板块月涨幅（替换占位 '--'）
 - `src/modules/monitor/TrendScoreService.ts`：policyItems 复用财联社新闻关键词提取政策/产业趋势项（替换占位硬编码）
-
 ## [changer] 2026-07-14 — Event Conduction 报告公开接口 + analysis_reports event_id 隔离
 **开发者**: 37588
 
