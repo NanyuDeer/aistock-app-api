@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-15 — 统一最佳概念板块选择,逐板统计轮动上榜次数选最多
+**开发者**: NanyuDeer
+
+### 重构
+- `src/modules/monitor/TrendScoreService.ts`：新增 `findBestConceptBoard` 函数，对股票所属每个 THS 概念板块独立统计 60 日轮动上榜次数，选上榜最多的单一板块统一用于概念 K 线 / sectorStrength / sectorName / weeklyListingTrend / sectorListCount60d
+- `src/modules/monitor/TrendScoreService.ts`：`calcTrackDim` 新增 `bestBoard` 参数，移除原 ths_member 反查 + 多板块累加匹配逻辑，bestBoard 为空时回退到 sectorStats 行业/概念名匹配
+- `src/modules/monitor/TrendScoreService.ts`：主函数概念 K 线获取改用最佳板块 ts_code 直接拉取 getThsDaily，无数据时回退行业名精确/模糊匹配
+
+---
+
 ## [master] 2026-07-14 — 趋势股评分赛道维度数据源增强
 **开发者**: NanyuDeer
 

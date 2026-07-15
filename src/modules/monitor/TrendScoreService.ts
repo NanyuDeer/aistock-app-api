@@ -284,12 +284,127 @@ function extractPolicyItems(news: { title: string; summary?: string }[], maxItem
     return items;
 }
 
+/** 单个板块在轮动数据中的匹配结果 */
+interface BoardMatchResult {
+    boardName: string;
+    boardCode: string;
+    count60d: number;
+    weeklyTrend: number[];
+}
+
+/**
+ * 查找股票所属的最佳概念板块（60日上榜次数最多的）
+ *
+ * 流程：
+ * 1. ths_member(con_code=股票) → 获取所有概念板块 ts_code
+ * 2. getThsIndex → ts_code 映射为板块名
+ * 3. 逐个板块统计在轮动rawData中的上榜天数
+ * 4. 返回上榜次数最多的板块
+ */
+async function findBestConceptBoard(
+    symbol: string,
+    rotationRawData: any[],
+    fallbackIndustryName?: string,
+): Promise<BoardMatchResult | null> {
+    try {
+        const tsCode = symbol.startsWith('6') ? `${symbol}.SH` : `${symbol}.SZ`;
+        const members = await TushareService.getThsMemberByStock(tsCode);
+        if (!members || members.length === 0) {
+            console.warn(`[TrendScore] ${symbol} ths_member 返回空`);
+            return null;
+        }
+
+        // 获取 ths_index 名称映射
+        const conceptIndices = await TushareService.getThsIndex('N', 'A');
+        const industryIndices = await TushareService.getThsIndex('I', 'A');
+        const codeToName = new Map<string, string>();
+        for (const idx of [...conceptIndices, ...industryIndices]) {
+            codeToName.set(idx.ts_code, idx.name);
+        }
+
+        // 构建候选板块列表：[{ name, code }]，只保留 is_new='Y' 的
+        const candidates: { name: string; code: string }[] = [];
+        for (const m of members) {
+            if (m.is_new === 'N') continue; // 跳过已剔除的
+            const boardName = codeToName.get(m.ts_code);
+            if (boardName) {
+                candidates.push({ name: boardName, code: m.ts_code });
+            }
+        }
+
+        // 兜底：如果 ths_member 没有返回有效的概念，用行业名
+        if (candidates.length === 0 && fallbackIndustryName) {
+            // 尝试在 ths_index 中模糊匹配行业名
+            const allEntries = [...codeToName.entries()];
+            for (const [code, name] of allEntries) {
+                if (name.length >= 2 && !name.includes('(A股)') &&
+                    (fallbackIndustryName.includes(name) || name.includes(fallbackIndustryName))) {
+                    candidates.push({ name, code });
+                    break;
+                }
+            }
+        }
+
+        if (candidates.length === 0) {
+            console.warn(`[TrendScore] ${symbol} 无可用概念板块`);
+            return null;
+        }
+
+        console.log(`[TrendScore] ${symbol} 候选板块 ${candidates.length} 个: ${candidates.slice(0, 5).map(c => c.name).join(', ')}...`);
+
+        // 逐个板块统计上榜次数
+        const results: BoardMatchResult[] = [];
+        for (const candidate of candidates) {
+            const names = [candidate.name];
+            // 也加入模糊匹配的轮动名（如果板块名在轮动数据中有包含关系的变体）
+            const allRotationNames = new Set<string>();
+            for (const dayData of rotationRawData) {
+                const blockList = dayData?.block_list || [];
+                for (const block of blockList) {
+                    if (block.name) allRotationNames.add(block.name);
+                }
+            }
+            for (const rotName of allRotationNames) {
+                if (rotName !== candidate.name &&
+                    (candidate.name.includes(rotName) || rotName.includes(candidate.name))) {
+                    names.push(rotName);
+                }
+            }
+
+            const nameSet = new Set(names);
+            const weeklyTrend = extractWeeklyTrend(rotationRawData, [...nameSet]);
+            const count60d = weeklyTrend.reduce((a, b) => a + b, 0);
+            results.push({
+                boardName: candidate.name,
+                boardCode: candidate.code,
+                count60d,
+                weeklyTrend,
+            });
+        }
+
+        // 按上榜次数降序排列，取最多的
+        results.sort((a, b) => b.count60d - a.count60d);
+        const best = results[0];
+
+        // 日志：打印前5个板块的统计
+        const top5 = results.slice(0, 5).map(r => `${r.boardName}=${r.count60d}次`).join(', ');
+        console.log(`[TrendScore] ${symbol} 板块上榜统计(top5): ${top5}`);
+        console.log(`[TrendScore] ${symbol} 最佳板块: ${best.boardName}(${best.boardCode}), 60日上榜${best.count60d}次`);
+
+        return best;
+    } catch (e) {
+        console.warn('[TrendScore] findBestConceptBoard failed:', (e as Error).message);
+        return null;
+    }
+}
+
 async function calcTrackDim(
     symbol: string,
     data: PrefetchedData,
     industryCache?: IndustryCache,
     sectorStrength?: string,
     newsItems?: { title: string; summary?: string }[],
+    bestBoard?: BoardMatchResult | null,
 ): Promise<{
     score: number;
     indicators: { name: string; key: string; value: string; score: number }[];
@@ -306,89 +421,56 @@ async function calcTrackDim(
         (trackIndScores['market_recognition'] + trackIndScores['industry_penetration'] + trackIndScores['policy_trend_score']) / 3
     );
 
-    // 通过 ths_member 反查股票所属概念板块（与轮动API同源）
-    let thsConceptNames: string[] = [];
-    try {
-        const tsCode = symbol.startsWith('6') ? `${symbol}.SH` : `${symbol}.SZ`;
-        const members = await TushareService.getThsMemberByStock(tsCode);
-        if (members.length > 0) {
-            // 获取 ths_index 名称映射
-            const conceptIndices = await TushareService.getThsIndex('N', 'A');
-            const industryIndices = await TushareService.getThsIndex('I', 'A');
-            const codeToName = new Map<string, string>();
-            for (const idx of [...conceptIndices, ...industryIndices]) {
-                codeToName.set(idx.ts_code, idx.name);
-            }
-            // 将 member 的 ts_code 转为板块名
-            for (const m of members) {
-                if (m.is_new === 'N') continue; // 跳过已剔除的
-                const boardName = codeToName.get(m.ts_code);
-                if (boardName) thsConceptNames.push(boardName);
-            }
-            console.log(`[TrendScore] ${symbol} 所属THS概念板块: ${thsConceptNames.length}个 - ${thsConceptNames.slice(0, 5).join(', ')}`);
-        }
-    } catch (e) {
-        console.warn('[TrendScore] getThsMemberByStock failed:', (e as Error).message);
-    }
-
-    // 获取60日板块轮动上榜次数
+    // 使用主函数传入的最佳概念板块数据
     let sectorListCount60d = 0;
     let sectorName = data.industry?.industry_name || '未知';
-    let rotationRawData: any[] = [];
-    try {
-        const { sectorStats, rawData } = await fetchBlockRotationData(60);
-        rotationRawData = rawData;
-        // 安全获取板块统计（缓存可能返回普通对象而非Map）+ 模糊匹配
-        const getSectorStat = (name: string): { frequency: number; matchedName?: string } | undefined => {
-            if (!name) return undefined;
-            // 精确匹配
-            if (sectorStats instanceof Map) {
-                const exact = sectorStats.get(name);
-                if (exact) return { frequency: exact.frequency, matchedName: name };
-            } else {
-                const obj = (sectorStats as any)[name];
-                if (obj) return { frequency: obj.frequency || 0, matchedName: name };
+    let weeklyTrend: number[] = [0, 0, 0, 0, 0, 0];
+
+    if (bestBoard) {
+        sectorListCount60d = bestBoard.count60d;
+        sectorName = bestBoard.boardName;
+        weeklyTrend = bestBoard.weeklyTrend;
+    } else {
+        // 回退：如果 bestBoard 为空，用旧的 sectorStats 匹配
+        try {
+            const { sectorStats, rawData } = await fetchBlockRotationData(60);
+            const getSectorStat = (name: string): { frequency: number; matchedName?: string } | undefined => {
+                if (!name) return undefined;
+                if (sectorStats instanceof Map) {
+                    const exact = sectorStats.get(name);
+                    if (exact) return { frequency: exact.frequency, matchedName: name };
+                } else {
+                    const obj = (sectorStats as any)[name];
+                    if (obj) return { frequency: obj.frequency || 0, matchedName: name };
+                }
+                const allEntries: [string, any][] = sectorStats instanceof Map
+                    ? [...sectorStats.entries()]
+                    : Object.entries(sectorStats as any);
+                for (const [statName, stat] of allEntries) {
+                    if (statName.length >= 2 && (name.includes(statName) || statName.includes(name))) {
+                        return { frequency: stat.frequency || 0, matchedName: statName };
+                    }
+                }
+                return undefined;
+            };
+            if (data.industry?.industry_name) {
+                const stat = getSectorStat(data.industry.industry_name);
+                if (stat && stat.frequency > 0) { sectorListCount60d = stat.frequency; if (stat.matchedName) sectorName = stat.matchedName; }
             }
-            // 模糊匹配（包含关系）
-            const allEntries: [string, any][] = sectorStats instanceof Map
-                ? [...sectorStats.entries()]
-                : Object.entries(sectorStats as any);
-            for (const [statName, stat] of allEntries) {
-                if (statName.length >= 2 && (name.includes(statName) || statName.includes(name))) {
-                    return { frequency: stat.frequency || 0, matchedName: statName };
+            if (sectorListCount60d === 0 && data.kplConceptCons.length > 0) {
+                for (const con of data.kplConceptCons) {
+                    const stat = getSectorStat(con.con_name);
+                    if (stat && stat.frequency > 0) {
+                        sectorListCount60d = stat.frequency;
+                        sectorName = stat.matchedName || con.con_name;
+                        break;
+                    }
                 }
             }
-            return undefined;
-        };
-        // 先尝试行业名匹配
-        if (data.industry?.industry_name) {
-            const stat = getSectorStat(data.industry.industry_name);
-            if (stat && stat.frequency > 0) { sectorListCount60d = stat.frequency; if (stat.matchedName) sectorName = stat.matchedName; }
+            weeklyTrend = extractWeeklyTrend(rawData || [], [sectorName], sectorListCount60d);
+        } catch (e) {
+            console.error('[TrendScore] fallback rotation match failed:', e);
         }
-        // 再尝试概念名匹配
-        if (sectorListCount60d === 0 && data.kplConceptCons.length > 0) {
-            for (const con of data.kplConceptCons) {
-                const stat = getSectorStat(con.con_name);
-                if (stat && stat.frequency > 0) {
-                    sectorListCount60d = stat.frequency;
-                    sectorName = stat.matchedName || con.con_name;
-                    break;
-                }
-            }
-        }
-        // 再尝试THS概念板块名匹配
-        if (sectorListCount60d === 0 && thsConceptNames.length > 0) {
-            for (const conName of thsConceptNames) {
-                const stat = getSectorStat(conName);
-                if (stat && stat.frequency > 0) {
-                    sectorListCount60d = stat.frequency;
-                    sectorName = stat.matchedName || conName;
-                    break;
-                }
-            }
-        }
-    } catch (e) {
-        console.error('[TrendScore] fetchBlockRotationData(60) failed:', e);
     }
 
     const indicators = [
@@ -396,50 +478,6 @@ async function calcTrackDim(
         { name: '行业渗透率位置', key: 'industry_penetration', value: String(trackRaw['industry_penetration'] ?? '--'), score: trackIndScores['industry_penetration'] },
         { name: '政策/产业趋势强度', key: 'policy_trend_score', value: String(trackRaw['policy_trend_score'] ?? '--'), score: trackIndScores['policy_trend_score'] },
     ];
-
-    // 收集所有需要匹配的板块名
-    // 优先级：THS概念板块名（与轮动API同源）> 开盘啦概念名(name字段) > 行业名
-    const sectorNamesForMatch: string[] = [];
-    // 1. THS概念板块名（最准确，与轮动API同源）
-    for (const name of thsConceptNames) {
-        sectorNamesForMatch.push(name);
-    }
-    // 2. 开盘啦概念题材名（注意：用 con.name 不是 con.con_name）
-    for (const con of data.kplConceptCons) {
-        if (con.name) sectorNamesForMatch.push(con.name);
-    }
-    // 3. 行业名（兜底）
-    if (data.industry?.industry_name) sectorNamesForMatch.push(data.industry.industry_name);
-    // 从轮动rawData中收集所有板块名，用于模糊匹配
-    const allRotationNames: string[] = [];
-    for (const dayData of rotationRawData) {
-        const blockList = dayData?.block_list || [];
-        for (const block of blockList) {
-            if (block.name) allRotationNames.push(block.name);
-        }
-    }
-    // 模糊匹配：如果stock的板块名包含轮动中的某个板块名（或反之），也算匹配
-    const fuzzyMatchNames = new Set<string>();
-    for (const stockName of sectorNamesForMatch) {
-        for (const rotName of allRotationNames) {
-            if (stockName.includes(rotName) || rotName.includes(stockName)) {
-                fuzzyMatchNames.add(rotName);
-            }
-        }
-    }
-    const allMatchNames = [...new Set([...sectorNamesForMatch, ...fuzzyMatchNames, ...thsConceptNames])];
-
-    // 先计算 weeklyListingTrend，再用其结果修正 sectorListCount60d
-    const weeklyTrend = extractWeeklyTrend(rotationRawData || [], allMatchNames, sectorListCount60d);
-    const weeklySum = weeklyTrend.reduce((a: number, b: number) => a + b, 0);
-    // 如果 sectorStats 匹配失败但 weeklyListingTrend 有值，用周度趋势总和作为60日上榜次数
-    if (sectorListCount60d === 0 && weeklySum > 0) {
-        sectorListCount60d = weeklySum;
-        // 如果 sectorName 还是默认行业名，用第一个模糊匹配的轮动板块名
-        if (sectorName === (data.industry?.industry_name || '') && fuzzyMatchNames.size > 0) {
-            sectorName = [...fuzzyMatchNames][0];
-        }
-    }
 
     return {
         score: trackDimScore,
@@ -625,117 +663,84 @@ export class TrendScoreService {
         // 1. 技术面维度
         const techResult = calcTechnicalDim(prices);
 
-        // 获取概念/行业指数K线（用于展开详情）
-        let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };
+        // 获取板块轮动数据 + 最佳概念板块
+        let rotationRawData: any[] = [];
         try {
-            // 构建 板块名 → ts_code 的映射（从Tushare ths_index获取）
-            const conceptIndices = await TushareService.getThsIndex('N', 'A'); // 概念指数
-            const industryIndices = await TushareService.getThsIndex('I', 'A'); // 行业指数
-            const nameToCode = new Map<string, string>();
-            for (const idx of [...conceptIndices, ...industryIndices]) {
-                nameToCode.set(idx.name, idx.ts_code);
-            }
+            const { rawData } = await fetchBlockRotationData(60);
+            rotationRawData = rawData;
+        } catch (e) {
+            console.error('[TrendScore] fetchBlockRotationData failed:', e);
+        }
 
-            // stock_basic 行业名 → ths_index 行业名别名映射（常见不一致情况）
-            const INDUSTRY_ALIASES: Record<string, string> = {
-                '元器件': '元件',          // ths_index 中叫"元件"
-                '电气设备': '电池',         // 宁德时代等电气设备 → 电池板块更有代表性
-                '半导体': '半导体',         // 精确匹配
-                '通信设备': '通信设备',
-                '计算机应用': '软件开发',
-                '计算机设备': '计算机设备',
-                '医疗器械': '医疗器械',
-                '化学制药': '化学制药',
-                '中药': '中药',
-                '生物制品': '生物制品',
-                '汽车零部件': '汽车零部件',
-                '房地产开发': '房地产',
-                '证券': '证券',
-                '保险': '保险',
-                '银行': '银行',
-                '钢铁': '钢铁',
-                '煤炭': '煤炭',
-                '有色金属': '有色金属',
-                '化工': '化学原料',
-                '机械设备': '通用设备',
-                '电力': '电力',
-                '水务': '水务',
-                '环保': '环保',
-                '建筑装饰': '装修装饰',
-                '建筑材料': '建材',
-                '食品加工': '食品',
-                '纺织服装': '服装家纺',
-                '农林牧渔': '种植业',
-                '交通运输': '港口航运',
-                '传媒': '传媒',
-                '电子': '消费电子',
-                '轻工制造': '家居用品',
-                '综合': '综合',
-                '商业贸易': '零售',
-                '休闲服务': '旅游及酒店',
-                '国防军工': '军工',
-                '公用事业': '电力',
-                '非银金融': '证券',
-            };
-            // 优先用概念名匹配，其次行业名（含别名+模糊匹配）
-            let matchedCode = '';
-            let matchedName = '';
-            // 模糊匹配函数：精确 > 别名 > 长名包含 > 短名包含
-            const findMatch = (name: string): { code: string; name: string } | null => {
-                if (!name) return null;
-                // 精确匹配
-                if (nameToCode.has(name)) return { code: nameToCode.get(name)!, name };
-                // 别名映射
-                const alias = INDUSTRY_ALIASES[name];
-                if (alias && nameToCode.has(alias)) return { code: nameToCode.get(alias)!, name: alias };
-                // 模糊匹配：按名称长度降序排列，优先匹配更长的名称（更精确）
-                const sortedEntries = [...nameToCode.entries()]
-                    .filter(([idxName]) => idxName.length >= 2 && !idxName.includes('(A股)'))
-                    .sort((a, b) => b[0].length - a[0].length);
-                for (const [idxName, code] of sortedEntries) {
-                    if (name.includes(idxName) || idxName.includes(name)) {
-                        return { code, name: idxName };
-                    }
-                }
-                return null;
-            };
-            // 先从概念列表中找匹配
-            for (const con of data.kplConceptCons) {
-                const m = findMatch(con.con_name);
-                if (m) { matchedCode = m.code; matchedName = m.name; break; }
-            }
-            // 如果概念没匹配到，用行业名
-            if (!matchedCode && data.industry?.industry_name) {
-                const m = findMatch(data.industry.industry_name);
-                if (m) { matchedCode = m.code; matchedName = m.name; }
-            }
-            // 如果还是没匹配，尝试用 industry_code
-            if (!matchedCode && data.industry?.industry_code) {
-                matchedCode = data.industry.industry_code;
-                matchedName = data.industry.industry_name || '';
-            }
+        const bestBoard = await findBestConceptBoard(symbol, rotationRawData, data.industry?.industry_name);
 
-            if (matchedCode) {
-                const thsDaily = await TushareService.getThsDaily(matchedCode, startDateStr);
+        // 使用最佳概念板块的 ts_code 获取概念指数K线
+        let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };
+        if (bestBoard) {
+            try {
+                const thsDaily = await TushareService.getThsDaily(bestBoard.boardCode, startDateStr);
                 const sorted = [...thsDaily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
                 const recent = sorted.slice(-120);
                 conceptKline = {
-                    name: matchedName,
+                    name: bestBoard.boardName,
                     dates: recent.map(d => d.trade_date),
                     ohlc: recent.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
                 };
-                console.log(`[TrendScore] 概念K线: ${matchedName}(${matchedCode}), ${recent.length}天`);
-            } else {
-                console.warn(`[TrendScore] 未找到匹配的概念/行业指数, kplCons=${data.kplConceptCons.length}, industry=${data.industry?.industry_name || 'N/A'}`);
+                console.log(`[TrendScore] 概念K线(最佳板块): ${bestBoard.boardName}(${bestBoard.boardCode}), ${recent.length}天`);
+            } catch (e) {
+                console.error('[TrendScore] concept K-line fetch failed:', e);
             }
-        } catch (e) {
-            console.error('[TrendScore] concept index kline failed:', e);
+        }
+
+        // 如果最佳板块没有K线数据，回退到原有的行业名匹配
+        if (conceptKline.ohlc.length === 0) {
+            try {
+                const conceptIndices = await TushareService.getThsIndex('N', 'A');
+                const industryIndices = await TushareService.getThsIndex('I', 'A');
+                const nameToCode = new Map<string, string>();
+                for (const idx of [...conceptIndices, ...industryIndices]) {
+                    nameToCode.set(idx.name, idx.ts_code);
+                }
+                // 尝试用行业名精确匹配
+                let fallbackCode = '';
+                let fallbackName = '';
+                if (data.industry?.industry_name && nameToCode.has(data.industry.industry_name)) {
+                    fallbackCode = nameToCode.get(data.industry.industry_name)!;
+                    fallbackName = data.industry.industry_name;
+                }
+                // 模糊匹配
+                if (!fallbackCode && data.industry?.industry_name) {
+                    const sortedEntries = [...nameToCode.entries()]
+                        .filter(([n]) => n.length >= 2 && !n.includes('(A股)'))
+                        .sort((a, b) => b[0].length - a[0].length);
+                    for (const [idxName, code] of sortedEntries) {
+                        if (data.industry.industry_name.includes(idxName) || idxName.includes(data.industry.industry_name)) {
+                            fallbackCode = code;
+                            fallbackName = idxName;
+                            break;
+                        }
+                    }
+                }
+                if (fallbackCode) {
+                    const thsDaily = await TushareService.getThsDaily(fallbackCode, startDateStr);
+                    const sorted = [...thsDaily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+                    const recent = sorted.slice(-120);
+                    conceptKline = {
+                        name: fallbackName,
+                        dates: recent.map(d => d.trade_date),
+                        ohlc: recent.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
+                    };
+                    console.log(`[TrendScore] 概念K线(回退): ${fallbackName}(${fallbackCode}), ${recent.length}天`);
+                }
+            } catch (e) {
+                console.error('[TrendScore] fallback concept K-line failed:', e);
+            }
         }
 
         // 计算板块月涨幅
         let sectorStrength = '--';
-        if (conceptKline.ohlc.length >= 21) { // 至少需要21个交易日（约1个月）
-            const currentClose = conceptKline.ohlc[conceptKline.ohlc.length - 1][1]; // [open, close, low, high]
+        if (conceptKline.ohlc.length >= 21) {
+            const currentClose = conceptKline.ohlc[conceptKline.ohlc.length - 1][1];
             const monthAgoClose = conceptKline.ohlc[conceptKline.ohlc.length - 21][1];
             if (monthAgoClose > 0) {
                 const gainNum = (currentClose - monthAgoClose) / monthAgoClose * 100;
@@ -748,7 +753,7 @@ export class TrendScoreService {
         const newsResult = await calcNewsDim(symbol, data);
 
         // 2. 行业赛道景气维度
-        const trackResult = await calcTrackDim(symbol, data, industryCache, sectorStrength, newsResult.detail.news);
+        const trackResult = await calcTrackDim(symbol, data, industryCache, sectorStrength, newsResult.detail.news, bestBoard);
 
         // 4. 基本面维度
         const fundamentalResult = calcFundamentalDim(data, aiScores);
