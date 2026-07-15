@@ -465,8 +465,6 @@ app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreCont
 app.get('/api/cn/stocks/:symbol/trend-score/detail', (req, res, next) => TrendScoreController.getDetail(req, res, next));
 app.post('/api/cn/stocks/:symbol/trend-score/refresh', (req, res, next) => TrendScoreController.refreshScore(req, res, next));
 app.post('/api/cn/stocks/trend-score/batch', (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
-app.post('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
-app.get('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
 
 app.get('/api/news/headlines', (req, res, next) => NewsController.getHeadlines(req, res, next));
 app.get('/api/news/cn', (req, res, next) => NewsController.getCnNews(req, res, next));
@@ -521,15 +519,16 @@ cron.schedule('0 2 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-cron.schedule('0 4 * * *', async () => {
-    console.log('[TenxCron] 开始批量评分');
-    try {
-        await TenxBatchService.run();
-        console.log('[TenxCron] 批量评分完成');
-    } catch (err: any) {
-        console.error('[TenxCron] 批量评分失败:', err?.message || err);
-    }
-}, { timezone: 'Asia/Shanghai' });
+// 十倍股批量评分 — 已停用（后续可能用趋势股评分替代）
+// cron.schedule('0 4 * * *', async () => {
+//     console.log('[TenxCron] 开始批量评分');
+//     try {
+//         await TenxBatchService.run();
+//         console.log('[TenxCron] 批量评分完成');
+//     } catch (err: any) {
+//         console.error('[TenxCron] 批量评分失败:', err?.message || err);
+//     }
+// }, { timezone: 'Asia/Shanghai' });
 
 cron.schedule('5 19 * * 1-5', async () => {
     console.log('[CapitalFlowCron] 收盘后批量预取资金流向');
