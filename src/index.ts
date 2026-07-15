@@ -50,6 +50,7 @@ import { AiGraphService } from './modules/monitor/AiGraphService';
 import { IndustryKGController } from './modules/monitor/industryKGController';
 import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TenxBatchService } from './modules/monitor/TenxBatchService';
+import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
@@ -159,6 +160,7 @@ app.get('/api/auth/wechat/callback', (req, res, next) => AuthController.callback
 app.all('/api/auth/wechat/push', (req, res, next) => WechatEventController.handle(req, res, next));
 app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.generateQrCode(req, res, next));
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
+app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
@@ -505,6 +507,17 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
     console.error('[Error]', err.message);
     res.status(500).json({ code: 500, message: err.message || 'Internal Server Error' });
 });
+
+// 趋势股批量评分 — 每天凌晨2点（在十倍股4点评分之前，共享板块轮动缓存）
+cron.schedule('0 2 * * *', async () => {
+    console.log('[TrendCron] 开始批量趋势股评分');
+    try {
+        await TrendBatchService.run();
+        console.log('[TrendCron] 批量趋势股评分完成');
+    } catch (err: any) {
+        console.error('[TrendCron] 批量趋势股评分失败:', err?.message || err);
+    }
+}, { timezone: 'Asia/Shanghai' });
 
 cron.schedule('0 4 * * *', async () => {
     console.log('[TenxCron] 开始批量评分');
