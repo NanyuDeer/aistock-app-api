@@ -2,6 +2,57 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-15 — 预筛选条件优化(成交额4000万+板块上榜≥3) + stk_surv接口修复
+**开发者**: Aria
+
+### 优化
+- `src/modules/monitor/TrendBatchService.ts`：20日日均成交额阈值从 3000 万提高到 4000 万（与 vetoCheck 同步）
+- `src/modules/monitor/TrendBatchService.ts`：板块 60 日上榜次数从 ≥2 提高到 ≥3
+- `src/modules/monitor/TenxScoreService.ts`：`AVG_AMOUNT_THRESHOLD` 从 300000 提高到 400000 千元（4000 万），错误提示文案同步更新
+
+### 修复
+- `src/modules/quote/TushareService.ts`：机构调研接口名 `stk_survival` → `stk_surv`（Tushare 官方正确名称）
+
+---
+
+## [master] 2026-07-15 — 预筛选增加板块轮动过滤 + 进度日志增强
+**开发者**: Aria
+
+### 优化
+- `src/modules/monitor/TrendBatchService.ts`：预筛选增加板块轮动过滤，用 `getBestBoardForStock()` 检查股票是否属于 60 日上榜板块（上榜次数 ≥ 2），零额外 API 调用，预计候选股从 981 降到 ~300-400 只
+- `src/modules/monitor/TrendBatchService.ts`：进度日志从每 50 只改为每 10 只，增加单只股票评分成功日志（含分数/标签/板块/上榜次数），增加预计剩余时间
+- `src/modules/monitor/TrendBatchService.ts`：预筛选日志增加板块缓存覆盖统计和"不在上榜板块"排除数量
+
+---
+
+## [master] 2026-07-15 — 预筛选对齐 vetoCheck + skipVeto 跳过重复否决
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/TrendBatchService.ts`：预筛选成交额从单日改为 20 日日均（拉取近 30 天 daily 数据聚合计算），与 vetoCheck 的 `AVG_AMOUNT_THRESHOLD`（300000 千元 = 3000 万）完全对齐
+- `src/modules/monitor/TrendBatchService.ts`：ST 排除改用 `stock_basic` 接口批量获取全市场股票名称（含 'ST'/'\*ST'），修复 daily_basic bulk 查询不返回 is_st 字段的问题
+- `src/modules/monitor/TrendBatchService.ts`：run() 传 `skipVeto=true`，预筛选已用相同标准过滤，无需在 calculateTrendScore 内部重复调用 vetoCheck（省 2 次 API/股）
+- `src/modules/quote/TushareService.ts`：新增 `getStockBasicBulk()` 函数，批量获取全市场股票基本信息
+
+---
+
+## [master] 2026-07-15 — 两阶段批量评分优化 + 手动触发接口 + App微信登录接口
+**开发者**: Aria
+
+### 重构
+- `src/modules/monitor/TrendBatchService.ts`：新增 `prefilterStocks()` 方法，用 bulk 接口一次性拉取全市场 daily_basic + daily 数据，在内存中快速筛选（非ST + 成交额>3000万 + 价格>2元 + 换手率>0.3% + 60日跌幅<10%），从 5000+ 股票筛至 ~300-800 只候选股
+- `src/modules/monitor/TrendBatchService.ts`：`run()` 改为两阶段流程，阶段1预筛选 → 阶段2仅对候选股跑完整评分，预计从 5+ 小时降到 30-60 分钟
+- `src/modules/monitor/TrendBatchService.ts`：已评分股票改为批量查询（`symbol = ANY($2)`）而非逐股查询，减少 DB 往返
+- `src/modules/quote/TushareService.ts`：`DailyBasicFullRow` 新增 `is_st` 字段，`getDailyBasicByDate` 请求字段增加 `is_st`
+
+### 新增
+- `src/modules/monitor/trendScoreController.ts`：新增 `triggerBatch` 方法，支持 async/sync 两种模式和 force 参数
+- `src/index.ts`：注册 `POST/GET /api/cn/stocks/trend-score/trigger-batch` 路由
+- `src/modules/auth/controller.ts`：新增 `appWxLogin` 接口，App 端微信登录（uni.login code → 换取用户信息 → 签发 JWT）
+- `src/modules/auth/scanLoginController.ts`：扫码登录增强（HTTP 状态码检查、空响应校验、try-catch 错误处理）
+
+---
+
 ## [changer] 2026-07-15 — event/list 去重修复
 **开发者**: 37588
 
@@ -10,19 +61,6 @@
 
 ### 测试
 - `src/core/routes/__tests__/event_conduction.spec.ts`：新增去重测试用例（同一 eventId 多条记录场景）
-
----
-
-## [master] 2026-07-15 — 手动触发趋势股批量评分接口 + App微信登录接口
-**开发者**: Aria
-
-### 新增
-- `src/modules/monitor/TrendBatchService.ts`：新增 `isRunning()` 并发锁和 `TrendBatchResult` 返回类型，防止重复触发批量评分
-- `src/modules/monitor/trendScoreController.ts`：新增 `triggerBatch` 方法，支持 async/sync 两种模式和 force 参数，路由 `POST/GET /api/cn/stocks/trend-score/trigger-batch`
-- `src/index.ts`：注册 trigger-batch 路由（POST + GET）
-- `src/modules/auth/controller.ts`：新增 `appWxLogin` 接口，App 端微信登录（uni.login code → 换取用户信息 → 签发 JWT）
-- `src/modules/auth/scanLoginController.ts`：扫码登录增强（HTTP 状态码检查、空响应校验、try-catch 错误处理）
-- `src/core/routes/internal.ts`：新增 event_conduction 公开接口和 event_id 隔离
 
 ---
 
