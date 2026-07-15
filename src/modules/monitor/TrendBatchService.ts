@@ -1,6 +1,7 @@
 import pool from '../../core/db';
 import { TrendScoreService } from './TrendScoreService';
 import { ensureCacheBuilt, getBestBoardForStock, getCacheStatus } from './RotationBoardCache';
+import * as LeaderStockCache from './LeaderStockCache';
 import * as TushareService from '../quote/TushareService';
 
 export interface TrendBatchResult {
@@ -242,6 +243,10 @@ export class TrendBatchService {
             console.log('[TrendBatch] 预热板块轮动反向缓存...');
             await ensureCacheBuilt();
 
+            // 预热龙头股缓存（~112次同花顺页面爬取，构建龙头股代码集合）
+            console.log('[TrendBatch] 预热龙头股缓存...');
+            await LeaderStockCache.ensureCacheBuilt();
+
             // === 阶段 1：预筛选 ===
             let symbols: string[];
 
@@ -298,8 +303,15 @@ export class TrendBatchService {
                     successCount++;
 
                     // 单只股票评分成功日志（含分数和板块信息）
-                    const boardInfo = getBestBoardForStock(symbol);
-                    const boardStr = boardInfo ? `${boardInfo.boardName}, 上榜${boardInfo.count60d}次` : '无板块';
+                    // 从 result.dimensions 中提取板块信息（不依赖缓存，缓存可能未命中）
+                    let boardStr = '无板块';
+                    const trackDim = result.dimensions?.find((d: { name: string }) => d.name === '行业赛道景气');
+                    if (trackDim && trackDim.detail) {
+                        const trackDetail = trackDim.detail as { sectorName?: string; sectorListCount60d?: number };
+                        if (trackDetail.sectorName && trackDetail.sectorListCount60d) {
+                            boardStr = `${trackDetail.sectorName}, 上榜${trackDetail.sectorListCount60d}次`;
+                        }
+                    }
                     console.log(
                         `[TrendBatch] ✅ ${symbol} 完成 (score=${result.score.toFixed(1)}, ${result.label}, ${boardStr}) ` +
                         `[${successCount}/${symbols.length}]`,

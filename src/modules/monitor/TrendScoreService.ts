@@ -1,6 +1,7 @@
 import * as TushareService from '../quote/TushareService';
 import { fetchBlockRotationData } from './WindLeaderAnalyzerService';
 import { getBestBoardForStock, ensureCacheBuilt } from './RotationBoardCache';
+import * as LeaderStockCache from './LeaderStockCache';
 import {
     PrefetchedData, RawIndicators, DimDef, IndustryCache,
     calcEarningsExplosion, calcValuationElasticity, calcProfitQuality,
@@ -43,6 +44,8 @@ export interface TechnicalDetail {
         isNewHigh120: boolean;
         maxDrawdown: number;
     };
+    isLeader?: boolean;          // 是否为其最佳板块的龙头股
+    leaderBoardName?: string;    // 最佳板块名称（龙头股加成时展示）
 }
 
 export interface TrackDetail {
@@ -115,11 +118,13 @@ const FUNDAMENTAL_SUB_DIMS: { name: string; weight: number; indicators: { name: 
 
 // ==================== 技术面维度计算 ====================
 
-function calcTechnicalDim(prices: TushareService.DailyPriceRow[]): {
+function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string, bestBoardCode?: string): {
     score: number;
     indicators: { name: string; key: string; value: string; score: number }[];
     kline: { dates: string[]; ohlc: [number, number, number, number][] };
     indicatorsRaw: TechnicalDetail['indicators'];
+    isLeader: boolean;
+    leaderBoardName: string;
 } {
     // prices 按 trade_date 降序（最新在前），反转为升序
     const daily = [...prices].reverse();
@@ -183,13 +188,20 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[]): {
     else if (maxDrawdown < 30) drawdownScore = 40 + Math.round((30 - maxDrawdown) / 15 * 29);
     else drawdownScore = Math.max(0, 39 - Math.round((maxDrawdown - 30) / 10 * 10));
 
-    const score = Math.round(gainScore * 0.4 + maScore * 0.3 + newHighScore * 0.15 + drawdownScore * 0.15);
+    const baseScore = Math.round(gainScore * 0.4 + maScore * 0.3 + newHighScore * 0.15 + drawdownScore * 0.15);
+
+    // 龙头股加成：仅当股票是其「最佳板块」（上榜次数最多的板块）的龙头股时 +8 分，封顶 100
+    const isLeader = bestBoardCode ? LeaderStockCache.isLeaderStockInBoard(symbol, bestBoardCode) : false;
+    const leaderBoardName = isLeader && bestBoardCode ? LeaderStockCache.getBoardName(bestBoardCode) : '';
+    const leaderBonus = isLeader ? 8 : 0;
+    const score = Math.min(100, baseScore + leaderBonus);
 
     const indicators = [
         { name: '低点以来涨幅', key: 'low_point_gain', value: `${lowPointGain.toFixed(1)}%`, score: gainScore },
         { name: '60日线位置', key: 'ma60_position', value: `${ma60Position === 'above' ? '上方' : '下方'} / ${ma60Trend === 'up' ? '向上' : ma60Trend === 'flat' ? '走平' : '向下'}`, score: maScore },
         { name: '创新高状态', key: 'new_high', value: isNewHigh250 ? '250日新高' : isNewHigh120 ? '120日新高' : '未创新高', score: newHighScore },
         { name: '最大回撤', key: 'max_drawdown', value: `${maxDrawdown.toFixed(1)}%`, score: drawdownScore },
+        { name: '龙头股加成', key: 'leader_bonus', value: isLeader ? `是（+${leaderBonus}分）${leaderBoardName}` : '否', score: leaderBonus },
     ];
 
     const klineDaily = daily.slice(-120);
@@ -203,6 +215,8 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[]): {
         indicators,
         kline,
         indicatorsRaw: { lowPointGain, ma60Position, ma60Trend, isNewHigh250, isNewHigh120, maxDrawdown },
+        isLeader,
+        leaderBoardName,
     };
 }
 
@@ -272,9 +286,9 @@ function extractPolicyItems(news: { title: string; summary?: string }[], maxItem
         const hasPolicy = POLICY_KEYWORDS.some(kw => title.includes(kw));
         if (!hasPolicy) continue;
         const isPositive = POSITIVE_KEYWORDS.some(kw => title.includes(kw));
-        // 标题作为name（截取前15字），摘要作为desc（截取前40字）
-        const name = title.length > 15 ? title.slice(0, 15) + '...' : title;
-        const desc = (item.summary || title).slice(0, 40);
+        // 标题和摘要完整返回，前端 CSS 控制显示行数
+        const name = title;
+        const desc = item.summary || title;
         items.push({ name, desc, color: isPositive ? 'up' : 'gold' });
         if (items.length >= maxItems) break;
     }
@@ -668,10 +682,7 @@ export class TrendScoreService {
         const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
         const prices = await TushareService.getDailyPrices(symbol, startDateStr);
 
-        // 1. 技术面维度
-        const techResult = calcTechnicalDim(prices);
-
-        // 获取板块轮动数据 + 最佳概念板块
+        // 先获取板块轮动数据 + 最佳概念板块（技术面评分需要最佳板块代码来判断龙头股加成）
         let rotationRawData: any[] = [];
         try {
             const { rawData } = await fetchBlockRotationData(60);
@@ -681,6 +692,9 @@ export class TrendScoreService {
         }
 
         const bestBoard = await findBestConceptBoard(symbol, rotationRawData, data.industry?.industry_name);
+
+        // 1. 技术面维度（传入最佳板块代码，用于龙头股加成判断）
+        const techResult = calcTechnicalDim(prices, symbol, bestBoard?.boardCode);
 
         // 使用最佳概念板块的 ts_code 获取概念指数K线
         let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };
@@ -780,6 +794,8 @@ export class TrendScoreService {
                     kline: techResult.kline,
                     conceptKline,
                     indicators: techResult.indicatorsRaw,
+                    isLeader: techResult.isLeader,
+                    leaderBoardName: techResult.leaderBoardName,
                 } as TechnicalDetail,
             },
             {
