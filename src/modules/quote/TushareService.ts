@@ -387,7 +387,7 @@ export async function getStkSurvival(symbol: string, startDate?: string): Promis
     const params: Record<string, any> = { ts_code: toTsCode(symbol) };
     if (startDate) params.start_date = startDate;
     const rows = await tushareRequest(
-        'stk_survival',
+        'stk_surv', // Tushare 官方接口名为 stk_surv（非 stk_survival）
         params,
         'ts_code,ann_date,visit_date,visitors,institution_name,institution_type',
     );
