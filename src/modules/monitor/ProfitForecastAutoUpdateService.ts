@@ -125,33 +125,33 @@ export class ProfitForecastAutoUpdateService {
     /**
      * 策略2：获取数据库中所有已有业绩预测记录的股票
      * 作为 report_rc 不可用时的回退方案
+     * 优先更新超过24小时未更新的股票，分批执行避免一次性全量爬取
      */
     private static async getSymbolsFromDatabase(): Promise<string[]> {
+        // 只获取超过24小时未更新或有新报告日期的股票
         const result = await pool.query(
-            `SELECT symbol FROM earnings_forecast ORDER BY symbol`
+            `SELECT symbol FROM earnings_forecast
+             WHERE update_time < NOW() - INTERVAL '24 hours'
+                OR update_time IS NULL
+             ORDER BY update_time ASC NULLS FIRST
+             LIMIT 500`
         );
         return result.rows.map((r: { symbol: string }) => r.symbol).filter((s: string) => /^\d{6}$/.test(s));
     }
 
     /**
      * 执行增量更新：对指定股票列表重新爬取业绩预测
-     * 爬取页面后，提取业绩预测详表中最新的报告日期，如果是前一天则更新，否则跳过
+     * 爬取后对比摘要文本，仅当摘要发生变化时才更新落库
      * @param symbols 要更新的股票列表
-     * @param yesterday 昨天的日期字符串，用于判断是否有新报告
+     * @param _yesterday 保留参数，仅用于日志
      */
-    private static async updateSymbols(symbols: string[], yesterday: string): Promise<{ updated: number; skipped: number; errors: number }> {
+    private static async updateSymbols(symbols: string[], _yesterday: string): Promise<{ updated: number; skipped: number; errors: number }> {
         let updated = 0;
         let skipped = 0;
         let errors = 0;
         const concurrency = 3;
         const intervalMs = 500;
         const queue = [...symbols];
-
-        const yesterdayPatterns = [
-            yesterday,                   // 2026-06-23
-            yesterday.replace(/-/g, ''), // 20260623
-            yesterday.replace(/-/g, '/'), // 2026/06/23
-        ];
 
         async function worker() {
             while (queue.length > 0) {
@@ -162,42 +162,44 @@ export class ProfitForecastAutoUpdateService {
                     const data = await ProfitForecastAutoUpdateService.fetchProfitForecast(symbol);
 
                     const detail = data['业绩预测详表_详细指标预测'];
+                    const summary = typeof data['摘要'] === 'string' ? data['摘要'] : '';
+
                     if (!Array.isArray(detail) || detail.length === 0) {
                         skipped++;
                         continue;
                     }
 
-                    // 提取详表中最新的报告日期（取所有报告日期中最晚的）
-                    let latestReportDate = '';
-                    for (const item of detail) {
-                        const reportDate = item['报告日期'] || item['报告日期 '] || '';
-                        if (reportDate && (!latestReportDate || reportDate > latestReportDate)) {
-                            latestReportDate = reportDate;
-                        }
-                    }
+                    // 查询数据库中的旧摘要，对比判断是否有变化
+                    const oldResult = await pool.query(
+                        `SELECT summary FROM earnings_forecast WHERE symbol = $1`,
+                        [symbol],
+                    );
+                    const oldSummary = oldResult.rows[0]?.summary || '';
 
-                    // 检查最新报告日期是否为前一天
-                    const isYesterdayReport = latestReportDate && yesterdayPatterns.some(p => latestReportDate.includes(p));
-
-                    if (!isYesterdayReport) {
-                        // 最新报告日期不是前一天，跳过不更新
+                    // 摘要完全相同则跳过（无新数据）
+                    if (oldSummary === summary) {
                         skipped++;
                         continue;
                     }
 
-                    const summary = typeof data['摘要'] === 'string' ? data['摘要'] : '';
                     const forecastNetProfitYoy = ProfitForecastAutoUpdateService.extractForecastNetProfitYoy(summary);
+                    const forecastNetprofit = ProfitForecastAutoUpdateService.extractForecastNetProfit(summary);
+                    const forecastEps = ProfitForecastAutoUpdateService.extractForecastEps(summary);
+                    const forecastEpsYoy = ProfitForecastAutoUpdateService.extractForecastEpsYoy(summary);
                     const updateTime = ProfitForecastAutoUpdateService.formatToChinaTimeWithMs(Date.now());
 
                     await pool.query(
-                        `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy)
-                         VALUES ($1, $2, $3, $4, $5)
+                        `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy, forecast_netprofit, forecast_eps, forecast_eps_yoy)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                          ON CONFLICT (symbol) DO UPDATE SET
                             update_time = EXCLUDED.update_time,
                             summary = EXCLUDED.summary,
                             forecast_detail = EXCLUDED.forecast_detail,
-                            forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy`,
-                        [symbol, updateTime, summary, JSON.stringify(detail), forecastNetProfitYoy],
+                            forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy,
+                            forecast_netprofit = EXCLUDED.forecast_netprofit,
+                            forecast_eps = EXCLUDED.forecast_eps,
+                            forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
+                        [symbol, updateTime, summary, JSON.stringify(detail), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                     );
                     updated++;
                 } catch (err: any) {
@@ -255,6 +257,27 @@ export class ProfitForecastAutoUpdateService {
         if (match) return parseFloat(match[1]);
         const match2 = summary.match(/预测\d{4}年净利润.*?较去年同比下降\s*([\d.]+)%/);
         if (match2) return -parseFloat(match2[1]);
+        return null;
+    }
+
+    /** 从摘要中提取净利润预测金额（亿） */
+    private static extractForecastNetProfit(summary: string): number | null {
+        const match = summary.match(/预测\d{4}年净利润\s*([\d.]+)\s*亿元/);
+        if (match) return parseFloat(match[1]);
+        return null;
+    }
+
+    /** 从摘要中提取EPS预测 */
+    private static extractForecastEps(summary: string): number | null {
+        const match = summary.match(/预测\d{4}年每股收益\s*([\d.]+)\s*元/);
+        if (match) return parseFloat(match[1]);
+        return null;
+    }
+
+    /** 从摘要中提取EPS同比增长（%） */
+    private static extractForecastEpsYoy(summary: string): number | null {
+        const match = summary.match(/每股收益[\s\S]*?较去年同比增长\s*([\d.]+)%/);
+        if (match) return parseFloat(match[1]);
         return null;
     }
 
