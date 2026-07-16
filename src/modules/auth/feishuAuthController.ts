@@ -117,10 +117,18 @@ async function sendFeishuMessage(openId: string, msgType: string, content: any):
 
 export class FeishuAuthController {
     private static async requireAuth(req: Request): Promise<{ ok: true; openid: string } | { ok: false; code: number; message: string }> {
-        const cookie = req.headers.cookie || '';
-        const tokenMatch = cookie.match(/(?:^|;\s*)token=([^;]+)/);
-        if (!tokenMatch) return { ok: false, code: 401, message: '未登录' };
-        const token = tokenMatch[1];
+        // 优先从 Authorization: Bearer <token> header 读取
+        let token: string | undefined;
+        const authHeader = req.headers.authorization;
+        if (authHeader && authHeader.startsWith('Bearer ')) {
+            token = authHeader.slice(7);
+        }
+        if (!token) {
+            const cookie = req.headers.cookie || '';
+            const tokenMatch = cookie.match(/(?:^|;\s*)token=([^;]+)/);
+            if (tokenMatch) token = tokenMatch[1];
+        }
+        if (!token) return { ok: false, code: 401, message: '未登录' };
         const payload = verifyJwt(token, process.env.JWT_SECRET!);
         if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
         return { ok: true, openid: payload.openid };
