@@ -754,15 +754,51 @@ async function synthesizeBroadcast(lines: ReturnType<typeof parseBroadcastDialog
     throw new Error(`不支持的 TTS_PROVIDER: ${provider}`)
 }
 
+/** 清洗报告中给机器解析用的标记，避免污染用户界面 */
+function cleanReportContent(content: Record<string, unknown>): Record<string, unknown> {
+    if (!content || typeof content !== 'object') return content
+    const cleaned = { ...content } as Record<string, unknown>
+
+    // 清洗 text 字段
+    if (typeof cleaned.text === 'string') {
+        cleaned.text = cleaned.text
+            .replace(/<!--SECTOR_LIST_START-->[\s\S]*?<!--SECTOR_LIST_END-->/g, '')
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+    }
+
+    // 清洗 display_report.details
+    const display = cleaned.display_report as Record<string, unknown> | undefined
+    if (display && typeof display.details === 'string') {
+        display.details = display.details
+            .replace(/<!--SECTOR_LIST_START-->[\s\S]*?<!--SECTOR_LIST_END-->/g, '')
+            .replace(/<!--[\s\S]*?-->/g, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+    }
+
+    return cleaned
+}
+
 /** 查询公共分析报告（复用内部查询逻辑，user_id 为 NULL） */
 async function getAnalysisReport(report_type: string, report_date: string) {
+    // report_date 是本地日期 YYYY-MM-DD，数据库 report_date 是 UTC timestamp
+    // 用日期范围查询：[date 00:00 UTC, date+1 00:00 UTC) 会漏掉跨时区的记录
+    // 改用本地日期范围：[date-1 16:00 UTC, date+1 16:00 UTC) 覆盖 Asia/Shanghai
+    const start = `${report_date}T00:00:00+08:00`
+    const end = `${report_date}T23:59:59+08:00`
     const result = await pool.query(
         `SELECT id, report_type, report_date, content, data_source, status,
                 generation_time_ms, model_version, created_at
          FROM agent_analysis_reports
-         WHERE report_type = $1 AND report_date = $2 AND user_id IS NULL
+         WHERE report_type = $1
+           AND report_date >= $2::timestamptz
+           AND report_date <= $3::timestamptz
+           AND user_id IS NULL
+         ORDER BY created_at DESC
          LIMIT 1`,
-        [report_type, report_date]
+        [report_type, start, end]
     )
     return result.rows.length > 0 ? result.rows[0] : null
 }
@@ -836,6 +872,9 @@ publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) =>
 
     try {
         const result = await getAnalysisReport(intent, date)
+        if (result && result.content) {
+            result.content = cleanReportContent(result.content as Record<string, unknown>)
+        }
         res.json({ code: 0, data: result })
     } catch (err: unknown) {
         console.error('[Public] agent/report GET error:', errMsg(err))
