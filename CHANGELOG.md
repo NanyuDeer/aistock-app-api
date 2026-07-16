@@ -2,6 +2,17 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [changer] 2026-07-16 — 报告内容清洗 + review 检查脚本
+**开发者**: 37588
+
+### 改进
+- `src/core/routes/internal.ts`：新增 `cleanReportContent()` 函数，清洗报告中给机器解析用的 HTML 注释标记（`<!--SECTOR_LIST_START-->` 等），避免污染用户界面（同时清洗 `text` 和 `display_report.details` 字段）
+
+### 新增
+- `scripts/check-details.js`、`scripts/check-report.js`、`scripts/insert-review.js`：review 数据检查和插入脚本
+
+---
+
 ## [master] 2026-07-15 — 预筛选条件优化(成交额4000万+板块上榜≥3) + stk_surv接口修复
 **开发者**: Aria
 
