@@ -24,6 +24,9 @@ export interface BoardStat {
 /** 反向映射表: 股票代码 → 板块统计列表（按上榜次数降序） */
 type StockBoardMap = Map<string, BoardStat[]>;
 
+/** 所有板块列表（构建缓存时保存） */
+let cachedBoards: { name: string; code: string }[] = [];
+
 // ==================== 缓存 ====================
 
 const CACHE_TTL = 3600 * 1000; // 1小时
@@ -129,6 +132,9 @@ async function buildMap(): Promise<StockBoardMap | null> {
         }
 
         console.log(`[RotationBoardCache] 匹配成功 ${boardCandidates.length}/${rotationNames.length} 个板块`);
+
+        // 保存板块列表供 LeaderStockCache 使用
+        cachedBoards = boardCandidates;
 
         // 4. 逐板获取成分股（核心调用，~112次 ths_member）
         const stockMap: StockBoardMap = new Map();
@@ -254,6 +260,17 @@ export async function rebuildCache(): Promise<void> {
     cachedMap = null;
     cachedAt = 0;
     await ensureCacheBuilt();
+}
+
+/**
+ * 获取所有上榜板块代码和名称（供 LeaderStockCache 使用）
+ * 必须在 ensureCacheBuilt() 之后调用
+ */
+export function getAllBoards(): { name: string; code: string }[] {
+    if (!cachedMap || Date.now() - cachedAt > CACHE_TTL) {
+        return [];
+    }
+    return cachedBoards;
 }
 
 /**

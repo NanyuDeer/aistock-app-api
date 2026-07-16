@@ -63,10 +63,13 @@ function normalizeDomain(url: string): string {
 
 function getAgent(url: string): http.Agent | https.Agent {
     const domain = normalizeDomain(url);
-    let agent = agentCache.get(domain);
+    const isHttps = url.startsWith('https');
+    // 缓存键必须包含协议，避免 HTTP 请求缓存的 http.Agent 被后续 HTTPS 请求误用
+    // 否则会报 "Protocol https: not supported. Expected http:" 错误
+    const cacheKey = `${domain}:${isHttps ? 'https' : 'http'}`;
+    let agent = agentCache.get(cacheKey);
     if (agent) return agent;
 
-    const isHttps = url.startsWith('https');
     const isHighFreq = ['eastmoney', 'tencent'].includes(domain);
     const config = isHighFreq ? HIGH_FREQ_CONFIG : DEFAULT_CONFIG;
 
@@ -75,7 +78,7 @@ function getAgent(url: string): http.Agent | https.Agent {
     } else {
         agent = new http.Agent(config);
     }
-    agentCache.set(domain, agent);
+    agentCache.set(cacheKey, agent);
     return agent;
 }
 
@@ -116,18 +119,6 @@ export function sessionFetch(
             agent,
         };
 
-        // 处理 AbortSignal
-        if (init?.signal) {
-            if (init.signal.aborted) {
-                reject(new DOMException('Aborted', 'AbortError'));
-                return;
-            }
-            init.signal.addEventListener('abort', () => {
-                req.destroy();
-                reject(new DOMException('The operation was aborted.', 'AbortError'));
-            }, { once: true });
-        }
-
         const transport = isHttps ? https : http;
         const req = transport.request(options, (res) => {
             // 读取响应体
@@ -159,6 +150,19 @@ export function sessionFetch(
         req.on('error', (err) => {
             reject(err);
         });
+
+        // 处理 AbortSignal（必须在 req 创建之后注册，避免 TDZ 错误）
+        if (init?.signal) {
+            if (init.signal.aborted) {
+                req.destroy();
+                reject(new DOMException('Aborted', 'AbortError'));
+                return;
+            }
+            init.signal.addEventListener('abort', () => {
+                req.destroy();
+                reject(new DOMException('The operation was aborted.', 'AbortError'));
+            }, { once: true });
+        }
 
         // 发送请求体
         if (init?.body) {

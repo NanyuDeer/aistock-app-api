@@ -186,9 +186,22 @@ export class NewsController {
             const $ = cheerio.load(cleanHtml, { scriptingEnabled: false });
 
             let title = '';
-            $('.detail-title span').each((_, elem) => { title = $(elem).text().trim(); return false; });
+            // 尝试多种选择器提取标题
+            const titleSelectors = [
+                '.detail-title span', '.detail-header',
+                'h1.detail-title', 'h1.title', 'h1',
+                '.title', '.article-title', '[class*="title"]',
+            ];
+            for (const sel of titleSelectors) {
+                if (title) break;
+                $(sel).each((_, elem) => {
+                    const text = $(elem).text().trim();
+                    if (text && text.length > 2) { title = text; return false; }
+                });
+            }
+            // 最终回退：从 meta 标签提取
             if (!title) {
-                $('.detail-header').each((_, elem) => { title = $(elem).text().trim(); return false; });
+                title = $('meta[property="og:title"]').attr('content') || '';
             }
 
             let publishTime = '';
@@ -230,10 +243,24 @@ export class NewsController {
             }
 
             let brief = '';
-            $('[class*="detail-brief"]').each((_, elem) => {
-                brief = this.cleanSummaryPrefix($(elem).text().trim());
-                return false;
-            });
+            // 尝试多种选择器提取摘要
+            const briefSelectors = [
+                '[class*="detail-brief"]', '[class*="brief"]',
+                '.summary', '.article-summary', '[class*="summary"]',
+                '.detail-sub', '.subtitle',
+            ];
+            for (const sel of briefSelectors) {
+                if (brief) break;
+                $(sel).each((_, elem) => {
+                    const text = this.cleanSummaryPrefix($(elem).text().trim());
+                    if (text && text.length > 5) { brief = text; return false; }
+                });
+            }
+            // 回退：从 meta description 提取
+            if (!brief) {
+                brief = $('meta[name="description"]').attr('content') || '';
+                if (brief) brief = this.cleanSummaryPrefix(brief);
+            }
 
             let content = '';
             $('.detail-content').each((_, elem) => {

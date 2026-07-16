@@ -145,12 +145,15 @@ src/
 | `/internal/analysis-reports/:type/:date/:userId` | **查询用户专属报告** | userId: 用户ID |
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
+| `/internal/push/market-event` | **市场事件重磅推送**（POST，Python Agent 调用） | market/direction/indices/cause/evidence_url/title 等，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
 > 新增接口（2026-07-10）：`/internal/analysis-reports/*` 系列，供 Python Agent 持久化分析报告（scheduler 触发写入，broadcast_agent 读取），建表脚本见 `docs/sql/agent_analysis_reports.sql`
 >
 > 更新（2026-07-14）：`event_conduction` 加入报告白名单，POST 支持 `event_id` 作为隔离键（复用 `user_id` 列，同日不同事件分别保存、同事件重跑 upsert）；新增公开接口 `GET /api/agent/event/list`（分页列表，返回 eventId/title/source/publishTime/摘要/结论）和 `GET /api/agent/event/:eventId`（详情，返回完整 analysis_reports 含四模块 + event_podcast_brief）
+>
+> 新增接口（2026-07-15）：`POST /internal/push/market-event` — 晨报后重磅市场事件推送。Python morning_agent 生成晨报后解析 MARKET_EVENT_PUSHES 标记，阈值过滤（对称 ±1.5%）后调用此接口，触发微信模板消息 + 飞书卡片推送
 
 ## Vibecoding 工作流
 

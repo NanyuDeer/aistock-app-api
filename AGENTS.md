@@ -189,6 +189,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/graph/concepts` | 知识图谱 | 产业链概念列表 |
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
+| `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
 
 ### 7.2 Agent 分析报告持久化接口
 
