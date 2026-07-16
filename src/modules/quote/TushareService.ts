@@ -1004,3 +1004,82 @@ export async function getReportRc(params: { ts_code?: string; report_date?: stri
     );
     return rows as ReportRcRow[];
 }
+
+// ==================== 半年报数据 ====================
+
+export interface SemiAnnualReportRow {
+    end_date: string;           // 报告期（如 20240630）
+    ann_date: string;           // 公告日期
+    total_revenue: number;      // 营业总收入（元）
+    n_income: number;           // 净利润（元）
+    n_income_attr_p: number;    // 归母净利润（元）
+    total_profit: number;       // 利润总额（元）
+    rd_exp: number;             // 研发费用（元）
+    basic_eps: number;          // 基本每股收益（元）
+    revenue_ps: number;         // 每股营业收入（元）
+}
+
+export interface SemiAnnualReportResult {
+    symbol: string;
+    reports: SemiAnnualReportRow[];
+    total_revenue_yoy: number | null;      // 营收同比增长(%)
+    n_income_yoy: number | null;           // 净利润同比增长(%)
+    n_income_attr_p_yoy: number | null;    // 归母净利润同比增长(%)
+    disclosure_url: string;                // 巨潮资讯网公告链接
+}
+
+/**
+ * 获取半年报关键财务数据
+ * 通过 income（利润表）接口按报告期获取半年度数据
+ * 积分要求：2000
+ */
+export async function getSemiAnnualReport(symbol: string): Promise<SemiAnnualReportResult> {
+    const tsCode = toTsCode(symbol);
+    const currentYear = new Date().getFullYear();
+    const startYear = currentYear - 3;
+
+    // 获取最近3年的半年报数据（报告期：6月30日）
+    const startPeriod = `${startYear}0630`;
+    const rows = await tushareRequest(
+        'income',
+        {
+            ts_code: tsCode,
+            start_date: startPeriod,
+            report_type: '2',  // 半年度报表
+        },
+        'ts_code,ann_date,end_date,total_revenue,n_income,n_income_attr_p,total_profit,rd_exp,basic_eps,revenue_ps',
+    );
+
+    // 过滤出半年报（end_date 以 0630 结尾）并按报告期降序排列
+    const reports = (rows as SemiAnnualReportRow[])
+        .filter(r => r.end_date && r.end_date.endsWith('0630'))
+        .sort((a, b) => b.end_date.localeCompare(a.end_date));
+
+    // 计算同比增长率（最新 vs 上年同期）
+    let total_revenue_yoy: number | null = null;
+    let n_income_yoy: number | null = null;
+    let n_income_attr_p_yoy: number | null = null;
+
+    if (reports.length >= 2) {
+        const latest = reports[0];
+        const prev = reports[1];
+        total_revenue_yoy = prev.total_revenue
+            ? Number((((latest.total_revenue / prev.total_revenue) - 1) * 100).toFixed(2))
+            : null;
+        n_income_yoy = prev.n_income
+            ? Number((((latest.n_income / prev.n_income) - 1) * 100).toFixed(2))
+            : null;
+        n_income_attr_p_yoy = prev.n_income_attr_p
+            ? Number((((latest.n_income_attr_p / prev.n_income_attr_p) - 1) * 100).toFixed(2))
+            : null;
+    }
+
+    return {
+        symbol,
+        reports,
+        total_revenue_yoy,
+        n_income_yoy,
+        n_income_attr_p_yoy,
+        disclosure_url: `https://www.cninfo.com.cn/new/disclosure/stock?stockCode=${symbol}`,
+    };
+}

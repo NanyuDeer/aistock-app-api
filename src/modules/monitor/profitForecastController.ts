@@ -18,9 +18,22 @@ interface ForecastListRow {
     update_time: string;
     summary: string | null;
     forecast_netprofit_yoy: unknown;
+    forecast_detail: unknown;
+    forecast_netprofit: unknown;
+    forecast_eps: unknown;
+    forecast_eps_yoy: unknown;
 }
 
-type ForecastSortBy = 'symbol' | 'forecast_netprofit_yoy';
+/** 从摘要文本中解析结构化字段 */
+interface ParsedSummary {
+    institutionCount: number;
+    eps: string;
+    epsGrowth: string;
+    netProfit: string;
+    netProfitGrowth: string;
+}
+
+type ForecastSortBy = 'symbol' | 'forecast_netprofit_yoy' | 'update_time' | 'net_profit_forecast' | 'eps_forecast' | 'net_profit_growth' | 'eps_growth';
 type ForecastSortOrder = 'asc' | 'desc';
 
 interface CommonListParams {
@@ -32,7 +45,8 @@ interface CommonListParams {
 
 const LATEST_FORECAST_CTE = `
     WITH latest AS (
-        SELECT e.symbol, e.update_time, e.summary, e.forecast_detail, e.forecast_netprofit_yoy
+        SELECT e.symbol, e.update_time, e.summary, e.forecast_detail, e.forecast_netprofit_yoy,
+               e.forecast_netprofit, e.forecast_eps, e.forecast_eps_yoy
         FROM earnings_forecast e
         INNER JOIN (
             SELECT symbol, MAX(update_time) AS latest_update_time
@@ -46,7 +60,7 @@ export class ProfitForecastController {
     private static readonly DEFAULT_PAGE_SIZE = 50;
     private static readonly MAX_PAGE_SIZE = 500;
     private static readonly DEFAULT_SORT_BY: ForecastSortBy = 'forecast_netprofit_yoy';
-    private static readonly ALLOWED_SORT_BY = new Set<ForecastSortBy>(['symbol', 'forecast_netprofit_yoy']);
+    private static readonly ALLOWED_SORT_BY = new Set<ForecastSortBy>(['symbol', 'forecast_netprofit_yoy', 'update_time', 'net_profit_forecast', 'eps_forecast', 'net_profit_growth', 'eps_growth']);
     private static readonly ALLOWED_SORT_ORDER = new Set<ForecastSortOrder>(['asc', 'desc']);
 
     private static formatToChinaTimeWithMs(timestamp: number): string {
@@ -71,6 +85,14 @@ export class ProfitForecastController {
         if (raw === null || raw === undefined || raw === '') return null;
         const parsed = Number(raw);
         return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    /** 从摘要中提取数值（正则匹配） */
+    private static extractNumericFromSummary(summary: string, pattern: RegExp): number | null {
+        if (!summary) return null;
+        const match = summary.match(pattern);
+        if (match) return parseFloat(match[1]);
+        return null;
     }
 
     private static extractForecastNetProfitYoy(summary: string): number | null {
@@ -111,7 +133,7 @@ export class ProfitForecastController {
             pageSize = parsed;
         }
 
-        if (!ProfitForecastController.ALLOWED_SORT_BY.has(sortByRaw as ForecastSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol 或 forecast_netprofit_yoy' };
+        if (!ProfitForecastController.ALLOWED_SORT_BY.has(sortByRaw as ForecastSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol / forecast_netprofit_yoy / update_time / net_profit_growth / eps_growth' };
         const sortBy = sortByRaw as ForecastSortBy;
 
         const defaultOrder: ForecastSortOrder = sortBy === 'symbol' ? 'asc' : 'desc';
@@ -124,16 +146,60 @@ export class ProfitForecastController {
     private static buildOrderBy(sortBy: ForecastSortBy, sortOrder: ForecastSortOrder): string {
         const order = sortOrder.toUpperCase();
         if (sortBy === 'symbol') return `l.symbol ${order}`;
+        if (sortBy === 'update_time') return `l.update_time ${order} NULLS LAST, l.symbol ASC`;
+        if (sortBy === 'net_profit_forecast') return `l.forecast_netprofit IS NULL ASC, l.forecast_netprofit ${order}, l.symbol ASC`;
+        if (sortBy === 'eps_forecast') return `l.forecast_eps IS NULL ASC, l.forecast_eps ${order}, l.symbol ASC`;
+        if (sortBy === 'eps_growth') return `l.forecast_eps_yoy IS NULL ASC, l.forecast_eps_yoy ${order}, l.symbol ASC`;
+        // net_profit_growth 或默认
         return `l.forecast_netprofit_yoy IS NULL ASC, l.forecast_netprofit_yoy ${order}, l.symbol ASC`;
     }
 
+    /**
+     * 解析摘要文本，提取结构化字段
+     * 示例：截至2026-06-22，6个月以内共有 4 家机构对汽轮科技的2026年度业绩作出预测；
+     *       预测2026年每股收益 0.34 元，较去年同比增长 5051.52%，
+     *       预测2026年净利润 5.11 亿元，较去年同比增长 22652.89%
+     */
+    private static parseSummary(summary: string): ParsedSummary {
+        const result: ParsedSummary = { institutionCount: 0, eps: '', epsGrowth: '', netProfit: '', netProfitGrowth: '' };
+        if (!summary) return result;
+
+        // 机构数量
+        const instMatch = summary.match(/共有\s*(\d+)\s*家/);
+        if (instMatch) result.institutionCount = parseInt(instMatch[1], 10);
+
+        // 每股收益 + 增长率
+        const epsMatch = summary.match(/预测\d{4}年每股收益\s*([\d.]+)\s*元[^，,。；;]*?(?:，|,)较去年同比增长\s*([\d.]+)%/);
+        if (epsMatch) {
+            result.eps = epsMatch[1];
+            result.epsGrowth = `${epsMatch[2]}%`;
+        }
+
+        // 净利润 + 增长率 (可能有"亿元"或"万元")
+        const npMatch = summary.match(/预测\d{4}年净利润\s*([\d.]+)\s*(亿元|万元)[^，,。；;]*?(?:，|,)较去年同比增长\s*([\d.]+)%/);
+        if (npMatch) {
+            result.netProfit = `${npMatch[1]}${npMatch[2] === '万元' ? '万' : '亿'}`;
+            result.netProfitGrowth = `${npMatch[3]}%`;
+        }
+
+        return result;
+    }
+
     private static mapForecastRow(row: ForecastListRow) {
+        const parsed = this.parseSummary(row.summary || '');
         return {
             '股票代码': row.symbol,
             '股票简称': row.stock_name || '',
             '更新时间': row.update_time,
             '净利润同比(%)': this.parseForecastNetProfitYoy(row.forecast_netprofit_yoy),
             '摘要': row.summary || '',
+            '净利润预测': parsed.netProfit,
+            'EPS预测': parsed.eps,
+            'EPS同比': parsed.epsGrowth,
+            '机构数量': parsed.institutionCount,
+            '_净利润预测值': this.parseForecastNetProfitYoy(row.forecast_netprofit),
+            '_EPS预测值': this.parseForecastNetProfitYoy(row.forecast_eps),
+            '_EPS同比值': this.parseForecastNetProfitYoy(row.forecast_eps_yoy),
         };
     }
 
@@ -180,16 +246,22 @@ export class ProfitForecastController {
                 const updateTime = this.formatToChinaTimeWithMs(now);
                 const summary = typeof data['摘要'] === 'string' ? data['摘要'] : '';
                 const forecastNetProfitYoy = this.extractForecastNetProfitYoy(summary);
+                const forecastNetprofit = this.extractNumericFromSummary(summary, /预测\d{4}年净利润\s*([\d.]+)\s*亿元/);
+                const forecastEps = this.extractNumericFromSummary(summary, /预测\d{4}年每股收益\s*([\d.]+)\s*元/);
+                const forecastEpsYoy = this.extractNumericFromSummary(summary, /每股收益[\s\S]*?较去年同比增长\s*([\d.]+)%/);
 
                 await pool.query(
-                    `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy)
-                     VALUES ($1, $2, $3, $4, $5)
+                    `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy, forecast_netprofit, forecast_eps, forecast_eps_yoy)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                      ON CONFLICT (symbol) DO UPDATE SET
                         update_time = EXCLUDED.update_time,
                         summary = EXCLUDED.summary,
                         forecast_detail = EXCLUDED.forecast_detail,
-                        forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy`,
-                    [symbol, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy],
+                        forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy,
+                        forecast_netprofit = EXCLUDED.forecast_netprofit,
+                        forecast_eps = EXCLUDED.forecast_eps,
+                        forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
+                    [symbol, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                 );
 
                 createResponse(res, 200, 'success', {
@@ -227,7 +299,8 @@ export class ProfitForecastController {
             const totalPages = Math.ceil(total / pageSize);
 
             const dataQuery = `${LATEST_FORECAST_CTE}
-                SELECT l.symbol, s.name AS stock_name, l.update_time, l.summary, l.forecast_netprofit_yoy
+                SELECT l.symbol, s.name AS stock_name, l.update_time, l.summary, l.forecast_netprofit_yoy, l.forecast_detail,
+                       l.forecast_netprofit, l.forecast_eps, l.forecast_eps_yoy
                 FROM latest l
                 LEFT JOIN stocks s ON s.symbol = l.symbol
                 WHERE l.forecast_netprofit_yoy IS NOT NULL
@@ -286,7 +359,8 @@ export class ProfitForecastController {
             const totalPages = Math.ceil(total / pageSize);
 
             const dataQuery = `${LATEST_FORECAST_CTE}
-                SELECT l.symbol, s.name AS stock_name, l.update_time, l.summary, l.forecast_netprofit_yoy
+                SELECT l.symbol, s.name AS stock_name, l.update_time, l.summary, l.forecast_netprofit_yoy, l.forecast_detail,
+                       l.forecast_netprofit, l.forecast_eps, l.forecast_eps_yoy
                 FROM latest l
                 LEFT JOIN stocks s ON s.symbol = l.symbol
                 WHERE l.forecast_netprofit_yoy IS NOT NULL
@@ -429,16 +503,22 @@ export class ProfitForecastController {
                         const data = await ProfitForecastController.fetchWithTimeout(sym, timeoutMs);
                         const summary = typeof data['摘要'] === 'string' ? data['摘要'] : '';
                         const forecastNetProfitYoy = ProfitForecastController.extractForecastNetProfitYoy(summary);
+                        const forecastNetprofit = ProfitForecastController.extractNumericFromSummary(summary, /预测\d{4}年净利润\s*([\d.]+)\s*亿元/);
+                        const forecastEps = ProfitForecastController.extractNumericFromSummary(summary, /预测\d{4}年每股收益\s*([\d.]+)\s*元/);
+                        const forecastEpsYoy = ProfitForecastController.extractNumericFromSummary(summary, /每股收益[\s\S]*?较去年同比增长\s*([\d.]+)%/);
                         const updateTime = ProfitForecastController.formatToChinaTimeWithMs(Date.now());
                         await pool.query(
-                            `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy)
-                             VALUES ($1, $2, $3, $4, $5)
+                            `INSERT INTO earnings_forecast (symbol, update_time, summary, forecast_detail, forecast_netprofit_yoy, forecast_netprofit, forecast_eps, forecast_eps_yoy)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                              ON CONFLICT (symbol) DO UPDATE SET
                                 update_time = EXCLUDED.update_time,
                                 summary = EXCLUDED.summary,
                                 forecast_detail = EXCLUDED.forecast_detail,
-                                forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy`,
-                            [sym, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy],
+                                forecast_netprofit_yoy = EXCLUDED.forecast_netprofit_yoy,
+                                forecast_netprofit = EXCLUDED.forecast_netprofit,
+                                forecast_eps = EXCLUDED.forecast_eps,
+                                forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
+                            [sym, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                         );
                         ok = true;
                         break;
