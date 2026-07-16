@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
-dotenv.config();
+// 根据 NODE_ENV 加载对应的环境文件（.env.development / .env.production）
+// 优先级：.env.{NODE_ENV} → .env（兼容旧版）
+dotenv.config({ path: `.env.${process.env.NODE_ENV || 'development'}` });
+dotenv.config(); // fallback：加载 .env（如果存在）
 
 // 设置时区为北京时间（确保 node-cron 按 CST 调度）
 process.env.TZ = 'Asia/Shanghai';
