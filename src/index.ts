@@ -1,5 +1,8 @@
 import dotenv from 'dotenv';
-dotenv.config();
+// 根据 NODE_ENV 加载对应的环境文件（.env.development / .env.production）
+// 优先级：.env.{NODE_ENV} → .env（兼容旧版）
+dotenv.config({ path: `.env.${process.env.NODE_ENV || 'development'}` });
+dotenv.config(); // fallback：加载 .env（如果存在）
 
 // 设置时区为北京时间（确保 node-cron 按 CST 调度）
 process.env.TZ = 'Asia/Shanghai';
@@ -19,6 +22,7 @@ import { StockListController } from './modules/quote/stockListController';
 import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
+import { getSemiAnnualReport } from './modules/quote/TushareService';
 
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
@@ -369,6 +373,21 @@ app.get('/api/cn/stocks/:symbol/capital-flow', (req, res, next) => {
 app.post('/api/cn/capital-flow/batch-prefetch', (req, res, next) => CapitalFlowController.batchPrefetch(req, res, next));
 app.get('/api/cn/capital-flow/batch-status', (req, res, next) => CapitalFlowController.getBatchStatus(req, res, next));
 
+app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
+    const symbol = req.params.symbol;
+    if (!isValidAShareSymbol(symbol)) {
+        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+        return;
+    }
+    try {
+        const data = await getSemiAnnualReport(symbol);
+        res.json({ code: 200, message: 'success', data });
+    } catch (err: any) {
+        console.error(`Error fetching semi-annual report for ${symbol}:`, err);
+        res.status(500).json({ code: 500, message: err instanceof Error ? err.message : 'Internal Server Error' });
+    }
+});
+
 app.get('/api/cn/stocks/:symbol/news', (req, res, next) => {
     if (!isValidAShareSymbol(req.params.symbol)) {
         res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
@@ -465,8 +484,6 @@ app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreCont
 app.get('/api/cn/stocks/:symbol/trend-score/detail', (req, res, next) => TrendScoreController.getDetail(req, res, next));
 app.post('/api/cn/stocks/:symbol/trend-score/refresh', (req, res, next) => TrendScoreController.refreshScore(req, res, next));
 app.post('/api/cn/stocks/trend-score/batch', (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
-app.post('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
-app.get('/api/cn/stocks/trend-score/trigger-batch', (req, res, next) => TrendScoreController.triggerBatch(req, res, next));
 
 app.get('/api/news/headlines', (req, res, next) => NewsController.getHeadlines(req, res, next));
 app.get('/api/news/cn', (req, res, next) => NewsController.getCnNews(req, res, next));
@@ -521,15 +538,16 @@ cron.schedule('0 2 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-cron.schedule('0 4 * * *', async () => {
-    console.log('[TenxCron] 开始批量评分');
-    try {
-        await TenxBatchService.run();
-        console.log('[TenxCron] 批量评分完成');
-    } catch (err: any) {
-        console.error('[TenxCron] 批量评分失败:', err?.message || err);
-    }
-}, { timezone: 'Asia/Shanghai' });
+// 十倍股批量评分 — 已停用（后续可能用趋势股评分替代）
+// cron.schedule('0 4 * * *', async () => {
+//     console.log('[TenxCron] 开始批量评分');
+//     try {
+//         await TenxBatchService.run();
+//         console.log('[TenxCron] 批量评分完成');
+//     } catch (err: any) {
+//         console.error('[TenxCron] 批量评分失败:', err?.message || err);
+//     }
+// }, { timezone: 'Asia/Shanghai' });
 
 cron.schedule('5 19 * * 1-5', async () => {
     console.log('[CapitalFlowCron] 收盘后批量预取资金流向');
@@ -786,6 +804,15 @@ async function start() {
             if (!/already exists|duplicate/i.test(e.message)) {
                 console.warn('[DB] earnings_forecast UNIQUE constraint migration:', e.message);
             }
+        }
+        // 迁移：添加排序专用列（净利润预测金额、EPS预测、EPS同比）
+        try {
+            await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_netprofit NUMERIC(20,2)');
+            await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps NUMERIC(10,3)');
+            await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps_yoy NUMERIC(10,2)');
+            console.log('[DB] earnings_forecast: added sort columns (forecast_netprofit, forecast_eps, forecast_eps_yoy)');
+        } catch (e: any) {
+            console.warn('[DB] earnings_forecast sort column migration:', e.message);
         }
         console.log('[DB] earnings_forecast table ready');
     } catch (err: any) {

@@ -1127,8 +1127,8 @@ export interface VetoCheckResult {
     isSt: boolean;        // 是否ST
 }
 
-/** 近20日日均成交额阈值（千元）：4000万 = 400,000千元 */
-const AVG_AMOUNT_THRESHOLD = 400000;
+/** 近20日日均成交额阈值（千元）：5000万 = 500,000千元 */
+const AVG_AMOUNT_THRESHOLD = 500000;
 
 /**
  * 一票否决检查：流动性与生存底线
@@ -1161,7 +1161,7 @@ export async function vetoCheck(symbol: string): Promise<VetoCheckResult> {
         // 检查日均成交额
         if (avgAmount !== null && avgAmount < AVG_AMOUNT_THRESHOLD) {
             const avgWan = (avgAmount / 100).toFixed(0); // 千元转万元
-            reasons.push(`近20日日均成交额仅${avgWan}万元，低于4000万元阈值，机构资金无法有效进出`);
+            reasons.push(`近20日日均成交额仅${avgWan}万元，低于5000万元阈值，机构资金无法有效进出`);
         } else if (avgAmount === null) {
             reasons.push('无法获取成交额数据，流动性无法确认');
         }

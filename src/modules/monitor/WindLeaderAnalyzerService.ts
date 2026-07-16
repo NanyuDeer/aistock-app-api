@@ -764,7 +764,11 @@ async function isAIRelatedByAI(name: string): Promise<boolean | null> {
             }),
         });
 
-        if (!resp.ok) return null;
+        if (!resp.ok) {
+            const errBody = await resp.text().catch(() => '');
+            console.warn(`[HotSectorAnalyzer] AI判断板块"${name}"失败: HTTP ${resp.status} ${errBody.slice(0, 200)}`);
+            return null;
+        }
 
         const data = await resp.json() as any;
         const answer = (data.choices?.[0]?.message?.content || '').trim();
@@ -902,12 +906,12 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
 }
 
 /** 从同花顺概念板块页面爬取龙头股 - 使用分布式爬虫 */
-async function fetchConceptLeadingStocks(boardCode: string): Promise<{ code: string; name: string }[]> {
+export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ code: string; name: string }[]> {
     const cacheKey = `concept_leading_${boardCode}`;
     const cached = cacheGet(cacheKey);
     if (cached) return cached;
 
-    const url = `https://basic.10jqka.com.cn/48/${boardCode}/`;
+    const url = `https://basic.10jqka.com.cn/48/${boardCode.replace(/\.TI$/, '')}/`;
     try {
         const html = await thsCrawler.fetchHtml(url);
         console.log(`[HotSectorAnalyzer] 概念${boardCode}页面HTML长度: ${html.length}`);
@@ -1496,7 +1500,10 @@ ${batch.map((n, i) => `${i + 1}. ${n}`).join('\n')}
         }),
     });
 
-    if (!resp.ok) throw new Error(`AI API HTTP ${resp.status}`);
+    if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+    }
 
     const json = await resp.json() as any;
     let content = (json?.choices?.[0]?.message?.content || '').trim();
@@ -1814,7 +1821,10 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
             }),
         });
 
-        if (!resp.ok) throw new Error(`AI API HTTP ${resp.status}`);
+        if (!resp.ok) {
+            const errBody = await resp.text().catch(() => '');
+            throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+        }
 
         const json: any = await resp.json();
         let content = json?.choices?.[0]?.message?.content?.trim() || '';
@@ -1828,8 +1838,9 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
         return result;
     } catch (err) {
         const errMsg = (err as Error).message || '';
-        // 只有连接错误才标记AI永久不可用，超时只是暂时问题
-        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed')) {
+        // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
+        // 超时只是暂时问题，不标记
+        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
             aiApiAvailable = false;
         }
         console.error('[HotSectorAnalyzer] AI分析失败，使用规则引擎:', errMsg);
