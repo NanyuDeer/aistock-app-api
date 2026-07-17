@@ -221,7 +221,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | `/api/agent/*` | GET/POST | 反代到 Python FastAPI（SSE 流式透传，自动注入 `X-Internal-Token`） |
 
-> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8000`）。
+> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）。
 
 ## 8. 定时任务速查
 

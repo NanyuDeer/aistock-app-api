@@ -13,6 +13,9 @@ __pycache__/
 *.pyc
 data/hot-sector-cache/
 src/data/hot-sector-cache/
+# 知识图谱运行时缓存（服务启动自动生成，不应提交）
+data/kg-cache/
+src/data/kg-cache/
 data/hot-sectors.json
 src/data/hot-sectors.json
 data/potential-stock-push-history.json

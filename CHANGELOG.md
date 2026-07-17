@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-17 — 跨仓库一致性修复（端口/测试/缓存/文档）
+**开发者**: Aria
+
+### 修复
+- `src/index.ts`：`AGENT_PY_URL` 默认端口 `8000`→`8080`（与 aistock-agent-py 实际端口对齐，原默认值导致 env 缺失时反代到错误端口）
+- `package.json`：`test` glob 补充 `"tests/**/*.test.ts"`（原仅匹配 `src/**/__tests__/**/*.spec.ts`，漏掉 `tests/` 下 11 个测试文件）
+
+### 改进
+- `.gitignore`：新增 `data/kg-cache/`、`src/data/kg-cache/` 忽略规则，取消跟踪 14 个知识图谱运行时缓存文件（服务启动自动生成）
+- `AGENTS.md`：同步修正 `AGENT_PY_URL` 默认端口文档（第 7.4 节 8000→8080）
+
+---
+
 ## [changer] 2026-07-16 — 报告内容清洗 + review 检查脚本
 **开发者**: 37588
 
