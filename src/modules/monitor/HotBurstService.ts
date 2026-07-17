@@ -699,27 +699,31 @@ export class HotBurstService {
      * 优先返回缓存，缓存过期则执行一次检测
      * @param minResonanceCount 最小有效共振数量过滤（0=不过滤）
      */
-    static async getRecentBursts(_hours: number = 6, minResonanceCount: number = 0): Promise<HotBurstResult | null> {
+    static async getRecentBursts(hours: number = 6, minResonanceCount: number = 0): Promise<HotBurstResult | null> {
+        const safeHours = Math.min(Math.max(hours, 1), 72);
         if (HotBurstService.lastDetectResult && (Date.now() - HotBurstService.lastDetectTime) < HotBurstService.DETECT_CACHE_TTL) {
             // 刷新内存缓存中的行情数据
             await HotBurstService.refreshOutbreaksQuotes(HotBurstService.lastDetectResult.outbreaks);
             if (minResonanceCount > 0) {
-                return {
+                const cachedResult = {
                     ...HotBurstService.lastDetectResult,
                     outbreaks: HotBurstService.lastDetectResult.outbreaks.filter(
                         s => s.resonanceCount >= minResonanceCount
                     ),
                 };
+                return cachedResult.outbreaks.length
+                    ? cachedResult
+                    : await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
             }
             return HotBurstService.lastDetectResult;
         }
         try {
             const result = await HotBurstService.detectHotBurst();
 
-            // 如果检测结果为空（无 outbreaks），尝试从 DB 历史表恢复
+            // 如果检测结果为空（无 outbreaks），尝试从指定小时窗口内的 DB 历史表恢复
             if (!result.outbreaks || result.outbreaks.length === 0) {
                 console.log('[HotBurst] detectHotBurst 返回空结果，尝试从 DB 历史表恢复...');
-                const dbFallback = await HotBurstService.fallbackFromDB(minResonanceCount);
+                const dbFallback = await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
                 if (dbFallback) {
                     return dbFallback;
                 }
@@ -728,12 +732,15 @@ export class HotBurstService {
             HotBurstService.lastDetectResult = result;
             HotBurstService.lastDetectTime = Date.now();
             if (minResonanceCount > 0) {
-                return {
+                const filteredResult = {
                     ...result,
                     outbreaks: result.outbreaks.filter(
                         s => s.resonanceCount >= minResonanceCount
                     ),
                 };
+                return filteredResult.outbreaks.length
+                    ? filteredResult
+                    : await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
             }
             return result;
         } catch (err) {
@@ -743,20 +750,22 @@ export class HotBurstService {
             }
             // 内存缓存为空（如服务器刚重启），从 DB 历史表兜底
             console.log('[HotBurst] 内存缓存为空，从 DB 历史表恢复...');
-            return await HotBurstService.fallbackFromDB(minResonanceCount);
+            return await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
         }
     }
 
     /** 从 DB 历史表恢复数据（兜底） */
-    private static async fallbackFromDB(minResonanceCount: number): Promise<HotBurstResult | null> {
+    private static async fallbackFromDB(hours: number, minResonanceCount: number): Promise<HotBurstResult | null> {
         try {
             const dbResult = await pool.query(
                 `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= 3
+                   AND detected_at >= NOW() - ($1::text || ' hours')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
-                 LIMIT 50`
+                 LIMIT 50`,
+                [hours]
             );
             if (dbResult.rows.length > 0) {
                 const records = dbResult.rows;
