@@ -5,6 +5,11 @@ import { TencentKlineService } from '../quote/TencentKlineService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { tushareRequest } from '../quote/TushareService';
 import { getStockIdentity } from '../../shared/utils/stock';
+import {
+    getQuoteTradeDate,
+    normalizeDateOnly,
+    normalizePushHistoryRecord,
+} from './pushHistoryDates';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DATA_FILE = path.join(PROJECT_ROOT, 'data', 'hot-sectors.json');
@@ -88,13 +93,6 @@ function normalizeDateText(value: unknown): string {
 
 function dateCompact(dateText: string): string {
     return dateText.replace(/-/g, '');
-}
-
-function formatDateLocal(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
 }
 
 function dateToEastmoneyText(dateText: string): string {
@@ -225,7 +223,8 @@ function readPushHistoryFile(): any[] {
         }
         const raw = fs.readFileSync(PUSH_HISTORY_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : parsed?.items || [];
+        const records = Array.isArray(parsed) ? parsed : parsed?.items || [];
+        return records.map(normalizePushHistoryRecord);
     } catch (err) {
         console.error('[WindLeaderService] read push history failed:', err);
         return [];
@@ -251,9 +250,8 @@ async function readPushHistoryFromDb(): Promise<any[]> {
             FROM wind_leader_push_history
             ORDER BY push_date DESC, score DESC
         `);
-        return result.rows.map(row => ({
+        return result.rows.map(row => normalizePushHistoryRecord({
             ...row,
-            push_date: row.push_date ? formatDateLocal(row.push_date) : '',
             realtime_time: row.realtime_time ? row.realtime_time.toISOString() : null,
         }));
     } catch (err) {
@@ -393,14 +391,14 @@ async function enrichPushPricesWithPreviousClose(records: any[]): Promise<any[]>
 }
 
 function mergePushRecord(existing: any, next: any): any {
-    if (!existing) return next;
-    return {
+    if (!existing) return normalizePushHistoryRecord(next);
+    return normalizePushHistoryRecord({
         ...next,
         ...existing,
         push_price: existing.push_price,
         latest_price: existing.latest_price ?? existing.push_price,
         latest_trade_date: existing.latest_trade_date ?? existing.push_date,
-    };
+    });
 }
 
 export class WindLeaderService {
@@ -614,7 +612,6 @@ export class WindLeaderService {
             });
 
             const now = new Date().toISOString();
-            const latestTradeDate = now.split('T')[0].replace(/-/g, '');
             let updatedCount = 0;
 
             const updatedRecords = history.map(record => {
@@ -623,18 +620,21 @@ export class WindLeaderService {
                 if (latestPrice !== null && latestPrice > 0) {
                     const pushPrice = Number(record.push_price) || 0;
                     const returnPct = pushPrice > 0 ? ((latestPrice - pushPrice) / pushPrice * 100) : 0;
+                    const latestTradeDate = getQuoteTradeDate(quote)
+                        || normalizeDateOnly(record.latest_trade_date)
+                        || normalizePushHistoryRecord(record).push_date;
 
                     updatedCount++;
-                    return {
+                    return normalizePushHistoryRecord({
                         ...record,
                         latest_price: latestPrice,
                         latest_change_pct: quote ? toFiniteNumber(quote['\u6da8\u8dcc\u5e45']) : record.latest_change_pct,
                         latest_trade_date: latestTradeDate,
                         realtime_return_pct: Number(returnPct.toFixed(2)),
                         realtime_time: now,
-                    };
+                    });
                 }
-                return record;
+                return normalizePushHistoryRecord(record);
             });
 
             if (isDbAvailable) {
