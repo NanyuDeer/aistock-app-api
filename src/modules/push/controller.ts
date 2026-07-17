@@ -56,7 +56,7 @@ function buildSummary(records: PotentialPushRecord[]) {
 }
 
 async function getHistoryRecords(): Promise<PotentialPushRecord[]> {
-    const records = await WindLeaderService.getPotentialPushHistory();
+    const records = await WindLeaderService.getPublishedPotentialPushHistory();
     return records.map(withReturn);
 }
 

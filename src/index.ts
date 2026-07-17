@@ -707,7 +707,7 @@ cron.schedule('0 15 * * *', async () => {
 cron.schedule('30 15 * * *', async () => {
     console.log('[PushHistoryPriceUpdateCron] update push history prices');
     try {
-        await WindLeaderService.updatePushHistoryPrices();
+        await WindLeaderService.ensurePushHistoryPricesCurrent();
     } catch (err: any) {
         console.error('[PushHistoryPriceUpdateCron] failed:', err?.message || err);
     }
@@ -963,6 +963,10 @@ async function start() {
             }
         }).catch(err => {
             console.warn('[Startup] 风口龙头数据检查失败:', err?.message || err);
+        });
+        // Compensate a missed post-close settlement after restarts or deployments.
+        WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
+            console.warn('[Startup] 推送历史收盘结算补偿失败:', err?.message || err);
         });
     });
 
