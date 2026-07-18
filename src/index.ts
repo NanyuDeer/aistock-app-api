@@ -107,9 +107,9 @@ app.use('/api/agent', publicRouter);
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
 // 导致 pipe 无数据可传。SSE 流式透传（upstreamRes.pipe(res) 不缓冲），自动注入 X-Internal-Token
 // （Python /api/agent/chat/* 鉴权）。路径保留 /api/agent 前缀，与 Python 路由一致。
-// AGENT_PY_URL（主）/ PYTHON_AGENT_URL（兼容 brief 命名）二选一，默认 http://localhost:8000。
+// AGENT_PY_URL（主）/ PYTHON_AGENT_URL（兼容 brief 命名）二选一，默认 http://localhost:8080。
 app.use('/api/agent', createAgentProxy({
-    target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8000',
+    target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
     internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
 }));
 
