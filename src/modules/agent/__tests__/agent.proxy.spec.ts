@@ -424,4 +424,150 @@ describe('Agent reverse proxy', () => {
       'expected onError callback to fire for upstream response stream error',
     );
   });
+
+  // ── 安全：公开代理必须拒绝 briefing trigger 路径 ──
+
+  it('rejects POST /api/agent/briefing/morning/trigger through public proxy (no upstream call)', async () => {
+    let upstreamCalled = false;
+    const upstream = await startUpstream((_req, res) => {
+      upstreamCalled = true;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/briefing/morning/trigger',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    // 必须被拒绝（403 或 404），不能 200
+    assert.ok(
+      res.status === 403 || res.status === 404,
+      `expected 403 or 404 for trigger path, got ${res.status}`,
+    );
+    // 上游不应收到请求
+    assert.strictEqual(upstreamCalled, false, 'upstream must NOT receive trigger request through public proxy');
+  });
+
+  it('rejects POST /api/agent/briefing/event/trigger through public proxy (no upstream call)', async () => {
+    let upstreamCalled = false;
+    const upstream = await startUpstream((_req, res) => {
+      upstreamCalled = true;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/briefing/event/trigger',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ event_title: 'test' }),
+    });
+
+    assert.ok(
+      res.status === 403 || res.status === 404,
+      `expected 403 or 404 for trigger path, got ${res.status}`,
+    );
+    assert.strictEqual(upstreamCalled, false, 'upstream must NOT receive trigger request through public proxy');
+  });
+
+  it('still allows non-trigger paths like /api/agent/briefing/morning (GET)', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, { method: 'GET', path: '/api/agent/briefing/morning' });
+
+    assert.strictEqual(res.status, 200);
+  });
+
+  // ── 安全：编码绕过变体必须被阻断（upstream 调用次数为 0）──
+
+  // 表驱动：每组 [label, path] 都应被拒绝且上游零调用
+  const ENCODED_BYPASS_CASES: Array<[string, string]> = [
+    // %74 → 't'：/briefing/morning/trigger 的编码片段绕过
+    ['%74rigger in morning trigger', '/api/agent/briefing/morning/%74rigger'],
+    // %2F → '/'：编码斜杠使整段看似单段，绕过 startsWith 匹配
+    ['%2F encoded slash in morning trigger', '/api/agent/briefing/morning%2Ftrigger'],
+    ['%2F encoded slash in event trigger', '/api/agent/briefing/event%2Ftrigger'],
+    // 尾部斜杠变体
+    ['trailing slash on morning trigger', '/api/agent/briefing/morning/trigger/'],
+    ['trailing slash on event trigger', '/api/agent/briefing/event/trigger/'],
+    // 双重编码：%252F → 解码一次为 %2F → 再解码为 /
+    ['double-encoded %252F slash in morning trigger', '/api/agent/briefing/morning%252Ftrigger'],
+    ['double-encoded %252F slash in event trigger', '/api/agent/briefing/event%252Ftrigger'],
+    // 大小写编码变体
+    ['uppercase %2F in event trigger', '/api/agent/briefing/event%2ftrigger'],
+  ];
+
+  for (const [label, path] of ENCODED_BYPASS_CASES) {
+    it(`blocks encoded bypass: ${label} (no upstream call)`, async () => {
+      const upstream = await startUpstream((_req, res) => {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      });
+
+      const app = buildApp(upstream.url);
+      const res = await call(app, {
+        method: 'POST',
+        path,
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      // 必须被拒绝（403 或 404），不能 200
+      assert.ok(
+        res.status === 403 || res.status === 404,
+        `${label}: expected 403 or 404, got ${res.status}`,
+      );
+      // 关键断言：上游调用次数为 0
+      assert.strictEqual(
+        upstream.requests.length,
+        0,
+        `${label}: upstream must NOT receive request, got ${upstream.requests.length} call(s)`,
+      );
+    });
+  }
+
+  it('blocks invalid percent-encoding with fail-closed (no upstream call)', async () => {
+    // %ZZ 不是合法的百分号编码，decodeURIComponent 抛错 → fail closed
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/briefing/morning/%ZZrigger',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    assert.ok(
+      res.status === 403 || res.status === 404,
+      `invalid encoding should fail closed, got ${res.status}`,
+    );
+    assert.strictEqual(upstream.requests.length, 0, 'upstream must NOT receive invalid-encoded request');
+  });
+
+  it('still allows GET /api/agent/briefing/morning with encoded safe chars', async () => {
+    // 正常公开路径含合法编码字符仍可用（不误伤）
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, { method: 'GET', path: '/api/agent/briefing/morning' });
+
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(upstream.requests.length, 1);
+  });
 });

@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [changer] 2026-07-18 — Morning trigger 鉴权统一 + agent.proxy 阻断 trigger 路径
+**开发者**: 37588
+
+### 修复
+- `src/index.ts`：引用生产 handler 模块，删除内联实现；手动 morning trigger 鉴权统一为 `INTERNAL_API_TOKEN || INTERNAL_TOKEN`；转发正确 token 给 Python；透传事件统计字段
+- `src/modules/agent/agent.proxy.ts`：循环 `decodeURIComponent`+规范化后用正则 `^/briefing/[^/]+/trigger(/.*)?$` 阻断 trigger 路径；解码失败 fail closed（默认 token 不作为有效凭据）；拒绝 briefing trigger 路径通过公开代理访问
+- `src/core/routes/morning_trigger_handler.ts`（新增）：抽成可测试模块：检查 response.ok、安全处理非 JSON、fail closed（默认 token 不作为有效凭据）、透传 event_persisted_count/persist_failed_count
+
+### 测试
+- `src/modules/agent/__tests__/agent.proxy.spec.ts`：新增 trigger 路径拒绝测试（morning/event trigger 不可通过代理）+ 编码绕过用例
+- `src/core/routes/__tests__/morning_trigger_handler.spec.ts`（新增）：使用真实 HTTP 上游 mock 测试：Token 优先级、透传、403/500、非 JSON、连接失败、fail closed
+
+---
+
 ## [changer] 2026-07-16 — 报告内容清洗 + review 检查脚本
 **开发者**: 37588
 

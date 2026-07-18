@@ -90,6 +90,69 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
 
   const router = Router();
 
+  /**
+   * 安全解码并规范化路径。
+   *
+   * 修复编码绕过：之前直接用未解码的 `req.path` 检查黑名单，
+   * 攻击者可用 `%74rigger`（=trigger）、`%2F`（=/）等编码字符绕过黑名单，
+   * 让请求携带内部 Token 到达 Python trigger 路由。
+   *
+   * 策略：
+   * 1. 循环 `decodeURIComponent` 直至稳定（防御双重编码 `%252F` → `%2F` → `/`）。
+   * 2. 解码失败（如 `%ZZ`）→ 返回 null，调用方 fail closed（403）。
+   * 3. 折叠多余斜杠、去除尾部斜杠，统一比较基线。
+   *
+   * 注意：`req.path` 是 Express 基于挂载点剥离前缀后的路径，本身已不含 `/api/agent`。
+   * Starlette（FastAPI 底层）会对路径做百分号解码（含 `%2F` → `/`），
+   * 因此若不在代理层先行解码阻断，编码斜杠将在 Python 侧匹配到 trigger 路由。
+   */
+  const normalizePath = (rawPath: string): string | null => {
+    let decoded = rawPath;
+    // 循环解码：防御 %252F → %2F → / 的多重编码
+    for (let i = 0; i < 3; i += 1) {
+      let next: string;
+      try {
+        next = decodeURIComponent(decoded);
+      } catch {
+        return null; // 非法百分号编码 → fail closed
+      }
+      if (next === decoded) break; // 已稳定，无更多编码
+      decoded = next;
+    }
+    // 折叠重复斜杠并去除尾部斜杠（保留根路径）
+    let normalized = decoded.replace(/\/+/g, '/').replace(/\/$/, '');
+    if (normalized === '') normalized = '/';
+    return normalized;
+  };
+
+  // 匹配 /briefing/<任意单段>/trigger 及其子路径。
+  // 覆盖 morning/trigger、event/trigger 及未来新增的 trigger，避免逐条枚举遗漏。
+  const TRIGGER_PATTERN = /^\/briefing\/[^/]+\/trigger(\/.*)?$/;
+
+  // 安全：禁止通过公开代理访问 briefing trigger 路径
+  // 这些路径只能通过 Node 内部路由 /api/internal/trigger-morning-briefing 访问
+  // （该路由校验 INTERNAL_API_TOKEN || INTERNAL_TOKEN 并转发给 Python）
+  router.use((req: Request, res: Response, next: NextFunction) => {
+    // 先安全解码并规范化，再判断：防止 %74rigger / %2F 等编码绕过
+    const normalized = normalizePath(req.path);
+    if (normalized === null) {
+      // 解码失败：fail closed，禁止转发以避免绕过
+      res.status(403).json({
+        error: 'forbidden',
+        message: 'malformed request path',
+      });
+      return;
+    }
+    if (TRIGGER_PATTERN.test(normalized)) {
+      res.status(403).json({
+        error: 'forbidden',
+        message: 'trigger paths are not accessible through public proxy',
+      });
+      return;
+    }
+    next();
+  });
+
   router.use((req: Request, res: Response, _next: NextFunction) => {
     // 复制客户端请求头，剔除 hop-by-hop，并注入 X-Internal-Token（覆写，防伪造）
     const headers: http.OutgoingHttpHeaders = {};
