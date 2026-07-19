@@ -1112,3 +1112,104 @@ export async function getSemiAnnualReport(symbol: string): Promise<SemiAnnualRep
         disclosure_url: `https://www.cninfo.com.cn/new/disclosure/stock?stockCode=${symbol}`,
     };
 }
+
+// ============================================================================
+// 完整日线抓取（分页 + 重复页保护）
+// 供 MarketSnapshotService 构建"当日 A 股大盘收盘溯源"事实聚合使用。
+// ============================================================================
+
+/**
+ * 完整日线覆盖状态原因。
+ * - complete：成功抓到短尾页，覆盖完整
+ * - duplicate_page：某满页未新增任何 ts_code（账户不支持 offset 等），必须失败
+ * - page_limit_reached：连续 4 个满页仍未到达短尾页，视作不完整
+ * - empty：首页即空，当日无数据
+ */
+export type DailyCoverageReason =
+    | 'complete'
+    | 'duplicate_page'
+    | 'page_limit_reached'
+    | 'empty';
+
+/** getCompleteDailyByDate 返回结构；rows 仅供 Node 内部使用，不直接透传出内部接口。 */
+export interface CompleteDailyResult {
+    rows: DailyPriceRow[];
+    complete: boolean;
+    reason: DailyCoverageReason;
+    page_count: number;
+}
+
+/**
+ * getCompleteDailyByDate 使用的可替换依赖引用，便于单测注入 tushareRequest。
+ * 生产环境默认指向真实 tushareRequest。该对象是同一模块内调用 tushareRequest
+ * 的唯一入口——直接调用 tushareRequest 会被同模块局部绑定捕获，无法被测试替换。
+ */
+export interface CompleteDailyDeps {
+    tushareRequest: typeof tushareRequest;
+}
+
+export const __completeDailyDependencies: CompleteDailyDeps = {
+    tushareRequest: tushareRequest,
+};
+
+/**
+ * 按交易日期获取全市场完整日线行情，带分页与重复页保护。
+ *
+ * 分页参数直接传给 Tushare（limit=5000, offset=page*5000）；
+ * 以 ts_code 去重；任一满页未新增 ts_code 即判定不完整并返回 complete:false。
+ *
+ * 不使用单次 5,000 行返回作为"全市场"事实；账户不支持 offset 时重复页保护会让快照失败。
+ * 保留现有 getDailyByDate(tradeDate) 的返回类型和调用语义不变。
+ */
+export async function getCompleteDailyByDate(
+    tradeDate: string,
+): Promise<CompleteDailyResult> {
+    const pageSize = 5000;
+    const maxPages = 4;
+    const rowsByCode = new Map<string, DailyPriceRow>();
+
+    for (let page = 0; page < maxPages; page += 1) {
+        const rows = await __completeDailyDependencies.tushareRequest(
+            'daily',
+            { trade_date: tradeDate, limit: pageSize, offset: page * pageSize },
+            'ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount',
+        ) as DailyPriceRow[];
+
+        const before = rowsByCode.size;
+        for (const row of rows) {
+            rowsByCode.set(row.ts_code, row);
+        }
+
+        if (rows.length === 0) {
+            return {
+                rows: [...rowsByCode.values()],
+                complete: before > 0,
+                reason: before > 0 ? 'complete' : 'empty',
+                page_count: page + 1,
+            };
+        }
+        if (rows.length === pageSize && rowsByCode.size === before) {
+            return {
+                rows: [...rowsByCode.values()],
+                complete: false,
+                reason: 'duplicate_page',
+                page_count: page + 1,
+            };
+        }
+        if (rows.length < pageSize) {
+            return {
+                rows: [...rowsByCode.values()],
+                complete: true,
+                reason: 'complete',
+                page_count: page + 1,
+            };
+        }
+    }
+
+    return {
+        rows: [...rowsByCode.values()],
+        complete: false,
+        reason: 'page_limit_reached',
+        page_count: maxPages,
+    };
+}
