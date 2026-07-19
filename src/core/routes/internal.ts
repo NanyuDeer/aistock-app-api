@@ -22,6 +22,10 @@ import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+// MarketSnapshotService 通过 namespace 导入：路由调用 MarketSnapshotService.getTodayCloseSnapshot()，
+// 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
+import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
+import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction', 'trend_score']
@@ -459,6 +463,31 @@ router.get('/institution-research', async (req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: unknown) {
         console.error('[Internal] institution-research error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/market/close-snapshot
+ * 当日 A 股大盘收盘事实快照（供 Python Agent 拉取当日收盘事实）
+ *
+ * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
+ * - 409：服务未就绪（未收盘 / 日线覆盖不完整），data 含 status='not_ready' 与 reason
+ * - 502：其它意外异常（沿用既有 502 约定）
+ */
+router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const data = await MarketSnapshotService.getTodayCloseSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        if (err instanceof MarketSnapshotUnavailableError) {
+            res.status(409).json({
+                code: 409,
+                data: { status: err.status, reason: err.reason },
+            })
+            return
+        }
+        console.error('[Internal] market/close-snapshot error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })

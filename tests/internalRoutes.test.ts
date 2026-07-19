@@ -21,6 +21,23 @@ import { TenxScoreService } from '../src/modules/monitor/TenxScoreService'
 import { IndustryKGService } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 
+// MarketSnapshotService 通过 __marketSnapshotDependencies 注入依赖（Task 1 已建立），
+// 路由侧调用 getTodayCloseSnapshot()，单测通过替换 deps 字段实现 mock。
+import {
+    __marketSnapshotDependencies,
+    MarketSnapshotUnavailableError,
+    type MarketSnapshotUnavailableReason,
+} from '../src/modules/quote/MarketSnapshotService'
+import type {
+    IndexDailyRow,
+    DailyPriceRow,
+    CompleteDailyResult,
+    LimitListThsRow,
+    LimitStepRow,
+    MoneyflowCntThsRow,
+    MoneyflowThsRow,
+} from '../src/modules/quote/TushareService'
+
 // 与 internal.ts 中 verifyInternalToken 使用相同的 token 读取逻辑
 const INTERNAL_TOKEN =
     process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production'
@@ -155,6 +172,72 @@ function withThrowingMock(
     })
 }
 
+// ==================== MarketSnapshotService Mock ====================
+//
+// getTodayCloseSnapshot 通过 __marketSnapshotDependencies 注入所有 Tushare 调用，
+// 因此替换 deps 字段即可让路由侧的 MarketSnapshotService.getTodayCloseSnapshot()
+// 返回完整快照或抛出 MarketSnapshotUnavailableError，无需 require.cache hack，
+// 也无需在 internal.ts 中新增 __marketSnapshotHandlers 之类的 DI 出口。
+
+/** 6 个指数的 index_daily 序列；000001.SH 含 current + previous 两个交易日。 */
+const SNAPSHOT_INDEX_ROWS: Record<string, IndexDailyRow[]> = {
+    '000001.SH': [
+        { ts_code: '000001.SH', trade_date: '20260719', open: 3190, high: 3210, low: 3185, close: 3200, pre_close: 3180, change: 20, pct_chg: 0.6, vol: 1, amount: 1 },
+        { ts_code: '000001.SH', trade_date: '20260718', open: 3175, high: 3190, low: 3170, close: 3180, pre_close: 3170, change: 10, pct_chg: 0.3, vol: 1, amount: 1 },
+        { ts_code: '000001.SH', trade_date: '20260717', open: 3165, high: 3175, low: 3160, close: 3170, pre_close: 3160, change: 10, pct_chg: 0.3, vol: 1, amount: 1 },
+    ],
+    '399001.SZ': [{ ts_code: '399001.SZ', trade_date: '20260719', open: 10450, high: 10600, low: 10400, close: 10500, pre_close: 10400, change: 100, pct_chg: 0.9, vol: 1, amount: 1 }],
+    '399006.SZ': [{ ts_code: '399006.SZ', trade_date: '20260719', open: 2090, high: 2110, low: 2080, close: 2100, pre_close: 2080, change: 20, pct_chg: 0.9, vol: 1, amount: 1 }],
+    '000300.SH': [{ ts_code: '000300.SH', trade_date: '20260719', open: 4190, high: 4210, low: 4180, close: 4200, pre_close: 4180, change: 20, pct_chg: 0.5, vol: 1, amount: 1 }],
+    '000905.SH': [{ ts_code: '000905.SH', trade_date: '20260719', open: 5480, high: 5520, low: 5470, close: 5500, pre_close: 5470, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
+    '000852.SH': [{ ts_code: '000852.SH', trade_date: '20260719', open: 6180, high: 6220, low: 6170, close: 6200, pre_close: 6170, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
+}
+
+const SNAPSHOT_CURRENT_DAILY: CompleteDailyResult = {
+    rows: [
+        { ts_code: '000001.SZ', trade_date: '20260719', open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 1.5, vol: 100, amount: 2000 },
+    ],
+    complete: true,
+    reason: 'complete',
+    page_count: 1,
+}
+
+const SNAPSHOT_PREVIOUS_DAILY: CompleteDailyResult = {
+    rows: [
+        { ts_code: '000001.SZ', trade_date: '20260718', open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 0.5, vol: 100, amount: 1000 },
+    ],
+    complete: true,
+    reason: 'complete',
+    page_count: 1,
+}
+
+/** 安装 MarketSnapshotService 依赖 mock：返回 trade_date=20260719 的完整快照。 */
+function setupMarketSnapshotMocks(): void {
+    const deps = __marketSnapshotDependencies
+    deps.getIndexDaily = (async (code: string) =>
+        SNAPSHOT_INDEX_ROWS[code] ?? []) as typeof deps.getIndexDaily
+    deps.getCompleteDailyByDate = (async (date: string) =>
+        date === '20260719' ? SNAPSHOT_CURRENT_DAILY : SNAPSHOT_PREVIOUS_DAILY) as typeof deps.getCompleteDailyByDate
+    deps.getLimitListThs = (async () => [] as LimitListThsRow[]) as typeof deps.getLimitListThs
+    deps.getLimitStep = (async () => [] as LimitStepRow[]) as typeof deps.getLimitStep
+    deps.getMoneyflowCntThs = (async () => [] as MoneyflowCntThsRow[]) as typeof deps.getMoneyflowCntThs
+    deps.getMoneyflowThsByDate = (async () => [] as MoneyflowThsRow[]) as typeof deps.getMoneyflowThsByDate
+}
+
+/**
+ * 让 MarketSnapshotService.getTodayCloseSnapshot 抛出 MarketSnapshotUnavailableError。
+ * 通过替换 deps.getIndexDaily 实现，路由侧 try/catch 会识别该错误并返回 409。
+ *
+ * 注意：此 mock 不自动恢复（brief 的 verbatim 测试未使用回调模式）。
+ * 调用方需确保后续不再有依赖 getTodayCloseSnapshot 的测试，或在此之后重新调用 setupMarketSnapshotMocks。
+ */
+function mockSnapshotUnavailable(reason: MarketSnapshotUnavailableReason): void {
+    const deps = __marketSnapshotDependencies
+    deps.getIndexDaily = (async () => {
+        throw new MarketSnapshotUnavailableError(reason)
+    }) as typeof deps.getIndexDaily
+}
+
 // ==================== 测试用例定义 ====================
 
 interface EndpointCase {
@@ -173,6 +256,7 @@ const endpoints: EndpointCase[] = [
     { name: 'graph/:concept', path: '/graph/885641.TI' },
     { name: 'institution-research', path: '/institution-research' },
     { name: 'institution-research/history', path: '/institution-research/history' },
+    { name: 'market/close-snapshot', path: '/market/close-snapshot' },
 ]
 
 // ==================== 主测试流程 ====================
@@ -191,6 +275,8 @@ async function main(): Promise<void> {
 
     // 3. 设置 Service Mock
     setupMocks()
+    // 为 MarketSnapshotService 路由测试准备 deps mock（返回 trade_date=20260719 的完整快照）
+    setupMarketSnapshotMocks()
 
     // 4. 运行测试
 
@@ -406,6 +492,38 @@ async function main(): Promise<void> {
         assert.equal(res.status, 200)
         const body = res.body as { code: number; data: { stocks: unknown[]; note: string } }
         assert.equal(body.code, 200)
+    })
+
+    // --- /internal/market/close-snapshot 测试（Task 2）---
+    // 顺序：成功(200) → 服务异常(502) → 未收盘(409)。
+    // 409 用例使用 mockSnapshotUnavailable 且不自动恢复，放在最后以避免影响其它测试。
+    await runAsyncTest('GET /internal/market/close-snapshot returns complete facts', async () => {
+        const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: { status: string; trade_date: string } }
+        assert.equal(body.code, 200)
+        assert.equal(body.data.status, 'complete')
+        assert.equal(body.data.trade_date, '20260719')
+    })
+
+    await runAsyncTest('GET /internal/market/close-snapshot returns 502 on service failure', async () => {
+        await withThrowingMock(__marketSnapshotDependencies, 'getCompleteDailyByDate', async () => {
+            const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+            assert.ok(body.message.includes('Service unavailable'))
+        })
+    })
+
+    await runAsyncTest('GET /internal/market/close-snapshot returns 409 before close', async () => {
+        mockSnapshotUnavailable('market_not_closed')
+        const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
+        assert.equal(res.status, 409)
+        assert.deepEqual(res.body, {
+            code: 409,
+            data: { status: 'not_ready', reason: 'market_not_closed' },
+        })
     })
 
     // 5. 关闭服务器
