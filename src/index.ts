@@ -299,54 +299,9 @@ app.post('/api/internal/push-stock-info', async (req, res) => {
 app.get('/api/config/public', (req, res, next) => ConfigController.getPublicConfig(req, res, next));
 
 // 手动触发 morning agent 晨报生成（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
-app.post('/api/internal/trigger-morning-briefing', async (req, res) => {
-    const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
-        return res.status(401).json({ error: 'unauthorized' });
-    }
-    const startTime = Date.now();
-    console.log('[ManualTrigger] 开始手动触发 morning 晨报...');
-
-    const pythonUrl = process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8000';
-    const triggerUrl = `${pythonUrl}/api/agent/briefing/morning/trigger`;
-
-    try {
-        const response = await fetch(triggerUrl, {
-            method: 'POST',
-            headers: { 'x-internal-token': token as string },
-        });
-        const result: any = await response.json();
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-        if (result.success) {
-            console.log(
-                `[ManualTrigger] morning 晨报生成完成 (${elapsed}s) | ` +
-                `cached=${result.cached} | major_events=${result.has_major_events}`
-            );
-        } else {
-            console.error(
-                `[ManualTrigger] morning 晨报生成失败 (${elapsed}s): ${result.message}`
-            );
-        }
-
-        res.json({
-            success: result.success,
-            message: result.message,
-            report_date: result.report_date,
-            cached: result.cached,
-            has_major_events: result.has_major_events,
-            elapsed_seconds: parseFloat(elapsed),
-        });
-    } catch (err: any) {
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        console.error(`[ManualTrigger] morning 晨报请求失败 (${elapsed}s):`, err?.message || err);
-        res.status(502).json({
-            success: false,
-            message: `Python Agent 调用失败: ${err?.message || err}`,
-            elapsed_seconds: parseFloat(elapsed),
-        });
-    }
-});
+// handler 逻辑抽到 src/core/routes/morning_trigger_handler.ts，便于单元测试
+import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler.js';
+app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler());
 
 // 手动触发爬虫抓取（只抓取+研判+入库，不推送）
 app.post('/api/internal/crawl/run', async (req, res) => {
