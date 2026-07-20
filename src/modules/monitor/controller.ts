@@ -1,5 +1,5 @@
 /**
- * 趋势风口 API 控制器
+ * 个股异动监控 API 控制器
  *
  * 提供前端页面所需的公告/新闻研判数据查询接口。
  */
@@ -31,8 +31,8 @@ export class StockMonitorController {
         return { ok: true, openid: payload.openid };
     }
     /**
-     * GET /api/cn/trend-hotspots/events
-     * 查询趋势风口列表
+     * GET /api/cn/stock-monitors/events
+     * 查询个股异动列表
      *
      * Query params:
      *   - cycle: 周期筛选 (all/short/mid/long)，默认 all
@@ -60,14 +60,14 @@ export class StockMonitorController {
             createResponse(res, 200, 'success', result);
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            console.error('[TrendHotspotController] getEvents error:', errMsg);
+            console.error('[StockMonitorController] getEvents error:', errMsg);
             createResponse(res, 500, errMsg);
         }
     }
 
     /**
-     * GET /api/cn/trend-hotspots/events/:stockCode
-     * 查询指定股票的趋势风口
+     * GET /api/cn/stock-monitors/events/:stockCode
+     * 查询指定股票的异动事件
      */
     static async getEventsByStock(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
@@ -85,14 +85,14 @@ export class StockMonitorController {
             createResponse(res, 200, 'success', { events });
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            console.error('[TrendHotspotController] getEventsByStock error:', errMsg);
+            console.error('[StockMonitorController] getEventsByStock error:', errMsg);
             createResponse(res, 500, errMsg);
         }
     }
 
     /**
-     * GET /api/cn/trend-hotspots/stats
-     * 获取趋势风口统计概览
+     * GET /api/cn/stock-monitors/stats
+     * 获取个股异动统计概览
      */
     static async getStats(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
@@ -100,7 +100,7 @@ export class StockMonitorController {
             createResponse(res, 200, 'success', stats);
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
-            console.error('[TrendHotspotController] getStats error:', errMsg);
+            console.error('[StockMonitorController] getStats error:', errMsg);
             createResponse(res, 500, errMsg);
         }
     }

@@ -23,7 +23,7 @@ async function runAsyncTest(name: string, fn: () => Promise<void>): Promise<void
 }
 
 async function main(): Promise<void> {
-await runAsyncTest('getEvents maps stock info judgements to trend hotspot events', async () => {
+await runAsyncTest('getEvents maps stock info judgements to stock monitor events', async () => {
     const originalQuery = pool.query.bind(pool);
     const calls: any[][] = [];
 
@@ -96,7 +96,7 @@ await runAsyncTest('getEvents maps stock info judgements to trend hotspot events
     }
 });
 
-await runAsyncTest('getStats counts announcement and news trend hotspots by impact', async () => {
+await runAsyncTest('getStats counts announcement and news stock monitor events by impact', async () => {
     const originalQuery = pool.query.bind(pool);
 
     (pool as any).query = async (...args: any[]) => {

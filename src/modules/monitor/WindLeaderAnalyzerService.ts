@@ -655,157 +655,6 @@ interface HotConcept {
     score: number;
 }
 
-/** AI相关板块关键词（基础词库，用于快速匹配） */
-const AI_RELATED_KEYWORDS = [
-    'AI', '人工智能', '芯片', '半导体', '光刻', 'CPO', 'PCB', '光纤', '光模块',
-    '存储', '算力', 'GPU', 'FPGA', 'HBM', 'MLCC', '玻璃基板', '培育钻石',
-    '物理AI', '铜缆', '太赫兹', '光通信', '激光', 'EDA', '封测',
-    '大基金', '集成电路', '晶圆', '刻蚀', '薄膜', '溅射', '电子化学品',
-    '消费电子', '光学光电子', '通信设备', '计算机设备', '机器人',
-    '自动化', '智能制造', '工业互联', '数据中心', '云计算',
-    '量子', '脑机', '边缘计算', '5G', '6G', '物联网',
-    '鸿蒙', '信创', '国产替代', '国产芯片',
-    // 补充关键词
-    'TGV', '先进封装', 'CoWoS', 'HBM3', '硅光', '光电', '服务器',
-    '液冷', '散热', '电源管理', 'MCU', 'SOC', 'DSP', 'ADC',
-    '连接器', '继电器', '传感器', '摄像头', '显示', 'OLED', 'MicroLED',
-    'MiniLED', 'VR', 'AR', 'MR', 'XR', '智能穿戴', '智能汽车',
-    '自动驾驶', '激光雷达', '毫米波', '射频', '天线', '基站',
-    '交换机', '路由器', '网络安全', '数据要素', 'AIGC', '大模型',
-    'ChatGPT', '文心', '通义', '智谱', '深度学习', '机器学习',
-    '神经网络', '知识图谱', '自然语言', '语音识别', '计算机视觉',
-    '具身智能', '人形机器人', '工业机器人', '服务机器人',
-    '固态电池', '钠电池', '氢能', '核聚变', '超导',
-    '碳化硅', '氮化镓', '砷化镓', '磷化铟', '第二代半导体', '第三代半导体',
-    '光刻胶', '抛光', '清洗', '检测', '量测',
-];
-
-/** AI板块判断缓存文件路径（持久化，重启不丢失） */
-const AI_SECTOR_CACHE_PATH = path.join(CACHE_DIR, 'ai_sector_judgment_cache.json');
-
-/** AI板块判断缓存：{ 板块名: { isAIRelated: boolean, judgedAt: number } } */
-let aiSectorJudgmentCache: Map<string, { isAIRelated: boolean; judgedAt: number }> | null = null;
-
-/** 加载AI板块判断缓存 */
-function loadAiSectorJudgmentCache(): Map<string, { isAIRelated: boolean; judgedAt: number }> {
-    if (aiSectorJudgmentCache) return aiSectorJudgmentCache;
-    try {
-        ensureCacheDir();
-        if (fs.existsSync(AI_SECTOR_CACHE_PATH)) {
-            const raw = fs.readFileSync(AI_SECTOR_CACHE_PATH, 'utf-8');
-            const obj = JSON.parse(raw);
-            aiSectorJudgmentCache = new Map(Object.entries(obj));
-            console.log(`[HotSectorAnalyzer] AI板块判断缓存加载: ${aiSectorJudgmentCache.size}条`);
-        } else {
-            aiSectorJudgmentCache = new Map();
-        }
-    } catch {
-        aiSectorJudgmentCache = new Map();
-    }
-    return aiSectorJudgmentCache;
-}
-
-/** 保存AI板块判断缓存 */
-function saveAiSectorJudgmentCache(): void {
-    if (!aiSectorJudgmentCache) return;
-    try {
-        ensureCacheDir();
-        const obj = Object.fromEntries(aiSectorJudgmentCache);
-        fs.writeFileSync(AI_SECTOR_CACHE_PATH, JSON.stringify(obj, null, 2), 'utf-8');
-    } catch (err) {
-        console.warn('[HotSectorAnalyzer] AI板块判断缓存保存失败:', err);
-    }
-}
-
-/** 基础关键词快速判断 */
-function isAIRelatedByKeyword(name: string): boolean {
-    const upperName = name.toUpperCase();
-    return AI_RELATED_KEYWORDS.some(kw => upperName.includes(kw.toUpperCase()));
-}
-
-/** 调用AI判断板块是否与AI相关（带缓存，7天内不重复调用） */
-async function isAIRelatedByAI(name: string): Promise<boolean | null> {
-    const cache = loadAiSectorJudgmentCache();
-    const cached = cache.get(name);
-    const SEVEN_DAYS = 7 * 24 * 3600 * 1000;
-
-    // 缓存7天内有效
-    if (cached && Date.now() - cached.judgedAt < SEVEN_DAYS) {
-        return cached.isAIRelated;
-    }
-
-    // 检查AI API是否可用
-    const apiKey = process.env.OPENAI_API_KEY || '';
-    if (!apiKey) return null;
-
-    let apiBase = process.env.OPENAI_API_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
-    const chatUrl = apiBase.includes('/chat/completions') ? apiBase : `${apiBase}/chat/completions`;
-    const model = process.env.AI_MODEL || 'gpt-4o-mini';
-
-    try {
-        const prompt = `判断以下A股概念板块是否与AI（人工智能）产业链相关。包括AI上游（芯片/算力/存储/光刻/PCB/元件/材料等）、AI中游（模型/算法/数据/云计算等）、AI下游（应用/机器人/自动驾驶/消费电子等）。
-
-板块名称：${name}
-
-只回答"是"或"否"，不要其他文字。`;
-
-        const resp = await sessionFetch(chatUrl, {
-            method: 'POST',
-            signal: AbortSignal.timeout(20000),  // 20秒超时，32B模型响应较慢
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0,
-                max_tokens: 10,
-            }),
-        });
-
-        if (!resp.ok) {
-            const errBody = await resp.text().catch(() => '');
-            console.warn(`[HotSectorAnalyzer] AI判断板块"${name}"失败: HTTP ${resp.status} ${errBody.slice(0, 200)}`);
-            return null;
-        }
-
-        const data = await resp.json() as any;
-        const answer = (data.choices?.[0]?.message?.content || '').trim();
-        const isRelated = answer.includes('是');
-
-        // 缓存结果
-        cache.set(name, { isAIRelated: isRelated, judgedAt: Date.now() });
-        saveAiSectorJudgmentCache();
-        console.log(`[HotSectorAnalyzer] AI判断板块"${name}"${isRelated ? '是' : '否'}AI相关`);
-        return isRelated;
-    } catch (err) {
-        console.warn(`[HotSectorAnalyzer] AI判断板块"${name}"失败:`, (err as Error).message);
-        return null;
-    }
-}
-
-/** 判断板块名称是否与AI相关（关键词优先，未命中则调用AI） */
-async function isAIRelatedSector(name: string): Promise<boolean> {
-    // 1. 基础关键词快速匹配
-    if (isAIRelatedByKeyword(name)) return true;
-
-    // 2. 查询AI判断缓存（可能命中旧缓存）
-    const cache = loadAiSectorJudgmentCache();
-    const cached = cache.get(name);
-    const SEVEN_DAYS = 7 * 24 * 3600 * 1000;
-    if (cached && Date.now() - cached.judgedAt < SEVEN_DAYS) {
-        return cached.isAIRelated;
-    }
-
-    // 3. 调用AI判断（异步，不阻塞主流程，返回null则不确定）
-    const aiResult = await isAIRelatedByAI(name);
-    if (aiResult !== null) return aiResult;
-
-    // 4. AI不可用时，保守返回false（不匹配的不纳入）
-    return false;
-}
-
 /** 从同花顺板块轮动API获取板块轮动数据（截取指定天数） */
 export async function fetchBlockRotationData(days: number = 20): Promise<{
     sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
@@ -1082,35 +931,15 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
     console.log('[HotSectorAnalyzer] 使用同花顺板块轮动表筛选风口板块');
     const { sectorStats } = await fetchBlockRotationData(days);
 
-    // 筛选AI相关板块（关键词优先，未命中则调用AI判断）
-    const aiSectors: { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }[] = [];
-    // 先用关键词快速筛选，收集未命中的板块
-    const unknownSectors: { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }[] = [];
-    for (const [, stat] of sectorStats) {
-        if (isAIRelatedByKeyword(stat.name)) {
-            aiSectors.push(stat);
-        } else {
-            unknownSectors.push(stat);
-        }
-    }
-    // 对未命中关键词的板块，查询AI判断缓存或调用AI（并发执行，限制并发数避免压垮AI API）
-    const AI_JUDGE_CONCURRENCY = 5;
-    for (let i = 0; i < unknownSectors.length; i += AI_JUDGE_CONCURRENCY) {
-        const batch = unknownSectors.slice(i, i + AI_JUDGE_CONCURRENCY);
-        const results = await Promise.all(
-            batch.map(async stat => ({ stat, isRelated: await isAIRelatedSector(stat.name) }))
-        );
-        for (const { stat, isRelated } of results) {
-            if (isRelated) aiSectors.push(stat);
-        }
-    }
-    console.log(`[HotSectorAnalyzer] AI相关板块: ${aiSectors.length} 个 (共 ${sectorStats.size} 个板块)`);
+    // 全行业覆盖：不再筛选AI相关板块，直接使用全部板块
+    const allSectors = Array.from(sectorStats.values());
+    console.log(`[HotSectorAnalyzer] 全行业板块: ${allSectors.length} 个`);
 
     // 按上榜频次排序，频次相同按平均涨幅排序
-    aiSectors.sort((a, b) => b.frequency - a.frequency || b.avgZf5 - a.avgZf5);
+    allSectors.sort((a, b) => b.frequency - a.frequency || b.avgZf5 - a.avgZf5);
 
     // 构建HotConcept列表
-    const candidates: HotConcept[] = aiSectors.map(sector => {
+    const candidates: HotConcept[] = allSectors.map(sector => {
         // 评分：上榜频次(40%) + 资金净流入(30%) + 平均涨幅(20%) + 最新涨幅(10%)
         const freqScore = Math.min(10, sector.frequency * 1.2);
         const avgChangeScore = Math.min(10, Math.abs(sector.avgZf5) * 1.5);

@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS trend_scores (
     dim_scores JSON NOT NULL,                      -- 各维度分数数组: [tech, track, news, fundamental]
     dimensions JSON NOT NULL,                      -- 完整维度详情（含指标、权重、明细）
     raw_data JSON,                                 -- 原始预取数据（可选，体积较大）
+    ma60_excluded BOOLEAN NOT NULL DEFAULT FALSE,  -- 60日均线剔除标记：连续两日跌破60日线时为true
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), -- 更新时间
     UNIQUE(symbol, score_date)
 );

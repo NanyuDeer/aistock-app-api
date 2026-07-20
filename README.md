@@ -118,7 +118,7 @@ src/
 |------|------|
 | `/api/cn/stock-quote/*` | 行情接口 |
 | `/api/cn/wind-leaders` | 龙头股接口 |
-| `/api/cn/trend-hotspots/*` | 重磅消息接口 |
+| `/api/cn/stock-monitors/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |

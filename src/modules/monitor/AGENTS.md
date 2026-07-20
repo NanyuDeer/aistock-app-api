@@ -1,25 +1,28 @@
 # monitor 监控模块
 
 ## 功能
-趋势风口、风口龙头、新闻、业绩预测、十字评分、AI 知识图谱、行业知识图谱、个股-板块映射、股票同步、共振检测。
+个股异动监控、风口龙头、新闻、业绩预测、趋势股评分（含60日均线剔除）、AI 知识图谱、行业知识图谱、个股-板块映射、股票同步、共振检测。
 
 ## 对外接口（路由）
-- `GET /api/cn/trend-hotspots/events` — 趋势风口列表
-- `GET /api/cn/trend-hotspots/stats` — 趋势风口统计
+- `GET /api/cn/stock-monitors/events` — 个股异动列表
+- `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
+- `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
-- `GET /api/cn/stocks/tenx-score/*` — 十字评分
+- `GET /api/cn/stocks/trend-score/*` — 趋势股评分
 - `GET /api/aigraph/*` — AI 知识图谱
 - `GET /api/kg/*` — 行业知识图谱
 
 ## 核心文件
-- `controller.ts` — StockMonitorController（趋势风口）
+- `controller.ts` — StockMonitorController（个股异动监控）
 - `windLeaderController.ts` — 风口龙头/机构调研/热词
 - `newsController.ts` — 新闻
 - `profitForecastController.ts` — 业绩预测
-- `tenxScoreController.ts` — 十字评分
+- `trendScoreController.ts` — 趋势股评分（S/A/B/C/D 评级 + 60日均线剔除）
+- `TrendBatchService.ts` — 趋势股批量评分（cron 凌晨2点）
+- `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
 - 对应 Service 文件
 
@@ -39,8 +42,8 @@
 - `modules/crawler/StockInfoService` — 股票信息（研判）
 
 ## 开发注意事项
-- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行
+- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
-- 十字评分批量任务由 cron 调度（凌晨 4 点）
+- 趋势股批量评分由 cron 调度（凌晨 2 点），含60日均线剔除规则（连续两日跌破60日线→从Top列表剔除）
 - 业绩预测自动更新由 cron 调度（凌晨 0 点）
