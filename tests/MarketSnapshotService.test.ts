@@ -238,6 +238,7 @@ function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
         getLimitStep: deps.getLimitStep,
         getMoneyflowCntThs: deps.getMoneyflowCntThs,
         getMoneyflowThsByDate: deps.getMoneyflowThsByDate,
+        now: deps.now,
     }
     const shIndexRows = overrides.shIndexRows ?? SH_INDEX_ROWS
     const indexRowsByCode = overrides.indexRowsByCode ?? INDEX_ROWS_BY_CODE
@@ -263,6 +264,7 @@ function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
         deps.getLimitStep = orig.getLimitStep
         deps.getMoneyflowCntThs = orig.getMoneyflowCntThs
         deps.getMoneyflowThsByDate = orig.getMoneyflowThsByDate
+        deps.now = orig.now
     }
 }
 
@@ -481,6 +483,8 @@ test('throws market_not_closed on holiday (requestDate not in SH series)', async
 test('throws market_not_closed when SH index data lags during market hours', async () => {
     // 盘中数据延迟场景：requestDate=20260719（真实交易日），但 SH 序列只到 20260718，
     // 说明 Tushare 当日 index_daily 尚未推送——绝不能把 20260718 当作"今日已收盘"。
+    // 关键：使用 15:31 +08:00（收盘后）调用，确保命中 SH 数据滞后校验而非 15:30 时钟门禁，
+    // 保留原 SH 滞后测试意图。
     applyCloseMocks({
         shIndexRows: [
             makeIndexRow({ ts_code: '000001.SH', trade_date: '20260718', close: 3180, pct_chg: 0.3, amount: 58000000 }),
@@ -497,6 +501,31 @@ test('throws market_not_closed when SH index data lags during market hours', asy
     })
     try {
         await assert.rejects(
+            getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+// ============================================================================
+// 收盘时钟门禁 — 15:30 +08:00 前一律拒绝，即使 6 指数和日线数据都已存在
+// ============================================================================
+
+test('throws market_not_closed at 11:30 +08:00 even with complete data', async () => {
+    // 真实工作日盘中：6 指数和日线均已存在（applyCloseMocks 安装完整数据），
+    // 但 Asia/Shanghai 时间 11:30 < 15:30 → 必须返回 market_not_closed。
+    // 旧实现只校验 currentTradeDate === requestDate，盘中数据到位时会错误返回 complete。
+    applyCloseMocks()
+    try {
+        await assert.rejects(
             getTodayCloseSnapshot(new Date('2026-07-19T11:30:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
@@ -505,6 +534,20 @@ test('throws market_not_closed when SH index data lags during market hours', asy
                 return true
             },
         )
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('returns complete at 15:30 +08:00 with complete data', async () => {
+    // 真实工作日 15:30 +08:00（收盘时刻）+ 完整数据 → 返回 complete。
+    // 与上一个测试共同锁定 15:30 时钟门禁边界：11:30 拒绝、15:30 放行。
+    applyCloseMocks()
+    try {
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-19T15:30:00+08:00'))
+        assert.equal(snapshot.status, 'complete')
+        assert.equal(snapshot.trade_date, '20260719')
     } finally {
         restoreDeps?.()
         restoreDeps = null

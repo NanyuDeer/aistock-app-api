@@ -186,9 +186,13 @@ function withThrowingMock(
 // 返回完整快照或抛出 MarketSnapshotUnavailableError，无需 require.cache hack，
 // 也无需在 internal.ts 中新增 __marketSnapshotHandlers 之类的 DI 出口。
 //
-// 关键：路由侧调用 getTodayCloseSnapshot() 不传 now 参数，内部使用 new Date()。
-// MarketSnapshotService 严格校验 currentTradeDate === requestDate（当日），
-// 所以 mock 数据的 trade_date 必须用 Asia/Shanghai 当日日期，不能用硬编码日期。
+// 关键：路由侧调用 getTodayCloseSnapshot() 不传 now 参数，内部使用 deps.now()。
+// MarketSnapshotService 已加 15:30 时钟门禁：Asia/Shanghai 时间 15:30 前一律拒绝。
+// 为让路由测试不依赖真实当前时刻（CI 在盘中运行也会通过），固定 deps.now 返回
+// 2026-07-19 15:30 +08:00，TODAY_YYYYMMDD 也基于该固定时刻计算。
+
+/** 固定时刻：2026-07-19 15:30 +08:00（收盘时刻，过 15:30 时钟门禁）。 */
+const FIXED_NOW = new Date('2026-07-19T15:30:00+08:00')
 
 /** 计算 Asia/Shanghai 时区的 YYYYMMDD（与 MarketSnapshotService.toShanghaiDateYyyymmdd 同逻辑）。 */
 function toShanghaiYyyymmdd(now: Date): string {
@@ -205,9 +209,9 @@ function toShanghaiYyyymmdd(now: Date): string {
     return `${y}${m}${d}`
 }
 
-const TODAY_YYYYMMDD = toShanghaiYyyymmdd(new Date())
+const TODAY_YYYYMMDD = toShanghaiYyyymmdd(FIXED_NOW)
 // 前一日（自然日减 1；测试不关心是否为真实交易日，只要求与当日不同）
-const PREV_YYYYMMDD = toShanghaiYyyymmdd(new Date(Date.now() - 24 * 60 * 60 * 1000))
+const PREV_YYYYMMDD = toShanghaiYyyymmdd(new Date(FIXED_NOW.getTime() - 24 * 60 * 60 * 1000))
 
 /** 6 个指数的 index_daily 序列；000001.SH 含 current + previous 两个交易日。 */
 const SNAPSHOT_INDEX_ROWS: Record<string, IndexDailyRow[]> = {
@@ -243,6 +247,9 @@ const SNAPSHOT_PREVIOUS_DAILY: CompleteDailyResult = {
 /** 安装 MarketSnapshotService 依赖 mock：返回 trade_date=TODAY_YYYYMMDD 的完整快照。 */
 function setupMarketSnapshotMocks(): void {
     const deps = __marketSnapshotDependencies
+    // 注入固定时刻，让路由侧 getTodayCloseSnapshot() 不传 nowOverride 时使用 FIXED_NOW，
+    // 既保证过 15:30 时钟门禁，又保证 TODAY_YYYYMMDD 与 mock 数据一致。
+    deps.now = () => FIXED_NOW
     deps.getIndexDaily = (async (code: string) =>
         SNAPSHOT_INDEX_ROWS[code] ?? []) as typeof deps.getIndexDaily
     deps.getCompleteDailyByDate = (async (date: string) =>

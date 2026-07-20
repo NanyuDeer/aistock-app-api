@@ -152,6 +152,11 @@ export interface MarketSnapshotDeps {
     getLimitStep: typeof getLimitStep;
     getMoneyflowCntThs: typeof getMoneyflowCntThs;
     getMoneyflowThsByDate: typeof getMoneyflowThsByDate;
+    /**
+     * 当前时刻工厂。生产环境默认返回 new Date()；测试可注入固定时间，
+     * 让内部路由测试不依赖真实当前时刻。
+     */
+    now: () => Date;
 }
 
 export const __marketSnapshotDependencies: MarketSnapshotDeps = {
@@ -161,6 +166,7 @@ export const __marketSnapshotDependencies: MarketSnapshotDeps = {
     getLimitStep,
     getMoneyflowCntThs,
     getMoneyflowThsByDate,
+    now: () => new Date(),
 };
 
 // ============================================================================
@@ -213,6 +219,39 @@ function toShanghaiDateYyyymmdd(now: Date): string {
     const m = parts.find(p => p.type === 'month')?.value ?? '';
     const d = parts.find(p => p.type === 'day')?.value ?? '';
     return `${y}${m}${d}`;
+}
+
+/**
+ * 取 Asia/Shanghai 时区的 { hour, minute }（用于 15:30 收盘时钟门禁）。
+ * 使用 Intl.DateTimeFormat 取 hour/minute，避免服务器本地时区漂移。
+ */
+function toShanghaiHourMinute(now: Date): { hour: number; minute: number } {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+    });
+    const parts = fmt.formatToParts(now);
+    const hour = Number(parts.find(p => p.type === 'hour')?.value ?? '0');
+    const minute = Number(parts.find(p => p.type === 'minute')?.value ?? '0');
+    return { hour, minute };
+}
+
+/**
+ * A 股收盘时刻：Asia/Shanghai 15:30。
+ * 15:30 前即使 6 指数和日线数据都已存在，也必须拒绝（盘中数据未稳定）。
+ */
+const MARKET_CLOSE_HOUR = 15;
+const MARKET_CLOSE_MINUTE = 30;
+
+/**
+ * 判断给定时刻是否已过 A 股收盘时刻（Asia/Shanghai 15:30）。
+ * 严格语义：hour > 15 或 (hour == 15 且 minute >= 30) 才返回 true。
+ */
+function isAtOrAfterClose(now: Date): boolean {
+    const { hour, minute } = toShanghaiHourMinute(now);
+    return hour > MARKET_CLOSE_HOUR || (hour === MARKET_CLOSE_HOUR && minute >= MARKET_CLOSE_MINUTE);
 }
 
 /** 从 YYYYMMDD 计算向前 lookbackDays 天的 YYYYMMDD（用于 index_daily start_date）。 */
@@ -316,6 +355,8 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
  * 构建当日 A 股大盘收盘事实快照。
  *
  * 步骤：
+ * 0. Asia/Shanghai 时钟门禁：15:30 前一律抛 market_not_closed，即使 6 指数和日线
+ *    数据都已存在。盘中数据未稳定，禁止把盘中事实冒充"今日已收盘"。
  * 1. Asia/Shanghai 计算 requestDate；以 000001.SH 序列识别 current/previous trade_date。
  *    严格校验 currentTradeDate === requestDate：盘中 / 非交易日 / 数据延迟时一律抛
  *    market_not_closed，禁止把上一交易日伪装成"今日已收盘"。
@@ -327,12 +368,28 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
  * 7. 概念板块（涨跌与资金流各自独立排序）
  * 8. 主力资金净额（大单 + 特大单，万元 → 元）
  *
- * @param now 用于计算请求日的时刻；测试可注入固定时间。默认当前时刻。
+ * @param nowOverride 用于计算请求日的时刻；测试可注入固定时间。
+ *   不传时使用 `__marketSnapshotDependencies.now()`，让内部路由测试通过
+ *   替换 `deps.now` 注入固定时间，不依赖真实当前时刻。
  */
-export async function getTodayCloseSnapshot(now: Date = new Date()): Promise<CloseMarketSnapshot> {
+export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMarketSnapshot> {
+    const deps = __marketSnapshotDependencies;
+    const now = nowOverride ?? deps.now();
+
+    // ---- 0. Asia/Shanghai 收盘时钟门禁 ----
+    // 关键契约：currentTradeDate === requestDate 只能证明"当天数据存在"，
+    // 不能证明"已收盘"。盘中 Tushare 可能已经推送当日指数行，但数据尚未稳定。
+    // 必须在所有 Tushare 调用前先校验 Asia/Shanghai 时间 ≥ 15:30。
+    // 15:30 前一律抛 market_not_closed，让上层（Python 侧）按 not_ready 语义重试。
+    if (!isAtOrAfterClose(now)) {
+        throw new MarketSnapshotUnavailableError(
+            'market_not_closed',
+            `market has not closed yet (Asia/Shanghai time before 15:30)`,
+        );
+    }
+
     const requestDate = toShanghaiDateYyyymmdd(now);
     const lookbackStart = toLookbackStartYyyymmdd(requestDate, LOOKBACK_DAYS);
-    const deps = __marketSnapshotDependencies;
     const capturedAt = now.toISOString();
 
     // ---- 1. 以 000001.SH 序列识别当前/前日交易日期 ----
