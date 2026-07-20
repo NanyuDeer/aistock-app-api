@@ -472,7 +472,9 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  * 当日 A 股大盘收盘事实快照（供 Python Agent 拉取当日收盘事实）
  *
  * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
- * - 409：服务未就绪（未收盘 / 日线覆盖不完整），data 含 status='not_ready' 与 reason
+ * - 409：服务未就绪，data 含 status 与 reason：
+ *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / 指数数据延迟
+ *   - status='incomplete' + reason='incomplete_daily_coverage'：已收盘但 daily 覆盖残缺
  * - 502：其它意外异常（沿用既有 502 约定）
  */
 router.get('/market/close-snapshot', async (_req: Request, res: Response) => {

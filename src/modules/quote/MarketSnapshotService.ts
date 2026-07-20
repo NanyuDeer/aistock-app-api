@@ -109,18 +109,34 @@ export type MarketSnapshotUnavailableReason =
     | 'incomplete_daily_coverage';
 
 /**
+ * 409 响应体中 data.status 的取值：
+ * - not_ready：未收盘（盘中 / 非交易日 / 指数数据未到位），上层可定时重试
+ * - incomplete：已收盘但 daily 覆盖残缺（重复页 / 页数上限 / 空），需要数据修复
+ *
+ * 区分二者是为了让 Python 侧按需重试时知道"再等一会儿"还是"今天没救了"。
+ */
+export type MarketSnapshotUnavailableStatus = 'not_ready' | 'incomplete';
+
+/** reason -> status 的固定映射，避免不同抛出点写错语义。 */
+function statusFromReason(reason: MarketSnapshotUnavailableReason): MarketSnapshotUnavailableStatus {
+    return reason === 'incomplete_daily_coverage' ? 'incomplete' : 'not_ready';
+}
+
+/**
  * 当收盘事实不完整时抛出。
- * - market_not_closed：指数序列不足以识别当前/前日，或某指数缺当前 trade_date 行
+ * - market_not_closed：指数序列不足以识别 requestDate 当日行，或某指数缺当日行
+ *   （含盘中、非交易日、数据延迟三种场景，status='not_ready'）
  * - incomplete_daily_coverage：当日或前日全市场日线抓取不完整（重复页/页数上限/空）
+ *   （status='incomplete'）
  */
 export class MarketSnapshotUnavailableError extends Error {
-    readonly status: 'not_ready';
+    readonly status: MarketSnapshotUnavailableStatus;
     readonly reason: MarketSnapshotUnavailableReason;
 
     constructor(reason: MarketSnapshotUnavailableReason, message?: string) {
         super(message ?? reason);
         this.name = 'MarketSnapshotUnavailableError';
-        this.status = 'not_ready';
+        this.status = statusFromReason(reason);
         this.reason = reason;
     }
 }
@@ -300,7 +316,9 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
  * 构建当日 A 股大盘收盘事实快照。
  *
  * 步骤：
- * 1. Asia/Shanghai 计算 requestDate；以 000001.SH 序列识别 current/previous trade_date
+ * 1. Asia/Shanghai 计算 requestDate；以 000001.SH 序列识别 current/previous trade_date。
+ *    严格校验 currentTradeDate === requestDate：盘中 / 非交易日 / 数据延迟时一律抛
+ *    market_not_closed，禁止把上一交易日伪装成"今日已收盘"。
  * 2. 校验 6 个指数都存在 current trade_date 行，否则抛 market_not_closed
  * 3. 抓取当日 + 前日完整日线；任一不完整抛 incomplete_daily_coverage
  * 4. 计算市场宽度（涨/跌/平家数）
@@ -318,6 +336,11 @@ export async function getTodayCloseSnapshot(now: Date = new Date()): Promise<Clo
     const capturedAt = now.toISOString();
 
     // ---- 1. 以 000001.SH 序列识别当前/前日交易日期 ----
+    // 关键契约：只有当 SH 序列包含 requestDate 当日行时，才能识别为"今日已收盘"。
+    // 旧实现用 `<= requestDate` 取最新一行作为 currentTradeDate，会把周末/节假日/数据延迟
+    // 场景下的"上一交易日"伪装成"今日已收盘"。这里改为严格相等校验：
+    // 若序列最新一行 trade_date != requestDate，立即抛 market_not_closed，
+    // 让上层（Python 侧）按 not_ready 语义定时重试。
     const shRows = await deps.getIndexDaily(SH_INDEX_CODE, lookbackStart);
     const shSortedDesc = shRows
         .filter(r => r.trade_date <= requestDate)
@@ -329,6 +352,17 @@ export async function getTodayCloseSnapshot(now: Date = new Date()): Promise<Clo
         );
     }
     const currentTradeDate = shSortedDesc[0].trade_date;
+    if (currentTradeDate !== requestDate) {
+        // SH 序列最新一行不是 requestDate 当日：
+        // - 周末/节假日：requestDate 不是交易日，序列最新行是上一交易日
+        // - 盘中数据延迟：requestDate 是交易日，但 Tushare index_daily 尚未推送当日行
+        // - 节假日后首个交易日的早盘：同样可能延迟
+        // 任何一种都不能把上一交易日的事实冒充"今日已收盘"。
+        throw new MarketSnapshotUnavailableError(
+            'market_not_closed',
+            `000001.SH latest trade_date ${currentTradeDate} != requestDate ${requestDate} (non-trading day or data lag)`,
+        );
+    }
     const previousTradeDate = shSortedDesc[1].trade_date;
 
     // ---- 2. 校验全部 6 个指数都存在当前 trade_date 行 ----

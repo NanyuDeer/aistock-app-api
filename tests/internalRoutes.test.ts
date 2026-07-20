@@ -38,6 +38,13 @@ import type {
     MoneyflowThsRow,
 } from '../src/modules/quote/TushareService'
 
+// 资源清理：internalRouter 传递依赖了 PG pool / Redis / keepAlive HTTP agents。
+// 这些长连接会阻止 Node 进程自然退出，旧实现用 process.exit(1) 强杀绕过，
+// 这里改为在测试结束后显式关闭，让进程自然退出（符合 Node 官方推荐做法）。
+import pool from '../src/core/db'
+import redis from '../src/core/redis'
+import { closeAllAgents } from '../src/shared/utils/httpAgent'
+
 // 与 internal.ts 中 verifyInternalToken 使用相同的 token 读取逻辑
 const INTERNAL_TOKEN =
     process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production'
@@ -178,24 +185,46 @@ function withThrowingMock(
 // 因此替换 deps 字段即可让路由侧的 MarketSnapshotService.getTodayCloseSnapshot()
 // 返回完整快照或抛出 MarketSnapshotUnavailableError，无需 require.cache hack，
 // 也无需在 internal.ts 中新增 __marketSnapshotHandlers 之类的 DI 出口。
+//
+// 关键：路由侧调用 getTodayCloseSnapshot() 不传 now 参数，内部使用 new Date()。
+// MarketSnapshotService 严格校验 currentTradeDate === requestDate（当日），
+// 所以 mock 数据的 trade_date 必须用 Asia/Shanghai 当日日期，不能用硬编码日期。
+
+/** 计算 Asia/Shanghai 时区的 YYYYMMDD（与 MarketSnapshotService.toShanghaiDateYyyymmdd 同逻辑）。 */
+function toShanghaiYyyymmdd(now: Date): string {
+    const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    })
+    const parts = fmt.formatToParts(now)
+    const y = parts.find(p => p.type === 'year')?.value ?? ''
+    const m = parts.find(p => p.type === 'month')?.value ?? ''
+    const d = parts.find(p => p.type === 'day')?.value ?? ''
+    return `${y}${m}${d}`
+}
+
+const TODAY_YYYYMMDD = toShanghaiYyyymmdd(new Date())
+// 前一日（自然日减 1；测试不关心是否为真实交易日，只要求与当日不同）
+const PREV_YYYYMMDD = toShanghaiYyyymmdd(new Date(Date.now() - 24 * 60 * 60 * 1000))
 
 /** 6 个指数的 index_daily 序列；000001.SH 含 current + previous 两个交易日。 */
 const SNAPSHOT_INDEX_ROWS: Record<string, IndexDailyRow[]> = {
     '000001.SH': [
-        { ts_code: '000001.SH', trade_date: '20260719', open: 3190, high: 3210, low: 3185, close: 3200, pre_close: 3180, change: 20, pct_chg: 0.6, vol: 1, amount: 1 },
-        { ts_code: '000001.SH', trade_date: '20260718', open: 3175, high: 3190, low: 3170, close: 3180, pre_close: 3170, change: 10, pct_chg: 0.3, vol: 1, amount: 1 },
-        { ts_code: '000001.SH', trade_date: '20260717', open: 3165, high: 3175, low: 3160, close: 3170, pre_close: 3160, change: 10, pct_chg: 0.3, vol: 1, amount: 1 },
+        { ts_code: '000001.SH', trade_date: TODAY_YYYYMMDD, open: 3190, high: 3210, low: 3185, close: 3200, pre_close: 3180, change: 20, pct_chg: 0.6, vol: 1, amount: 1 },
+        { ts_code: '000001.SH', trade_date: PREV_YYYYMMDD, open: 3175, high: 3190, low: 3170, close: 3180, pre_close: 3170, change: 10, pct_chg: 0.3, vol: 1, amount: 1 },
     ],
-    '399001.SZ': [{ ts_code: '399001.SZ', trade_date: '20260719', open: 10450, high: 10600, low: 10400, close: 10500, pre_close: 10400, change: 100, pct_chg: 0.9, vol: 1, amount: 1 }],
-    '399006.SZ': [{ ts_code: '399006.SZ', trade_date: '20260719', open: 2090, high: 2110, low: 2080, close: 2100, pre_close: 2080, change: 20, pct_chg: 0.9, vol: 1, amount: 1 }],
-    '000300.SH': [{ ts_code: '000300.SH', trade_date: '20260719', open: 4190, high: 4210, low: 4180, close: 4200, pre_close: 4180, change: 20, pct_chg: 0.5, vol: 1, amount: 1 }],
-    '000905.SH': [{ ts_code: '000905.SH', trade_date: '20260719', open: 5480, high: 5520, low: 5470, close: 5500, pre_close: 5470, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
-    '000852.SH': [{ ts_code: '000852.SH', trade_date: '20260719', open: 6180, high: 6220, low: 6170, close: 6200, pre_close: 6170, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
+    '399001.SZ': [{ ts_code: '399001.SZ', trade_date: TODAY_YYYYMMDD, open: 10450, high: 10600, low: 10400, close: 10500, pre_close: 10400, change: 100, pct_chg: 0.9, vol: 1, amount: 1 }],
+    '399006.SZ': [{ ts_code: '399006.SZ', trade_date: TODAY_YYYYMMDD, open: 2090, high: 2110, low: 2080, close: 2100, pre_close: 2080, change: 20, pct_chg: 0.9, vol: 1, amount: 1 }],
+    '000300.SH': [{ ts_code: '000300.SH', trade_date: TODAY_YYYYMMDD, open: 4190, high: 4210, low: 4180, close: 4200, pre_close: 4180, change: 20, pct_chg: 0.5, vol: 1, amount: 1 }],
+    '000905.SH': [{ ts_code: '000905.SH', trade_date: TODAY_YYYYMMDD, open: 5480, high: 5520, low: 5470, close: 5500, pre_close: 5470, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
+    '000852.SH': [{ ts_code: '000852.SH', trade_date: TODAY_YYYYMMDD, open: 6180, high: 6220, low: 6170, close: 6200, pre_close: 6170, change: 30, pct_chg: 0.5, vol: 1, amount: 1 }],
 }
 
 const SNAPSHOT_CURRENT_DAILY: CompleteDailyResult = {
     rows: [
-        { ts_code: '000001.SZ', trade_date: '20260719', open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 1.5, vol: 100, amount: 2000 },
+        { ts_code: '000001.SZ', trade_date: TODAY_YYYYMMDD, open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 1.5, vol: 100, amount: 2000 },
     ],
     complete: true,
     reason: 'complete',
@@ -204,20 +233,20 @@ const SNAPSHOT_CURRENT_DAILY: CompleteDailyResult = {
 
 const SNAPSHOT_PREVIOUS_DAILY: CompleteDailyResult = {
     rows: [
-        { ts_code: '000001.SZ', trade_date: '20260718', open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 0.5, vol: 100, amount: 1000 },
+        { ts_code: '000001.SZ', trade_date: PREV_YYYYMMDD, open: 10, high: 11, low: 9, close: 10, pre_close: 10, change: 0, pct_chg: 0.5, vol: 100, amount: 1000 },
     ],
     complete: true,
     reason: 'complete',
     page_count: 1,
 }
 
-/** 安装 MarketSnapshotService 依赖 mock：返回 trade_date=20260719 的完整快照。 */
+/** 安装 MarketSnapshotService 依赖 mock：返回 trade_date=TODAY_YYYYMMDD 的完整快照。 */
 function setupMarketSnapshotMocks(): void {
     const deps = __marketSnapshotDependencies
     deps.getIndexDaily = (async (code: string) =>
         SNAPSHOT_INDEX_ROWS[code] ?? []) as typeof deps.getIndexDaily
     deps.getCompleteDailyByDate = (async (date: string) =>
-        date === '20260719' ? SNAPSHOT_CURRENT_DAILY : SNAPSHOT_PREVIOUS_DAILY) as typeof deps.getCompleteDailyByDate
+        date === TODAY_YYYYMMDD ? SNAPSHOT_CURRENT_DAILY : SNAPSHOT_PREVIOUS_DAILY) as typeof deps.getCompleteDailyByDate
     deps.getLimitListThs = (async () => [] as LimitListThsRow[]) as typeof deps.getLimitListThs
     deps.getLimitStep = (async () => [] as LimitStepRow[]) as typeof deps.getLimitStep
     deps.getMoneyflowCntThs = (async () => [] as MoneyflowCntThsRow[]) as typeof deps.getMoneyflowCntThs
@@ -279,13 +308,15 @@ async function main(): Promise<void> {
     setupMarketSnapshotMocks()
 
     // 4. 运行测试
-
-    // --- /internal/health（无需 token，Task 3 已有）---
-    await runAsyncTest('GET /internal/health returns 200 without token', async () => {
-        const res = await makeGetRequest(port, '/health')
-        assert.equal(res.status, 200)
-        assert.deepEqual(res.body, { status: 'ok' })
-    })
+    // 用 try/finally 包裹全部测试：任何用例失败时，finally 块也会关闭 server / pool / redis / agents，
+    // 让进程能自然退出（配合 process.exitCode 而非 process.exit）。
+    try {
+        // --- /internal/health（无需 token，Task 3 已有）---
+        await runAsyncTest('GET /internal/health returns 200 without token', async () => {
+            const res = await makeGetRequest(port, '/health')
+            assert.equal(res.status, 200)
+            assert.deepEqual(res.body, { status: 'ok' })
+        })
 
     // --- 鉴权失败测试：9 个新接口在无 token 时均返回 403 ---
     for (const ep of endpoints) {
@@ -503,7 +534,7 @@ async function main(): Promise<void> {
         const body = res.body as { code: number; data: { status: string; trade_date: string } }
         assert.equal(body.code, 200)
         assert.equal(body.data.status, 'complete')
-        assert.equal(body.data.trade_date, '20260719')
+        assert.equal(body.data.trade_date, TODAY_YYYYMMDD)
     })
 
     await runAsyncTest('GET /internal/market/close-snapshot returns 502 on service failure', async () => {
@@ -516,7 +547,7 @@ async function main(): Promise<void> {
         })
     })
 
-    await runAsyncTest('GET /internal/market/close-snapshot returns 409 before close', async () => {
+    await runAsyncTest('GET /internal/market/close-snapshot returns 409 before close (market_not_closed)', async () => {
         mockSnapshotUnavailable('market_not_closed')
         const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
         assert.equal(res.status, 409)
@@ -526,14 +557,43 @@ async function main(): Promise<void> {
         })
     })
 
-    // 5. 关闭服务器
-    await new Promise<void>((resolve) => server.close(() => resolve()))
-    console.log('[test] Server closed')
+    // 重置 deps：上一个 409 用例把 deps.getIndexDaily 改成抛错版本且不自动恢复，
+    // 这里重新安装正常 mock，让下一个 409 用例从干净状态开始。
+    setupMarketSnapshotMocks()
+
+    await runAsyncTest('GET /internal/market/close-snapshot returns 409 with incomplete status (incomplete_daily_coverage)', async () => {
+        mockSnapshotUnavailable('incomplete_daily_coverage')
+        const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
+        assert.equal(res.status, 409)
+        assert.deepEqual(res.body, {
+            code: 409,
+            data: { status: 'incomplete', reason: 'incomplete_daily_coverage' },
+        })
+    })
+
+    // 5. 关闭服务器 + 释放长连接资源，让进程自然退出
+    } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()))
+        console.log('[test] Server closed')
+
+        // 关闭 PG 连接池（internalRouter 传递依赖 src/core/db.ts 的 pool）
+        await pool.end()
+        // 关闭 Redis 连接（lazyConnect 未真正连上时 disconnect 也是 no-op，安全）
+        redis.disconnect()
+        // 关闭 keepAlive HTTP agents（sessionFetch 创建的连接池）
+        closeAllAgents()
+        console.log('[test] Resources released (pool / redis / http agents)')
+    }
 }
 
 // ==================== 入口 ====================
-
+//
+// 注意：禁止使用 process.exit() 强杀进程。
+// - process.exit() 会跳过未完成的 I/O 清理（如 server.close() 的优雅退出、
+//   pending Promise 的 finally 块、缓存写盘），导致测试进程在 CI 中留下僵尸句柄。
+// - 这里改用 process.exitCode = 1：设置退出码但让 Node 自然退出，让事件循环
+//   清空 pending 任务后再退出。这也是 Node 官方推荐的"非强制失败"做法。
 main().catch((err) => {
     console.error(err)
-    process.exit(1)
+    process.exitCode = 1
 })

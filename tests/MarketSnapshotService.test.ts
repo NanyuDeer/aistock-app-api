@@ -364,7 +364,9 @@ test('throws incomplete_daily_coverage when daily coverage incomplete', async ()
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'incomplete_daily_coverage')
-                assert.equal(err.status, 'not_ready')
+                // daily 覆盖不完整属于"已收盘但数据残缺"，与"未收盘"语义不同；
+                // 路由层据此区分 409 响应体 status 字段，便于上层（Python 侧）按需重试
+                assert.equal(err.status, 'incomplete')
                 return true
             },
         )
@@ -388,6 +390,114 @@ test('throws market_not_closed when an index lacks the current trade_date', asyn
     try {
         await assert.rejects(
             getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+// ============================================================================
+// stale-data 拒绝：盘中 / 非交易日 / 数据延迟场景
+//
+// 旧实现用 `r.trade_date <= requestDate` 取 SH 序列最新一行作为"当前交易日"，
+// 导致周末/节假日或盘中指数数据未到位时，会把上一交易日的事实冒充"今日已收盘"。
+// 以下三个测试锁定新契约：只有当 SH 序列包含 requestDate 当日行时，才能识别为已收盘。
+// ============================================================================
+
+test('throws market_not_closed on weekend (requestDate not a trade day)', async () => {
+    // requestDate=20260719（周六非交易日），SH 序列最新两行只到 20260717（周五）和 20260716（周四）。
+    // 旧实现的 `<= requestDate` 会把 20260717 当作 currentTradeDate 并返回快照，
+    // 新实现必须拒绝（market_not_closed），因为 20260717 != requestDate(20260719)。
+    // 关键：其他指数也提供 20260717 行，避免因"其他指数缺行"误触 market_not_closed，
+    // 让测试精准命中"SH trade_date 不等于 requestDate"这一 stale-data 校验。
+    applyCloseMocks({
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3170, pct_chg: 0.3, amount: 58000000 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260716', close: 3160, pct_chg: 0.2, amount: 55000000 }),
+        ],
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260717' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260717' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260717' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260717' })],
+        },
+    })
+    try {
+        await assert.rejects(
+            getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('throws market_not_closed on holiday (requestDate not in SH series)', async () => {
+    // 节假日场景：requestDate=20261001（国庆节），SH 序列最近两行是 20260930 和 20260929。
+    // 旧实现会把 20260930 当作 currentTradeDate 返回快照，新实现必须拒绝。
+    applyCloseMocks({
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260930', close: 3200, pct_chg: 0.5, amount: 60000000 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260929', close: 3180, pct_chg: 0.3, amount: 58000000 }),
+        ],
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260930' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260930' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260930' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260930' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260930' })],
+        },
+    })
+    try {
+        await assert.rejects(
+            getTodayCloseSnapshot(new Date('2026-10-01T15:31:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('throws market_not_closed when SH index data lags during market hours', async () => {
+    // 盘中数据延迟场景：requestDate=20260719（真实交易日），但 SH 序列只到 20260718，
+    // 说明 Tushare 当日 index_daily 尚未推送——绝不能把 20260718 当作"今日已收盘"。
+    applyCloseMocks({
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260718', close: 3180, pct_chg: 0.3, amount: 58000000 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3170, pct_chg: 0.2, amount: 55000000 }),
+        ],
+        // 其余指数同样缺 20260719 行（与 SH 一致）
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260718' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260718' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260718' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260718' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260718' })],
+        },
+    })
+    try {
+        await assert.rejects(
+            getTodayCloseSnapshot(new Date('2026-07-19T11:30:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')
