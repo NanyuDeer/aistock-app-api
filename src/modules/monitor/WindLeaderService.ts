@@ -10,6 +10,12 @@ import {
     normalizeDateOnly,
     normalizePushHistoryRecord,
 } from './pushHistoryDates';
+import {
+    canRunCloseSettlement,
+    getExpectedCloseTradeDate,
+    isPushHistoryRecordSettled,
+    needsCloseSettlement,
+} from './pushHistorySettlement';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DATA_FILE = path.join(PROJECT_ROOT, 'data', 'hot-sectors.json');
@@ -22,6 +28,9 @@ const HOME_SECTOR_LIMIT = 8;
 const HOME_MAX_STOCKS_PER_SECTOR = 2;
 
 let dbAvailable = false;
+let closeSettlementPromise: Promise<void> | null = null;
+let lastCloseSettlementAttempt = 0;
+const CLOSE_SETTLEMENT_RETRY_MS = 5 * 60 * 1000;
 
 async function checkDbAvailability(): Promise<boolean> {
     if (dbAvailable) return true;
@@ -531,6 +540,37 @@ export class WindLeaderService {
         });
     }
 
+    static async getPublishedPotentialPushHistory(): Promise<any[]> {
+        await this.ensurePushHistoryPricesCurrent();
+        const records = await this.getPotentialPushHistory();
+        return records.filter(isPushHistoryRecordSettled);
+    }
+
+    static async ensurePushHistoryPricesCurrent(): Promise<void> {
+        if (!canRunCloseSettlement()) return;
+        if (closeSettlementPromise) return closeSettlementPromise;
+        if (Date.now() - lastCloseSettlementAttempt < CLOSE_SETTLEMENT_RETRY_MS) return;
+        lastCloseSettlementAttempt = Date.now();
+
+        const settlement = (async () => {
+            const isDbAvailable = await checkDbAvailability();
+            const history = isDbAvailable
+                ? await readPushHistoryFromDb()
+                : readPushHistoryFile();
+            const expectedTradeDate = getExpectedCloseTradeDate();
+            if (!needsCloseSettlement(history, expectedTradeDate)) return;
+
+            console.log(`[PriceUpdate] missing close settlement for ${expectedTradeDate}, compensating...`);
+            await this.updatePushHistoryPrices();
+        })();
+        closeSettlementPromise = settlement;
+        try {
+            await settlement;
+        } finally {
+            if (closeSettlementPromise === settlement) closeSettlementPromise = null;
+        }
+    }
+
     static async appendPotentialPushHistory(data: any): Promise<void> {
         const nextRecords = await enrichPushPricesWithPreviousClose(collectPushRecordsFromData(data));
         if (!nextRecords.length) return;
@@ -576,6 +616,11 @@ export class WindLeaderService {
     static async updatePushHistoryPrices(): Promise<void> {
         console.log('[PriceUpdate] update push history prices...');
         try {
+            if (!canRunCloseSettlement()) {
+                console.log('[PriceUpdate] before 15:30 on a trading day, skip close settlement');
+                return;
+            }
+            const expectedTradeDate = getExpectedCloseTradeDate();
             const isDbAvailable = await checkDbAvailability();
             
             let history: any[];
@@ -618,11 +663,12 @@ export class WindLeaderService {
                 const quote = quoteMap.get(record.stock_code);
                 const latestPrice = quote ? toFiniteNumber(quote['\u6700\u65b0\u4ef7']) : null;
                 if (latestPrice !== null && latestPrice > 0) {
+                    const latestTradeDate = getQuoteTradeDate(quote);
+                    if (!latestTradeDate || latestTradeDate < expectedTradeDate) {
+                        return normalizePushHistoryRecord(record);
+                    }
                     const pushPrice = Number(record.push_price) || 0;
                     const returnPct = pushPrice > 0 ? ((latestPrice - pushPrice) / pushPrice * 100) : 0;
-                    const latestTradeDate = getQuoteTradeDate(quote)
-                        || normalizeDateOnly(record.latest_trade_date)
-                        || normalizePushHistoryRecord(record).push_date;
 
                     updatedCount++;
                     return normalizePushHistoryRecord({
