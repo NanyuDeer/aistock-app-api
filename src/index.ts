@@ -301,6 +301,10 @@ app.get('/api/config/public', (req, res, next) => ConfigController.getPublicConf
 import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler.js';
 app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler());
 
+// 手动触发 review agent 复盘溯源（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
+import { createReviewTriggerHandler } from './core/routes/review_trigger_handler.js';
+app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
+
 // 手动触发爬虫抓取（只抓取+研判+入库，不推送）
 app.post('/api/internal/crawl/run', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
