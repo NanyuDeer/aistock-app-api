@@ -10,6 +10,7 @@ import {
     vetoCheck, VetoError, getAiIndicatorScores, clearAiIndicatorScores,
 } from './TenxScoreService';
 import { ClsStockNewsService } from './ClsStockNewsService';
+import { calcMa60Excluded } from './ma60Excluded';
 
 // ==================== 类型定义 ====================
 
@@ -22,6 +23,7 @@ export interface TrendScoreResult {
     dimScores: number[];
     dimensions: TrendDimension[];
     rawData: PrefetchedData;
+    ma60Excluded: boolean;
     updatedAt: string;
 }
 
@@ -43,6 +45,7 @@ export interface TechnicalDetail {
         isNewHigh250: boolean;
         isNewHigh120: boolean;
         maxDrawdown: number;
+        ma60Excluded: boolean;
     };
     isLeader?: boolean;          // 是否为其最佳板块的龙头股
     leaderBoardName?: string;    // 最佳板块名称（龙头股加成时展示）
@@ -151,6 +154,9 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string
     const ma60Slope = ma60Prev > 0 ? (ma60 - ma60Prev) / ma60Prev : 0;
     const ma60Trend: 'up' | 'flat' | 'down' = ma60Slope > 0.001 ? 'up' : ma60Slope < -0.001 ? 'down' : 'flat';
 
+    // 60日均线剔除判定：连续两日收盘价在60日均线下方 → 剔除
+    const ma60Excluded = calcMa60Excluded(closes);
+
     let maScore: number;
     if (ma60Position === 'above' && ma60Trend === 'up') {
         maScore = Math.min(100, 80 + Math.round(ma60Slope * 2000));
@@ -214,7 +220,7 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string
         score,
         indicators,
         kline,
-        indicatorsRaw: { lowPointGain, ma60Position, ma60Trend, isNewHigh250, isNewHigh120, maxDrawdown },
+        indicatorsRaw: { lowPointGain, ma60Position, ma60Trend, isNewHigh250, isNewHigh120, maxDrawdown, ma60Excluded },
         isLeader,
         leaderBoardName,
     };
@@ -827,6 +833,7 @@ export class TrendScoreService {
             dimScores,
             dimensions,
             rawData: data,
+            ma60Excluded: techResult.indicatorsRaw.ma60Excluded,
             updatedAt: new Date().toISOString(),
         };
     }

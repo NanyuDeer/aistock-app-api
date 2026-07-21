@@ -30,7 +30,7 @@
 ## 跨模块依赖
 - `modules/monitor/ThsService` — 同花顺数据（分析用）
 - `modules/monitor/ClsStockNewsService` — 财联社新闻
-- `modules/monitor/TenxScoreService` — 十字评分
+- `modules/monitor/TenxScoreService` — 评分基础设施（setAiIndicatorScores 注入 AI 资讯打分；十倍股独立模块已下线，共享计算函数保留）
 
 ## 内部子模块
 - `analysis-agent/` — 个股分析 Agent 工具（tools/prompts/types）

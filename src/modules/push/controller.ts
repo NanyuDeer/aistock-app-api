@@ -15,15 +15,23 @@ type PotentialPushRecord = {
     push_price?: number | null;
     latest_price?: number | null;
     latest_trade_date?: string;
+    latest_change_pct?: number | null;
+    realtime_return_pct?: number | null;
     return_pct?: number | null;
 };
 
-function toFiniteNumber(value: unknown): number | null {
+export function toFiniteNumber(value: unknown): number | null {
+    // 与前端 toFiniteNumber 行为保持一致：null/undefined/空串视为无值，返回 null。
+    // 注意 Number(null) === 0，若不显式拦截会把 DB NULL 误转成 0。
+    if (value === null || value === undefined || value === '') return null;
     const num = Number(value);
     return Number.isFinite(num) ? num : null;
 }
 
-function withReturn(record: PotentialPushRecord): PotentialPushRecord {
+// 修复要点：PostgreSQL NUMERIC 列经 pg 驱动默认返回字符串。
+// withReturn 必须把所有数值字段转换为 number，否则前端 .toFixed() 会抛 TypeError，
+// 导致 App 端 webview 渲染崩溃（历史推送页“一闪而过空白”根因）。
+export function withReturn(record: PotentialPushRecord): PotentialPushRecord {
     const pushPrice = toFiniteNumber(record.push_price);
     const latestPrice = toFiniteNumber(record.latest_price);
     const returnPct = pushPrice && pushPrice > 0 && latestPrice !== null
@@ -32,6 +40,11 @@ function withReturn(record: PotentialPushRecord): PotentialPushRecord {
 
     return {
         ...record,
+        push_price: pushPrice,
+        latest_price: latestPrice,
+        latest_change_pct: toFiniteNumber(record.latest_change_pct),
+        realtime_return_pct: toFiniteNumber(record.realtime_return_pct),
+        score: toFiniteNumber(record.score),
         return_pct: returnPct,
     };
 }
@@ -56,7 +69,7 @@ function buildSummary(records: PotentialPushRecord[]) {
 }
 
 async function getHistoryRecords(): Promise<PotentialPushRecord[]> {
-    const records = await WindLeaderService.getPotentialPushHistory();
+    const records = await WindLeaderService.getPublishedPotentialPushHistory();
     return records.map(withReturn);
 }
 

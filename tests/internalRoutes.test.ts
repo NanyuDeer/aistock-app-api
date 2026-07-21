@@ -17,7 +17,6 @@ import internalRouter from '../src/core/routes/internal'
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
-import { TenxScoreService } from '../src/modules/monitor/TenxScoreService'
 import { IndustryKGService } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 
@@ -108,11 +107,6 @@ const mockData = {
     },
     monitorData: [{ event_id: 'test:1', symbol: '300059', stock_name: '东方财富' }],
     alertHistory: { total: 1, events: [{ event_id: 'test:1', symbol: '300059' }] },
-    tenxScore: { score: 85.2, label: 'S', description: 'test score', dimensions: [] },
-    tenxTop: {
-        stocks: [{ symbol: '300059', name: '东方财富', score: 85.2, label: 'S' }],
-        note: 'stub: batch tenx score not yet implemented',
-    },
     concepts: [{ id: '885641.TI', name: '人工智能', industryCount: 3 }],
     graph: {
         centerIndustries: [],
@@ -143,11 +137,6 @@ function setupMocks(): void {
     const S = StockMonitorService as any
     S.getMonitorData = async () => mockData.monitorData
     S.getAlertHistory = async () => mockData.alertHistory
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const T = TenxScoreService as any
-    T.getScore = async () => mockData.tenxScore
-    T.getTopStocks = async () => mockData.tenxTop
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const I = IndustryKGService as any
@@ -263,8 +252,6 @@ const endpoints: EndpointCase[] = [
     { name: 'wind-leaders', path: '/wind-leaders' },
     { name: 'monitor/alerts', path: '/monitor/alerts' },
     { name: 'monitor/:symbol', path: '/monitor/300059' },
-    { name: 'tenx/score/:symbol', path: '/tenx/score/300059' },
-    { name: 'tenx/top', path: '/tenx/top' },
     { name: 'graph/concepts', path: '/graph/concepts' },
     { name: 'graph/:concept', path: '/graph/885641.TI' },
     { name: 'institution-research', path: '/institution-research' },
@@ -351,24 +338,6 @@ async function main(): Promise<void> {
         assert.equal(res.status, 400)
     })
 
-    await runAsyncTest('GET /internal/tenx/score/:symbol returns 200 + score', async () => {
-        const res = await makeGetRequest(port, '/tenx/score/300059', INTERNAL_TOKEN)
-        assert.equal(res.status, 200)
-        const body = res.body as { code: number; data: typeof mockData.tenxScore }
-        assert.equal(body.code, 200)
-        assert.equal(body.data.score, 85.2)
-        assert.equal(body.data.label, 'S')
-    })
-
-    await runAsyncTest('GET /internal/tenx/top returns 200 + top stocks', async () => {
-        const res = await makeGetRequest(port, '/tenx/top', INTERNAL_TOKEN)
-        assert.equal(res.status, 200)
-        const body = res.body as { code: number; data: typeof mockData.tenxTop }
-        assert.equal(body.code, 200)
-        assert.ok(Array.isArray(body.data.stocks))
-        assert.equal(body.data.note, 'stub: batch tenx score not yet implemented')
-    })
-
     await runAsyncTest('GET /internal/graph/concepts returns 200 + concept list', async () => {
         const res = await makeGetRequest(port, '/graph/concepts', INTERNAL_TOKEN)
         assert.equal(res.status, 200)
@@ -443,13 +412,6 @@ async function main(): Promise<void> {
         })
     })
 
-    await runAsyncTest('GET /internal/tenx/score/:symbol returns 502 on service failure', async () => {
-        await withThrowingMock(TenxScoreService, 'getScore', async () => {
-            const res = await makeGetRequest(port, '/tenx/score/300059', INTERNAL_TOKEN)
-            assert.equal(res.status, 502)
-        })
-    })
-
     await runAsyncTest('GET /internal/graph/:concept returns 502 on service failure', async () => {
         await withThrowingMock(IndustryKGService, 'getGraphByConcept', async () => {
             const res = await makeGetRequest(port, '/graph/885641.TI', INTERNAL_TOKEN)
@@ -481,16 +443,6 @@ async function main(): Promise<void> {
         })
     })
 
-    await runAsyncTest('GET /internal/tenx/top returns 502 on service failure', async () => {
-        await withThrowingMock(TenxScoreService, 'getTopStocks', async () => {
-            const res = await makeGetRequest(port, '/tenx/top', INTERNAL_TOKEN)
-            assert.equal(res.status, 502)
-            const body = res.body as { code: number; message: string }
-            assert.equal(body.code, 502)
-            assert.ok(body.message.includes('Service unavailable'))
-        })
-    })
-
     await runAsyncTest('GET /internal/graph/concepts returns 502 on service failure', async () => {
         await withThrowingMock(IndustryKGService, 'getConcepts', async () => {
             const res = await makeGetRequest(port, '/graph/concepts', INTERNAL_TOKEN)
@@ -499,14 +451,6 @@ async function main(): Promise<void> {
             assert.equal(body.code, 502)
             assert.ok(body.message.includes('Service unavailable'))
         })
-    })
-
-    // --- 查询参数测试 ---
-    await runAsyncTest('GET /internal/tenx/top respects limit param (mock returns fixed)', async () => {
-        const res = await makeGetRequest(port, '/tenx/top?limit=3', INTERNAL_TOKEN)
-        assert.equal(res.status, 200)
-        const body = res.body as { code: number; data: { stocks: unknown[]; note: string } }
-        assert.equal(body.code, 200)
     })
 
     // --- /internal/market/close-snapshot 测试（Task 2）---

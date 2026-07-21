@@ -30,5 +30,7 @@
 
 ## 开发注意事项
 - 推送调度器通过 `MessagePushService.startScheduler()` 启动
+- 潜力股 `push_price` 固定为推荐日前一交易日收盘价；收益率仅由后端按结算后的 `latest_price` 计算。
+- 推送历史接口只返回已完成收盘结算的记录，当日推荐在 15:30 后结算成功前不展示。
 - 微信推送需要有效 access_token
 - **微信 API 调用必须使用原生 `fetch`**，禁止用 `sessionFetch`（自定义 https.Agent keepAlive 会导致 HTTP 412）

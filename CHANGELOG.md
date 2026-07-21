@@ -22,6 +22,40 @@
 
 ---
 
+## [master] 2026-07-20 — 后端线：全行业覆盖 + 60日均线剔除 + 合并十倍股 + push历史修复
+**开发者**: Aria
+
+### 新增
+- `src/modules/monitor/ma60Excluded.ts`：纯函数 `calcMa60Excluded(closes)` — 连续两日收盘价在60日均线下方→剔除
+- `tests/TrendScoreMa60Excluded.test.ts`：7 项单元测试（TDD，全通过）
+- `src/modules/push/__tests__/controller.spec.ts`：push 历史回归测试覆盖字符串→number、return_pct 计算、null 容错
+- `sql/trend_scores_ma60.sql`：ALTER TABLE 加 ma60_excluded 列迁移
+- `docs/sql/drop_tenx_scores.sql`：DROP tenx_scores 表运维 SQL
+- `tenx-cleanup-roadmap.md`：十倍股清理后续修改建议文档
+
+### 修复
+- `src/modules/push/controller.ts`：PostgreSQL NUMERIC 列返回字符串导致前端 `.toFixed()` 崩溃；导出 `toFiniteNumber`，`withReturn` 增加 number 归一化
+
+### 改进
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：`identifyHotConcepts` 不再筛选 AI 相关板块，直接使用全部板块；删除 AI_RELATED_KEYWORDS 等死代码（150行）
+- `src/modules/monitor/TrendScoreService.ts`：`calcTechnicalDim` 计算并返回 `ma60Excluded`，`TrendScoreResult` 接口新增字段
+- `src/modules/monitor/trendScoreController.ts` + `TrendBatchService.ts`：saveToDB 持久化 `ma60_excluded` 列；getTopStocks 过滤 `ma60_excluded = false`
+- `src/core/routes/internal.ts`：移除 tenx 路由 + TenxScoreService import；`/internal/trend/top` 过滤 ma60_excluded
+- `sql/trend_scores.sql`：基础建表 SQL 包含 `ma60_excluded` 列
+- `tests/internalRoutes.test.ts`：移除所有 tenx 测试用例
+- `AGENTS.md`、`src/modules/monitor/AGENTS.md`、`src/modules/quote/AGENTS.md`：tenx→趋势股评分，新增60日均线剔除说明
+
+### 重构
+- 删除 `src/modules/monitor/tenxScoreController.ts`、`src/modules/monitor/TenxBatchService.ts`：tenx-score 独立模块下线
+- `src/index.ts`：移除 tenx 公开路由（batch/rebuild/per-symbol 6条/top）+ import + 注释 cron
+- **保留 `TenxScoreService.ts`**：含 11 个共享计算函数被 TrendScoreService 依赖
+
+### 合并
+- `agent/fix-push-history-date-sources`：推送历史日期源规范化（新增 pushHistoryDates.ts）
+- `tieny`：fix(hot-burst) 历史兜底查询同步适配时间窗口
+
+---
+
 ## [changer] 2026-07-18 — Morning trigger 鉴权统一 + agent.proxy 阻断 trigger 路径
 **开发者**: 37588
 

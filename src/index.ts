@@ -47,13 +47,11 @@ import { StockMonitorController } from './modules/monitor/controller';
 import { WindLeaderController } from './modules/monitor/windLeaderController';
 import { NewsController } from './modules/monitor/newsController';
 import { ProfitForecastController } from './modules/monitor/profitForecastController';
-import { TenxScoreController } from './modules/monitor/tenxScoreController';
 import { TrendScoreController } from './modules/monitor/trendScoreController';
 import { AiGraphController } from './modules/monitor/aiGraphController';
 import { AiGraphService } from './modules/monitor/AiGraphService';
 import { IndustryKGController } from './modules/monitor/industryKGController';
 import { IndustryKGService } from './modules/monitor/IndustryKGService';
-import { TenxBatchService } from './modules/monitor/TenxBatchService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
@@ -182,10 +180,10 @@ app.post('/api/internal/stock-info/existing', (req, res, next) => StockInfoJudge
 app.post('/api/internal/stock-info/judgements', (req, res, next) => StockInfoJudgementController.saveJudgements(req, res, next));
 app.post('/api/internal/stock-info/push', (req, res, next) => StockInfoJudgementController.push(req, res, next));
 
-// 趋势风口 - 前端查询接口，数据来自外部爬虫提交的公告/新闻研判。
-app.get('/api/cn/trend-hotspots/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
-app.get('/api/cn/trend-hotspots/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
-app.get('/api/cn/trend-hotspots/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
+// 个股异动监控 - 前端查询接口，数据来自外部爬虫提交的公告/新闻研判。
+app.get('/api/cn/stock-monitors/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
+app.get('/api/cn/stock-monitors/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
+app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
 
@@ -356,9 +354,6 @@ app.get('/api/cn/stock/fundamentals', (req, res, next) => StockQuoteController.g
 app.get('/api/cn/index/quotes', (req, res, next) => IndexQuoteController.getIndexQuotes(req, res, next));
 app.get('/api/gb/index/quotes', (req, res, next) => IndexQuoteController.getGlobalIndexQuotes(req, res, next));
 
-app.get('/api/cn/stocks/tenx-score/batch', (req, res, next) => TenxScoreController.batchRefresh(req, res, next));
-app.post('/api/cn/stocks/tenx-score/batch', (req, res, next) => TenxScoreController.batchRefresh(req, res, next));
-app.get('/api/cn/stocks/tenx-score/rebuild', (req, res, next) => TenxScoreController.rebuildAll(req, res, next));
 app.get('/api/cn/stocks/profit-forecast', (req, res, next) => ProfitForecastController.getForecastList(req, res, next));
 app.get('/api/cn/stocks/profit-forecast/search', (req, res, next) => ProfitForecastController.searchForecastList(req, res, next));
 app.post('/api/cn/stocks/profit-forecast/batch', (req, res, next) => ProfitForecastController.batchRefresh(req, res, next));
@@ -440,49 +435,6 @@ app.post('/api/cn/stock/:symbol/profit-forecast', (req, res, next) => {
     ProfitForecastController.getThsForecast(req, res, next);
 });
 
-app.get('/api/cn/stocks/:symbol/tenx-score', (req, res, next) => {
-    if (!isValidAShareSymbol(req.params.symbol)) {
-        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
-        return;
-    }
-    TenxScoreController.getScore(req, res, next);
-});
-
-app.get('/api/cn/stocks/:symbol/tenx-score/history', (req, res, next) => {
-    if (!isValidAShareSymbol(req.params.symbol)) {
-        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
-        return;
-    }
-    TenxScoreController.getScoreHistory(req, res, next);
-});
-
-app.get('/api/cn/stocks/:symbol/tenx-score/refresh', (req, res, next) => {
-    if (!isValidAShareSymbol(req.params.symbol)) {
-        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
-        return;
-    }
-    TenxScoreController.refreshScore(req, res, next);
-});
-app.post('/api/cn/stocks/:symbol/tenx-score/refresh', (req, res, next) => {
-    if (!isValidAShareSymbol(req.params.symbol)) {
-        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
-        return;
-    }
-    TenxScoreController.refreshScore(req, res, next);
-});
-
-app.get('/api/cn/stocks/:symbol/tenx-score/veto-check', (req, res, next) => {
-    if (!isValidAShareSymbol(req.params.symbol)) {
-        res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
-        return;
-    }
-    TenxScoreController.checkVeto(req, res, next);
-});
-
-app.get('/api/cn/stocks/tenx-score/top', (req, res, next) => {
-    TenxScoreController.getTopStocks(req, res, next);
-});
-
 // ==================== 趋势股评分路由 ====================
 app.get('/api/cn/stocks/trend-score/top', (req, res, next) => TrendScoreController.getTopStocks(req, res, next));
 app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreController.getScore(req, res, next));
@@ -532,7 +484,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
     res.status(500).json({ code: 500, message: err.message || 'Internal Server Error' });
 });
 
-// 趋势股批量评分 — 每天凌晨2点（在十倍股4点评分之前，共享板块轮动缓存）
+// 趋势股批量评分 — 每天凌晨2点（刷新板块轮动缓存后执行）
 cron.schedule('0 2 * * *', async () => {
     console.log('[TrendCron] 开始批量趋势股评分');
     try {
@@ -542,17 +494,6 @@ cron.schedule('0 2 * * *', async () => {
         console.error('[TrendCron] 批量趋势股评分失败:', err?.message || err);
     }
 }, { timezone: 'Asia/Shanghai' });
-
-// 十倍股批量评分 — 已停用（后续可能用趋势股评分替代）
-// cron.schedule('0 4 * * *', async () => {
-//     console.log('[TenxCron] 开始批量评分');
-//     try {
-//         await TenxBatchService.run();
-//         console.log('[TenxCron] 批量评分完成');
-//     } catch (err: any) {
-//         console.error('[TenxCron] 批量评分失败:', err?.message || err);
-//     }
-// }, { timezone: 'Asia/Shanghai' });
 
 cron.schedule('5 19 * * 1-5', async () => {
     console.log('[CapitalFlowCron] 收盘后批量预取资金流向');
@@ -626,7 +567,7 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
-// 每日 04:30 刷新个股-板块映射表（在 04:00 TenxCron 之后）
+// 每日 04:30 刷新个股-板块映射表
 cron.schedule('30 4 * * *', async () => {
     console.log('[StockConceptMappingCron] 开始刷新个股-板块映射');
     try {
@@ -662,7 +603,7 @@ cron.schedule('0 15 * * *', async () => {
 cron.schedule('30 15 * * *', async () => {
     console.log('[PushHistoryPriceUpdateCron] update push history prices');
     try {
-        await WindLeaderService.updatePushHistoryPrices();
+        await WindLeaderService.ensurePushHistoryPricesCurrent();
     } catch (err: any) {
         console.error('[PushHistoryPriceUpdateCron] failed:', err?.message || err);
     }
@@ -918,6 +859,10 @@ async function start() {
             }
         }).catch(err => {
             console.warn('[Startup] 风口龙头数据检查失败:', err?.message || err);
+        });
+        // Compensate a missed post-close settlement after restarts or deployments.
+        WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
+            console.warn('[Startup] 推送历史收盘结算补偿失败:', err?.message || err);
         });
     });
 

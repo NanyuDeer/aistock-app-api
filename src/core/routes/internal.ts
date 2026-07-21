@@ -16,7 +16,6 @@ import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../../modules/monitor/service'
-import { TenxScoreService } from '../../modules/monitor/TenxScoreService'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
@@ -286,40 +285,6 @@ router.get('/monitor/:symbol', async (req: Request, res: Response) => {
 })
 
 /**
- * GET /internal/tenx/score/:symbol
- * 个股十倍股评分（6维度18指标百分制评分体系）
- */
-router.get('/tenx/score/:symbol', async (req: Request, res: Response) => {
-    const symbol = param(req, 'symbol')
-    if (!isValidAShareSymbol(symbol)) {
-        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
-    }
-    try {
-        const data = await TenxScoreService.getScore(symbol)
-        res.json({ code: 200, data })
-    } catch (err: unknown) {
-        console.error(`[Internal] tenx/score/${symbol} error:`, errMsg(err))
-        res.status(502).json({ code: 502, message: errMsg(err) })
-    }
-})
-
-/**
- * GET /internal/tenx/top
- * 十倍股评分 Top 列表（当前为 stub，返回固定占位数据）
- */
-router.get('/tenx/top', async (req: Request, res: Response) => {
-    try {
-        const data = await TenxScoreService.getTopStocks({
-            limit: queryInt(req, 'limit', 10),
-        })
-        res.json({ code: 200, data })
-    } catch (err: unknown) {
-        console.error('[Internal] tenx/top error:', errMsg(err))
-        res.status(502).json({ code: 502, message: errMsg(err) })
-    }
-})
-
-/**
  * GET /internal/trend/score/:symbol
  * 个股趋势股评分（4维度百分制评分体系：技术面35%+赛道25%+消息20%+基本面20%）
  */
@@ -371,6 +336,7 @@ router.get('/trend/top', async (req: Request, res: Response) => {
             LEFT JOIN stocks s ON t.symbol = s.symbol
             WHERE t.score_date = (SELECT MAX(t2.score_date) FROM trend_scores t2)
             AND t.label NOT IN ('D')
+            AND (t.ma60_excluded IS NULL OR t.ma60_excluded = false)
             ORDER BY t.score DESC
             LIMIT $1
         `, [Math.min(50, Math.max(1, limit))])

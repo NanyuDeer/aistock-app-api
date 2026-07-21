@@ -24,6 +24,7 @@ const FIELD_INDEX: Record<string, number> = {
     '最新价': 3,
     '昨收价': 4,
     '今开价': 5,
+    '行情时间': 30,
     '涨跌额': 31,
     '涨跌幅': 32,
     '最高价': 33,
@@ -38,7 +39,7 @@ const FIELD_INDEX: Record<string, number> = {
     '市净率': 46,
 };
 
-const CORE_FIELDS = new Set(['股票代码', '股票简称', '最新价', '涨跌幅']);
+const CORE_FIELDS = new Set(['股票代码', '股票简称', '最新价', '涨跌幅', '行情时间']);
 const ACTIVITY_FIELDS = new Set([
     '股票代码', '股票简称', '最新价', '涨跌额', '涨跌幅', '成交量', '成交额',
     '换手率', '今开价', '最高价', '最低价', '昨收价', '振幅', '市盈率', '市净率',

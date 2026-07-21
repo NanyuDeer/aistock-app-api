@@ -5,6 +5,17 @@ import { TencentKlineService } from '../quote/TencentKlineService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { tushareRequest } from '../quote/TushareService';
 import { getStockIdentity } from '../../shared/utils/stock';
+import {
+    getQuoteTradeDate,
+    normalizeDateOnly,
+    normalizePushHistoryRecord,
+} from './pushHistoryDates';
+import {
+    canRunCloseSettlement,
+    getExpectedCloseTradeDate,
+    isPushHistoryRecordSettled,
+    needsCloseSettlement,
+} from './pushHistorySettlement';
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DATA_FILE = path.join(PROJECT_ROOT, 'data', 'hot-sectors.json');
@@ -17,6 +28,9 @@ const HOME_SECTOR_LIMIT = 8;
 const HOME_MAX_STOCKS_PER_SECTOR = 2;
 
 let dbAvailable = false;
+let closeSettlementPromise: Promise<void> | null = null;
+let lastCloseSettlementAttempt = 0;
+const CLOSE_SETTLEMENT_RETRY_MS = 5 * 60 * 1000;
 
 async function checkDbAvailability(): Promise<boolean> {
     if (dbAvailable) return true;
@@ -88,13 +102,6 @@ function normalizeDateText(value: unknown): string {
 
 function dateCompact(dateText: string): string {
     return dateText.replace(/-/g, '');
-}
-
-function formatDateLocal(date: Date): string {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
 }
 
 function dateToEastmoneyText(dateText: string): string {
@@ -225,7 +232,8 @@ function readPushHistoryFile(): any[] {
         }
         const raw = fs.readFileSync(PUSH_HISTORY_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed : parsed?.items || [];
+        const records = Array.isArray(parsed) ? parsed : parsed?.items || [];
+        return records.map(normalizePushHistoryRecord);
     } catch (err) {
         console.error('[WindLeaderService] read push history failed:', err);
         return [];
@@ -251,9 +259,8 @@ async function readPushHistoryFromDb(): Promise<any[]> {
             FROM wind_leader_push_history
             ORDER BY push_date DESC, score DESC
         `);
-        return result.rows.map(row => ({
+        return result.rows.map(row => normalizePushHistoryRecord({
             ...row,
-            push_date: row.push_date ? formatDateLocal(row.push_date) : '',
             realtime_time: row.realtime_time ? row.realtime_time.toISOString() : null,
         }));
     } catch (err) {
@@ -393,14 +400,14 @@ async function enrichPushPricesWithPreviousClose(records: any[]): Promise<any[]>
 }
 
 function mergePushRecord(existing: any, next: any): any {
-    if (!existing) return next;
-    return {
+    if (!existing) return normalizePushHistoryRecord(next);
+    return normalizePushHistoryRecord({
         ...next,
         ...existing,
         push_price: existing.push_price,
         latest_price: existing.latest_price ?? existing.push_price,
         latest_trade_date: existing.latest_trade_date ?? existing.push_date,
-    };
+    });
 }
 
 export class WindLeaderService {
@@ -533,6 +540,37 @@ export class WindLeaderService {
         });
     }
 
+    static async getPublishedPotentialPushHistory(): Promise<any[]> {
+        await this.ensurePushHistoryPricesCurrent();
+        const records = await this.getPotentialPushHistory();
+        return records.filter(isPushHistoryRecordSettled);
+    }
+
+    static async ensurePushHistoryPricesCurrent(): Promise<void> {
+        if (!canRunCloseSettlement()) return;
+        if (closeSettlementPromise) return closeSettlementPromise;
+        if (Date.now() - lastCloseSettlementAttempt < CLOSE_SETTLEMENT_RETRY_MS) return;
+        lastCloseSettlementAttempt = Date.now();
+
+        const settlement = (async () => {
+            const isDbAvailable = await checkDbAvailability();
+            const history = isDbAvailable
+                ? await readPushHistoryFromDb()
+                : readPushHistoryFile();
+            const expectedTradeDate = getExpectedCloseTradeDate();
+            if (!needsCloseSettlement(history, expectedTradeDate)) return;
+
+            console.log(`[PriceUpdate] missing close settlement for ${expectedTradeDate}, compensating...`);
+            await this.updatePushHistoryPrices();
+        })();
+        closeSettlementPromise = settlement;
+        try {
+            await settlement;
+        } finally {
+            if (closeSettlementPromise === settlement) closeSettlementPromise = null;
+        }
+    }
+
     static async appendPotentialPushHistory(data: any): Promise<void> {
         const nextRecords = await enrichPushPricesWithPreviousClose(collectPushRecordsFromData(data));
         if (!nextRecords.length) return;
@@ -578,6 +616,11 @@ export class WindLeaderService {
     static async updatePushHistoryPrices(): Promise<void> {
         console.log('[PriceUpdate] update push history prices...');
         try {
+            if (!canRunCloseSettlement()) {
+                console.log('[PriceUpdate] before 15:30 on a trading day, skip close settlement');
+                return;
+            }
+            const expectedTradeDate = getExpectedCloseTradeDate();
             const isDbAvailable = await checkDbAvailability();
             
             let history: any[];
@@ -614,27 +657,30 @@ export class WindLeaderService {
             });
 
             const now = new Date().toISOString();
-            const latestTradeDate = now.split('T')[0].replace(/-/g, '');
             let updatedCount = 0;
 
             const updatedRecords = history.map(record => {
                 const quote = quoteMap.get(record.stock_code);
                 const latestPrice = quote ? toFiniteNumber(quote['\u6700\u65b0\u4ef7']) : null;
                 if (latestPrice !== null && latestPrice > 0) {
+                    const latestTradeDate = getQuoteTradeDate(quote);
+                    if (!latestTradeDate || latestTradeDate < expectedTradeDate) {
+                        return normalizePushHistoryRecord(record);
+                    }
                     const pushPrice = Number(record.push_price) || 0;
                     const returnPct = pushPrice > 0 ? ((latestPrice - pushPrice) / pushPrice * 100) : 0;
 
                     updatedCount++;
-                    return {
+                    return normalizePushHistoryRecord({
                         ...record,
                         latest_price: latestPrice,
                         latest_change_pct: quote ? toFiniteNumber(quote['\u6da8\u8dcc\u5e45']) : record.latest_change_pct,
                         latest_trade_date: latestTradeDate,
                         realtime_return_pct: Number(returnPct.toFixed(2)),
                         realtime_time: now,
-                    };
+                    });
                 }
-                return record;
+                return normalizePushHistoryRecord(record);
             });
 
             if (isDbAvailable) {

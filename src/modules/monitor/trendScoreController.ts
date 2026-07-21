@@ -159,6 +159,7 @@ export class TrendScoreController {
                     SELECT MAX(t2.score_date) FROM trend_scores t2
                 )
                 AND t.label NOT IN ('D')
+                AND (t.ma60_excluded IS NULL OR t.ma60_excluded = false)
                 ORDER BY t.score DESC
                 LIMIT $1
             `, [limit]);
@@ -214,15 +215,15 @@ export class TrendScoreController {
         });
     }
 
-    private static async saveToDB(symbol: string, result: { score: number; label: string; expectedMultiple: string; description: string; aiConclusion: string; dimScores: number[]; dimensions: unknown[]; rawData: unknown; updatedAt: string }): Promise<void> {
+    private static async saveToDB(symbol: string, result: { score: number; label: string; expectedMultiple: string; description: string; aiConclusion: string; dimScores: number[]; dimensions: unknown[]; rawData: unknown; ma60Excluded: boolean; updatedAt: string }): Promise<void> {
         const today = new Date().toISOString().slice(0, 10);
         const rawDataJson = result.rawData ? JSON.stringify(result.rawData) : null;
 
         try {
             await pool.query(`
                 INSERT INTO trend_scores
-                    (symbol, score_date, score, label, expected_multiple, description, ai_conclusion, dim_scores, dimensions, raw_data, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                    (symbol, score_date, score, label, expected_multiple, description, ai_conclusion, dim_scores, dimensions, raw_data, ma60_excluded, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (symbol, score_date) DO UPDATE SET
                     score = EXCLUDED.score,
                     label = EXCLUDED.label,
@@ -232,18 +233,19 @@ export class TrendScoreController {
                     dim_scores = EXCLUDED.dim_scores,
                     dimensions = EXCLUDED.dimensions,
                     raw_data = EXCLUDED.raw_data,
+                    ma60_excluded = EXCLUDED.ma60_excluded,
                     updated_at = EXCLUDED.updated_at
             `, [
                 symbol, today, result.score, result.label, result.expectedMultiple,
                 result.description, result.aiConclusion, JSON.stringify(result.dimScores),
-                JSON.stringify(result.dimensions), rawDataJson, result.updatedAt,
+                JSON.stringify(result.dimensions), rawDataJson, result.ma60Excluded, result.updatedAt,
             ]);
         } catch {
             try {
                 await pool.query(`
                     INSERT INTO trend_scores
-                        (symbol, score_date, score, label, expected_multiple, description, ai_conclusion, dim_scores, dimensions, updated_at)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                        (symbol, score_date, score, label, expected_multiple, description, ai_conclusion, dim_scores, dimensions, ma60_excluded, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                     ON CONFLICT (symbol, score_date) DO UPDATE SET
                         score = EXCLUDED.score,
                         label = EXCLUDED.label,
@@ -252,11 +254,12 @@ export class TrendScoreController {
                         ai_conclusion = EXCLUDED.ai_conclusion,
                         dim_scores = EXCLUDED.dim_scores,
                         dimensions = EXCLUDED.dimensions,
+                        ma60_excluded = EXCLUDED.ma60_excluded,
                         updated_at = EXCLUDED.updated_at
                 `, [
                     symbol, today, result.score, result.label, result.expectedMultiple,
                     result.description, result.aiConclusion, JSON.stringify(result.dimScores),
-                    JSON.stringify(result.dimensions), result.updatedAt,
+                    JSON.stringify(result.dimensions), result.ma60Excluded, result.updatedAt,
                 ]);
             } catch {}
         }

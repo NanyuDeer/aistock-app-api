@@ -13,7 +13,7 @@ const HORIZON_CYCLES: Record<string, string> = {
     中长期: 'long',
 };
 
-const TREND_HOTSPOT_IMPACTS = new Set<StockInfoImpact>(['重大利好', '利好', '中性', '利空', '重大利空']);
+const STOCK_MONITOR_IMPACTS = new Set<StockInfoImpact>(['重大利好', '利好', '中性', '利空', '重大利空']);
 
 export interface MonitorEventItem {
     event_id: string;
@@ -40,7 +40,7 @@ export interface MonitorEventItem {
     source: string;
 }
 
-export interface TrendHotspotStats {
+export interface StockMonitorStats {
     total: number;
     announcement: number;
     news: number;
@@ -58,7 +58,7 @@ function normalizeCycle(value: string | undefined): string | undefined {
 }
 
 function normalizeImpact(value: string | undefined): StockInfoImpact | undefined {
-    return value && TREND_HOTSPOT_IMPACTS.has(value as StockInfoImpact)
+    return value && STOCK_MONITOR_IMPACTS.has(value as StockInfoImpact)
         ? value as StockInfoImpact
         : undefined;
 }
@@ -251,7 +251,7 @@ export class StockMonitorService {
         };
     }
 
-    static async getStats(): Promise<TrendHotspotStats> {
+    static async getStats(): Promise<StockMonitorStats> {
         await StockInfoService.ensureSchema();
         const poolModule = await import('../../core/db');
         const result = await poolModule.default.query(
