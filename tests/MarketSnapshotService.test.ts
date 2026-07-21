@@ -29,6 +29,38 @@ import {
     MarketSnapshotUnavailableError,
 } from '../src/modules/quote/MarketSnapshotService'
 
+import { TradingCalendarService } from '../src/shared/utils/TradingCalendarService'
+
+test('rejects malformed and non-existent calendar dates', () => {
+    assert.equal(TradingCalendarService.isTradingDayYyyymmdd('20260230'), false)
+    assert.equal(TradingCalendarService.isTradingDayYyyymmdd('2026023'), false)
+})
+
+test('isTradingDay uses the Asia/Shanghai calendar date across a UTC day boundary', () => {
+    assert.equal(
+        TradingCalendarService.isTradingDay(new Date('2026-05-05T16:30:00.000Z')),
+        true,
+    )
+})
+
+test('isTradingDay rejects an invalid Date', () => {
+    assert.equal(TradingCalendarService.isTradingDay(new Date('invalid')), false)
+})
+
+test('getRecentTradingDay fails closed after calendar coverage in Asia/Shanghai', () => {
+    assert.throws(
+        () => TradingCalendarService.getRecentTradingDay(new Date('2026-12-31T16:30:00.000Z')),
+        /Trading calendar is not available for 2027/,
+    )
+})
+
+test('getRecentTradingDay fails closed before calendar coverage', () => {
+    assert.throws(
+        () => TradingCalendarService.getRecentTradingDay(new Date(2025, 0, 2, 16)),
+        /Trading calendar is not available for 2025/,
+    )
+})
+
 // ============================================================================
 // Step 1 helpers
 // ============================================================================
@@ -493,6 +525,44 @@ test('throws market_not_closed on holiday with complete data', async () => {
     try {
         await assert.rejects(
             getTodayCloseSnapshot(new Date('2026-10-01T15:31:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+        assert.deepEqual(marketDataCalls(), [])
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('throws market_not_closed on 2026 Labour Day holiday with complete data', async () => {
+    applyCloseMocks(makeCompleteDataOverrides('20260504', '20260430'))
+    try {
+        await assert.rejects(
+            getTodayCloseSnapshot(new Date('2026-05-04T15:30:00+08:00')),
+            (err: unknown) => {
+                assert.ok(err instanceof MarketSnapshotUnavailableError)
+                assert.equal(err.reason, 'market_not_closed')
+                assert.equal(err.status, 'not_ready')
+                return true
+            },
+        )
+        assert.deepEqual(marketDataCalls(), [])
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('throws market_not_closed on an uncovered New Year holiday with complete data', async () => {
+    applyCloseMocks(makeCompleteDataOverrides('20270101', '20261231'))
+    try {
+        await assert.rejects(
+            getTodayCloseSnapshot(new Date('2027-01-01T15:30:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')

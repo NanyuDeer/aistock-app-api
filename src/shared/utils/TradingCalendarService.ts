@@ -1,20 +1,83 @@
 /**
  * 交易日历服务
  *
- * 提供A股交易日判断，基于周末规则 + 节假日列表。
- * 节假日列表每年初手动更新（或从 Tushare trade_cal 接口获取）。
+ * 提供A股交易日判断，基于周末规则 + 按年度维护的休市日历。
+ * 收盘快照只信任已覆盖年度；新年度日历未更新时必须失败关闭。
  */
 
-// 2026年A股节假日（每年初更新）
-const HOLIDAYS_2026: Set<string> = new Set([
-    '2026-01-01', // 元旦
-    '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', // 春节
-    '2026-04-04', '2026-04-05', '2026-04-06', // 清明
-    '2026-05-01', '2026-05-02', '2026-05-03', // 劳动节
-    '2026-06-19', '2026-06-20', '2026-06-21', // 端午
-    '2026-09-25', '2026-09-26', '2026-09-27', // 中秋
-    '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', // 国庆
-]);
+/** A 股休市日历，按年度随官方休市安排更新。 */
+const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<string>>>> = {
+    2026: new Set([
+        '2026-01-01', '2026-01-02', '2026-01-03', // 元旦
+        '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', // 春节
+        '2026-04-04', '2026-04-05', '2026-04-06', // 清明
+        '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05', // 劳动节
+        '2026-06-19', '2026-06-20', '2026-06-21', // 端午
+        '2026-09-25', '2026-09-26', '2026-09-27', // 中秋
+        '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', // 国庆
+    ]),
+};
+
+const SHANGHAI_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+});
+
+interface ShanghaiCalendarDate {
+    year: number;
+    month: number;
+    day: number;
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+}
+
+function getShanghaiCalendarDate(date: Date): ShanghaiCalendarDate | null {
+    if (Number.isNaN(date.getTime())) return null;
+
+    const values = Object.fromEntries(
+        SHANGHAI_DATE_TIME_FORMATTER.formatToParts(date)
+            .filter(part => part.type !== 'literal')
+            .map(part => [part.type, Number(part.value)]),
+    );
+    const { year, month, day, hour, minute, second } = values;
+    if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null;
+
+    return { year, month, day, hour, minute, second, millisecond: date.getUTCMilliseconds() };
+}
+
+function toYyyymmdd(date: ShanghaiCalendarDate): string {
+    return `${date.year}${String(date.month).padStart(2, '0')}${String(date.day).padStart(2, '0')}`;
+}
+
+function previousShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalendarDate {
+    const previous = new Date(Date.UTC(date.year, date.month - 1, date.day - 1));
+    return {
+        ...date,
+        year: previous.getUTCFullYear(),
+        month: previous.getUTCMonth() + 1,
+        day: previous.getUTCDate(),
+    };
+}
+
+function toDate(date: ShanghaiCalendarDate): Date {
+    return new Date(Date.UTC(
+        date.year,
+        date.month - 1,
+        date.day,
+        date.hour - 8,
+        date.minute,
+        date.second,
+        date.millisecond,
+    ));
+}
 
 export class TradingCalendarService {
     /**
@@ -22,15 +85,27 @@ export class TradingCalendarService {
      * 日期已由调用方在目标时区归一化，因此使用 UTC 星期避免服务器本地时区影响。
      */
     static isTradingDayYyyymmdd(yyyymmdd: string): boolean {
+        if (!/^\d{8}$/.test(yyyymmdd)) return false;
+
         const year = Number(yyyymmdd.slice(0, 4));
         const month = Number(yyyymmdd.slice(4, 6));
         const day = Number(yyyymmdd.slice(6, 8));
-        const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+        const holidays = A_SHARE_HOLIDAYS_BY_YEAR[year];
+        if (!holidays) return false;
+
+        const date = new Date(Date.UTC(year, month - 1, day));
+        if (
+            date.getUTCFullYear() !== year
+            || date.getUTCMonth() !== month - 1
+            || date.getUTCDate() !== day
+        ) return false;
+
+        const weekday = date.getUTCDay();
 
         if (weekday === 0 || weekday === 6) return false;
 
         const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        return !HOLIDAYS_2026.has(dateStr);
+        return !holidays.has(dateStr);
     }
 
     /**
@@ -38,12 +113,8 @@ export class TradingCalendarService {
      */
     static isTradingDay(date: Date = new Date()): boolean {
         // 周六、周日不交易
-        if (date.getDay() === 0 || date.getDay() === 6) return false;
-
-        const dateStr = date.toISOString().slice(0, 10);
-        if (HOLIDAYS_2026.has(dateStr)) return false;
-
-        return true;
+        const calendarDate = getShanghaiCalendarDate(date);
+        return calendarDate ? this.isTradingDayYyyymmdd(toYyyymmdd(calendarDate)) : false;
     }
 
     /**
@@ -52,15 +123,24 @@ export class TradingCalendarService {
      * 如果今天不是交易日或在盘中，返回上一个交易日
      */
     static getRecentTradingDay(date: Date = new Date()): Date {
-        const result = new Date(date);
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
         // 如果在盘中（<15:00），回溯到上一个交易日
-        if (result.getHours() < 15) {
-            result.setDate(result.getDate() - 1);
+        if (result.hour < 15) {
+            result = previousShanghaiCalendarDate(result);
         }
-        while (!this.isTradingDay(result)) {
-            result.setDate(result.getDate() - 1);
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) return toDate(result);
+            result = previousShanghaiCalendarDate(result);
         }
-        return result;
+    }
+
+    private static assertCalendarCoverage(year: number): void {
+        if (!A_SHARE_HOLIDAYS_BY_YEAR[year]) {
+            throw new Error(`Trading calendar is not available for ${year}`);
+        }
     }
 
     /**
