@@ -216,6 +216,7 @@ const MONEYFLOW_ROWS: MoneyflowThsRow[] = [
 interface CloseMockOverrides {
     currentDaily?: CompleteDailyResult
     previousDaily?: CompleteDailyResult
+    dailyResultsByDate?: Record<string, CompleteDailyResult>
     shIndexRows?: IndexDailyRow[]
     indexRowsByCode?: Record<string, IndexDailyRow[]>
     sectorRows?: MoneyflowCntThsRow[]
@@ -225,11 +226,43 @@ interface CloseMockOverrides {
 }
 
 let recordedLimitPoolArgs: string[] = []
+let recordedMarketDataCalls: string[] = []
 let restoreDeps: (() => void) | null = null
+
+function makeCompleteDailyResult(tradeDate: string): CompleteDailyResult {
+    return {
+        rows: [makeDailyPriceRow({ ts_code: '000001.SZ', trade_date: tradeDate, pct_chg: 1, amount: 1000 })],
+        complete: true,
+        reason: 'complete',
+        page_count: 1,
+    }
+}
+
+/** 为指定交易日期注入完整指数和日线数据，用于验证非交易日仍须优先拒绝。 */
+function makeCompleteDataOverrides(currentTradeDate: string, previousTradeDate: string): CloseMockOverrides {
+    return {
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: currentTradeDate }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: previousTradeDate }),
+        ],
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: currentTradeDate })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: currentTradeDate })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: currentTradeDate })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: currentTradeDate })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: currentTradeDate })],
+        },
+        dailyResultsByDate: {
+            [currentTradeDate]: makeCompleteDailyResult(currentTradeDate),
+            [previousTradeDate]: makeCompleteDailyResult(previousTradeDate),
+        },
+    }
+}
 
 /** 安装 MarketSnapshotService 依赖 mock；可选 override 任何子项。 */
 function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
     recordedLimitPoolArgs = []
+    recordedMarketDataCalls = []
     const deps = __marketSnapshotDependencies
     const orig = {
         getIndexDaily: deps.getIndexDaily,
@@ -242,20 +275,36 @@ function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
     }
     const shIndexRows = overrides.shIndexRows ?? SH_INDEX_ROWS
     const indexRowsByCode = overrides.indexRowsByCode ?? INDEX_ROWS_BY_CODE
+    const dailyResultsByDate = overrides.dailyResultsByDate ?? {
+        '20260720': overrides.currentDaily ?? COMPLETE_CURRENT_DAILY,
+        '20260717': overrides.previousDaily ?? COMPLETE_PREVIOUS_DAILY,
+    }
 
-    deps.getIndexDaily = (async (code: string) =>
-        code === '000001.SH' ? shIndexRows : (indexRowsByCode[code] ?? [])) as typeof orig.getIndexDaily
-    deps.getCompleteDailyByDate = (async (date: string) =>
-        date === '20260720'
-            ? (overrides.currentDaily ?? COMPLETE_CURRENT_DAILY)
-            : (overrides.previousDaily ?? COMPLETE_PREVIOUS_DAILY)) as typeof orig.getCompleteDailyByDate
+    deps.getIndexDaily = (async (code: string) => {
+        recordedMarketDataCalls.push(`index:${code}`)
+        return code === '000001.SH' ? shIndexRows : (indexRowsByCode[code] ?? [])
+    }) as typeof orig.getIndexDaily
+    deps.getCompleteDailyByDate = (async (date: string) => {
+        recordedMarketDataCalls.push(`daily:${date}`)
+        return dailyResultsByDate[date] ?? (overrides.previousDaily ?? COMPLETE_PREVIOUS_DAILY)
+    }) as typeof orig.getCompleteDailyByDate
     deps.getLimitListThs = (async (_tradeDate: string, limitType?: string) => {
+        recordedMarketDataCalls.push(`limit:${limitType ?? ''}`)
         if (limitType) recordedLimitPoolArgs.push(limitType)
         return overrides.limitList ?? ([] as LimitListThsRow[])
     }) as typeof orig.getLimitListThs
-    deps.getLimitStep = (async () => overrides.limitStep ?? ([] as LimitStepRow[])) as typeof orig.getLimitStep
-    deps.getMoneyflowCntThs = (async () => overrides.sectorRows ?? SECTOR_ROWS) as typeof orig.getMoneyflowCntThs
-    deps.getMoneyflowThsByDate = (async () => overrides.moneyflowRows ?? MONEYFLOW_ROWS) as typeof orig.getMoneyflowThsByDate
+    deps.getLimitStep = (async () => {
+        recordedMarketDataCalls.push('limit-step')
+        return overrides.limitStep ?? ([] as LimitStepRow[])
+    }) as typeof orig.getLimitStep
+    deps.getMoneyflowCntThs = (async () => {
+        recordedMarketDataCalls.push('sector')
+        return overrides.sectorRows ?? SECTOR_ROWS
+    }) as typeof orig.getMoneyflowCntThs
+    deps.getMoneyflowThsByDate = (async () => {
+        recordedMarketDataCalls.push('moneyflow')
+        return overrides.moneyflowRows ?? MONEYFLOW_ROWS
+    }) as typeof orig.getMoneyflowThsByDate
 
     restoreDeps = () => {
         deps.getIndexDaily = orig.getIndexDaily
@@ -270,6 +319,10 @@ function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
 
 function limitPoolArguments(): string[] {
     return recordedLimitPoolArgs
+}
+
+function marketDataCalls(): string[] {
+    return recordedMarketDataCalls
 }
 
 // ============================================================================
@@ -414,24 +467,9 @@ test('throws market_not_closed when an index lacks the current trade_date', asyn
 // ============================================================================
 
 test('throws market_not_closed on weekend (requestDate not a trade day)', async () => {
-    // requestDate=20260719（周六非交易日），SH 序列最新两行只到 20260717（周五）和 20260716（周四）。
-    // 旧实现的 `<= requestDate` 会把 20260717 当作 currentTradeDate 并返回快照，
-    // 新实现必须拒绝（market_not_closed），因为 20260717 != requestDate(20260719)。
-    // 关键：其他指数也提供 20260717 行，避免因"其他指数缺行"误触 market_not_closed，
-    // 让测试精准命中"SH trade_date 不等于 requestDate"这一 stale-data 校验。
-    applyCloseMocks({
-        shIndexRows: [
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3170, pct_chg: 0.3, amount: 58000000 }),
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260716', close: 3160, pct_chg: 0.2, amount: 55000000 }),
-        ],
-        indexRowsByCode: {
-            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
-            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260717' })],
-            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260717' })],
-            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260717' })],
-            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260717' })],
-        },
-    })
+    // requestDate=20260719（周日非交易日）。即使 6 指数、当日和前日日线均完整，
+    // 也必须在任何行情调用前拒绝，不能把伪造的同日数据当作 A 股已收盘事实。
+    applyCloseMocks(makeCompleteDataOverrides('20260719', '20260717'))
     try {
         await assert.rejects(
             getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
@@ -442,28 +480,16 @@ test('throws market_not_closed on weekend (requestDate not a trade day)', async 
                 return true
             },
         )
+        assert.deepEqual(marketDataCalls(), [])
     } finally {
         restoreDeps?.()
         restoreDeps = null
     }
 })
 
-test('throws market_not_closed on holiday (requestDate not in SH series)', async () => {
-    // 节假日场景：requestDate=20261001（国庆节），SH 序列最近两行是 20260930 和 20260929。
-    // 旧实现会把 20260930 当作 currentTradeDate 返回快照，新实现必须拒绝。
-    applyCloseMocks({
-        shIndexRows: [
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260930', close: 3200, pct_chg: 0.5, amount: 60000000 }),
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260929', close: 3180, pct_chg: 0.3, amount: 58000000 }),
-        ],
-        indexRowsByCode: {
-            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260930' })],
-            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260930' })],
-            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260930' })],
-            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260930' })],
-            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260930' })],
-        },
-    })
+test('throws market_not_closed on holiday with complete data', async () => {
+    // 20261001 是国庆节。即使完整同日数据被错误提供，也必须在行情调用前拒绝。
+    applyCloseMocks(makeCompleteDataOverrides('20261001', '20260930'))
     try {
         await assert.rejects(
             getTodayCloseSnapshot(new Date('2026-10-01T15:31:00+08:00')),
@@ -474,14 +500,15 @@ test('throws market_not_closed on holiday (requestDate not in SH series)', async
                 return true
             },
         )
+        assert.deepEqual(marketDataCalls(), [])
     } finally {
         restoreDeps?.()
         restoreDeps = null
     }
 })
 
-test('throws market_not_closed when SH index data lags during market hours', async () => {
-    // 盘中数据延迟场景：requestDate=20260720（真实交易日），但 SH 序列只到 20260717，
+test('throws market_not_closed when SH index data lags after close', async () => {
+    // 数据延迟场景：requestDate=20260720（真实交易日），但 SH 序列只到 20260717，
     // 说明 Tushare 当日 index_daily 尚未推送——绝不能把 20260717 当作"今日已收盘"。
     // 关键：使用 15:31 +08:00（收盘后）调用，确保命中 SH 数据滞后校验而非 15:30 时钟门禁，
     // 保留原 SH 滞后测试意图。
@@ -519,14 +546,14 @@ test('throws market_not_closed when SH index data lags during market hours', asy
 // 收盘时钟门禁 — 15:30 +08:00 前一律拒绝，即使 6 指数和日线数据都已存在
 // ============================================================================
 
-test('throws market_not_closed at 11:30 +08:00 even with complete data', async () => {
+test('throws market_not_closed at 15:29 +08:00 even with complete data', async () => {
     // 真实工作日盘中：6 指数和日线均已存在（applyCloseMocks 安装完整数据），
-    // 但 Asia/Shanghai 时间 11:30 < 15:30 → 必须返回 market_not_closed。
+    // 但 Asia/Shanghai 时间 15:29 < 15:30 → 必须返回 market_not_closed。
     // 旧实现只校验 currentTradeDate === requestDate，盘中数据到位时会错误返回 complete。
     applyCloseMocks()
     try {
         await assert.rejects(
-            getTodayCloseSnapshot(new Date('2026-07-20T11:30:00+08:00')),
+            getTodayCloseSnapshot(new Date('2026-07-20T15:29:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')
@@ -542,7 +569,7 @@ test('throws market_not_closed at 11:30 +08:00 even with complete data', async (
 
 test('returns complete at 15:30 +08:00 with complete data', async () => {
     // 真实工作日 15:30 +08:00（收盘时刻）+ 完整数据 → 返回 complete。
-    // 与上一个测试共同锁定 15:30 时钟门禁边界：11:30 拒绝、15:30 放行。
+    // 与上一个测试共同锁定 15:30 时钟门禁边界：15:29 拒绝、15:30 放行。
     applyCloseMocks()
     try {
         const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:30:00+08:00'))

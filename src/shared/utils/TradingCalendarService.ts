@@ -18,6 +18,22 @@ const HOLIDAYS_2026: Set<string> = new Set([
 
 export class TradingCalendarService {
     /**
+     * 判断 YYYYMMDD 指定的 A 股交易日。
+     * 日期已由调用方在目标时区归一化，因此使用 UTC 星期避免服务器本地时区影响。
+     */
+    static isTradingDayYyyymmdd(yyyymmdd: string): boolean {
+        const year = Number(yyyymmdd.slice(0, 4));
+        const month = Number(yyyymmdd.slice(4, 6));
+        const day = Number(yyyymmdd.slice(6, 8));
+        const weekday = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+
+        if (weekday === 0 || weekday === 6) return false;
+
+        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        return !HOLIDAYS_2026.has(dateStr);
+    }
+
+    /**
      * 判断指定日期是否为A股交易日
      */
     static isTradingDay(date: Date = new Date()): boolean {

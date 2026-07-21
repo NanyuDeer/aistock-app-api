@@ -25,8 +25,6 @@ import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 // 路由侧调用 getTodayCloseSnapshot()，单测通过替换 deps 字段实现 mock。
 import {
     __marketSnapshotDependencies,
-    MarketSnapshotUnavailableError,
-    type MarketSnapshotUnavailableReason,
 } from '../src/modules/quote/MarketSnapshotService'
 import type {
     IndexDailyRow,
@@ -189,29 +187,12 @@ function withThrowingMock(
 // 关键：路由侧调用 getTodayCloseSnapshot() 不传 now 参数，内部使用 deps.now()。
 // MarketSnapshotService 已加 15:30 时钟门禁：Asia/Shanghai 时间 15:30 前一律拒绝。
 // 为让路由测试不依赖真实当前时刻（CI 在盘中运行也会通过），固定 deps.now 返回
-// 2026-07-19 15:30 +08:00，TODAY_YYYYMMDD 也基于该固定时刻计算。
+// 2026-07-20 15:30 +08:00，保证使用真实交易日和显式前一交易日。
 
-/** 固定时刻：2026-07-19 15:30 +08:00（收盘时刻，过 15:30 时钟门禁）。 */
-const FIXED_NOW = new Date('2026-07-19T15:30:00+08:00')
-
-/** 计算 Asia/Shanghai 时区的 YYYYMMDD（与 MarketSnapshotService.toShanghaiDateYyyymmdd 同逻辑）。 */
-function toShanghaiYyyymmdd(now: Date): string {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    })
-    const parts = fmt.formatToParts(now)
-    const y = parts.find(p => p.type === 'year')?.value ?? ''
-    const m = parts.find(p => p.type === 'month')?.value ?? ''
-    const d = parts.find(p => p.type === 'day')?.value ?? ''
-    return `${y}${m}${d}`
-}
-
-const TODAY_YYYYMMDD = toShanghaiYyyymmdd(FIXED_NOW)
-// 前一日（自然日减 1；测试不关心是否为真实交易日，只要求与当日不同）
-const PREV_YYYYMMDD = toShanghaiYyyymmdd(new Date(FIXED_NOW.getTime() - 24 * 60 * 60 * 1000))
+const TODAY_YYYYMMDD = '20260720'
+const PREV_YYYYMMDD = '20260717'
+const BEFORE_CLOSE_NOW = new Date('2026-07-20T15:29:00+08:00')
+const AT_CLOSE_NOW = new Date('2026-07-20T15:30:00+08:00')
 
 /** 6 个指数的 index_daily 序列；000001.SH 含 current + previous 两个交易日。 */
 const SNAPSHOT_INDEX_ROWS: Record<string, IndexDailyRow[]> = {
@@ -244,34 +225,30 @@ const SNAPSHOT_PREVIOUS_DAILY: CompleteDailyResult = {
     page_count: 1,
 }
 
+const INCOMPLETE_SNAPSHOT_CURRENT_DAILY: CompleteDailyResult = {
+    rows: [],
+    complete: false,
+    reason: 'duplicate_page',
+    page_count: 1,
+}
+
 /** 安装 MarketSnapshotService 依赖 mock：返回 trade_date=TODAY_YYYYMMDD 的完整快照。 */
-function setupMarketSnapshotMocks(): void {
+function setupMarketSnapshotMocks(
+    now: Date = AT_CLOSE_NOW,
+    currentDaily: CompleteDailyResult = SNAPSHOT_CURRENT_DAILY,
+): void {
     const deps = __marketSnapshotDependencies
-    // 注入固定时刻，让路由侧 getTodayCloseSnapshot() 不传 nowOverride 时使用 FIXED_NOW，
+    // 注入固定时刻，让路由侧 getTodayCloseSnapshot() 不传 nowOverride 时使用 now，
     // 既保证过 15:30 时钟门禁，又保证 TODAY_YYYYMMDD 与 mock 数据一致。
-    deps.now = () => FIXED_NOW
+    deps.now = () => now
     deps.getIndexDaily = (async (code: string) =>
         SNAPSHOT_INDEX_ROWS[code] ?? []) as typeof deps.getIndexDaily
     deps.getCompleteDailyByDate = (async (date: string) =>
-        date === TODAY_YYYYMMDD ? SNAPSHOT_CURRENT_DAILY : SNAPSHOT_PREVIOUS_DAILY) as typeof deps.getCompleteDailyByDate
+        date === TODAY_YYYYMMDD ? currentDaily : SNAPSHOT_PREVIOUS_DAILY) as typeof deps.getCompleteDailyByDate
     deps.getLimitListThs = (async () => [] as LimitListThsRow[]) as typeof deps.getLimitListThs
     deps.getLimitStep = (async () => [] as LimitStepRow[]) as typeof deps.getLimitStep
     deps.getMoneyflowCntThs = (async () => [] as MoneyflowCntThsRow[]) as typeof deps.getMoneyflowCntThs
     deps.getMoneyflowThsByDate = (async () => [] as MoneyflowThsRow[]) as typeof deps.getMoneyflowThsByDate
-}
-
-/**
- * 让 MarketSnapshotService.getTodayCloseSnapshot 抛出 MarketSnapshotUnavailableError。
- * 通过替换 deps.getIndexDaily 实现，路由侧 try/catch 会识别该错误并返回 409。
- *
- * 注意：此 mock 不自动恢复（brief 的 verbatim 测试未使用回调模式）。
- * 调用方需确保后续不再有依赖 getTodayCloseSnapshot 的测试，或在此之后重新调用 setupMarketSnapshotMocks。
- */
-function mockSnapshotUnavailable(reason: MarketSnapshotUnavailableReason): void {
-    const deps = __marketSnapshotDependencies
-    deps.getIndexDaily = (async () => {
-        throw new MarketSnapshotUnavailableError(reason)
-    }) as typeof deps.getIndexDaily
 }
 
 // ==================== 测试用例定义 ====================
@@ -311,7 +288,7 @@ async function main(): Promise<void> {
 
     // 3. 设置 Service Mock
     setupMocks()
-    // 为 MarketSnapshotService 路由测试准备 deps mock（返回 trade_date=20260719 的完整快照）
+    // 为 MarketSnapshotService 路由测试准备 deps mock（返回 trade_date=20260720 的完整快照）
     setupMarketSnapshotMocks()
 
     // 4. 运行测试
@@ -533,9 +510,18 @@ async function main(): Promise<void> {
     })
 
     // --- /internal/market/close-snapshot 测试（Task 2）---
-    // 顺序：成功(200) → 服务异常(502) → 未收盘(409)。
-    // 409 用例使用 mockSnapshotUnavailable 且不自动恢复，放在最后以避免影响其它测试。
-    await runAsyncTest('GET /internal/market/close-snapshot returns complete facts', async () => {
+    await runAsyncTest('GET /internal/market/close-snapshot returns 409 at 15:29 (market_not_closed)', async () => {
+        setupMarketSnapshotMocks(BEFORE_CLOSE_NOW)
+        const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
+        assert.equal(res.status, 409)
+        assert.deepEqual(res.body, {
+            code: 409,
+            data: { status: 'not_ready', reason: 'market_not_closed' },
+        })
+    })
+
+    await runAsyncTest('GET /internal/market/close-snapshot returns complete facts at 15:30', async () => {
+        setupMarketSnapshotMocks(AT_CLOSE_NOW)
         const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
         assert.equal(res.status, 200)
         const body = res.body as { code: number; data: { status: string; trade_date: string } }
@@ -554,22 +540,8 @@ async function main(): Promise<void> {
         })
     })
 
-    await runAsyncTest('GET /internal/market/close-snapshot returns 409 before close (market_not_closed)', async () => {
-        mockSnapshotUnavailable('market_not_closed')
-        const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
-        assert.equal(res.status, 409)
-        assert.deepEqual(res.body, {
-            code: 409,
-            data: { status: 'not_ready', reason: 'market_not_closed' },
-        })
-    })
-
-    // 重置 deps：上一个 409 用例把 deps.getIndexDaily 改成抛错版本且不自动恢复，
-    // 这里重新安装正常 mock，让下一个 409 用例从干净状态开始。
-    setupMarketSnapshotMocks()
-
     await runAsyncTest('GET /internal/market/close-snapshot returns 409 with incomplete status (incomplete_daily_coverage)', async () => {
-        mockSnapshotUnavailable('incomplete_daily_coverage')
+        setupMarketSnapshotMocks(AT_CLOSE_NOW, INCOMPLETE_SNAPSHOT_CURRENT_DAILY)
         const res = await makeGetRequest(port, '/market/close-snapshot', INTERNAL_TOKEN)
         assert.equal(res.status, 409)
         assert.deepEqual(res.body, {

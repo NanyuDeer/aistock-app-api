@@ -25,6 +25,7 @@ import {
     type CompleteDailyResult,
     type DailyCoverageReason,
 } from './TushareService';
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 
 // ============================================================================
 // 对外类型定义
@@ -375,6 +376,15 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
 export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMarketSnapshot> {
     const deps = __marketSnapshotDependencies;
     const now = nowOverride ?? deps.now();
+    const requestDate = toShanghaiDateYyyymmdd(now);
+
+    // 完整同日行情数据不能证明当天是 A 股交易日；周末和节假日必须在所有行情调用前拒绝。
+    if (!TradingCalendarService.isTradingDayYyyymmdd(requestDate)) {
+        throw new MarketSnapshotUnavailableError(
+            'market_not_closed',
+            `request date ${requestDate} is not an A-share trading day`,
+        );
+    }
 
     // ---- 0. Asia/Shanghai 收盘时钟门禁 ----
     // 关键契约：currentTradeDate === requestDate 只能证明"当天数据存在"，
@@ -388,7 +398,6 @@ export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMa
         );
     }
 
-    const requestDate = toShanghaiDateYyyymmdd(now);
     const lookbackStart = toLookbackStartYyyymmdd(requestDate, LOOKBACK_DAYS);
     const capturedAt = now.toISOString();
 
