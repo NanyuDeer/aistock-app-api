@@ -54,7 +54,7 @@ function makeDailyRows(count: number, offset: number): DailyPriceRow[] {
         const codeNum = offset + i
         rows.push(makeDailyPriceRow({
             ts_code: `${String(codeNum).padStart(6, '0')}.SZ`,
-            trade_date: '20260719',
+            trade_date: '20260720',
         }))
     }
     return rows
@@ -97,7 +97,7 @@ function makeIndexRow(partial: Partial<IndexDailyRow> & Pick<IndexDailyRow, 'ts_
 
 function makeSectorRow(partial: Partial<MoneyflowCntThsRow> & Pick<MoneyflowCntThsRow, 'ts_code' | 'name' | 'pct_change' | 'net_amount'>): MoneyflowCntThsRow {
     return {
-        trade_date: '20260719',
+        trade_date: '20260720',
         lead_stock: '领涨股',
         close_price: 1000,
         industry_index: 1000,
@@ -135,33 +135,33 @@ function makeMoneyflowRow(partial: Partial<MoneyflowThsRow> & Pick<MoneyflowThsR
     }
 }
 
-/** 000001.SH 序列：用于识别当前(20260719)与前一日(20260718)交易日。 */
+/** 000001.SH 序列：用于识别当前(20260720)与前一日(20260717)交易日。 */
 const SH_INDEX_ROWS: IndexDailyRow[] = [
-    makeIndexRow({ ts_code: '000001.SH', trade_date: '20260719', close: 3200, pct_chg: 0.6, amount: 60000000 }),
-    makeIndexRow({ ts_code: '000001.SH', trade_date: '20260718', close: 3180, pct_chg: 0.3, amount: 58000000 }),
+    makeIndexRow({ ts_code: '000001.SH', trade_date: '20260720', close: 3200, pct_chg: 0.6, amount: 60000000 }),
+    makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3180, pct_chg: 0.3, amount: 58000000 }),
 ]
 
-/** 其余 5 个指数各自包含 20260719 当前行。 */
+/** 其余 5 个指数各自包含 20260720 当日行。 */
 const INDEX_ROWS_BY_CODE: Record<string, IndexDailyRow[]> = {
-    '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260719', close: 10500, pct_chg: 0.8 })],
-    '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260719', close: 2100, pct_chg: 1.1 })],
-    '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260719', close: 4200, pct_chg: 0.5 })],
-    '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260719', close: 5500, pct_chg: 0.7 })],
-    '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260719', close: 6200, pct_chg: 0.9 })],
+    '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260720', close: 10500, pct_chg: 0.8 })],
+    '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260720', close: 2100, pct_chg: 1.1 })],
+    '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260720', close: 4200, pct_chg: 0.5 })],
+    '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260720', close: 5500, pct_chg: 0.7 })],
+    '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260720', close: 6200, pct_chg: 0.9 })],
 }
 
 /** 当日全市场日线：3 涨 + 1 跌 + 1 平；amount(千元)合计 6000 → 6,000,000 元。 */
 const CURRENT_DAILY_ROWS: DailyPriceRow[] = [
-    makeDailyPriceRow({ ts_code: '000001.SZ', trade_date: '20260719', pct_chg: 1.5, amount: 2000 }),
-    makeDailyPriceRow({ ts_code: '000002.SZ', trade_date: '20260719', pct_chg: 2.0, amount: 2000 }),
-    makeDailyPriceRow({ ts_code: '600000.SH', trade_date: '20260719', pct_chg: 0.8, amount: 2000 }),
-    makeDailyPriceRow({ ts_code: '600001.SH', trade_date: '20260719', pct_chg: -1.0, amount: 0 }),
-    makeDailyPriceRow({ ts_code: '600002.SH', trade_date: '20260719', pct_chg: 0, amount: 0 }),
+    makeDailyPriceRow({ ts_code: '000001.SZ', trade_date: '20260720', pct_chg: 1.5, amount: 2000 }),
+    makeDailyPriceRow({ ts_code: '000002.SZ', trade_date: '20260720', pct_chg: 2.0, amount: 2000 }),
+    makeDailyPriceRow({ ts_code: '600000.SH', trade_date: '20260720', pct_chg: 0.8, amount: 2000 }),
+    makeDailyPriceRow({ ts_code: '600001.SH', trade_date: '20260720', pct_chg: -1.0, amount: 0 }),
+    makeDailyPriceRow({ ts_code: '600002.SH', trade_date: '20260720', pct_chg: 0, amount: 0 }),
 ]
 
 const PREVIOUS_DAILY_ROWS: DailyPriceRow[] = [
-    makeDailyPriceRow({ ts_code: '000001.SZ', trade_date: '20260718', pct_chg: 0.5, amount: 1000 }),
-    makeDailyPriceRow({ ts_code: '000002.SZ', trade_date: '20260718', pct_chg: -0.5, amount: 1000 }),
+    makeDailyPriceRow({ ts_code: '000001.SZ', trade_date: '20260717', pct_chg: 0.5, amount: 1000 }),
+    makeDailyPriceRow({ ts_code: '000002.SZ', trade_date: '20260717', pct_chg: -0.5, amount: 1000 }),
 ]
 
 const COMPLETE_CURRENT_DAILY: CompleteDailyResult = {
@@ -205,7 +205,7 @@ const SECTOR_ROWS: MoneyflowCntThsRow[] = [
 const MONEYFLOW_ROWS: MoneyflowThsRow[] = [
     makeMoneyflowRow({
         ts_code: '000001.SZ',
-        trade_date: '20260719',
+        trade_date: '20260720',
         buy_lg_amount: 30,
         buy_elg_amount: 50,
         sell_lg_amount: 0,
@@ -246,7 +246,7 @@ function applyCloseMocks(overrides: CloseMockOverrides = {}): void {
     deps.getIndexDaily = (async (code: string) =>
         code === '000001.SH' ? shIndexRows : (indexRowsByCode[code] ?? [])) as typeof orig.getIndexDaily
     deps.getCompleteDailyByDate = (async (date: string) =>
-        date === '20260719'
+        date === '20260720'
             ? (overrides.currentDaily ?? COMPLETE_CURRENT_DAILY)
             : (overrides.previousDaily ?? COMPLETE_PREVIOUS_DAILY)) as typeof orig.getCompleteDailyByDate
     deps.getLimitListThs = (async (_tradeDate: string, limitType?: string) => {
@@ -282,7 +282,7 @@ test('getCompleteDailyByDate returns all unique pages', async () => {
         makeDailyRows(25, 5000),
     ])
     try {
-        const result = await getCompleteDailyByDate('20260719')
+        const result = await getCompleteDailyByDate('20260720')
         assert.equal(result.complete, true)
         assert.equal(result.rows.length, 5025)
     } finally {
@@ -295,7 +295,7 @@ test('getCompleteDailyByDate rejects a repeated full page', async () => {
     const page = makeDailyRows(5000, 0)
     mockDailyPages([page, page])
     try {
-        const result = await getCompleteDailyByDate('20260719')
+        const result = await getCompleteDailyByDate('20260720')
         assert.equal(result.complete, false)
         assert.equal(result.reason, 'duplicate_page')
     } finally {
@@ -311,7 +311,7 @@ test('getCompleteDailyByDate rejects a repeated full page', async () => {
 test('builds a complete close snapshot with normalized monetary units', async () => {
     applyCloseMocks()
     try {
-        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00'))
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
         assert.equal(snapshot.status, 'complete')
         assert.equal(snapshot.breadth.advance_count, 3)
         assert.equal(snapshot.turnover.amount_yuan, 6000000)
@@ -326,7 +326,7 @@ test('builds a complete close snapshot with normalized monetary units', async ()
 test('sectors are sorted independently by pct_change and net_amount', async () => {
     applyCloseMocks()
     try {
-        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00'))
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
         // top_gainers: pct_change 降序前 5
         assert.deepEqual(
             snapshot.sectors.top_gainers.map(s => s.name),
@@ -362,7 +362,7 @@ test('throws incomplete_daily_coverage when daily coverage incomplete', async ()
     applyCloseMocks({ currentDaily: INCOMPLETE_CURRENT_DAILY })
     try {
         await assert.rejects(
-            getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'incomplete_daily_coverage')
@@ -382,7 +382,7 @@ test('throws market_not_closed when an index lacks the current trade_date', asyn
     // 399001.SZ 仅返回前一交易日，缺当日行
     applyCloseMocks({
         indexRowsByCode: {
-            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260718' })],
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
             '399006.SZ': INDEX_ROWS_BY_CODE['399006.SZ']!,
             '000300.SH': INDEX_ROWS_BY_CODE['000300.SH']!,
             '000905.SH': INDEX_ROWS_BY_CODE['000905.SH']!,
@@ -391,7 +391,7 @@ test('throws market_not_closed when an index lacks the current trade_date', asyn
     })
     try {
         await assert.rejects(
-            getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')
@@ -481,27 +481,27 @@ test('throws market_not_closed on holiday (requestDate not in SH series)', async
 })
 
 test('throws market_not_closed when SH index data lags during market hours', async () => {
-    // 盘中数据延迟场景：requestDate=20260719（真实交易日），但 SH 序列只到 20260718，
-    // 说明 Tushare 当日 index_daily 尚未推送——绝不能把 20260718 当作"今日已收盘"。
+    // 盘中数据延迟场景：requestDate=20260720（真实交易日），但 SH 序列只到 20260717，
+    // 说明 Tushare 当日 index_daily 尚未推送——绝不能把 20260717 当作"今日已收盘"。
     // 关键：使用 15:31 +08:00（收盘后）调用，确保命中 SH 数据滞后校验而非 15:30 时钟门禁，
     // 保留原 SH 滞后测试意图。
     applyCloseMocks({
         shIndexRows: [
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260718', close: 3180, pct_chg: 0.3, amount: 58000000 }),
-            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3170, pct_chg: 0.2, amount: 55000000 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3180, pct_chg: 0.3, amount: 58000000 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260716', close: 3170, pct_chg: 0.2, amount: 55000000 }),
         ],
-        // 其余指数同样缺 20260719 行（与 SH 一致）
+        // 其余指数同样缺 20260720 行（与 SH 一致）
         indexRowsByCode: {
-            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260718' })],
-            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260718' })],
-            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260718' })],
-            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260718' })],
-            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260718' })],
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260717' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260717' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260717' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260717' })],
         },
     })
     try {
         await assert.rejects(
-            getTodayCloseSnapshot(new Date('2026-07-19T15:31:00+08:00')),
+            getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')
@@ -526,7 +526,7 @@ test('throws market_not_closed at 11:30 +08:00 even with complete data', async (
     applyCloseMocks()
     try {
         await assert.rejects(
-            getTodayCloseSnapshot(new Date('2026-07-19T11:30:00+08:00')),
+            getTodayCloseSnapshot(new Date('2026-07-20T11:30:00+08:00')),
             (err: unknown) => {
                 assert.ok(err instanceof MarketSnapshotUnavailableError)
                 assert.equal(err.reason, 'market_not_closed')
@@ -545,9 +545,9 @@ test('returns complete at 15:30 +08:00 with complete data', async () => {
     // 与上一个测试共同锁定 15:30 时钟门禁边界：11:30 拒绝、15:30 放行。
     applyCloseMocks()
     try {
-        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-19T15:30:00+08:00'))
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:30:00+08:00'))
         assert.equal(snapshot.status, 'complete')
-        assert.equal(snapshot.trade_date, '20260719')
+        assert.equal(snapshot.trade_date, '20260720')
     } finally {
         restoreDeps?.()
         restoreDeps = null
