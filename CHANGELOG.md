@@ -2,6 +2,26 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [changer] 2026-07-21 — 收盘快照门禁：交易日历 fail-closed + 时钟边界 + 数据完整性
+
+**开发者**: 37588
+
+### 新增
+- `src/modules/quote/MarketSnapshotService.ts`：当日 A 股大盘收盘事实聚合服务，六指数 + 全市场宽度 + 成交额 + 涨跌停 + 板块 + 主力资金
+- `src/shared/utils/TradingCalendarService.ts`：A 股交易日历服务，基于周末规则 + 年度休市日历，未覆盖年度 fail-closed
+- `tests/MarketSnapshotService.test.ts`：18 项测试覆盖分页、重复页拒绝、金额单位、节假日拒绝、15:29/15:30 边界、数据延迟
+
+### 修复
+- `src/modules/quote/TushareService.ts`：新增 `getCompleteDailyByDate` 分页去重抓取，重复页/页数上限立即失败
+- `src/core/routes/internal.ts`：新增 `GET /internal/market/close-snapshot` 内部接口（鉴权 + 200/409/502）
+- `tests/internalRoutes.test.ts`：路由时钟由 `__marketSnapshotDependencies.now` 驱动，15:29 拒绝/15:30 成功
+
+### 改进
+- 收盘门禁三重校验：交易日历 → 15:30 时钟 → SH 指数数据到位，任一不通过拒绝
+- 节假日拒绝（周末/劳动节/国庆/跨年）在行情调用前完成，零 Tushare 调用
+
+---
+
 ## [changer] 2026-07-18 — Morning trigger 鉴权统一 + agent.proxy 阻断 trigger 路径
 **开发者**: 37588
 
