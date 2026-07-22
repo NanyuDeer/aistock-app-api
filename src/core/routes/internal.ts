@@ -395,6 +395,78 @@ router.get('/graph/:concept', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/industry/:name/chain
+ * 行业知识图谱 — 查询行业上下游产业链
+ *
+ * 用途：为事件传导 Agent 提供真实产业链关系
+ *
+ * 参数：
+ * - name: 行业名称（URL 参数）
+ * - depth: 深度（query 参数，默认 1）
+ *
+ * 返回：
+ * - industry: { id, name } 中心行业信息
+ * - upstream: 上游行业列表（含 id, name, leadingStocks）
+ * - downstream: 下游行业列表（含 id, name, leadingStocks）
+ * - graphVersion: 图谱版本（当前系统无版本字段，返回 null）
+ * - updatedAt: 图谱更新时间
+ *
+ * 注意：
+ * - upstream 和 downstream 分别独立扩展 depth 层
+ * - 返回扁平列表，不包含层级字段
+ * - Agent 负责结合事件内容生成 direction、impactStrength、reason
+ *
+ * 错误处理：
+ * - 行业不存在：返回 HTTP 404
+ * - 服务异常：返回 HTTP 502
+ */
+router.get('/industry/:name/chain', async (req: Request, res: Response) => {
+    const name = param(req, 'name')
+    if (!name) {
+        return res.status(400).json({ code: 400, message: 'Industry name is required' })
+    }
+
+    const depth = queryInt(req, 'depth', 1)
+
+    try {
+        // 1. 获取完整图谱数据
+        const graph = IndustryKGService.getFullGraph()
+
+        // 2. 查找中心行业
+        const industry = graph.industries.find(i => i.name === name)
+
+        // 3. 检查行业是否存在
+        if (!industry) {
+            return res.status(404).json({
+                code: 404,
+                message: `Industry not found: ${name}`
+            })
+        }
+
+        // 4. 获取上下游关系
+        const { upstream, downstream } = IndustryKGService.getUpstreamDownstream(industry.id, depth)
+
+        // 5. 返回完整结构
+        res.json({
+            code: 200,
+            data: {
+                industry: {
+                    id: industry.id,
+                    name: industry.name,
+                },
+                upstream,
+                downstream,
+                graphVersion: null,  // 当前系统无版本字段
+                updatedAt: graph.updateTime,
+            },
+        })
+    } catch (err: unknown) {
+        console.error(`[Internal] industry/${name}/chain error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/institution-research/history
  * 机构调研推荐热门股历史记录（从数据库查询，分页）
  *
