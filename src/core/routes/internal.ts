@@ -474,11 +474,16 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
  */
 router.get('/institution-research/history', async (req: Request, res: Response) => {
     try {
+        const rawMinResonance = queryStr(req, 'min_resonance')
+        const minResonance = rawMinResonance === undefined
+            ? undefined
+            : Math.min(Math.max(queryInt(req, 'min_resonance', 3), 2), 4)
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
             minResonanceOnly: queryStr(req, 'min_resonance_only') !== 'false',
             days: queryInt(req, 'days', 30),
+            minResonance,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
