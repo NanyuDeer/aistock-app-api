@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { withReturn } from '../controller';
+import pool from '../../../core/db';
+import redis from '../../../core/redis';
+import { closeAllAgents } from '../../../shared/utils/httpAgent';
+
+after(async () => {
+    await pool.end();
+    redis.disconnect();
+    closeAllAgents();
+});
 
 // 回归测试：PostgreSQL NUMERIC 列经 pg 驱动默认返回字符串。
 // withReturn 必须把数值字段从字符串归一化为 number，
