@@ -584,10 +584,10 @@ export class HotBurstService {
 
     /** 将检测结果保存到历史表 */
     static async saveHistory(result: HotBurstResult): Promise<void> {
-        // 入库三源共振信号
-        const qualifiedSignals = result.outbreaks.filter(s => s.resonanceCount >= 3);
+        // 历史表保留二源及以上的检测快照；展示与 Agent 在查询时各自筛选。
+        const qualifiedSignals = result.outbreaks.filter(s => s.resonanceCount >= 2);
         if (!qualifiedSignals.length) {
-            console.log('[HotBurst] 无三源共振信号，跳过历史入库');
+            console.log('[HotBurst] 无二源共振信号，跳过历史入库');
             return;
         }
         try {
@@ -609,7 +609,7 @@ export class HotBurstService {
                  VALUES ${placeholders}`,
                 values
             );
-            console.log(`[HotBurst] 保存 ${rows.length} 条三源共振历史记录（总信号 ${result.outbreaks.length} 条）`);
+            console.log(`[HotBurst] 保存 ${rows.length} 条二源及以上共振历史记录（总信号 ${result.outbreaks.length} 条）`);
         } catch (err) {
             console.error('[HotBurst] 保存历史记录失败:', (err as Error).message);
         }
@@ -617,17 +617,42 @@ export class HotBurstService {
 
     /**
      * 查询历史机构调研推荐热门股记录
-     * @param minResonanceOnly 仅返回三源共振及以上（resonance_count >= 3）的记录
+     * @param minResonanceOnly 旧参数：true 时仅返回三源及以上，false 时不过滤
+     * @param minResonance 新参数：显式传入时覆盖 minResonanceOnly
      */
     static async getHistory(
         limit: number = 50,
         offset: number = 0,
         minResonanceOnly: boolean = true,
         days: number = 30,
+        minResonance?: number,
     ): Promise<{ total: number; records: any[] }> {
         let total: number;
         let records: any[];
         const safeDays = Math.min(Math.max(days, 1), 365);
+
+        if (minResonance !== undefined) {
+            const safeMinResonance = Math.min(Math.max(minResonance, 2), 4);
+            const countResult = await pool.query(
+                `SELECT COUNT(*)::int AS total FROM institution_research_history
+                 WHERE resonance_count >= $1
+                   AND detected_at >= NOW() - ($2::text || ' days')::interval`,
+                [safeMinResonance, safeDays]
+            );
+            total = countResult.rows[0]?.total || 0;
+
+            const result = await pool.query(
+                `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                 FROM institution_research_history
+                 WHERE resonance_count >= $3
+                   AND detected_at >= NOW() - ($4::text || ' days')::interval
+                 ORDER BY detected_at DESC, resonance_score DESC
+                 LIMIT $1 OFFSET $2`,
+                [limit, offset, safeMinResonance, safeDays]
+            );
+            records = result.rows;
+        } else
 
         if (minResonanceOnly) {
             const countResult = await pool.query(
@@ -921,19 +946,21 @@ export class HotBurstService {
 
     /**
      * 获取机构调研推荐热门股历史记录（供 /internal/institution-research/history 接口调用）
-     * 包装 getHistory()，从数据库查询历史三源共振记录
+     * 包装 getHistory()，从数据库查询历史共振记录
      */
     static async getHotBurstHistory(query: {
         limit?: number;
         offset?: number;
         minResonanceOnly?: boolean;
         days?: number;
+        minResonance?: number;
     }): Promise<{ total: number; records: unknown[] }> {
         return this.getHistory(
             query.limit ?? 50,
             query.offset ?? 0,
             query.minResonanceOnly ?? true,
             query.days ?? 30,
+            query.minResonance,
         );
     }
 }

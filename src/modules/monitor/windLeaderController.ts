@@ -194,7 +194,18 @@ export class WindLeaderController {
             const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10), 1), 200);
             const offset = Math.max(parseInt(String(req.query.offset || '0'), 10), 0);
             const minResonanceOnly = String(req.query.min_resonance_only) !== 'false';
-            const result = await HotBurstService.getHistory(limit, offset, minResonanceOnly);
+            const days = Math.min(Math.max(parseInt(String(req.query.days || '30'), 10), 1), 365);
+            const rawMinResonance = req.query.min_resonance;
+            const minResonance = rawMinResonance === undefined
+                ? undefined
+                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 3, 2), 4);
+            const result = await HotBurstService.getHistory(
+                limit,
+                offset,
+                minResonanceOnly,
+                days,
+                minResonance,
+            );
             createResponse(res, 200, 'success', result);
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
