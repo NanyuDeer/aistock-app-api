@@ -51,6 +51,8 @@ import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerS
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
+import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
 
 // crawler 爬虫模块
@@ -323,6 +325,11 @@ app.get('/api/cn/stocks/profit-forecast/search', (req, res, next) => ProfitForec
 app.post('/api/cn/stocks/profit-forecast/batch', (req, res, next) => ProfitForecastController.batchRefresh(req, res, next));
 app.get('/api/cn/stocks/profit-forecast/batch/status', (req, res, next) => ProfitForecastController.getBatchStatus(req, res, next));
 app.post('/api/cn/stocks/ocr', (req, res, next) => StockOcrController.batchOcr(req, res, next));
+
+// 业绩报告
+app.get('/api/cn/stocks/performance-reports', (req, res, next) => PerformanceReportController.getReportList(req, res, next));
+app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => PerformanceReportController.searchReportList(req, res, next));
+app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 
@@ -612,6 +619,17 @@ cron.schedule('0 0 * * *', async () => {
     }
 });
 
+// 业绩报告自动更新：每天凌晨 01:00 执行（快报+正式报告）
+cron.schedule('0 1 * * *', async () => {
+    console.log('[PerformanceReportCron] 开始执行业绩报告自动更新');
+    try {
+        const result = await PerformanceReportAutoUpdateService.run();
+        console.log(`[PerformanceReportCron] 完成: updated=${result.updated}, skipped=${result.skipped}, errors=${result.errors}`);
+    } catch (err: any) {
+        console.error('[PerformanceReportCron] 执行失败:', err?.message || err);
+    }
+});
+
 // 股票基础数据同步：每天凌晨 00:05 执行（同步新股、更新行业等）
 cron.schedule('5 0 * * *', async () => {
     console.log('[StockSyncCron] 开始同步股票基础数据');
@@ -733,6 +751,41 @@ async function start() {
         console.log('[DB] earnings_forecast table ready');
     } catch (err: any) {
         console.warn('[DB] earnings_forecast table check:', err.message);
+    }
+
+    // 业绩报告表
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS performance_reports (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(20) NOT NULL,
+                stock_name VARCHAR(50) DEFAULT '',
+                report_type VARCHAR(20) NOT NULL,
+                ann_date VARCHAR(10) NOT NULL,
+                end_date VARCHAR(10) DEFAULT '',
+                forecast_eps NUMERIC(10,3),
+                rating VARCHAR(20) DEFAULT '',
+                org_name VARCHAR(100) DEFAULT '',
+                summary TEXT DEFAULT '',
+                total_revenue NUMERIC(20,2),
+                n_income NUMERIC(20,2),
+                n_income_attr_p NUMERIC(20,2),
+                basic_eps NUMERIC(10,3),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_performance_reports_symbol ON performance_reports(symbol)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_performance_reports_ann_date ON performance_reports(ann_date DESC)');
+        try {
+            await pool.query('ALTER TABLE performance_reports ADD CONSTRAINT performance_reports_unique UNIQUE (symbol, report_type, ann_date)');
+        } catch (e: any) {
+            if (!/already exists|duplicate/i.test(e.message)) {
+                console.warn('[DB] performance_reports UNIQUE constraint migration:', e.message);
+            }
+        }
+        console.log('[DB] performance_reports table ready');
+    } catch (err: any) {
+        console.warn('[DB] performance_reports table check:', err.message);
     }
 
     try {
