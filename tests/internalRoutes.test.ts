@@ -115,6 +115,17 @@ const mockData = {
         edges: [],
         conceptEdges: [],
     },
+    industryGraph: {
+        industries: [{ id: '881121.TI', name: '半导体', leadingStocks: [] }],
+        concepts: [],
+        edges: [],
+        updateTime: '2026-07-23T00:00:00Z',
+        industryCount: 1,
+        edgeCount: 0,
+        conceptCount: 0,
+    },
+    industryUpstream: [{ id: '881101.TI', name: '上游行业', leadingStocks: [] }],
+    industryDownstream: [{ id: '881201.TI', name: '下游行业', leadingStocks: [] }],
     hotBurst: {
         update_time: '2026-01-01T00:00:00Z',
         total_stocks_checked: 100,
@@ -142,6 +153,11 @@ function setupMocks(): void {
     const I = IndustryKGService as any
     I.getConcepts = async () => mockData.concepts
     I.getGraphByConcept = async () => mockData.graph
+    I.getFullGraph = () => mockData.industryGraph
+    I.getUpstreamDownstream = () => ({
+        upstream: mockData.industryUpstream,
+        downstream: mockData.industryDownstream,
+    })
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const H = HotBurstService as any
@@ -254,6 +270,7 @@ const endpoints: EndpointCase[] = [
     { name: 'monitor/:symbol', path: '/monitor/300059' },
     { name: 'graph/concepts', path: '/graph/concepts' },
     { name: 'graph/:concept', path: '/graph/885641.TI' },
+    { name: 'industry/:name/chain', path: '/industry/%E5%8D%8A%E5%AF%BC%E4%BD%93/chain?depth=1' },
     { name: 'institution-research', path: '/institution-research' },
     { name: 'institution-research/history', path: '/institution-research/history' },
     { name: 'market/close-snapshot', path: '/market/close-snapshot' },
@@ -305,6 +322,17 @@ async function main(): Promise<void> {
         assert.equal(res.status, 403)
     })
 
+    await runAsyncTest('GET /internal/industry/:name/chain returns 403 with wrong token', async () => {
+        const res = await makeGetRequest(
+            port,
+            '/industry/%E5%8D%8A%E5%AF%BC%E4%BD%93/chain?depth=1',
+            'wrong-token',
+        )
+        const body = res.body as { code: number }
+        assert.equal(res.status, 403)
+        assert.equal(body.code, 403)
+    })
+
     // --- 成功测试：9 个新接口在带正确 token 时返回 200 + data ---
     await runAsyncTest('GET /internal/wind-leaders returns 200 + wind leader data', async () => {
         const res = await makeGetRequest(port, '/wind-leaders', INTERNAL_TOKEN)
@@ -353,6 +381,74 @@ async function main(): Promise<void> {
         const body = res.body as { code: number; data: typeof mockData.graph }
         assert.equal(body.code, 200)
         assert.ok(Array.isArray(body.data.centerIndustries))
+    })
+
+    await runAsyncTest('GET /internal/industry/:name/chain returns source and one-hop facts', async () => {
+        let requestedDepth: number | undefined
+        const original = IndustryKGService.getUpstreamDownstream
+        ;(IndustryKGService as typeof IndustryKGService).getUpstreamDownstream = (id, depth) => {
+            requestedDepth = depth
+            assert.equal(id, '881121.TI')
+            return { upstream: mockData.industryUpstream, downstream: mockData.industryDownstream }
+        }
+        try {
+            const res = await makeGetRequest(
+                port,
+                '/industry/%E5%8D%8A%E5%AF%BC%E4%BD%93/chain?depth=1',
+                INTERNAL_TOKEN,
+            )
+            const body = res.body as {
+                code: number
+                data: {
+                    source: string
+                    industry: { id: string }
+                    upstream: typeof mockData.industryUpstream
+                    downstream: typeof mockData.industryDownstream
+                }
+            }
+            assert.equal(res.status, 200)
+            assert.equal(body.code, 200)
+            assert.equal(body.data.source, 'IndustryKGService')
+            assert.equal(body.data.industry.id, '881121.TI')
+            assert.deepEqual(body.data.upstream, mockData.industryUpstream)
+            assert.deepEqual(body.data.downstream, mockData.industryDownstream)
+            assert.equal(requestedDepth, 1)
+        } finally {
+            ;(IndustryKGService as typeof IndustryKGService).getUpstreamDownstream = original
+        }
+    })
+
+    await runAsyncTest('GET /internal/industry/:name/chain returns 404 when industry is absent', async () => {
+        const original = IndustryKGService.getFullGraph
+        ;(IndustryKGService as typeof IndustryKGService).getFullGraph = () => ({
+            ...mockData.industryGraph,
+            industries: [],
+        })
+        try {
+            const res = await makeGetRequest(port, '/industry/%E5%8D%8A%E5%AF%BC%E4%BD%93/chain', INTERNAL_TOKEN)
+            const body = res.body as { code: number; message: string }
+            assert.equal(res.status, 404)
+            assert.equal(body.code, 404)
+            assert.equal(body.message, 'Industry not found: 半导体')
+        } finally {
+            ;(IndustryKGService as typeof IndustryKGService).getFullGraph = original
+        }
+    })
+
+    await runAsyncTest('GET /internal/industry/:name/chain returns 502 when graph lookup fails', async () => {
+        const original = IndustryKGService.getFullGraph
+        ;(IndustryKGService as typeof IndustryKGService).getFullGraph = () => {
+            throw new Error('Service unavailable (mock)')
+        }
+        try {
+            const res = await makeGetRequest(port, '/industry/%E5%8D%8A%E5%AF%BC%E4%BD%93/chain', INTERNAL_TOKEN)
+            const body = res.body as { code: number; message: string }
+            assert.equal(res.status, 502)
+            assert.equal(body.code, 502)
+            assert.ok(body.message.includes('Service unavailable'))
+        } finally {
+            ;(IndustryKGService as typeof IndustryKGService).getFullGraph = original
+        }
     })
 
     await runAsyncTest('GET /internal/institution-research returns 200 + hot burst data', async () => {

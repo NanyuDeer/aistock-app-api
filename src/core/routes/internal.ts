@@ -28,6 +28,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction', 'trend_score']
+const INDUSTRY_CHAIN_SOURCE = 'IndustryKGService'
 
 const router: Router = Router()
 
@@ -458,6 +459,7 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
                 downstream,
                 graphVersion: null,  // 当前系统无版本字段
                 updatedAt: graph.updateTime,
+                source: INDUSTRY_CHAIN_SOURCE,
             },
         })
     } catch (err: unknown) {
