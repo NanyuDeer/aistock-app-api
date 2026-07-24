@@ -570,4 +570,111 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(res.status, 200);
     assert.strictEqual(upstream.requests.length, 1);
   });
+
+  // ── market-trace-qa/message 契约测试：验证反代正确转发新端点 ──
+
+  it('forwards market-trace-qa/message POST body and injects token', async () => {
+    const reqBody = JSON.stringify({
+      message: '大盘为何涨跌',
+      report_date: '2026-07-22',
+      session_id: 'mtqa_001',
+    });
+    const pythonBody = JSON.stringify({
+      content: '回答',
+      session_id: 'mtqa_001',
+      trace: {
+        artifact_id: 'review_2026-07-22',
+        sources: [],
+        as_of: '2026-07-22',
+        confidence: 'high',
+        uncertainty: [],
+        degraded: false,
+        degraded_reason: null,
+      },
+    });
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(pythonBody);
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/market-trace-qa/message',
+      headers: {
+        'content-type': 'application/json',
+        authorization: 'Bearer user-mtqa',
+      },
+      body: reqBody,
+    });
+
+    // 响应原样透传（body 未改）
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.text, pythonBody);
+    // 上游收到完整的请求体（未改）
+    assert.strictEqual(upstream.requests.length, 1);
+    assert.strictEqual(upstream.requests[0].method, 'POST');
+    assert.strictEqual(upstream.requests[0].url, '/api/agent/market-trace-qa/message');
+    assert.strictEqual(upstream.requests[0].body, reqBody);
+    // X-Internal-Token 被注入
+    assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
+  });
+
+  it('market-trace-qa/message with degraded response passes through', async () => {
+    const reqBody = JSON.stringify({ message: '海外因素有何影响' });
+    const pythonBody = JSON.stringify({
+      content: '暂时无法回答',
+      session_id: 'mtqa_x',
+      trace: {
+        artifact_id: 'review_2026-07-22',
+        sources: [],
+        as_of: '',
+        confidence: 'low',
+        uncertainty: [],
+        degraded: true,
+        degraded_reason: '当日无市场复盘报告',
+      },
+    });
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(pythonBody);
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/market-trace-qa/message',
+      headers: { 'content-type': 'application/json' },
+      body: reqBody,
+    });
+
+    // 状态 200，body 原样透传，degraded: true
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.text, pythonBody);
+    const body = JSON.parse(res.text) as { trace: { degraded: boolean } };
+    assert.strictEqual(body.trace.degraded, true);
+  });
+
+  it('market-trace-qa/message forges token prevention', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+
+    const app = buildApp(upstream.url);
+    await call(app, {
+      method: 'POST',
+      path: '/api/agent/market-trace-qa/message',
+      headers: {
+        'content-type': 'application/json',
+        // 客户端尝试伪造内网 token
+        'x-internal-token': 'forged-by-client',
+      },
+      body: JSON.stringify({ message: 'test' }),
+    });
+
+    // 代理覆写为配置的 token，伪造值不生效
+    assert.strictEqual(upstream.requests.length, 1);
+    assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
+  });
 });
