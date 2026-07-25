@@ -219,7 +219,7 @@ app.post('/api/internal/push-feishu', (req, res, next) => FeishuAuthController.p
 // 手动触发龙头股推送（测试用）
 app.post('/api/internal/push-leader', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     try {
@@ -234,7 +234,7 @@ app.post('/api/internal/push-leader', async (req, res) => {
 // 手动触发机构调研推荐热门股推送（测试用，支持传入测试数据）
 app.post('/api/internal/push-institution-research', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     try {
@@ -250,7 +250,7 @@ app.post('/api/internal/push-institution-research', async (req, res) => {
 // 手动触发自选股异动推送（测试用，支持传入测试数据）
 app.post('/api/internal/push-stock-info', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     try {
@@ -311,7 +311,7 @@ app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
 // 用于修复数据库/迁移后立即补数据，无需等到凌晨 02:00 cron
 app.post('/api/internal/trigger-trend-batch', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     if (TrendBatchService.isRunning()) {
@@ -332,7 +332,7 @@ app.post('/api/internal/trigger-trend-batch', async (req, res) => {
 // 手动触发爬虫抓取（只抓取+研判+入库，不推送）
 app.post('/api/internal/crawl/run', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     try {
@@ -346,7 +346,7 @@ app.post('/api/internal/crawl/run', async (req, res) => {
 // 手动触发爬虫完整周期（抓取+研判+入库+推送）
 app.post('/api/internal/crawl/cycle', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
-    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+    if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
         return res.status(401).json({ error: 'unauthorized' });
     }
     try {

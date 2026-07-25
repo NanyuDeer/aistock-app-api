@@ -9,7 +9,7 @@ import { WindLeaderAnalyzerService } from './WindLeaderAnalyzerService';
 import { HotKeywordDetectorService } from './HotKeywordDetectorService';
 import { HotBurstService } from './HotBurstService';
 
-const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
+const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
 
 function verifyInternalToken(req: Request): boolean {
     const headerToken = req.headers['x-internal-token'];

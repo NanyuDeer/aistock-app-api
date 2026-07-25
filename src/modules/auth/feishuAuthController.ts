@@ -307,7 +307,7 @@ export class FeishuAuthController {
             const headerToken = req.headers['x-internal-token'];
             const bearerToken = req.headers.authorization?.replace('Bearer ', '');
             const token = String(Array.isArray(headerToken) ? headerToken[0] : headerToken || '') || bearerToken || '';
-            if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+            if (token !== (process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
                 createResponse(res, 401, 'invalid internal token');
                 return;
             }

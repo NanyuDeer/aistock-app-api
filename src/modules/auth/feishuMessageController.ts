@@ -10,7 +10,7 @@ import { createResponse } from '../../shared/utils/response';
 import pool from '../../core/db';
 import { extractStockCodes, loadStockNameMap } from '../monitor/HotKeywordDetectorService';
 
-const INTERNAL_TOKEN = process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
+const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
 
 function verifyInternalToken(req: Request): boolean {
     const headerToken = req.headers['x-internal-token'];

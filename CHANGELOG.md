@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-25 — 统一内部路由 token 读取优先级（INTERNAL_API_TOKEN || INTERNAL_TOKEN）
+**开发者**: Aria
+
+### 修复
+- `src/index.ts`：6 处内部路由（push-leader / push-institution-research / push-stock-info / trigger-trend-batch / crawl/run / crawl/cycle）token 读取从 `INTERNAL_TOKEN` 改为 `INTERNAL_API_TOKEN || INTERNAL_TOKEN`，修复 `.env` 仅配置 `INTERNAL_API_TOKEN` 时 401 的问题
+- `src/modules/auth/feishuMessageController.ts`：同上统一 token 优先级
+- `src/modules/auth/feishuAuthController.ts`：同上统一 token 优先级
+- `src/modules/monitor/windLeaderController.ts`：同上统一 token 优先级
+- `src/modules/crawler/judgementController.ts`：修正 token 优先级顺序为 `INTERNAL_API_TOKEN || INTERNAL_TOKEN`（原为 `INTERNAL_TOKEN || INTERNAL_API_TOKEN`）
+
+---
+
 ## [master] 2026-07-25 — 报告降级返回 + 趋势股评分表自动迁移修复
 **开发者**: Aria
 

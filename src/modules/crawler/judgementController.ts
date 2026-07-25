@@ -4,7 +4,7 @@ import { StockInfoService } from './StockInfoService';
 import { StockInfoPushService } from './StockInfoPushService';
 
 function validateInternalToken(req: Request): boolean {
-    const expected = process.env.INTERNAL_TOKEN || process.env.INTERNAL_API_TOKEN || 'crawler-int-2026-token';
+    const expected = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
     const headerToken = req.headers['x-internal-token'];
     const bearerToken = req.headers.authorization?.replace('Bearer ', '');
     const token = String(Array.isArray(headerToken) ? headerToken[0] : headerToken || '') || bearerToken || '';
