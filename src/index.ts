@@ -307,6 +307,28 @@ app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler()
 import { createReviewTriggerHandler } from './core/routes/review_trigger_handler.js';
 app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
 
+// 手动触发趋势股批量评分（TrendBatchService.run，管理员 curl 后用 pm2 log 查看）
+// 用于修复数据库/迁移后立即补数据，无需等到凌晨 02:00 cron
+app.post('/api/internal/trigger-trend-batch', async (req, res) => {
+    const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
+    if (token !== (process.env.INTERNAL_TOKEN || 'crawler-int-2026-token')) {
+        return res.status(401).json({ error: 'unauthorized' });
+    }
+    if (TrendBatchService.isRunning()) {
+        return res.status(409).json({ error: 'batch already running', success: false });
+    }
+    try {
+        const force = req.body?.force === true || req.query.force === 'true';
+        console.log(`[ManualTrigger] trend batch start, force=${force}`);
+        const result = await TrendBatchService.run(force);
+        console.log(`[ManualTrigger] trend batch done:`, result);
+        res.json({ success: true, result });
+    } catch (err: any) {
+        console.error('[ManualTrigger] trend batch failed:', err?.message || err);
+        res.status(500).json({ error: err?.message || 'batch failed' });
+    }
+});
+
 // 手动触发爬虫抓取（只抓取+研判+入库，不推送）
 app.post('/api/internal/crawl/run', async (req, res) => {
     const token = req.headers['x-internal-token'] || req.headers.authorization?.replace('Bearer ', '');
@@ -858,6 +880,34 @@ async function start() {
         console.log('[DB] wind_leader_push_history table ready');
     } catch (err: any) {
         console.warn('[DB] wind_leader_push_history table check:', err.message);
+    }
+
+    // 趋势股评分表 — 建表 + 补列（ma60_excluded 迁移自动修复，避免漏执行 SQL 文件导致评分写入/查询全部失败）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS trend_scores (
+                symbol VARCHAR(20) NOT NULL,
+                score_date DATE NOT NULL,
+                score NUMERIC(5,1) NOT NULL DEFAULT 0,
+                label VARCHAR(4) NOT NULL DEFAULT '',
+                expected_multiple VARCHAR(20) NOT NULL DEFAULT '',
+                description TEXT,
+                ai_conclusion TEXT,
+                dim_scores JSON NOT NULL,
+                dimensions JSON NOT NULL,
+                raw_data JSON,
+                ma60_excluded BOOLEAN NOT NULL DEFAULT FALSE,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(symbol, score_date)
+            )
+        `);
+        // 补列：旧表可能缺少 ma60_excluded（幂等，已有则跳过）
+        await pool.query(`ALTER TABLE trend_scores ADD COLUMN IF NOT EXISTS ma60_excluded BOOLEAN DEFAULT FALSE`);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_date ON trend_scores(score_date)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_symbol ON trend_scores(symbol)');
+        console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
+    } catch (err: any) {
+        console.warn('[DB] trend_scores table check:', err.message);
     }
 
     try {

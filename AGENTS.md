@@ -227,12 +227,13 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 | 时间 | 任务 | 说明 |
 |------|------|------|
+| 启动时 | trend_scores 自动迁移 | CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT EXISTS ma60_excluded（堵住 deploy.sh 漏执行 SQL 的缺口） |
 | 00:00 | 业绩预测自动更新 | 同花顺数据 |
 | 00:05 | 数据同步 | — |
+| 02:00 | 趋势股批量评分 | TrendBatchService（含60日均线剔除），每天执行不检查交易日 |
 | 03:00 | 报告清理 | 删除过期 Agent 分析报告（`expires_at < NOW()`） |
 | 03:00 | 知识图谱/其他 | — |
 | 03:00 | 风口龙头分析 | WindLeaderAnalyzerService（空结果不覆盖旧数据） |
-| 02:00 | 趋势股批量评分 | TrendBatchService（含60日均线剔除） |
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |
 | 15:00 | 数据归档 | — |

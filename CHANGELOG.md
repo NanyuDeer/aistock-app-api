@@ -2,6 +2,22 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-25 — 报告降级返回 + 趋势股评分表自动迁移修复
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：周末/节假日 Agent 未生成报告时，公开路由 `/report/:intent/:date` 降级返回最近一份报告（新增 `getLatestAnalysisReport` 函数），避免前端所有报告页显示空状态
+- `src/index.ts`：新增 `trend_scores` 表自动迁移（`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS ma60_excluded`），服务重启自动补列，修复迁移 SQL 未执行导致评分数据全部丢失、API 500、trend_score 报告缺失的问题
+
+### 新增
+- `src/index.ts`：新增 `POST /api/internal/trigger-trend-batch` 管理接口，手动触发 `TrendBatchService.run()`，修复后可立即补数据无需等到 02:00
+
+### 改进
+- `AGENTS.md`：更新定时任务表格，新增趋势股自动迁移说明，调整趋势股批量评分为 02:00
+- `src/core/routes/internal.ts`：`getAnalysisReport` 的 `created_at` 改用 `AT TIME ZONE 'UTC'` 返回真 UTC 时间，与前端 `formatDateTime` 配合正确显示
+
+---
+
 ## [changer] 2026-07-21 — 收盘快照门禁：交易日历 fail-closed + 时钟边界 + 数据完整性
 
 **开发者**: 37588

@@ -864,7 +864,8 @@ async function getAnalysisReport(report_type: string, report_date: string) {
     const end = `${report_date}T23:59:59+08:00`
     const result = await pool.query(
         `SELECT id, report_type, report_date, content, data_source, status,
-                generation_time_ms, model_version, created_at
+                generation_time_ms, model_version,
+                created_at AT TIME ZONE 'UTC' AS created_at
          FROM agent_analysis_reports
          WHERE report_type = $1
            AND report_date >= $2::timestamptz
@@ -873,6 +874,25 @@ async function getAnalysisReport(report_type: string, report_date: string) {
          ORDER BY created_at DESC
          LIMIT 1`,
         [report_type, start, end]
+    )
+    return result.rows.length > 0 ? result.rows[0] : null
+}
+
+/**
+ * 查询最近一份公共分析报告（降级用：指定日期无报告时返回最近一份）。
+ * 用于周末/节假日 Agent 未生成新报告时，前端仍可展示上一份报告。
+ */
+async function getLatestAnalysisReport(report_type: string) {
+    const result = await pool.query(
+        `SELECT id, report_type, report_date, content, data_source, status,
+                generation_time_ms, model_version,
+                created_at AT TIME ZONE 'UTC' AS created_at
+         FROM agent_analysis_reports
+         WHERE report_type = $1
+           AND user_id IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1`,
+        [report_type]
     )
     return result.rows.length > 0 ? result.rows[0] : null
 }
@@ -945,7 +965,11 @@ publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) =>
     }
 
     try {
-        const result = await getAnalysisReport(intent, date)
+        let result = await getAnalysisReport(intent, date)
+        // 降级：指定日期无报告（周末/节假日 Agent 未生成）时，返回最近一份报告
+        if (!result) {
+            result = await getLatestAnalysisReport(intent)
+        }
         if (result && result.content) {
             result.content = cleanReportContent(result.content as Record<string, unknown>)
         }
