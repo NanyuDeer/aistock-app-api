@@ -475,6 +475,24 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(upstreamCalled, false, 'upstream must NOT receive trigger request through public proxy');
   });
 
+  it('rejects QA runner through public proxy (no upstream call)', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/qa/briefing/run',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ run_id: 'must-not-reach-python' }),
+    });
+
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(upstream.requests.length, 0, 'upstream must NOT receive QA runner request');
+  });
+
   it('still allows non-trigger paths like /api/agent/briefing/morning (GET)', async () => {
     const upstream = await startUpstream((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -573,21 +591,34 @@ describe('Agent reverse proxy', () => {
 
   // ── market-trace-qa/message 契约测试：验证反代正确转发新端点 ──
 
-  it('forwards market-trace-qa/message POST body and injects token', async () => {
+  it('forwards complete market-trace-qa/message trace byte-for-byte', async () => {
     const reqBody = JSON.stringify({
       message: '大盘为何涨跌',
       report_date: '2026-07-22',
       session_id: 'mtqa_001',
     });
     const pythonBody = JSON.stringify({
-      content: '回答',
+      content: '确认的市场现象：主要指数全面下跌，市场广度恶化。',
       session_id: 'mtqa_001',
       trace: {
         artifact_id: 'review_2026-07-22',
-        sources: [],
-        as_of: '2026-07-22',
-        confidence: 'high',
-        uncertainty: [],
+        sources: [
+          {
+            source_id: 'INDEX_000001_SH',
+            title: '上证指数',
+            kind: 'market_fact',
+            provider: 'tushare:index_daily',
+          },
+          {
+            source_id: 'BREADTH_ALL',
+            title: '全市场涨跌家数',
+            kind: 'market_fact',
+            provider: 'tushare:daily',
+          },
+        ],
+        as_of: '2026-07-22T15:10:00+08:00',
+        confidence: 'medium',
+        uncertainty: ['主力资金数据不可用'],
         degraded: false,
         degraded_reason: null,
       },
@@ -608,7 +639,7 @@ describe('Agent reverse proxy', () => {
       body: reqBody,
     });
 
-    // 响应原样透传（body 未改）
+    // HTTP 200 与完整 JSON body（包括来源、截止时间、置信度和不确定性）逐字透传。
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.text, pythonBody);
     // 上游收到完整的请求体（未改）
@@ -620,7 +651,7 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
   });
 
-  it('market-trace-qa/message with degraded response passes through', async () => {
+  it('forwards technical market-trace-qa degradation byte-for-byte', async () => {
     const reqBody = JSON.stringify({ message: '海外因素有何影响' });
     const pythonBody = JSON.stringify({
       content: '暂时无法回答',
@@ -648,11 +679,10 @@ describe('Agent reverse proxy', () => {
       body: reqBody,
     });
 
-    // 状态 200，body 原样透传，degraded: true
+    // 技术降级仍是 HTTP 200，且不得由代理填充来源或截至时间。
     assert.strictEqual(res.status, 200);
     assert.strictEqual(res.text, pythonBody);
-    const body = JSON.parse(res.text) as { trace: { degraded: boolean } };
-    assert.strictEqual(body.trace.degraded, true);
+    assert.deepStrictEqual(JSON.parse(res.text), JSON.parse(pythonBody));
   });
 
   it('market-trace-qa/message forges token prevention', async () => {

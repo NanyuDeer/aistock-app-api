@@ -128,6 +128,8 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
   // 匹配 /briefing/<任意单段>/trigger 及其子路径。
   // 覆盖 morning/trigger、event/trigger 及未来新增的 trigger，避免逐条枚举遗漏。
   const TRIGGER_PATTERN = /^\/briefing\/[^/]+\/trigger(\/.*)?$/;
+  // QA 编排只能由隔离环境内的回环调用，公开代理不得代为注入内部 Token。
+  const QA_PATTERN = /^\/qa(?:\/.*)?$/;
 
   // 安全：禁止通过公开代理访问 briefing trigger 路径
   // 这些路径只能通过 Node 内部路由 /api/internal/trigger-morning-briefing 访问
@@ -143,10 +145,10 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
       });
       return;
     }
-    if (TRIGGER_PATTERN.test(normalized)) {
+    if (TRIGGER_PATTERN.test(normalized) || QA_PATTERN.test(normalized)) {
       res.status(403).json({
         error: 'forbidden',
-        message: 'trigger paths are not accessible through public proxy',
+        message: 'internal-only paths are not accessible through public proxy',
       });
       return;
     }

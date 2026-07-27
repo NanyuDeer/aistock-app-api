@@ -75,11 +75,13 @@ import { closeAllAgents } from './shared/utils/httpAgent';
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { initWebSocket } from './core/ws/handler';
+import { shouldRunBackgroundJobs } from './core/qa_mode';
 
 import { Application } from 'express';
 
 const app: Application = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
+const BACKGROUND_JOBS_ENABLED = shouldRunBackgroundJobs();
 
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN || '';
 const allowedOrigins = corsAllowOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -489,12 +491,14 @@ app.get('/api/news/:id', (req, res, next) => {
 });
 
 // ==================== 行业知识图谱路由（IndustryKGService 必须先初始化） ====================
-IndustryKGService.initialize().then(() => {
-    // AiGraphService 依赖 IndustryKGService 的数据，在其初始化完成后再启动
-    return AiGraphService.initialize();
-}).catch((err: Error) => {
-    console.error('[KG/AiGraph] 初始化失败:', err);
-});
+if (BACKGROUND_JOBS_ENABLED) {
+    IndustryKGService.initialize().then(() => {
+        // AiGraphService 依赖 IndustryKGService 的数据，在其初始化完成后再启动
+        return AiGraphService.initialize();
+    }).catch((err: Error) => {
+        console.error('[KG/AiGraph] 初始化失败:', err);
+    });
+}
 app.get('/api/aigraph/concepts', (req, res, next) => AiGraphController.getConcepts(req, res, next));
 app.get('/api/aigraph/concept/:conceptCode', (req, res, next) => AiGraphController.getGraph(req, res, next));
 app.post('/api/aigraph/graph', (req, res, next) => AiGraphController.getGraph(req, res, next));
@@ -517,6 +521,7 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
     res.status(500).json({ code: 500, message: err.message || 'Internal Server Error' });
 });
 
+if (BACKGROUND_JOBS_ENABLED) {
 // 趋势股批量评分 — 每天凌晨2点（刷新板块轮动缓存后执行）
 cron.schedule('0 2 * * *', async () => {
     console.log('[TrendCron] 开始批量趋势股评分');
@@ -696,6 +701,7 @@ cron.schedule('*/10 * * * *', () => {
         `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
     );
 }, { timezone: 'Asia/Shanghai' });
+}
 
 async function start() {
     try {
@@ -919,6 +925,10 @@ async function start() {
 
     const server = app.listen(PORT, '0.0.0.0', () => {
         console.log(`[Server] aistock-app-api running on http://0.0.0.0:${PORT}`);
+        if (!BACKGROUND_JOBS_ENABLED) {
+            console.log('[Server] QA_MODE=true，后台调度和启动同步已禁用');
+            return;
+        }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
         // 异步同步个股-板块映射（不阻塞启动，首次启动时填充空表）
