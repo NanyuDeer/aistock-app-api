@@ -698,4 +698,73 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body.data.total, 5);
         assert.strictEqual(body.data.hasMore, true);
     });
+
+    it('GET /internal/analysis-reports/:type/:date/list 返回同日事件数组而非把 list 当作 userId', async () => {
+        let listSql = '';
+        let listParams: unknown[] = [];
+        mockResponder = (sql: string, params: unknown[]) => {
+            listSql = sql;
+            listParams = params;
+            return {
+                rows: [
+                    {
+                        id: 8,
+                        report_type: 'event_conduction',
+                        report_date: '2026-07-24',
+                        user_id: 'evt_real',
+                        content: { analysis_reports: {} },
+                        data_source: 'event_agent_v3',
+                        status: 'completed',
+                        created_at: '2026-07-24T09:00:00Z',
+                    },
+                ],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/internal/analysis-reports/event_conduction/2026-07-24/list',
+            headers: { 'x-internal-token': INTERNAL_TOKEN },
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { code: number; data: unknown };
+        assert.strictEqual(body.code, 200);
+        assert.ok(Array.isArray(body.data));
+        assert.strictEqual(body.data.length, 1);
+        assert.deepStrictEqual(listParams, ['event_conduction', '2026-07-24']);
+        assert.doesNotMatch(listSql, /user_id\s*=\s*\$3/i);
+        assert.match(listSql, /report_date::text\s+AS\s+report_date/i);
+    });
+
+    it('GET /internal/analysis-reports/:type/:date 将 PostgreSQL DATE 投影为日期字符串', async () => {
+        let readSql = '';
+        mockResponder = (sql: string) => {
+            readSql = sql;
+            return {
+                rows: [{
+                    id: 9,
+                    report_type: 'brief_morning',
+                    report_date: '2026-07-24',
+                    content: {},
+                    data_source: 'brief_aggregator',
+                    status: 'completed',
+                    created_at: '2026-07-24T09:00:00Z',
+                }],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/internal/analysis-reports/brief_morning/2026-07-24',
+            headers: { 'x-internal-token': INTERNAL_TOKEN },
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { data: { report_date: string } };
+        assert.strictEqual(body.data.report_date, '2026-07-24');
+        assert.match(readSql, /report_date::text\s+AS\s+report_date/i);
+    });
 });

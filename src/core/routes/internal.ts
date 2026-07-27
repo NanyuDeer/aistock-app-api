@@ -650,8 +650,8 @@ router.get('/analysis-reports/:type/:date', async (req: Request, res: Response) 
 
     try {
         const result = await pool.query(
-            `SELECT id, report_type, report_date, content, data_source, status,
-                    generation_time_ms, model_version, created_at
+        `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                generation_time_ms, model_version, created_at
              FROM agent_analysis_reports
              WHERE report_type = $1 AND report_date = $2 AND user_id IS NULL
              LIMIT 1`,
@@ -665,6 +665,38 @@ router.get('/analysis-reports/:type/:date', async (req: Request, res: Response) 
         res.json({ code: 200, data: result.rows[0] })
     } catch (err: unknown) {
         console.error('[Internal] analysis-reports GET error:', errMsg(err))
+        res.status(500).json({ code: 500, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/analysis-reports/:type/:date/list
+ * 查询同一类型、同一日期的全部报告。事件传导会以 event_id 写入 user_id，
+ * 因此 Brief 构建需要该只读列表而不是公共报告的单条读取接口。
+ */
+router.get('/analysis-reports/:type/:date/list', async (req: Request, res: Response) => {
+    const report_type = param(req, 'type')
+    const report_date = param(req, 'date')
+
+    if (!VALID_REPORT_TYPES.includes(report_type)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_type: ${report_type}` })
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(report_date)) {
+        return res.status(400).json({ code: 400, message: `Invalid report_date format: ${report_date}` })
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, user_id, content, data_source, status,
+                    generation_time_ms, model_version, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = $1 AND report_date = $2
+             ORDER BY created_at DESC`,
+            [report_type, report_date]
+        )
+        res.json({ code: 200, data: result.rows })
+    } catch (err: unknown) {
+        console.error('[Internal] analysis-reports list GET error:', errMsg(err))
         res.status(500).json({ code: 500, message: errMsg(err) })
     }
 })
@@ -888,7 +920,7 @@ async function getAnalysisReport(report_type: string, report_date: string) {
     const start = `${report_date}T00:00:00+08:00`
     const end = `${report_date}T23:59:59+08:00`
     const result = await pool.query(
-        `SELECT id, report_type, report_date, content, data_source, status,
+        `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
                 generation_time_ms, model_version,
                 created_at AT TIME ZONE 'UTC' AS created_at
          FROM agent_analysis_reports

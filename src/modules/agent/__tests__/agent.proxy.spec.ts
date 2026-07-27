@@ -475,6 +475,24 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(upstreamCalled, false, 'upstream must NOT receive trigger request through public proxy');
   });
 
+  it('rejects QA runner through public proxy (no upstream call)', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/qa/briefing/run',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ run_id: 'must-not-reach-python' }),
+    });
+
+    assert.strictEqual(res.status, 403);
+    assert.strictEqual(upstream.requests.length, 0, 'upstream must NOT receive QA runner request');
+  });
+
   it('still allows non-trigger paths like /api/agent/briefing/morning (GET)', async () => {
     const upstream = await startUpstream((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
