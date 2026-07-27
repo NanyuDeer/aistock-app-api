@@ -17,7 +17,7 @@ import internalRouter from '../src/core/routes/internal'
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
-import { IndustryKGService } from '../src/modules/monitor/IndustryKGService'
+import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 
 // MarketSnapshotService 通过 __marketSnapshotDependencies 注入依赖（Task 1 已建立），
@@ -45,6 +45,28 @@ import { closeAllAgents } from '../src/shared/utils/httpAgent'
 // 与 internal.ts 中 verifyInternalToken 使用相同的 token 读取逻辑
 const INTERNAL_TOKEN =
     process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production'
+
+const realGetUpstreamDownstream = IndustryKGService.getUpstreamDownstream
+const ONE_HOP_GRAPH: KGFullGraph = {
+    industries: [
+        { id: 'U2', name: '二跳上游', leadingStocks: [] },
+        { id: 'U1', name: '一跳上游', leadingStocks: [] },
+        { id: 'C', name: '中心行业', leadingStocks: [] },
+        { id: 'D1', name: '一跳下游', leadingStocks: [] },
+        { id: 'D2', name: '二跳下游', leadingStocks: [] },
+    ],
+    edges: [
+        { source: 'U2', target: 'U1', confidence: 'ai_strong', direction: 'upstream' },
+        { source: 'U1', target: 'C', confidence: 'ai_strong', direction: 'upstream' },
+        { source: 'C', target: 'D1', confidence: 'ai_strong', direction: 'upstream' },
+        { source: 'D1', target: 'D2', confidence: 'ai_strong', direction: 'upstream' },
+    ],
+    concepts: [],
+    updateTime: '2026-07-24T00:00:00Z',
+    industryCount: 5,
+    edgeCount: 4,
+    conceptCount: 0,
+}
 
 // ==================== 测试工具函数 ====================
 
@@ -147,6 +169,19 @@ function setupMocks(): void {
     const H = HotBurstService as any
     H.getHotBurst = async () => mockData.hotBurst
     H.getHotBurstHistory = async () => mockData.hotBurstHistory
+}
+
+async function withRealOneHopGraph(fn: () => Promise<void>): Promise<void> {
+    const originalGetFullGraph = IndustryKGService.getFullGraph
+    const originalGetUpstreamDownstream = IndustryKGService.getUpstreamDownstream
+    IndustryKGService.getFullGraph = () => ONE_HOP_GRAPH
+    IndustryKGService.getUpstreamDownstream = realGetUpstreamDownstream
+    try {
+        await fn()
+    } finally {
+        IndustryKGService.getFullGraph = originalGetFullGraph
+        IndustryKGService.getUpstreamDownstream = originalGetUpstreamDownstream
+    }
 }
 
 /** 临时替换某个 Service 方法为抛出异常的版本，测试完后恢复 */
@@ -353,6 +388,53 @@ async function main(): Promise<void> {
         const body = res.body as { code: number; data: typeof mockData.graph }
         assert.equal(body.code, 200)
         assert.ok(Array.isArray(body.data.centerIndustries))
+    })
+
+    await runAsyncTest('GET /internal/industry/:name/chain只接受精确 depth=1，并只返回一跳节点', async () => {
+        await withRealOneHopGraph(async () => {
+            let traversalCalls = 0
+            const originalGetUpstreamDownstream = IndustryKGService.getUpstreamDownstream
+            IndustryKGService.getUpstreamDownstream = (...args) => {
+                traversalCalls += 1
+                return originalGetUpstreamDownstream.call(IndustryKGService, ...args)
+            }
+            try {
+                const invalid = await makeGetRequest(
+                    port,
+                    '/industry/%E4%B8%AD%E5%BF%83%E8%A1%8C%E4%B8%9A/chain?depth=1.0',
+                    INTERNAL_TOKEN,
+                )
+                assert.equal(invalid.status, 400)
+                assert.equal(traversalCalls, 0)
+
+                for (const query of ['depth%5Braw%5D=1', 'depth%5B%5D=1']) {
+                    const nested = await makeGetRequest(
+                        port,
+                        `/industry/%E4%B8%AD%E5%BF%83%E8%A1%8C%E4%B8%9A/chain?${query}`,
+                        INTERNAL_TOKEN,
+                    )
+                    assert.equal(nested.status, 400, query)
+                    assert.equal(traversalCalls, 0, `${query} must not call IndustryKGService`)
+                }
+
+                const valid = await makeGetRequest(
+                    port,
+                    '/industry/%E4%B8%AD%E5%BF%83%E8%A1%8C%E4%B8%9A/chain?depth=1',
+                    INTERNAL_TOKEN,
+                )
+                const data = (valid.body as { data: {
+                    source: string
+                    upstream: Array<{ id: string }>
+                    downstream: Array<{ id: string }>
+                } }).data
+                assert.equal(valid.status, 200)
+                assert.equal(data.source, 'IndustryKGService')
+                assert.deepEqual(data.upstream.map((industry) => industry.id), ['U1'])
+                assert.deepEqual(data.downstream.map((industry) => industry.id), ['D1'])
+            } finally {
+                IndustryKGService.getUpstreamDownstream = originalGetUpstreamDownstream
+            }
+        })
     })
 
     await runAsyncTest('GET /internal/institution-research returns 200 + hot burst data', async () => {

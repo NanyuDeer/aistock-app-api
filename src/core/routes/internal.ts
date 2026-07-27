@@ -27,7 +27,11 @@ import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotServic
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = ['morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate', 'broadcast', 'event_conduction', 'trend_score']
+const VALID_REPORT_TYPES = [
+    'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
+    'broadcast', 'event_conduction', 'trend_score',
+    'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
+]
 
 const router: Router = Router()
 
@@ -426,7 +430,27 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
         return res.status(400).json({ code: 400, message: 'Industry name is required' })
     }
 
-    const depth = queryInt(req, 'depth', 1)
+    const rawQuery = req.originalUrl.includes('?') ? req.originalUrl.split('?', 2)[1] : ''
+    const rawDepthParams = rawQuery.split('&').filter((part) => {
+        const rawKey = part.split('=', 1)[0]
+        try {
+            return decodeURIComponent(rawKey).toLowerCase().startsWith('depth')
+        } catch {
+            return rawKey.toLowerCase().startsWith('depth')
+        }
+    })
+    const rawDepth = req.query.depth
+    if (
+        (rawDepthParams.length > 0
+            && (rawDepthParams.length !== 1 || rawDepthParams[0] !== 'depth=1'))
+        || (rawDepth !== undefined && (typeof rawDepth !== 'string' || rawDepth !== '1'))
+    ) {
+        return res.status(400).json({
+            code: 400,
+            message: 'depth must be omitted or exactly "1" (one-hop only)',
+        })
+    }
+    const depth = 1
 
     try {
         // 1. 获取完整图谱数据
@@ -454,6 +478,7 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
                     id: industry.id,
                     name: industry.name,
                 },
+                source: 'IndustryKGService',
                 upstream,
                 downstream,
                 graphVersion: null,  // 当前系统无版本字段
@@ -807,12 +832,12 @@ router.post('/industries/semantic-search', async (req: Request, res: Response) =
 import path from 'path'
 import fs from 'fs'
 import { randomUUID } from 'crypto'
-import { AzureMultiVoiceTtsProvider, parseBroadcastDialogue } from '../services/tts.service'
+import { AzureMultiVoiceTtsProvider, type DialogueLine } from '../services/tts.service'
 import { readVolcenginePodcastOptions, VolcenginePodcastProvider } from '../services/volcenginePodcast.service'
 
 const publicRouter: Router = Router()
 
-async function synthesizeBroadcast(lines: ReturnType<typeof parseBroadcastDialogue>): Promise<Buffer> {
+async function synthesizeBroadcast(lines: DialogueLine[]): Promise<Buffer> {
     const provider = process.env.TTS_PROVIDER || 'azure'
     if (provider === 'volcengine_podcast') {
         return new VolcenginePodcastProvider(readVolcenginePodcastOptions(process.env)).synthesize(lines)
@@ -908,16 +933,26 @@ router.post('/briefing/generate-audio', json(), async (req: Request, res: Respon
         return
     }
 
+    const requestedBriefType = req.body?.brief_type
+    if (requestedBriefType !== 'morning' && requestedBriefType !== 'evening') {
+        res.status(400).json({ code: 400, message: 'brief_type must be morning or evening' })
+        return
+    }
+    const briefType: 'morning' | 'evening' = requestedBriefType
+    const reportType = BROADCAST_REPORT_TYPES[briefType]
+    const filename = `broadcast-${briefType}-${date}.mp3`
+
     try {
-        const report = await getAnalysisReport('broadcast', date)
-        const text = (report?.content as { text?: unknown } | undefined)?.text
-        if (!report || !text) {
+        const [report, sourceBrief] = await Promise.all([
+            getAnalysisReport(reportType, date),
+            getAnalysisReport(BRIEF_REPORT_TYPES[briefType], date),
+        ])
+        if (!isInternalBroadcastReadyForAudio(report, briefType, reportType, date, sourceBrief)) {
             res.status(404).json({ code: 404, message: '播报报告不存在' })
             return
         }
 
-        const audio = await synthesizeBroadcast(parseBroadcastDialogue(text))
-        const filename = `broadcast-${date}.mp3`
+        const audio = await synthesizeBroadcast(report.content.dialogue as DialogueLine[])
         const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
         const filePath = path.join(audioDir, filename)
         const tempPath = `${filePath}.${randomUUID()}.part`
@@ -930,12 +965,280 @@ router.post('/briefing/generate-audio', json(), async (req: Request, res: Respon
             `UPDATE agent_analysis_reports
              SET content = jsonb_set(content, '{audio_path}', to_jsonb($2::text), true)
              WHERE id = $1`,
-            [report.id, audioPath]
+            [(report as Record<string, unknown>).id, audioPath]
         )
         res.json({ code: 0, data: { audio_path: audioPath }, message: '' })
     } catch (err: unknown) {
         console.error('[Internal] briefing/generate-audio error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+const BRIEF_REPORT_TYPES = {
+    morning: 'brief_morning',
+    evening: 'brief_evening',
+} as const
+
+const BROADCAST_REPORT_TYPES = {
+    morning: 'broadcast_morning',
+    evening: 'broadcast_evening',
+} as const
+
+const BRIEF_SOURCE_REPORT_TYPES = new Set<string>([
+    'morning', 'wind_leader', 'alert', 'hot_burst', 'review', 'iterate',
+    'event_conduction', 'trend_score', 'market_snapshot',
+])
+
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.trim().length > 0
+}
+
+function isNonEmptyTimestamp(value: unknown): boolean {
+    return (isNonEmptyString(value) && !Number.isNaN(Date.parse(value)))
+        || (value instanceof Date && !Number.isNaN(value.getTime()))
+}
+
+function isCalendarDate(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+    const parsed = new Date(`${value}T00:00:00.000Z`)
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
+}
+
+function reportDateMatches(value: unknown, expectedDate: string): boolean {
+    if (!isCalendarDate(expectedDate)) return false
+    if (typeof value === 'string') return isCalendarDate(value) && value === expectedDate
+    return value instanceof Date && !Number.isNaN(value.getTime())
+        && value.toISOString().slice(0, 10) === expectedDate
+}
+
+function hasValidDegradation(content: Record<string, unknown>): boolean {
+    if (typeof content.degraded !== 'boolean' || !Array.isArray(content.missing_sources)) return false
+    const missingSources = content.missing_sources
+    return missingSources.every(
+        (source) => isNonEmptyString(source) && BRIEF_SOURCE_REPORT_TYPES.has(source),
+    )
+        && new Set(missingSources).size === missingSources.length
+        && (content.degraded ? missingSources.length > 0 : missingSources.length === 0)
+}
+
+function looksLikeRawJson(text: unknown): boolean {
+    if (typeof text !== 'string') return false
+    const stripped = text.trimStart()
+    if (!stripped.startsWith('{') && !stripped.startsWith('[')) return false
+    try {
+        JSON.parse(stripped)
+    } catch {
+        return false
+    }
+    return true
+}
+
+function isBriefEvidence(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const evidence = value as Record<string, unknown>
+    return ['id', 'report_type', 'data_source', 'created_at'].every(
+        (key) => isNonEmptyString(evidence[key]),
+    ) && BRIEF_SOURCE_REPORT_TYPES.has(evidence.report_type as string)
+        && isNonEmptyTimestamp(evidence.created_at)
+}
+
+function isBriefItem(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const item = value as Record<string, unknown>
+    const uncertainty = item.uncertainty
+    const hasUncertainty = isNonEmptyString(uncertainty)
+        || (Array.isArray(uncertainty) && uncertainty.length > 0 && uncertainty.every(isNonEmptyString))
+    return ['title', 'conclusion', 'as_of', 'confidence'].every((key) => isNonEmptyString(item[key]))
+        && hasUncertainty
+        && !looksLikeRawJson(item.conclusion)
+        && Array.isArray(item.evidence)
+        && item.evidence.length > 0
+        && item.evidence.every(isBriefEvidence)
+}
+
+function isPublicBriefReport(
+    value: unknown,
+    expectedBriefType: 'morning' | 'evening',
+    expectedReportType: string,
+    expectedDate: string,
+): value is { id: number; content: Record<string, unknown> } {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const report = value as Record<string, unknown>
+    if (typeof report.id !== 'number' || !Number.isInteger(report.id) || report.id <= 0
+        || report.report_type !== expectedReportType
+        || !reportDateMatches(report.report_date, expectedDate)
+        || report.status !== 'completed'
+        || !isNonEmptyString(report.data_source)
+        || !isNonEmptyTimestamp(report.created_at)
+        || !report.content || typeof report.content !== 'object' || Array.isArray(report.content)) return false
+
+    const content = report.content as Record<string, unknown>
+    return content.schema_version === 'brief.v1'
+        && content.brief_type === expectedBriefType
+        && isNonEmptyTimestamp(content.as_of)
+        && hasValidDegradation(content)
+        && Array.isArray(content.items)
+        && content.items.length <= 5
+        && content.items.every(isBriefItem)
+        && (content.degraded === true || content.items.length >= 3)
+}
+
+function publicBriefProjection(content: Record<string, unknown>): Record<string, unknown> {
+    return {
+        schema_version: content.schema_version,
+        brief_type: content.brief_type,
+        as_of: content.as_of,
+        items: (content.items as Record<string, unknown>[]).map((item) => ({
+            title: item.title,
+            conclusion: item.conclusion,
+            evidence: (item.evidence as Record<string, unknown>[]).map((evidence) => ({
+                report_type: evidence.report_type,
+                id: evidence.id,
+                data_source: evidence.data_source,
+                created_at: evidence.created_at,
+            })),
+            as_of: item.as_of,
+            confidence: item.confidence,
+            uncertainty: item.uncertainty,
+        })),
+        degraded: content.degraded,
+        missing_sources: content.missing_sources,
+    }
+}
+
+function isValidatedBroadcastReport(
+    value: unknown,
+    expectedBriefType: 'morning' | 'evening',
+    expectedReportType: string,
+    expectedDate: string,
+    sourceBrief: unknown,
+    expectedAudioPath: string | null,
+): value is { id: number; content: Record<string, unknown> } {
+    if (!isPublicBriefReport(sourceBrief, expectedBriefType, BRIEF_REPORT_TYPES[expectedBriefType], expectedDate)
+        || !value || typeof value !== 'object' || Array.isArray(value)) return false
+    const report = value as Record<string, unknown>
+    const content = report.content as Record<string, unknown>
+    if (typeof report.id !== 'number' || !Number.isInteger(report.id) || report.id <= 0
+        || report.report_type !== expectedReportType
+        || !reportDateMatches(report.report_date, expectedDate)
+        || report.status !== 'completed'
+        || !isNonEmptyString(report.data_source)
+        || !isNonEmptyTimestamp(report.created_at)
+        || !content || typeof content !== 'object' || Array.isArray(content)
+        || content.schema_version !== 'broadcast.v1'
+        || content.brief_type !== expectedBriefType
+        || !hasValidDegradation(content)
+        || !Array.isArray(content.dialogue)
+        || content.dialogue.length === 0
+        || !content.dialogue.every((line) => {
+            if (!line || typeof line !== 'object' || Array.isArray(line)) return false
+            const dialogue = line as Record<string, unknown>
+            return (dialogue.role === 'host' || dialogue.role === 'analyst')
+                && isNonEmptyString(dialogue.content)
+                && !looksLikeRawJson(dialogue.content)
+        })) return false
+
+    const source = content.source_brief
+    const sourceBriefContent = sourceBrief.content
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return false
+    const sourceRecord = source as Record<string, unknown>
+    if (String(sourceRecord.id) !== String(sourceBrief.id)
+        || sourceRecord.report_type !== BRIEF_REPORT_TYPES[expectedBriefType]
+        || !reportDateMatches(sourceRecord.report_date, expectedDate)
+        || !isNonEmptyTimestamp(sourceRecord.as_of)
+        || sourceRecord.as_of !== sourceBriefContent.as_of
+        || content.degraded !== sourceBriefContent.degraded
+        || JSON.stringify(content.missing_sources) !== JSON.stringify(sourceBriefContent.missing_sources)) return false
+
+    return content.audio_path === expectedAudioPath
+}
+
+function publicBroadcastProjection(content: Record<string, unknown>): Record<string, unknown> {
+    const sourceBrief = content.source_brief as Record<string, unknown>
+    return {
+        schema_version: content.schema_version,
+        brief_type: content.brief_type,
+        source_brief: {
+            id: sourceBrief.id,
+            report_type: sourceBrief.report_type,
+            report_date: sourceBrief.report_date,
+            as_of: sourceBrief.as_of,
+        },
+        degraded: content.degraded,
+        missing_sources: [...(content.missing_sources as string[])],
+        dialogue: (content.dialogue as Record<string, unknown>[]).map((line) => ({
+            role: line.role,
+            content: line.content,
+        })),
+        audio_path: content.audio_path,
+    }
+}
+
+function isInternalBroadcastReadyForAudio(
+    value: unknown,
+    briefType: 'morning' | 'evening',
+    reportType: string,
+    date: string,
+    sourceBrief: unknown,
+): value is { id: number; content: Record<string, unknown> } {
+    return isValidatedBroadcastReport(value, briefType, reportType, date, sourceBrief, null)
+}
+
+async function serveBrief(req: Request, res: Response): Promise<void> {
+    const briefType = param(req, 'briefType')
+    const date = param(req, 'date')
+    if (briefType !== 'morning' && briefType !== 'evening') {
+        res.status(400).json({ code: -1, message: `Invalid brief_type: ${briefType}` })
+        return
+    }
+    if (!isCalendarDate(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+    try {
+        const result = await getAnalysisReport(BRIEF_REPORT_TYPES[briefType], date)
+        res.json({
+            code: 0,
+            data: isPublicBriefReport(result, briefType, BRIEF_REPORT_TYPES[briefType], date)
+                ? publicBriefProjection(result.content)
+                : null,
+        })
+    } catch (err: unknown) {
+        console.error('[Public] brief artifact GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+}
+
+publicRouter.get('/brief/:briefType/:date', async (req: Request, res: Response) => {
+    await serveBrief(req, res)
+})
+
+publicRouter.get('/broadcast/:briefType/:date', async (req: Request, res: Response) => {
+    const briefType = param(req, 'briefType')
+    const date = param(req, 'date')
+    if (briefType !== 'morning' && briefType !== 'evening') {
+        res.status(400).json({ code: -1, message: `Invalid brief_type: ${briefType}` })
+        return
+    }
+    if (!isCalendarDate(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+    try {
+        const [broadcast, sourceBrief] = await Promise.all([
+            getAnalysisReport(BROADCAST_REPORT_TYPES[briefType], date),
+            getAnalysisReport(BRIEF_REPORT_TYPES[briefType], date),
+        ])
+        res.json({
+            code: 0,
+            data: isValidatedBroadcastReport(
+                broadcast, briefType, BROADCAST_REPORT_TYPES[briefType], date, sourceBrief,
+                `/api/agent/audio/broadcast-${briefType}-${date}.mp3`,
+            ) ? publicBroadcastProjection(broadcast.content) : null,
+        })
+    } catch (err: unknown) {
+        console.error('[Public] broadcast artifact GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
     }
 })
 
@@ -955,7 +1258,10 @@ publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) =>
     const intent = param(req, 'intent')
     const date = param(req, 'date')
 
-    if (!VALID_REPORT_TYPES.includes(intent)) {
+    if (intent === 'stock' || intent === 'market_snapshot' || intent === 'iterate'
+        || intent === 'broadcast'
+        || intent.startsWith('brief_') || intent.startsWith('broadcast_')
+        || !VALID_REPORT_TYPES.includes(intent)) {
         res.status(400).json({ code: -1, message: `Invalid intent: ${intent}` })
         return
     }
