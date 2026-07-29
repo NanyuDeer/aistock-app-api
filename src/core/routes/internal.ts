@@ -29,7 +29,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
-    'broadcast', 'event_conduction', 'trend_score',
+    'broadcast', 'event_conduction', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
 ]
 
@@ -1412,6 +1412,116 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
     } catch (err: unknown) {
         console.error('[Public] agent/event/list error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/event/highlights
+ * 焦点事件列表（公开接口，供页面顶部焦点区域展示）
+ *
+ * 数据来源：
+ * 1. global_importance 评估结果 → 获取已排序的焦点事件列表
+ * 2. event_conduction 详情 → 补充事件标题/摘要展示信息
+ *
+ * 返回按重要性排序的 Top 5 焦点事件。
+ * 与 event/list 完全隔离，不修改 event/list 的排序逻辑。
+ */
+publicRouter.get('/event/highlights', async (req: Request, res: Response) => {
+    try {
+        // ── 查询最新的 global_importance 报告 ──
+        const giResult = await pool.query(
+            `SELECT content, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'global_importance' AND status = 'completed'
+             ORDER BY created_at DESC
+             LIMIT 1`
+        )
+
+        // 情况 1：没有 global_importance 数据
+        if (giResult.rows.length === 0) {
+            res.json({
+                success: true,
+                code: 'NO_DATA',
+                data: { events: [] },
+            })
+            return
+        }
+
+        const giContent = giResult.rows[0]['content'] as Record<string, unknown> || {}
+        const rawEvents = giContent['events'] as Array<Record<string, unknown>> || []
+
+        if (!Array.isArray(rawEvents) || rawEvents.length === 0) {
+            res.json({
+                success: true,
+                code: 'NO_DATA',
+                data: { events: [] },
+            })
+            return
+        }
+
+        // ── 按 rank 排序（确保顺序） ──
+        const sorted = [...rawEvents].sort((a, b) =>
+            (Number(a['rank']) || 999) - (Number(b['rank']) || 999)
+        )
+
+        // ── 最多返回 5 个焦点事件 ──
+        const MAX_HIGHLIGHTS = 5
+        const topEvents = sorted.slice(0, MAX_HIGHLIGHTS)
+
+        // ── 补充 event_conduction 展示字段 ──
+        const enriched = await Promise.all(topEvents.map(async (ev) => {
+            const eventId = String(ev['event_id'] || '')
+
+            let title = ''
+            let summary = ''
+
+            if (eventId) {
+                try {
+                    const detailResult = await pool.query(
+                        `SELECT content FROM agent_analysis_reports
+                         WHERE report_type = 'event_conduction' AND user_id = $1
+                         ORDER BY created_at DESC
+                         LIMIT 1`,
+                        [eventId]
+                    )
+
+                    if (detailResult.rows.length > 0) {
+                        const detailContent = detailResult.rows[0]['content'] as Record<string, unknown> || {}
+                        title = String(detailContent['title'] || '')
+                        const ar = (detailContent['analysis_reports'] as Record<string, unknown>) || {}
+                        const eu = (ar['event_understanding'] as Record<string, unknown>) || {}
+                        summary = String(eu['summary'] || '')
+                    }
+                } catch {
+                    // 单个事件详情缺失不影响整体
+                }
+            }
+
+            return {
+                event_id: eventId,
+                title,
+                summary,
+                rank: Number(ev['rank']) || 0,
+                importance_score: Number(ev['importance_score']) || 0,
+                importance_level: String(ev['importance_level'] || ''),
+                direction: String(ev['direction'] || ''),
+                impact_scope: String(ev['impact_scope'] || ''),
+                impact_period: String(ev['impact_period'] || ''),
+                reason: String(ev['reason'] || ''),
+            }
+        }))
+
+        res.json({
+            success: true,
+            data: { events: enriched },
+        })
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/highlights error:', errMsg(err))
+        res.status(502).json({
+            success: false,
+            code: 'SERVICE_ERROR',
+            message: '焦点事件服务暂不可用',
+        })
     }
 })
 
