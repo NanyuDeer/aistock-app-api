@@ -1,7 +1,7 @@
 /**
  * 业绩报告自动更新服务
  *
- * 每天凌晨 01:00 定时执行，从 Tushare 获取业绩快报（预告）+ 正式报告数据。
+ * 每天凌晨 00:00 定时执行，从 Tushare 获取业绩快报（预告）+ 正式报告数据。
  *
  * 数据源：
  * - Tushare forecast 接口：业绩快报/预告（含净利润变动、摘要）
@@ -17,6 +17,7 @@
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
+import { AiTagService } from './AiTagService';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -254,6 +255,8 @@ export class PerformanceReportAutoUpdateService {
 
                     if (expressUpdated || formalUpdated) {
                         updated++;
+                        // 为新插入的报告计算并更新 ai_tag
+                        await PerformanceReportAutoUpdateService.updateAiTags(symbol);
                     } else {
                         skipped++;
                     }
@@ -293,6 +296,53 @@ export class PerformanceReportAutoUpdateService {
             return result.rows[0]?.name || '';
         } catch {
             return '';
+        }
+    }
+
+    /**
+     * 更新指定股票所有最新报告的 ai_tag
+     * 使用 AiTagService 计算标签并写入数据库
+     */
+    private static async updateAiTags(symbol: string): Promise<void> {
+        // 1. 查出所有需要更新标签的正式报告
+        const formalRows = await pool.query(
+            `SELECT end_date, total_revenue, n_income_attr_p, report_type
+             FROM performance_reports
+             WHERE symbol = $1 AND report_type IN ('formal', 'express')
+               AND n_income_attr_p IS NOT NULL
+             ORDER BY end_date ASC`,
+            [symbol]
+        );
+        if (formalRows.rows.length === 0) return;
+
+        // 2. 逐条计算标签并 UPDATE
+        let prevRev: number | null = null;
+        let prevProfit: number | null = null;
+
+        for (const row of formalRows.rows) {
+            let tag: string;
+            if (row.report_type === 'formal') {
+                const result = await AiTagService.computeForFormal(
+                    symbol, row.end_date, row.total_revenue, row.n_income_attr_p
+                );
+                tag = result;
+            } else {
+                const result = await AiTagService.computeForExpress(
+                    symbol, row.end_date, row.n_income_attr_p
+                );
+                tag = result;
+            }
+
+            await pool.query(
+                `UPDATE performance_reports SET ai_tag = $1
+                 WHERE symbol = $2 AND end_date = $3 AND report_type = $4`,
+                [tag, symbol, row.end_date, row.report_type]
+            );
+
+            if (row.report_type === 'formal') {
+                prevRev = row.total_revenue;
+                prevProfit = row.n_income_attr_p;
+            }
         }
     }
 

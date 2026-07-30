@@ -395,6 +395,8 @@ app.post('/api/cn/stocks/ocr', (req, res, next) => StockOcrController.batchOcr(r
 app.get('/api/cn/stocks/performance-reports', (req, res, next) => PerformanceReportController.getReportList(req, res, next));
 app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => PerformanceReportController.searchReportList(req, res, next));
 app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
+app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
+app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 
@@ -676,8 +678,8 @@ cron.schedule('0 0 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-// 业绩报告自动更新：每天凌晨 01:00 执行（快报+正式报告）
-cron.schedule('0 1 * * *', async () => {
+// 业绩报告自动更新：每天凌晨 00:00 执行（快报+正式报告）
+cron.schedule('0 0 * * *', async () => {
     console.log('[PerformanceReportCron] 开始执行业绩报告自动更新');
     try {
         const result = await PerformanceReportAutoUpdateService.run();
@@ -871,6 +873,40 @@ async function start() {
             }
         }
         console.log('[DB] performance_reports table ready');
+
+        // 确保 ai_tag 列存在（后续迁移）
+        try {
+            const hasAiTag = await pool.query(`
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'performance_reports' AND column_name = 'ai_tag'
+            `);
+            if (hasAiTag.rows.length === 0) {
+                await pool.query('ALTER TABLE performance_reports ADD COLUMN ai_tag VARCHAR(20) DEFAULT NULL');
+                console.log('[DB] performance_reports.ai_tag column added');
+            }
+        } catch (e: any) {
+            console.warn('[DB] ai_tag column migration:', e.message);
+        }
+
+        // 创建 stock_ai_scores 表（存储四维评分缓存）
+        try {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS stock_ai_scores (
+                    symbol VARCHAR(20) PRIMARY KEY,
+                    total_score NUMERIC(5,1),
+                    rating VARCHAR(10),
+                    dimensions JSONB DEFAULT '[]',
+                    strengths TEXT[] DEFAULT '{}',
+                    risks TEXT[] DEFAULT '{}',
+                    data_period VARCHAR(50) DEFAULT '',
+                    report_count INT DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            console.log('[DB] stock_ai_scores table ready');
+        } catch (e: any) {
+            console.warn('[DB] stock_ai_scores table:', e.message);
+        }
     } catch (err: any) {
         console.warn('[DB] performance_reports table check:', err.message);
     }

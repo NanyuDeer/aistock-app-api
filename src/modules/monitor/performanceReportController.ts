@@ -9,6 +9,8 @@ import { Request, Response, NextFunction } from 'express';
 import { createResponse } from '../../shared/utils/response';
 import pool from '../../core/db';
 import { PerformanceReportAutoUpdateService } from './PerformanceReportAutoUpdateService';
+import { AiAnalysisService } from './AiAnalysisService';
+import { AiScoreService } from './AiScoreService';
 
 interface ReportRow {
     symbol: string;
@@ -25,9 +27,11 @@ interface ReportRow {
     n_income_attr_p: number | null;
     basic_eps: number | null;
     created_at: string;
+    ai_tag: string | null;
+    ai_score: number | null;
 }
 
-type ReportSortBy = 'symbol' | 'ann_date' | 'total_revenue' | 'n_income_attr_p' | 'forecast_eps';
+type ReportSortBy = 'symbol' | 'ann_date' | 'total_revenue' | 'n_income_attr_p' | 'forecast_eps' | 'ai_score';
 type ReportSortOrder = 'asc' | 'desc';
 
 interface CommonListParams {
@@ -41,8 +45,10 @@ const LATEST_REPORT_CTE = `
     WITH latest AS (
         SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
                p.forecast_eps, p.rating, p.org_name, p.summary,
-               p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at
+               p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at, p.ai_tag,
+               s.total_score AS ai_score
         FROM performance_reports p
+        LEFT JOIN stock_ai_scores s ON p.symbol = s.symbol
         INNER JOIN (
             SELECT symbol, report_type, MAX(ann_date) AS latest_ann_date
             FROM performance_reports
@@ -55,7 +61,7 @@ export class PerformanceReportController {
     private static readonly DEFAULT_PAGE_SIZE = 50;
     private static readonly MAX_PAGE_SIZE = 500;
     private static readonly DEFAULT_SORT_BY: ReportSortBy = 'ann_date';
-    private static readonly ALLOWED_SORT_BY = new Set<ReportSortBy>(['symbol', 'ann_date', 'total_revenue', 'n_income_attr_p', 'forecast_eps']);
+    private static readonly ALLOWED_SORT_BY = new Set<ReportSortBy>(['symbol', 'ann_date', 'total_revenue', 'n_income_attr_p', 'forecast_eps', 'ai_score']);
     private static readonly ALLOWED_SORT_ORDER = new Set<ReportSortOrder>(['asc', 'desc']);
 
     private static parseCommonListParams(url: URL): CommonListParams | { error: string } {
@@ -79,7 +85,7 @@ export class PerformanceReportController {
             pageSize = parsed;
         }
 
-        if (!PerformanceReportController.ALLOWED_SORT_BY.has(sortByRaw as ReportSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol / ann_date / total_revenue / n_income_attr_p / forecast_eps' };
+        if (!PerformanceReportController.ALLOWED_SORT_BY.has(sortByRaw as ReportSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol / ann_date / total_revenue / n_income_attr_p / forecast_eps / ai_score' };
         const sortBy = sortByRaw as ReportSortBy;
 
         const defaultOrder: ReportSortOrder = sortBy === 'symbol' ? 'asc' : 'desc';
@@ -95,6 +101,7 @@ export class PerformanceReportController {
         if (sortBy === 'ann_date') return `l.ann_date ${order} NULLS LAST, l.symbol ASC`;
         if (sortBy === 'total_revenue') return `l.total_revenue IS NULL ASC, l.total_revenue ${order}, l.symbol ASC`;
         if (sortBy === 'forecast_eps') return `l.forecast_eps IS NULL ASC, l.forecast_eps ${order}, l.symbol ASC`;
+        if (sortBy === 'ai_score') return `l.ai_score IS NULL ASC, l.ai_score ${order}, l.symbol ASC`;
         // n_income_attr_p 或默认
         return `l.n_income_attr_p IS NULL ASC, l.n_income_attr_p ${order}, l.symbol ASC`;
     }
@@ -114,6 +121,8 @@ export class PerformanceReportController {
             '净利润': row.n_income,
             '归母净利润': row.n_income_attr_p,
             '基本每股收益': row.basic_eps,
+            'AI研判': row.ai_tag || '',
+            'AI评分': row.ai_score,
             '更新时间': row.created_at,
         };
     }
@@ -136,10 +145,14 @@ export class PerformanceReportController {
 
         // 筛选条件
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = reportType ? ` AND l.report_type = '${reportType}'` : '';
+        const reportTypeFilter = reportType
+            ? ` AND l.report_type = '${reportType}'`
+            : ` AND l.report_type IN ('formal', 'express')`;
+        const endYear = url.searchParams.get('endYear') || '';
+        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
         try {
-            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}`;
+            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}${endYearFilter}`;
             const countResult = await pool.query(countQuery);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -147,7 +160,7 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE 1=1${reportTypeFilter}
+                WHERE 1=1${reportTypeFilter}${endYearFilter}
                 ORDER BY ${orderBy}
                 LIMIT $1 OFFSET $2`;
             const dataResult = await pool.query(dataQuery, [pageSize, offset]);
@@ -196,14 +209,18 @@ export class PerformanceReportController {
         const keywordPattern = `%${keyword}%`;
 
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = reportType ? ` AND l.report_type = '${reportType}'` : '';
+        const reportTypeFilter = reportType
+            ? ` AND l.report_type = '${reportType}'`
+            : ` AND l.report_type IN ('formal', 'express')`;
+        const endYear = url.searchParams.get('endYear') || '';
+        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
         try {
             const countQuery = `${LATEST_REPORT_CTE}
                 SELECT COUNT(*) AS total
                 FROM latest l
                 WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
-                  AND 1=1${reportTypeFilter}`;
+                  AND 1=1${reportTypeFilter}${endYearFilter}`;
             const countResult = await pool.query(countQuery, [keywordPattern]);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -212,7 +229,7 @@ export class PerformanceReportController {
                 SELECT l.*
                 FROM latest l
                 WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
-                  AND 1=1${reportTypeFilter}
+                  AND 1=1${reportTypeFilter}${endYearFilter}
                 ORDER BY ${orderBy}
                 LIMIT $2 OFFSET $3`;
             const dataResult = await pool.query(dataQuery, [keywordPattern, pageSize, offset]);
@@ -254,5 +271,75 @@ export class PerformanceReportController {
             .catch(err => {
                 console.error('[PerformanceReport] 手动更新失败:', err?.message || err);
             });
+    }
+
+    /**
+     * GET /api/cn/stocks/performance-reports/analysis
+     * AI 智能研判分析：生成亮点/风险词条 + 综合研判短文 + 多期财务数据
+     */
+    static async getAnalysis(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const url = new URL(req.originalUrl, `http://${req.get('host')}`);
+        const symbol = (url.searchParams.get('symbol') || '').trim();
+        if (!symbol || !/^\d{6}$/.test(symbol)) {
+            createResponse(res, 400, '缺少或无效的 symbol 参数（需6位数字股票代码）');
+            return;
+        }
+        const endDate = (url.searchParams.get('endDate') || '').trim() || undefined;
+
+        try {
+            const result = await AiAnalysisService.analyze(symbol, endDate);
+            if (!result) {
+                createResponse(res, 404, '未找到该股票的业绩报告数据');
+                return;
+            }
+            createResponse(res, 200, 'success', {
+                '股票代码': result.symbol,
+                '股票名称': result.stockName,
+                '报告期': result.periodLabel,
+                '最新报告类型': result.reportType,
+                'AI研判': result.aiTag,
+                '经营亮点': result.goodTags,
+                '潜在风险': result.riskTags,
+                '综合研判': result.analysisText,
+                '财务数据': {
+                    periods: result.periods.map(p => ({
+                        key: p.key,
+                        label: p.label,
+                        revenue: p.revenue,
+                        revenueYoy: p.revenueYoy,
+                        netProfit: p.netProfit,
+                        netProfitYoy: p.netProfitYoy,
+                        deductProfit: p.deductProfit,
+                        grossMargin: p.grossMargin,
+                        netMargin: p.netMargin,
+                        roe: p.roe,
+                        cashFlow: p.cashFlow,
+                        debtRatio: p.debtRatio,
+                    })),
+                },
+            });
+        } catch (error: any) {
+            createResponse(res, 500, error instanceof Error ? error.message : 'Internal Server Error');
+        }
+    }
+
+    /**
+     * GET /api/cn/stocks/performance-reports/ai-analysis
+     * AI 四维评分：获取盈利能力、成长性、财务健康、现金流四维评分
+     */
+    static async getAiScore(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const url = new URL(req.originalUrl, `http://${req.get('host')}`);
+        const symbol = (url.searchParams.get('symbol') || '').trim();
+        if (!symbol || !/^\d{6}$/.test(symbol)) {
+            createResponse(res, 400, '缺少或无效的 symbol 参数（需6位数字股票代码）');
+            return;
+        }
+
+        try {
+            const result = await AiScoreService.analyze(symbol);
+            createResponse(res, 200, 'success', result);
+        } catch (error: any) {
+            createResponse(res, 500, error instanceof Error ? error.message : 'Internal Server Error');
+        }
     }
 }
