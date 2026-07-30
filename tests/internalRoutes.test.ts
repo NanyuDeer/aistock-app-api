@@ -19,6 +19,8 @@ import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
 import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
+import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
+import { TencentSnapshotService } from '../src/modules/quote/TencentSnapshotService'
 
 // MarketSnapshotService 通过 __marketSnapshotDependencies 注入依赖（Task 1 已建立），
 // 路由侧调用 getTodayCloseSnapshot()，单测通过替换 deps 字段实现 mock。
@@ -574,6 +576,67 @@ async function main(): Promise<void> {
             code: 409,
             data: { status: 'incomplete', reason: 'incomplete_daily_coverage' },
         })
+    })
+
+    // --- /internal/market/quick-snapshot 路由测试 ---
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 200 with quick snapshot', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => ({
+            schema_version: '1.0',
+            status: 'complete',
+            trade_date: '20260720',
+            captured_at: '2026-07-20T07:30:00.000Z',
+            indexes: [{ ts_code: 'sh000001', name: '上证指数', trade_date: '20260720', close: 3200, pct_chg: 1.2, amount: 3000000000, source: 'tushare:index_daily' }],
+            breadth: { total_count: 0, advance_count: 0, decline_count: 0, flat_count: 0, advance_ratio: 0, source: 'tushare:daily' },
+            turnover: { amount_yuan: 0, previous_amount_yuan: 0, change_pct: 0, source: 'tushare:daily' },
+            limits: { up_count: 0, down_count: 0, broken_count: 0, highest_board: 0 },
+            sectors: { top_gainers: [], top_losers: [], top_inflows: [], top_outflows: [] },
+            main_force: { large_and_extra_large_net_yuan: 0, source: 'tushare:moneyflow_ths' },
+            coverage: { current_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 }, previous_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 } },
+            snapshot_kind: 'quick',
+        })
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 200)
+            const body = res.body as { code: number; data: { snapshot_kind: string } }
+            assert.equal(body.code, 200)
+            assert.equal(body.data.snapshot_kind, 'quick')
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
+    })
+
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 409 before 15:30', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => {
+            const err = new Error('market_not_closed: before 15:30 Shanghai time')
+            err.name = 'MarketSnapshotUnavailable'
+            throw err
+        }
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 409)
+            const body = res.body as { code: number; data: { status: string; reason: string } }
+            assert.equal(body.code, 409)
+            assert.equal(body.data.status, 'not_ready')
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
+    })
+
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 502 on unexpected error', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => {
+            throw new Error('unexpected internal error')
+        }
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
     })
 
     // 5. 关闭服务器 + 释放长连接资源，让进程自然退出
