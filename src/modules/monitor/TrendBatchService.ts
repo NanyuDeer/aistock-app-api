@@ -131,16 +131,34 @@ export class TrendBatchService {
         console.log(`[TrendBatch] 20日日均成交额: 获取了 ${daysFetched} 个交易日数据, 覆盖 ${amountSumMap.size} 只股票`);
 
         // --- 4. 构建 60 日前收盘价映射（用于动量筛选） ---
+        // 计算 90 自然日前的日期（≈ 60 交易日），若该日为非交易日（节假日/周末），
+        // 则向前回退查找最近一个有交易数据的日期，避免动量筛选因数据为空而完全失效
         const momentumDate = new Date();
         momentumDate.setDate(momentumDate.getDate() - 90); // 90 自然日 ≈ 60 交易日
         const momentumDateStr = momentumDate.toISOString().slice(0, 10).replace(/-/g, '');
         const close60dAgoMap = new Map<string, number>();
+        let actualMomentumDateStr = '';
         try {
-            const daily60dAgo = await TushareService.getDailyByDate(momentumDateStr);
-            for (const row of daily60dAgo) {
-                close60dAgoMap.set(row.ts_code, row.close);
+            const MAX_FALLBACK_DAYS = 10; // 最多回退10天，覆盖春节等长假
+            for (let offset = 0; offset <= MAX_FALLBACK_DAYS; offset++) {
+                const tryDate = new Date(momentumDate);
+                tryDate.setDate(tryDate.getDate() - offset);
+                const tryDateStr = tryDate.toISOString().slice(0, 10).replace(/-/g, '');
+                const daily = await TushareService.getDailyByDate(tryDateStr);
+                if (daily.length > 0) {
+                    actualMomentumDateStr = tryDateStr;
+                    for (const row of daily) {
+                        close60dAgoMap.set(row.ts_code, row.close);
+                    }
+                    break;
+                }
             }
-            console.log(`[TrendBatch] 60日前(${momentumDateStr})数据: ${close60dAgoMap.size} 只`);
+            if (close60dAgoMap.size > 0) {
+                const adjusted = actualMomentumDateStr !== momentumDateStr;
+                console.log(`[TrendBatch] 60日前(${actualMomentumDateStr})数据: ${close60dAgoMap.size} 只${adjusted ? ' (原日期为非交易日，已回退)' : ''}`);
+            } else {
+                console.warn('[TrendBatch] 60日前数据连续10天均为空，跳过动量筛选');
+            }
         } catch {
             console.warn('[TrendBatch] 获取60日前数据失败，跳过动量筛选');
         }
