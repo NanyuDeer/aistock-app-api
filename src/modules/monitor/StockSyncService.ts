@@ -48,10 +48,10 @@ export class StockSyncService {
         let updated = 0;
 
         for (const row of rows) {
-            const symbol = (row.symbol || '').trim();
-            const name = (row.name || '').trim();
-            const industry = (row.industry || '').trim();
-            const market = this.tsCodeToMarket(row.ts_code || '');
+            const symbol = String(row.symbol || '').trim();
+            const name = String(row.name || '').trim();
+            const industry = String(row.industry || '').trim();
+            const market = this.tsCodeToMarket(String(row.ts_code || ''));
             const py = this.toPinyinInitials(name);
 
             if (!symbol || !name) continue;

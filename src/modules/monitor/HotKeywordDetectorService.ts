@@ -173,8 +173,8 @@ export async function loadStockNameMap(): Promise<void> {
         try {
             const rows = await tushareRequest('stock_basic', { exchange: '', list_status: 'L' }, 'ts_code,symbol,name');
             for (const row of rows) {
-                const name = (row.name || '').trim();
-                const symbol = (row.symbol || '').trim();
+                const name = String(row.name || '').trim();
+                const symbol = String(row.symbol || '').trim();
                 if (name && symbol && name.length >= 2) {
                     stockNameMap.set(name.toLowerCase(), { symbol, name });
                 }

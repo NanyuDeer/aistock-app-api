@@ -16,6 +16,14 @@ import { AiTagService } from './AiTagService';
 //  类型定义
 // ================================================================
 
+/** 通用金融指标记录（tushare 返回 / DB 查询的统一行类型） */
+interface FinancialMetric {
+    ts_code?: string;
+    end_date?: string;
+    ann_date?: string;
+    [key: string]: string | number | null | undefined;
+}
+
 export interface DimensionScore {
     name: string;
     score: number;
@@ -73,7 +81,7 @@ function toTsCode(symbol: string): string {
     return padded + suffix;
 }
 
-function tushareRequest(apiName: string, params: Record<string, any>, fields: string): Promise<any[]> {
+function tushareRequest(apiName: string, params: Record<string, string | number | null>, fields: string): Promise<FinancialMetric[]> {
     return new Promise((resolve, reject) => {
         const token = process.env.TUSHARE_TOKEN || '';
         if (!token) { reject(new Error('TUSHARE_TOKEN not set')); return; }
@@ -100,8 +108,8 @@ function tushareRequest(apiName: string, params: Record<string, any>, fields: st
                         reject(new Error(`Tushare error: ${json.msg || json.code}`));
                         return;
                     }
-                    const items = (json.data?.items || []).map((item: any[]) => {
-                        const obj: Record<string, any> = {};
+                    const items: FinancialMetric[] = (json.data?.items || []).map((item: (string | number | null)[]) => {
+                        const obj: FinancialMetric = {};
                         (json.data.fields || []).forEach((f: string, i: number) => { obj[f] = item[i]; });
                         return obj;
                     });
@@ -117,7 +125,7 @@ function tushareRequest(apiName: string, params: Record<string, any>, fields: st
     });
 }
 
-async function fetchFinaIndicators(symbol: string, startDate: string): Promise<any[]> {
+async function fetchFinaIndicators(symbol: string, startDate: string): Promise<FinancialMetric[]> {
     try {
         return await tushareRequest('fina_indicator', { ts_code: toTsCode(symbol), start_date: startDate },
             'ts_code,ann_date,end_date,roe,grossprofit_margin,netprofit_margin,debt_to_assets,accounts_receiv,inventories,goodwill,debt_to_assets,cip,fix_assets,ocfps'
@@ -125,7 +133,7 @@ async function fetchFinaIndicators(symbol: string, startDate: string): Promise<a
     } catch { return []; }
 }
 
-async function fetchBalanceSheet(symbol: string, startDate: string): Promise<any[]> {
+async function fetchBalanceSheet(symbol: string, startDate: string): Promise<FinancialMetric[]> {
     try {
         return await tushareRequest('balancesheet', { ts_code: toTsCode(symbol), start_date: startDate },
             'ts_code,ann_date,end_date,total_assets,total_liab,total_hldr_eqy_exc_min_int,goodwill,accounts_receiv,inventory,cip,fixed_assets'
@@ -133,7 +141,7 @@ async function fetchBalanceSheet(symbol: string, startDate: string): Promise<any
     } catch { return []; }
 }
 
-async function fetchCashflow(symbol: string, startDate: string): Promise<any[]> {
+async function fetchCashflow(symbol: string, startDate: string): Promise<FinancialMetric[]> {
     try {
         return await tushareRequest('cashflow', { ts_code: toTsCode(symbol), start_date: startDate },
             'ts_code,ann_date,end_date,n_cashflow_act,cash_rec_share_s,n_income_attr_p'
@@ -155,8 +163,8 @@ export class AiScoreService {
         // 2. 获取年报数据
         const annualRows = await this.fetchAnnualReports(symbol);
         const annualData = annualRows.map(r => ({
-            endDate: r.end_date,
-            year: r.end_date.slice(0, 4),
+            endDate: r.end_date || '',
+            year: (r.end_date || '').slice(0, 4),
             revenue: r.total_revenue != null ? Number(r.total_revenue) : null,
             netProfit: r.n_income_attr_p != null ? Number(r.n_income_attr_p) : null,
         }));
@@ -263,7 +271,7 @@ export class AiScoreService {
     }
 
     /** 获取正式年报 (2023-2025) */
-    private static async fetchAnnualReports(symbol: string): Promise<any[]> {
+    private static async fetchAnnualReports(symbol: string): Promise<FinancialMetric[]> {
         const r = await pool.query(
             `SELECT end_date, total_revenue, n_income_attr_p
              FROM performance_reports
@@ -276,7 +284,7 @@ export class AiScoreService {
     }
 
     /** 从 DB 获取财务指标数据 */
-    private static async fetchFinaIndicatorsFromDB(symbol: string): Promise<any[]> {
+    private static async fetchFinaIndicatorsFromDB(symbol: string): Promise<FinancialMetric[]> {
         const r = await pool.query(
             `SELECT end_date, roe, grossprofit_margin, netprofit_margin, debt_to_assets
              FROM performance_reports
@@ -290,14 +298,14 @@ export class AiScoreService {
         // fallback: 从 Tushare 获取
         const indicators = await fetchFinaIndicators(symbol, '20230101');
         // 保留年报数据
-        return indicators.filter((i: any) => {
+        return indicators.filter((i: FinancialMetric) => {
             const ed = (i.end_date || '').replace(/-/g, '');
             return ed === '20231231' || ed === '20241231' || ed === '20251231';
-        }).sort((a: any, b: any) => (a.end_date || '').localeCompare(b.end_date || ''));
+        }).sort((a: FinancialMetric, b: FinancialMetric) => (a.end_date || '').localeCompare(b.end_date || ''));
     }
 
     /** 从 DB 获取现金流数据 */
-    private static async fetchCashflowsFromDB(symbol: string): Promise<any[]> {
+    private static async fetchCashflowsFromDB(symbol: string): Promise<FinancialMetric[]> {
         const r = await pool.query(
             `SELECT end_date, n_cashflow_act
              FROM performance_reports
@@ -309,19 +317,19 @@ export class AiScoreService {
         if (r.rows.length >= 2) return r.rows;
 
         const cfs = await fetchCashflow(symbol, '20230101');
-        return cfs.filter((c: any) => {
+        return cfs.filter((c: FinancialMetric) => {
             const ed = (c.end_date || '').replace(/-/g, '');
             return ed === '20231231' || ed === '20241231' || ed === '20251231';
-        }).sort((a: any, b: any) => (a.end_date || '').localeCompare(b.end_date || ''));
+        }).sort((a: FinancialMetric, b: FinancialMetric) => (a.end_date || '').localeCompare(b.end_date || ''));
     }
 
     /** 从 Tushare 获取资产负债表数据（用于异常排查） */
-    private static async fetchBalanceSheetData(symbol: string): Promise<any[]> {
+    private static async fetchBalanceSheetData(symbol: string): Promise<FinancialMetric[]> {
         const bs = await fetchBalanceSheet(symbol, '20230101');
-        return bs.filter((b: any) => {
+        return bs.filter((b: FinancialMetric) => {
             const ed = (b.end_date || '').replace(/-/g, '');
             return ed === '20231231' || ed === '20241231' || ed === '20251231';
-        }).sort((a: any, b: any) => (a.end_date || '').localeCompare(b.end_date || ''));
+        }).sort((a: FinancialMetric, b: FinancialMetric) => (a.end_date || '').localeCompare(b.end_date || ''));
     }
 
     /** 获取2026最新报告（用于趋势验证） */
@@ -368,8 +376,8 @@ export class AiScoreService {
     }
 
     /** 从指标列表中获取某年份的值 */
-    private static getIndicator(list: any[], year: string, field: string): number | null {
-        const item = list.find((i: any) => {
+    private static getIndicator(list: FinancialMetric[], year: string, field: string): number | null {
+        const item = list.find((i: FinancialMetric) => {
             const ed = (i.end_date || '').replace(/-/g, '');
             return ed.startsWith(year);
         });
@@ -379,8 +387,8 @@ export class AiScoreService {
     }
 
     /** 从现金流列表中获取某年份的值 */
-    private static getCashflowValue(list: any[], year: string, field: string): number | null {
-        const item = list.find((i: any) => {
+    private static getCashflowValue(list: FinancialMetric[], year: string, field: string): number | null {
+        const item = list.find((i: FinancialMetric) => {
             const ed = (i.end_date || '').replace(/-/g, '');
             return ed.startsWith(year);
         });
@@ -390,8 +398,8 @@ export class AiScoreService {
     }
 
     /** 从资产负债表中获取某年份的值 */
-    private static getBalValue(list: any[], year: string, field: string): number | null {
-        const item = list.find((i: any) => {
+    private static getBalValue(list: FinancialMetric[], year: string, field: string): number | null {
+        const item = list.find((i: FinancialMetric) => {
             const ed = (i.end_date || '').replace(/-/g, '');
             return ed.startsWith(year);
         });
@@ -966,8 +974,8 @@ export class AiScoreService {
      */
     private static checkPartial(
         annualData: { year: string; revenue: number | null; netProfit: number | null }[],
-        indicators: any[],
-        cashflows: any[],
+        indicators: FinancialMetric[],
+        cashflows: FinancialMetric[],
     ): { isPartial: boolean; missingFields: string[]; missingFieldLabels: string[] } {
         const missingFields: string[] = [];
         const missingFieldLabels: string[] = [];
@@ -1019,8 +1027,8 @@ export class AiScoreService {
         symbol: string,
         stockName: string,
         annualData: { endDate: string; year: string; revenue: number | null; netProfit: number | null }[],
-        indicators: any[],
-        cashflows: any[],
+        indicators: FinancialMetric[],
+        cashflows: FinancialMetric[],
         availableYears: number,
         missingFields: string[],
         missingFieldLabels: string[],
@@ -1125,8 +1133,8 @@ export class AiScoreService {
      */
     private static generateAvailableHighlights(
         annualData: { year: string; revenue: number | null; netProfit: number | null }[],
-        indicators: any[],
-        cashflows: any[],
+        indicators: FinancialMetric[],
+        cashflows: FinancialMetric[],
         latest2026: { revenueYOY: number | null; profitYOY: number | null } | null,
         yrList: string[],
     ): AvailableHighlight[] {

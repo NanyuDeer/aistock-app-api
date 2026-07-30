@@ -21,6 +21,14 @@ import { getFinaIndicator, getCashflow } from '../quote/TushareService';
 //  类型定义
 // ================================================================
 
+/** 通用金融指标记录（tushare 返回 / DB 查询的统一行类型） */
+interface FinancialMetric {
+    ts_code?: string;
+    end_date?: string;
+    ann_date?: string;
+    [key: string]: string | number | null | undefined;
+}
+
 /** 单期财务数据（供前端表格/图表使用） */
 export interface PeriodFinanceData {
     key: string;
@@ -84,6 +92,12 @@ interface ReportRow {
     stock_name: string;
     ai_tag: string | null;
     report_type: string;
+    // LEFT JOIN 指标字段
+    grossprofit_margin?: number | null;
+    netprofit_margin?: number | null;
+    roe?: number | null;
+    debt_to_assets?: number | null;
+    n_cashflow_act?: number | null;
 }
 
 // ================================================================
@@ -110,8 +124,8 @@ export class AiAnalysisService {
 
         // 3. 获取 fina_indicator / cashflow — 优先从 DB（已由 AutoUpdateService 预存），在线 API 作 fallback
         // 当前行可能已有 LEFT JOIN 进来的指标数据
-        let indicator: any = null;
-        let cashflow: any = null;
+        let indicator: FinancialMetric | null = null;
+        let cashflow: FinancialMetric | null = null;
         if (current.grossprofit_margin != null || current.roe != null) {
             // DB 已有数据
             indicator = {
@@ -213,7 +227,7 @@ export class AiAnalysisService {
      * 同一报告期优先取 formal（更完整）
      * 指标数据（毛利率/ROE/现金流）已存入 performance_reports 表，通过 LEFT JOIN 关联
      */
-    private static async fetchReportRows(symbol: string): Promise<any[]> {
+    private static async fetchReportRows(symbol: string): Promise<ReportRow[]> {
         const result = await pool.query(
             `SELECT r.end_date, r.total_revenue, r.n_income_attr_p, r.stock_name, r.ai_tag, r.report_type,
                     i.grossprofit_margin, i.netprofit_margin, i.roe, i.debt_to_assets,
@@ -239,7 +253,7 @@ export class AiAnalysisService {
         );
         // 去重：同一 end_date 只保留第一条（formal 优先）
         const seen = new Set<string>();
-        const deduped: any[] = [];
+        const deduped: ReportRow[] = [];
         for (const row of result.rows) {
             if (!seen.has(row.end_date)) {
                 seen.add(row.end_date);
@@ -251,18 +265,18 @@ export class AiAnalysisService {
     }
 
     /** 查询 fina_indicator 数据（在线 API 作为 fallback） */
-    private static async fetchFinaIndicators(symbol: string): Promise<any[]> {
+    private static async fetchFinaIndicators(symbol: string): Promise<FinancialMetric[]> {
         try {
-            return await getFinaIndicator(symbol);
+            return await getFinaIndicator(symbol) as unknown as FinancialMetric[];
         } catch {
             return [];
         }
     }
 
     /** 查询 cashflow 数据（在线 API 作为 fallback） */
-    private static async fetchCashflows(symbol: string): Promise<any[]> {
+    private static async fetchCashflows(symbol: string): Promise<FinancialMetric[]> {
         try {
-            return await getCashflow(symbol);
+            return await getCashflow(symbol) as unknown as FinancialMetric[];
         } catch {
             return [];
         }
@@ -273,11 +287,11 @@ export class AiAnalysisService {
     // ================================================================
 
     private static generateGoodTags(
-        current: { total_revenue: number | null; n_income_attr_p: number | null },
+        current: ReportRow,
         revYoy: number | null,
         profitYoy: number | null,
-        indicator: any | null,
-        cashflow: any | null,
+        indicator: FinancialMetric | null,
+        cashflow: FinancialMetric | null,
     ): string[] {
         const tags: string[] = [];
 
@@ -322,7 +336,7 @@ export class AiAnalysisService {
 
         // 经营现金流
         const nCashflow = cashflow?.n_cashflow_act ?? null;
-        if (nCashflow != null && nCashflow > 0) tags.push('现金流充裕');
+        if (nCashflow != null && Number(nCashflow) > 0) tags.push('现金流充裕');
 
         if (tags.length === 0 && current.n_income_attr_p != null && Number(current.n_income_attr_p) > 0) {
             tags.push('持续盈利');
@@ -332,11 +346,11 @@ export class AiAnalysisService {
     }
 
     private static generateRiskTags(
-        current: { total_revenue: number | null; n_income_attr_p: number | null },
+        current: ReportRow,
         revYoy: number | null,
         profitYoy: number | null,
-        indicator: any | null,
-        cashflow: any | null,
+        indicator: FinancialMetric | null,
+        cashflow: FinancialMetric | null,
         aiTag: string,
     ): string[] {
         const tags: string[] = [];
@@ -368,7 +382,7 @@ export class AiAnalysisService {
 
         // 现金流为负
         const nCashflow = cashflow?.n_cashflow_act ?? null;
-        if (nCashflow != null && nCashflow < 0) tags.push('现金流紧张');
+        if (nCashflow != null && Number(nCashflow) < 0) tags.push('现金流紧张');
 
         // 负债率高（Tushare 返回已是百分比）
         const debtRatio = indicator?.debt_to_assets != null ? Number(indicator.debt_to_assets) : null;
