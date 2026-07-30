@@ -563,6 +563,34 @@ router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/market/last-close-snapshot
+ * 最近一个已完成交易日的收盘快照（跳过 15:30 时钟门禁）。
+ *
+ * 用途：在盘中或开盘前（如凌晨）需要昨日收盘数据时调用。Python review_full
+ * 链路在 close-snapshot 返回 409 时降级到此接口。
+ *
+ * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
+ * - 409：数据不可用（非交易日连续回溯失败等）
+ * - 502：其它意外异常
+ */
+router.get('/market/last-close-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const data = await MarketSnapshotService.getLastCloseSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        if (err instanceof MarketSnapshotUnavailableError) {
+            res.status(409).json({
+                code: 409,
+                data: { status: err.status, reason: err.reason },
+            })
+            return
+        }
+        console.error('[Internal] market/last-close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/market/quick-snapshot
  * 15:30 收盘后基于腾讯实时行情的简版收盘快照。
  *
