@@ -5,6 +5,7 @@ dist/
 .env.local
 .env.development
 .env.production
+.env.test
 # 仅提交模板
 !.env.example
 *.log
