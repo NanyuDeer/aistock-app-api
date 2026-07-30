@@ -562,6 +562,33 @@ router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
     }
 })
 
+/**
+ * GET /internal/market/quick-snapshot
+ * 15:30 收盘后基于腾讯实时行情的简版收盘快照。
+ *
+ * - 200：data 为 CloseMarketSnapshot（snapshot_kind='quick'）
+ * - 409：未收盘（status='not_ready'）
+ * - 502：其它意外异常
+ */
+router.get('/market/quick-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const { TencentSnapshotService } = await import('../../modules/quote/TencentSnapshotService')
+        const data = await TencentSnapshotService.buildQuickSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        const msg = errMsg(err)
+        if (msg.includes('market_not_closed')) {
+            res.status(409).json({
+                code: 409,
+                data: { status: 'not_ready', reason: 'market_not_closed' },
+            })
+            return
+        }
+        console.error('[Internal] market/quick-snapshot error:', msg)
+        res.status(502).json({ code: 502, message: msg })
+    }
+})
+
 // ==================== Agent 分析报告持久化接口 ====================
 
 /**
