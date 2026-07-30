@@ -380,6 +380,31 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
 // ============================================================================
 
 /**
+ * 获取最近一个已完成交易日的收盘快照（跳过 15:30 时钟门禁）。
+ *
+ * 在开盘前（如凌晨 3 点）调用时返回上一交易日的完整收盘数据，
+ * 让 Python review_full 链路能使用昨日数据完成测试/生成。
+ *
+ * 实现：构造一个"伪当前时刻"（最近交易日 15:30），
+ * 复用 getTodayCloseSnapshot 的完整构建逻辑。
+ */
+export async function getLastCloseSnapshot(): Promise<CloseMarketSnapshot> {
+    const now = __marketSnapshotDependencies.now();
+    const lastTradingDay = TradingCalendarService.getRecentTradingDay(now);
+
+    // 取最近交易日的 Shanghai YYYYMMDD
+    const lastShanghaiStr = toShanghaiDateYyyymmdd(lastTradingDay);
+    const year = Number(lastShanghaiStr.slice(0, 4));
+    const month = Number(lastShanghaiStr.slice(4, 6)) - 1;
+    const day = Number(lastShanghaiStr.slice(6, 8));
+
+    // 构造伪当前时刻：最近交易日 15:30 CST = 07:30 UTC
+    const fakeNow = new Date(Date.UTC(year, month, day, 7, 30, 0, 0));
+
+    return getTodayCloseSnapshot(fakeNow);
+}
+
+/**
  * 构建当日 A 股大盘收盘事实快照。
  *
  * 步骤：
