@@ -39,7 +39,7 @@ import { MessagePushService } from './modules/push/MessagePushService';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
-import { FeishuMessageController } from './modules/auth/feishuMessageController';
+import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
 import { FeishuAuthController } from './modules/auth/feishuAuthController';
 
 // monitor 监控模块
@@ -56,6 +56,7 @@ import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
+import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
@@ -605,6 +606,23 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
+// 飞书消息千问分析：每分钟串行处理少量待分析记录。
+cron.schedule('* * * * *', async () => {
+    if (!FeishuMessageAiService.isConfigured()) return;
+    try {
+        const result = await FeishuMessageAiService.processPending(
+            Number(process.env.QWEN_BATCH_SIZE || 3),
+        );
+        if (result.claimed > 0) {
+            console.log(
+                `[FeishuAI] 完成: claimed=${result.claimed}, succeeded=${result.succeeded}, failed=${result.failed}`,
+            );
+        }
+    } catch (err: any) {
+        console.error('[FeishuAI] 批处理失败:', err?.message || err);
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 每日 04:30 刷新个股-板块映射表
 cron.schedule('30 4 * * *', async () => {
     console.log('[StockConceptMappingCron] 开始刷新个股-板块映射');
@@ -716,6 +734,13 @@ async function start() {
         console.log('[DB] stocks.industry column ready');
     } catch (err: any) {
         console.warn('[DB] stocks.industry column check:', err.message);
+    }
+
+    try {
+        await ensureFeishuMessageSchema();
+        console.log('[DB] feishu_messages AI columns ready');
+    } catch (err: any) {
+        console.warn('[DB] feishu_messages schema check:', err.message);
     }
 
     try {
