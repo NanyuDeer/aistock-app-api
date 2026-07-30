@@ -61,6 +61,26 @@ export interface DailyCoverageSummary {
     row_count: number;
 }
 
+/** 全市场宽度（quick snapshot 用，含近似涨跌停）。 */
+export interface MarketBreadth {
+    total_count: number;
+    advance_count: number;
+    decline_count: number;
+    flat_count: number;
+    limit_up_count: number;
+    limit_down_count: number;
+    limit_count_approximate: boolean;
+    total_volume: number;
+    avg_change_pct: number;
+}
+
+/** quick snapshot 数据覆盖标识。 */
+export interface QuickSnapshotCoverage {
+    has_limit_pool: boolean;
+    has_moneyflow: boolean;
+    has_concept_flow: boolean;
+}
+
 /** 当日 A 股大盘收盘事实快照。 */
 export interface CloseMarketSnapshot {
     schema_version: '1.0';
@@ -102,6 +122,13 @@ export interface CloseMarketSnapshot {
         current_daily: DailyCoverageSummary;
         previous_daily: DailyCoverageSummary;
     };
+    // ---- 以下为 quick snapshot 扩展字段（full snapshot 不填）----
+    /** 快照类型：quick=15:30 腾讯实时，full=20:30 Tushare 完整。缺省视为 full。 */
+    snapshot_kind?: 'quick' | 'full';
+    /** quick snapshot 数据覆盖标识。 */
+    coverage_info?: QuickSnapshotCoverage;
+    /** quick snapshot 全市场宽度（含近似涨跌停）。full snapshot 用上方内联 breadth。 */
+    market_breadth?: MarketBreadth;
 }
 
 /** 快照不可用原因。 */
@@ -250,7 +277,7 @@ const MARKET_CLOSE_MINUTE = 30;
  * 判断给定时刻是否已过 A 股收盘时刻（Asia/Shanghai 15:30）。
  * 严格语义：hour > 15 或 (hour == 15 且 minute >= 30) 才返回 true。
  */
-function isAtOrAfterClose(now: Date): boolean {
+export function isAtOrAfterClose(now: Date): boolean {
     const { hour, minute } = toShanghaiHourMinute(now);
     return hour > MARKET_CLOSE_HOUR || (hour === MARKET_CLOSE_HOUR && minute >= MARKET_CLOSE_MINUTE);
 }
