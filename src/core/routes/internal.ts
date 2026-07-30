@@ -29,7 +29,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
-    'broadcast', 'event_conduction', 'trend_score',
+    'broadcast', 'event_conduction', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
 ]
 
@@ -1387,7 +1387,7 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
     const offset = (page - 1) * pageSize
 
     try {
-        const [dataResult, countResult] = await Promise.all([
+        const [dataResult, countResult, giResult] = await Promise.all([
             pool.query(
                 `SELECT id, report_date, user_id, content, created_at
                  FROM (
@@ -1406,20 +1406,52 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                  FROM agent_analysis_reports
                  WHERE report_type = 'event_conduction'`
             ),
+            // 查询最新的 global_importance 报告
+            pool.query(
+                `SELECT content
+                 FROM agent_analysis_reports
+                 WHERE report_type = 'global_importance' AND status = 'completed'
+                 ORDER BY created_at DESC
+                 LIMIT 1`
+            ),
         ])
+
+        // 构建 event_id → rank / direction / level 的映射
+        const giRankMap = new Map<string, number>()
+        const giDirectionMap = new Map<string, string>()
+        const giLevelMap = new Map<string, string>()
+        if (giResult.rows.length > 0) {
+            const giContent = (giResult.rows[0]['content'] as Record<string, unknown>) || {}
+            const events = (giContent['events'] as Array<Record<string, unknown>>) || []
+            events.forEach((ev) => {
+                const eventId = String(ev['event_id'] || '')
+                const rank = Number(ev['rank']) || 0
+                if (eventId && rank > 0) {
+                    giRankMap.set(eventId, rank)
+                    giDirectionMap.set(eventId, String(ev['direction'] || ''))
+                    giLevelMap.set(eventId, String(ev['importance_level'] || ''))
+                }
+            })
+        }
 
         const items = dataResult.rows.map((row: Record<string, unknown>) => {
             const content = (row['content'] as Record<string, unknown>) || {}
             const ar = (content['analysis_reports'] as Record<string, unknown>) || {}
             const eu = (ar['event_understanding'] as Record<string, unknown>) || {}
             const ei = (ar['event_investment'] as Record<string, unknown>) || {}
+            const eventId = String(content['eventId'] || row['user_id'] || '')
+
             return {
-                eventId: content['eventId'] || row['user_id'] || '',
+                eventId,
                 title: content['title'] || '',
                 source: content['source'] || '',
                 publishTime: content['publishTime'] || row['report_date'] || '',
                 summary: eu['summary'] || '',
                 conclusion: ei['conclusion'] || '',
+                // 轻量字段：仅返回 rank / direction / level（如果存在）
+                globalImportanceRank: giRankMap.get(eventId) || null,
+                globalImportanceDirection: giDirectionMap.get(eventId) || null,
+                globalImportanceLevel: giLevelMap.get(eventId) || null,
             }
         })
 
