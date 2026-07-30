@@ -11,6 +11,10 @@
  */
 
 import pool from '../../core/db';
+import {
+    getAiKeywordsForStock,
+    type FeishuAiAnalysis,
+} from './FeishuMessageAiService';
 import { HotKeywordDetectorService, extractStockCodes, type HotConceptResult } from './HotKeywordDetectorService';
 import { getThsHot, type ThsHotRow } from '../quote/TushareService';
 import { findResearchReportMessagesForStock } from '../crawler/FeishuResearchReportService';
@@ -29,6 +33,8 @@ export interface FeishuMessageRow {
     text: string;
     stock_codes: string[];
     keywords: { keyword: string; dimension: string }[];
+    ai_status: string;
+    ai_analysis: FeishuAiAnalysis | null;
     received_at: string;
 }
 
@@ -244,7 +250,8 @@ export function enrichFeishuStockCodes(messages: FeishuMessageRow[]): FeishuMess
 async function getFeishuMessages(hours: number = 6): Promise<FeishuMessageRow[]> {
     try {
         const result = await pool.query(
-            `SELECT id, source, chat_id, chat_name, message_id, message_type, text, stock_codes, keywords, received_at
+            `SELECT id, source, chat_id, chat_name, message_id, message_type,
+                    text, stock_codes, keywords, ai_status, ai_analysis, received_at
              FROM feishu_messages
              WHERE received_at > NOW() - INTERVAL '${hours} hours'
              ORDER BY received_at DESC
@@ -254,6 +261,10 @@ async function getFeishuMessages(hours: number = 6): Promise<FeishuMessageRow[]>
             ...row,
             stock_codes: row.stock_codes || [],
             keywords: typeof row.keywords === 'string' ? JSON.parse(row.keywords) : row.keywords || [],
+            ai_status: String(row.ai_status || 'skipped'),
+            ai_analysis: typeof row.ai_analysis === 'string'
+                ? JSON.parse(row.ai_analysis)
+                : row.ai_analysis || null,
         }));
         // 回退：当 stock_codes 为空时从文本提取
         return enrichFeishuStockCodes(rows);
@@ -347,17 +358,36 @@ export class HotBurstService {
         console.log(`[HotBurst] Step2: 获取到 ${feishuMessages.length} 条飞书群消息`);
 
         // 构建：股票代码 → 飞书消息数 + 关键词
-        const feishuStockMap = new Map<string, { messageCount: number; keywords: Set<string> }>();
+        const feishuStockMap = new Map<string, {
+            messageCount: number;
+            keywords: Set<string>;
+            aiKeywords: Set<string>;
+        }>();
         for (const msg of feishuMessages) {
             for (const code of msg.stock_codes) {
                 const existing = feishuStockMap.get(code);
                 if (existing) {
                     existing.messageCount++;
                     for (const kw of msg.keywords) existing.keywords.add(kw.keyword);
+                    if (msg.ai_status === 'succeeded') {
+                        for (const kw of getAiKeywordsForStock(msg.ai_analysis, code)) {
+                            existing.aiKeywords.add(kw);
+                        }
+                    }
                 } else {
                     const kwSet = new Set<string>();
                     for (const kw of msg.keywords) kwSet.add(kw.keyword);
-                    feishuStockMap.set(code, { messageCount: 1, keywords: kwSet });
+                    const aiKeywordSet = new Set<string>();
+                    if (msg.ai_status === 'succeeded') {
+                        for (const kw of getAiKeywordsForStock(msg.ai_analysis, code)) {
+                            aiKeywordSet.add(kw);
+                        }
+                    }
+                    feishuStockMap.set(code, {
+                        messageCount: 1,
+                        keywords: kwSet,
+                        aiKeywords: aiKeywordSet,
+                    });
                 }
             }
         }
@@ -450,6 +480,10 @@ export class HotBurstService {
 
             // 构建触发标签：概念名 + 板块名 + 维度关键词
             const triggerTagsSet = new Set<string>();
+            if (feishuData) {
+                for (const kw of feishuData.aiKeywords) triggerTagsSet.add(kw);
+                for (const kw of feishuData.keywords) triggerTagsSet.add(kw);
+            }
             const conceptInfo = stockConceptMap.get(stock.symbol);
             if (conceptInfo?.conceptName) triggerTagsSet.add(conceptInfo.conceptName);
             if (thsVerified && thsSectorName) triggerTagsSet.add(thsSectorName);

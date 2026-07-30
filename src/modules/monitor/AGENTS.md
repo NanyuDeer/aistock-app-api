@@ -22,6 +22,7 @@
 - `profitForecastController.ts` — 业绩预测
 - `trendScoreController.ts` — 趋势股评分（S/A/B/C/D 评级 + 60日均线剔除）
 - `TrendBatchService.ts` — 趋势股批量评分（cron 凌晨2点）
+- `FeishuMessageAiService.ts` — 领取待处理飞书消息、调用千问并生成按股票关联的关键词
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
 - 对应 Service 文件
@@ -45,5 +46,6 @@
 - 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
+- 飞书消息 AI 任务每分钟执行一次；仅处理正文/OCR非空且已有候选股票代码的消息，失败不自动重试
 - 趋势股批量评分由 cron 调度（凌晨 2 点），含60日均线剔除规则（连续两日跌破60日线→从Top列表剔除）
 - 业绩预测自动更新由 cron 调度（凌晨 0 点）
