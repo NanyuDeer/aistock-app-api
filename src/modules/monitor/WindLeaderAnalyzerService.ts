@@ -51,9 +51,122 @@ import {
 import pool from '../../core/db';
 import { getBatchSinaMoneyflowForBJ, isBJStock } from '../quote/SinaMoneyFlowService';
 
+// ==================== 类型定义 ====================
+
+/** 数据库 stocks 表行（仅取所需字段） */
+interface StockIndustryDbRow {
+    symbol: string;
+    industry: string;
+}
+
+/** 同花顺概念板块（基础字段） */
+interface BoardBase {
+    code: string;
+    name: string;
+    change: number;
+    price: number;
+    up_count: number;
+    down_count: number;
+    net_inflow: number;
+}
+
+/** 同花顺行业板块（带 leading_stock） */
+interface IndustryBoard extends BoardBase {
+    leading_stock: string;
+}
+
+/** 板块成分股 */
+interface BoardConstituent {
+    code: string;
+    name: string;
+    price: number;
+    change_pct: number;
+    industry: string;
+}
+
+/** 板块涨幅前N股票（含资金流和换手率） */
+interface BoardTopStock extends BoardConstituent {
+    net_inflow: number;
+    turnover_rate: number;
+}
+
+/** 板块历史K线 */
+interface BoardHistoryItem {
+    date: string;
+    open: number;
+    close: number;
+    high: number;
+    low: number;
+    volume: number;
+    amount: number;
+    change_pct: number;
+}
+
+/** 同花顺概念页面 gnSectionVal 解析项（字段名不规则，使用索引签名） */
+interface ThsGnSectionItem {
+    cid?: string | number;
+    platename?: string;
+    zfl?: string | number;
+    zjjlr?: string | number;
+    [key: string]: string | number | undefined;
+}
+
+/** 同花顺板块轮动 API 单日数据 */
+interface BlockRotationDayItem {
+    name: string;
+    code: string;
+    info?: { zf5?: string };
+}
+interface BlockRotationDay {
+    block_list?: BlockRotationDayItem[];
+}
+
+/** AI Chat Completions API 响应（仅取所需字段） */
+interface AiChatResponse {
+    choices?: Array<{ message?: { content?: string } }>;
+}
+
+/** 行业行情统计 */
+interface IndustryStat {
+    name: string;
+    change: number;
+    up_count: number;
+    down_count: number;
+    leading_stock: string;
+}
+
+/** 风口板块完整分析结果（hot_sectors 元素） */
+interface HotSectorAnalysis {
+    code: string;
+    name: string;
+    type: string;
+    frequency: number;
+    avg_change: number;
+    today_change: number;
+    amount_trend: number;
+    net_inflow: number;
+    leading_stock: string;
+    leading_change: number;
+    up_count: number;
+    down_count: number;
+    driver: string;
+    score: number;
+    related_industries: string[];
+    industry_data: IndustryStat[];
+    ai_analysis: AiAnalysis;
+    main_stocks: SelectedStock[];
+    upstream_stocks: SelectedStock[];
+    downstream_stocks: SelectedStock[];
+    flow_data: { nodes: FlowNode[]; links: FlowLink[]; transfer_direction: string };
+    leading_stock_info: LeadingStockInfo;
+}
+
 // ==================== 缓存 ====================
 const CACHE_DIR = path.resolve(__dirname, '../../data/hot-sector-cache');
 const CACHE_TTL = 3600 * 1000; // 缓存1小时
+
+/** 同一 key 的回源 Promise 去重表，避免 cache miss 时并发触发多次回源 */
+const inflightCache: Map<string, Promise<unknown>> = new Map();
 
 /** 批量查询股票的行业板块（从 stocks 表，与个股详情页一致） */
 async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string>> {
@@ -63,7 +176,7 @@ async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string
             'SELECT symbol, industry FROM stocks WHERE symbol = ANY($1) AND industry IS NOT NULL AND industry != \'\'',
             [codes],
         );
-        return new Map(result.rows.map((r: any) => [r.symbol, r.industry]));
+        return new Map(result.rows.map((r: StockIndustryDbRow) => [r.symbol, r.industry]));
     } catch (err) {
         console.warn('[HotSectorAnalyzer] getStocksIndustryMap failed:', (err as Error).message);
         return new Map();
@@ -123,56 +236,93 @@ async function getThsIndexNameMap(): Promise<Map<string, string>> {
     return map;
 }
 
-function ensureCacheDir(): void {
-    if (!fs.existsSync(CACHE_DIR)) {
-        fs.mkdirSync(CACHE_DIR, { recursive: true });
-    }
+async function ensureCacheDir(): Promise<void> {
+    // recursive 选项在目录已存在时不抛错，无需 existsSync 预检查
+    await fs.promises.mkdir(CACHE_DIR, { recursive: true });
 }
 
 /** 清除所有缓存（用于强制刷新数据） */
-function clearAllCache(): void {
+async function clearAllCache(): Promise<void> {
     try {
-        ensureCacheDir();
-        const files = fs.readdirSync(CACHE_DIR);
+        await ensureCacheDir();
+        const files = await fs.promises.readdir(CACHE_DIR);
         let count = 0;
         for (const file of files) {
             // 保留AI板块判断缓存、快照文件、股票→行业反向映射、同花顺行业产业链
             if (file === 'ai_sector_judgment_cache.json' || file.startsWith('snapshot_') || file === 'stock_industry_reverse_map.json' || file === 'ths_industry_chain.json') continue;
             const fp = path.join(CACHE_DIR, file);
-            fs.unlinkSync(fp);
+            await fs.promises.unlink(fp);
             count++;
         }
         // 重置内存缓存
         dailyByDateCache = null;
         thsIndexNameMap = null;
+        inflightCache.clear();
         console.log(`[HotSectorAnalyzer] 缓存已清除: ${count}个文件`);
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 缓存清除失败:', err);
     }
 }
 
-function cacheGet(key: string): any | null {
+/**
+ * 读取缓存（异步 IO + in-flight 去重）。
+ * 如果同一 key 正在被回源（写入尚未完成），等待回源 Promise 完成后再读，
+ * 避免 cache miss 时多个并发调用方同时触发回源。
+ */
+async function cacheGet<T>(key: string): Promise<T | null> {
+    // 若有 in-flight 回源，等待它落盘后再读
+    const inflight = inflightCache.get(key);
+    if (inflight) {
+        try {
+            await inflight;
+        } catch {
+            // 回源失败不阻塞后续读，回退到文件读取
+        }
+    }
     try {
-        ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${key}.json`);
-        if (!fs.existsSync(fp)) return null;
-        const stat = fs.statSync(fp);
+        const stat = await fs.promises.stat(fp);
         if (Date.now() - stat.mtimeMs > CACHE_TTL) return null;
-        const raw = fs.readFileSync(fp, 'utf-8');
-        return JSON.parse(raw);
+        const raw = await fs.promises.readFile(fp, 'utf-8');
+        return JSON.parse(raw) as T;
     } catch {
         return null;
     }
 }
 
-function cacheSet(key: string, data: any): void {
+async function cacheSet<T>(key: string, data: T): Promise<void> {
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${key}.json`);
-        fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 缓存写入失败:', err);
     }
+}
+
+/**
+ * 带回源去重的缓存读取：cache miss 时执行 loader，并把回源 Promise 注册到
+ * inflightCache，使同一 key 的并发请求只回源一次。
+ */
+async function cacheGetOrLoad<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    const inflight = inflightCache.get(key);
+    if (inflight) {
+        return inflight as Promise<T>;
+    }
+    const cached = await cacheGet<T>(key);
+    if (cached !== null) return cached;
+
+    const promise = (async (): Promise<T> => {
+        try {
+            const data = await loader();
+            await cacheSet(key, data);
+            return data;
+        } finally {
+            inflightCache.delete(key);
+        }
+    })();
+    inflightCache.set(key, promise);
+    return promise;
 }
 
 // ==================== 同花顺板块数据 ====================
@@ -190,21 +340,21 @@ async function fetchThsHtml(url: string): Promise<string> {
 }
 
 /** 同花顺JSON API请求 - 使用分布式爬虫 */
-async function fetchThsJson(url: string): Promise<any> {
+async function fetchThsJson(url: string): Promise<unknown> {
     return thsApiCrawler.fetchJson(url);
 }
 
 /** 获取同花顺概念板块列表（优先使用Tushare ths_index，回退到HTML爬虫） */
-async function getConceptBoards(): Promise<any[]> {
+async function getConceptBoards(): Promise<BoardBase[]> {
     const cacheKey = 'ths_concept_boards';
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardBase[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_index =====
     try {
         const conceptIndices = await getThsIndex('N', 'A');
         if (conceptIndices.length > 0) {
-            const result = conceptIndices.map(idx => ({
+            const result: BoardBase[] = conceptIndices.map(idx => ({
                 code: idx.ts_code,
                 name: idx.name,
                 change: 0,  // 涨跌幅在identifyHotConcepts中通过ths_daily获取
@@ -214,8 +364,8 @@ async function getConceptBoards(): Promise<any[]> {
                 net_inflow: 0,
             }));
             console.log(`[HotSectorAnalyzer] Tushare概念板块获取成功: ${result.length}个`);
-            cacheSet(cacheKey, result);
-            saveDailySnapshot('concept', result);
+            await cacheSet(cacheKey, result);
+            await saveDailySnapshot('concept', result);
             return result;
         }
     } catch (err) {
@@ -229,27 +379,27 @@ async function getConceptBoards(): Promise<any[]> {
         // 从页面隐藏的#gnSection输入框提取概念板块数据
         const gnSectionVal = $('#gnSection').val() as string;
         if (gnSectionVal) {
-            const data = new Function('return (' + gnSectionVal + ')')() as Record<string, any>;
-            const result = Object.values(data).map((item: any) => ({
+            const data = new Function('return (' + gnSectionVal + ')')() as Record<string, ThsGnSectionItem>;
+            const result: BoardBase[] = Object.values(data).map((item) => ({
                 code: String(item.cid || ''),
                 name: item.platename || '',
-                change: parseFloat(item[199112]) || 0,  // 涨跌幅
+                change: parseFloat(String(item[199112] ?? '')) || 0,  // 涨跌幅
                 price: 0,
-                up_count: parseInt(item.zfl) || 0,       // 涨幅家数
+                up_count: parseInt(String(item.zfl ?? '')) || 0,       // 涨幅家数
                 down_count: 0,
-                net_inflow: (parseFloat(item.zjjlr) || 0) * 100000000, // 亿元→元
-            })).filter((item: any) => item.code && item.name);
+                net_inflow: (parseFloat(String(item.zjjlr ?? '')) || 0) * 100000000, // 亿元→元
+            })).filter((item) => item.code && item.name);
 
             if (result.length > 0) {
                 console.log(`[HotSectorAnalyzer] 同花顺概念板块获取成功: ${result.length}个`);
-                cacheSet(cacheKey, result);
-                saveDailySnapshot('concept', result);
+                await cacheSet(cacheKey, result);
+                await saveDailySnapshot('concept', result);
                 return result;
             }
         }
 
         // Fallback: 从概念链接提取（无涨幅数据）
-        const result: any[] = [];
+        const result: BoardBase[] = [];
         const seen = new Set<string>();
         $('a[href*="/gn/detail/code/"]').each((i, el) => {
             const name = $(el).text().trim();
@@ -271,8 +421,8 @@ async function getConceptBoards(): Promise<any[]> {
 
         if (result.length > 0) {
             console.log(`[HotSectorAnalyzer] 同花顺概念板块链接提取成功: ${result.length}个（无涨幅数据）`);
-            cacheSet(cacheKey, result);
-            saveDailySnapshot('concept', result);
+            await cacheSet(cacheKey, result);
+            await saveDailySnapshot('concept', result);
             return result;
         }
     } catch (err) {
@@ -283,16 +433,16 @@ async function getConceptBoards(): Promise<any[]> {
 }
 
 /** 获取同花顺行业板块列表（优先使用Tushare ths_index，回退到HTML爬虫） */
-async function getIndustryBoards(): Promise<any[]> {
+async function getIndustryBoards(): Promise<IndustryBoard[]> {
     const cacheKey = 'ths_industry_boards';
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<IndustryBoard[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_index =====
     try {
         const industryIndices = await getThsIndex('I', 'A');
         if (industryIndices.length > 0) {
-            const industries = industryIndices.map(idx => ({
+            const industries: IndustryBoard[] = industryIndices.map(idx => ({
                 code: idx.ts_code,
                 name: idx.name,
                 change: 0,  // 涨跌幅在选股时按需获取
@@ -304,7 +454,7 @@ async function getIndustryBoards(): Promise<any[]> {
             }));
 
             console.log(`[HotSectorAnalyzer] Tushare行业板块获取成功: ${industries.length}个`);
-            cacheSet(cacheKey, industries);
+            await cacheSet(cacheKey, industries);
             return industries;
         }
     } catch (err) {
@@ -316,7 +466,7 @@ async function getIndustryBoards(): Promise<any[]> {
         const html = await fetchThsHtml('https://q.10jqka.com.cn/thshy/');
         const $ = cheerio.load(html);
 
-        const industries: any[] = [];
+        const industries: IndustryBoard[] = [];
         $('table tbody tr').each((i, el) => {
             const cells = $(el).find('td');
             if (cells.length < 8) return;
@@ -346,7 +496,7 @@ async function getIndustryBoards(): Promise<any[]> {
         });
 
         console.log(`[HotSectorAnalyzer] 同花顺行业板块获取成功: ${industries.length}个`);
-        cacheSet(cacheKey, industries);
+        await cacheSet(cacheKey, industries);
         return industries;
     } catch (err) {
         console.error('[HotSectorAnalyzer] 同花顺行业板块列表获取失败:', err);
@@ -355,21 +505,22 @@ async function getIndustryBoards(): Promise<any[]> {
 }
 
 /** 保存每日板块数据快照（用于历史回溯） */
-function saveDailySnapshot(type: 'concept' | 'industry', data: any[]): void {
+async function saveDailySnapshot(type: 'concept' | 'industry', data: readonly unknown[]): Promise<void> {
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
         const fp = path.join(CACHE_DIR, `snapshot_${type}_${today}.json`);
-        if (!fs.existsSync(fp)) {
-            fs.writeFileSync(fp, JSON.stringify(data), 'utf-8');
-        }
+        // 仅当快照不存在时写入（每日首条 wins）
+        await fs.promises.access(fp).catch(async () => {
+            await fs.promises.writeFile(fp, JSON.stringify(data), 'utf-8');
+        });
     } catch { /* ignore */ }
 }
 
 /** 获取板块历史数据（通过Tushare ths_daily） */
-async function getBoardHistory(boardName: string, days: number = 10): Promise<any[]> {
+async function getBoardHistory(boardName: string, days: number = 10): Promise<BoardHistoryItem[]> {
     const cacheKey = `board_history_${boardName}_${days}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardHistoryItem[]>(cacheKey);
     if (cached) return cached;
 
     const nameMap = await getThsIndexNameMap();
@@ -382,7 +533,7 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<an
         const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
 
         const hist = await getThsDaily(tsCode, startDateStr);
-        const result = hist
+        const result: BoardHistoryItem[] = hist
             .sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
             .slice(-days)
             .map(h => ({
@@ -397,7 +548,7 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<an
             }));
 
         if (result.length > 0) {
-            cacheSet(cacheKey, result);
+            await cacheSet(cacheKey, result);
         }
         return result;
     } catch (err) {
@@ -448,9 +599,9 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
 }
 
 /** 获取板块成分股（优先使用Tushare ths_member + daily，回退到HTML爬虫） */
-async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<any[]> {
+async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<BoardConstituent[]> {
     const cacheKey = `board_cons_${boardType}_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardConstituent[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_member + daily =====
@@ -475,7 +626,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
             const { data: dailyMap } = await getLatestDailyMap();
 
             // 组装成分股数据（含涨幅）
-            const result: any[] = [];
+            const result: BoardConstituent[] = [];
             for (const m of members) {
                 if (m.is_new === 'N') continue;  // 跳过已剔除的
                 const dailyRow = dailyMap.get(m.con_code);
@@ -494,7 +645,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
 
             console.log(`[HotSectorAnalyzer] Tushare ${boardType} ${boardCode} 成分股: ${result.length}只`);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
                 return result.slice(0, pageSize);
             }
         }
@@ -507,7 +658,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
         try {
             const result = await parseConceptConstituents(boardCode, pageSize);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
                 return result;
             }
         } catch (err) {
@@ -517,7 +668,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
         try {
             const result = await parseIndustryConstituents(boardCode, pageSize);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
             }
             return result;
         } catch (err) {
@@ -528,8 +679,8 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
 }
 
 /** 解析概念板块成分股（使用同花顺board/all接口） */
-async function parseConceptConstituents(boardCode: string, pageSize: number): Promise<any[]> {
-    const result: any[] = [];
+async function parseConceptConstituents(boardCode: string, pageSize: number): Promise<BoardConstituent[]> {
+    const result: BoardConstituent[] = [];
     const maxPages = Math.ceil(pageSize / 20);
 
     for (let page = 1; page <= maxPages; page++) {
@@ -567,8 +718,8 @@ async function parseConceptConstituents(boardCode: string, pageSize: number): Pr
 }
 
 /** 解析行业板块成分股（使用同花顺行业详情页） */
-async function parseIndustryConstituents(boardCode: string, pageSize: number): Promise<any[]> {
-    const result: any[] = [];
+async function parseIndustryConstituents(boardCode: string, pageSize: number): Promise<BoardConstituent[]> {
+    const result: BoardConstituent[] = [];
     const maxPages = Math.ceil(pageSize / 20);
 
     for (let page = 1; page <= maxPages; page++) {
@@ -608,15 +759,15 @@ async function parseIndustryConstituents(boardCode: string, pageSize: number): P
 }
 
 /** 获取板块涨幅排名前N的股票 */
-async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType: 'concept' | 'industry' = 'concept'): Promise<any[]> {
+async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType: 'concept' | 'industry' = 'concept'): Promise<BoardTopStock[]> {
     const cacheKey = `board_top_${boardType}_${boardCode}_${topN}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardTopStock[]>(cacheKey);
     if (cached) return cached;
 
     // 按指定类型获取成分股（已按涨幅排序）
     const stocks = await getBoardConstituents(boardCode, boardType, topN);
 
-    const result = stocks.slice(0, topN).map(s => ({
+    const result: BoardTopStock[] = stocks.slice(0, topN).map(s => ({
         code: s.code,
         name: s.name,
         price: s.price,
@@ -627,7 +778,7 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
     }));
 
     if (result.length > 0) {
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
     }
     return result;
 }
@@ -658,10 +809,13 @@ interface HotConcept {
 /** 从同花顺板块轮动API获取板块轮动数据（截取指定天数） */
 export async function fetchBlockRotationData(days: number = 20): Promise<{
     sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
-    rawData: any[];
+    rawData: BlockRotationDay[];
 }> {
     const cacheKey = `block_rotation_${days}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<{
+        sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
+        rawData: BlockRotationDay[];
+    }>(cacheKey);
     if (cached) {
         console.log('[HotSectorAnalyzer] 使用缓存的板块轮动数据');
         return cached;
@@ -675,20 +829,20 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     };
 
     console.log('[HotSectorAnalyzer] 正在从同花顺板块轮动API获取数据...');
-    
+
     // 添加重试机制：最多重试 3 次
     let response: Response | null = null;
     let lastError: Error | null = null;
     const MAX_RETRIES = 3;
-    
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             response = await sessionFetch(url, { headers });
             if (response.ok) break; // 成功则跳出循环
-            
+
             lastError = new Error(`同花顺板块轮动API请求失败: HTTP ${response.status}`);
             console.warn(`[HotSectorAnalyzer] API请求失败 (尝试 ${attempt}/${MAX_RETRIES}): HTTP ${response.status}`);
-            
+
             if (attempt < MAX_RETRIES) {
                 // 等待一段时间后重试
                 await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
@@ -696,20 +850,24 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
         } catch (err) {
             lastError = err as Error;
             console.warn(`[HotSectorAnalyzer] API请求异常 (尝试 ${attempt}/${MAX_RETRIES}):`, (err as Error).message);
-            
+
             if (attempt < MAX_RETRIES) {
                 await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
             }
         }
     }
-    
+
     // 所有重试失败后，返回空数据而非抛出异常
     if (!response || !response.ok) {
         console.error('[HotSectorAnalyzer] 同花顺板块轮动API多次重试失败，返回空数据:', lastError?.message);
         return { sectorStats: new Map(), rawData: [] };
     }
-    
-    const json = await response.json() as any;
+
+    const json = await response.json() as {
+        status_code?: number;
+        status_msg?: string;
+        data?: { data_list?: BlockRotationDay[] };
+    };
 
     if (json.status_code !== 0 || !json.data?.data_list) {
         console.error(`[HotSectorAnalyzer] 同花顺板块轮动API返回异常: ${json.status_msg}，返回空数据`);
@@ -717,7 +875,7 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     }
 
     // 截取指定天数的数据
-    const allDataLists = json.data.data_list;
+    const allDataLists = json.data?.data_list ?? [];
     const dataLists = allDataLists.slice(0, days);
     console.log(`[HotSectorAnalyzer] 板块轮动API返回 ${allDataLists.length} 天数据，截取前 ${dataLists.length} 天`);
 
@@ -750,14 +908,14 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     console.log(`[HotSectorAnalyzer] 板块轮动统计完成: ${sectorStats.size} 个板块`);
 
     const result = { sectorStats, rawData: dataLists };
-    cacheSet(cacheKey, result);
+    await cacheSet(cacheKey, result);
     return result;
 }
 
 /** 从同花顺概念板块页面爬取龙头股 - 使用分布式爬虫 */
 export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ code: string; name: string }[]> {
     const cacheKey = `concept_leading_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<{ code: string; name: string }[]>(cacheKey);
     if (cached) return cached;
 
     const url = `https://basic.10jqka.com.cn/48/${boardCode.replace(/\.TI$/, '')}/`;
@@ -872,7 +1030,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
 
         console.log(`[HotSectorAnalyzer] 概念${boardCode}龙头股: ${leadingStocks.map(s => s.name).join(', ') || '无'}`);
         if (leadingStocks.length > 0) {
-            cacheSet(cacheKey, leadingStocks);
+            await cacheSet(cacheKey, leadingStocks);
         }
         return leadingStocks;
     } catch (err) {
@@ -884,7 +1042,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
 /** 从同花顺概念板块页面爬取成分股列表 - 使用分布式爬虫 */
 async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ code: string; name: string; exchange: string }[]> {
     const cacheKey = `concept_page_cons_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<{ code: string; name: string; exchange: string }[]>(cacheKey);
     if (cached) return cached;
 
     const url = `https://basic.10jqka.com.cn/48/${boardCode}/`;
@@ -895,22 +1053,22 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
         const match = html.match(/id="concept_data"[^>]*>([\s\S]*?)<\/div>/);
         if (!match) return [];
 
-        const data = JSON.parse(match[1]);
+        const data = JSON.parse(match[1]) as { result?: { listdata?: Record<string, string[][]> } };
         const listData = data.result?.listdata;
         if (!listData) return [];
 
         const dates = Object.keys(listData);
         if (dates.length === 0) return [];
 
-        const stocks = listData[dates[0]].map((s: string[]) => ({
+        const stocks = listData[dates[0]].map((s) => ({
             code: s[0],
             name: s[1],
             exchange: s[2] || '',
-        })).filter((s: { code: string; name: string }) => s.code && s.name && /^\d{6}$/.test(s.code));
+        })).filter((s) => s.code && s.name && /^\d{6}$/.test(s.code));
 
         console.log(`[HotSectorAnalyzer] 概念${boardCode}页面成分股: ${stocks.length}只`);
         if (stocks.length > 0) {
-            cacheSet(cacheKey, stocks);
+            await cacheSet(cacheKey, stocks);
         }
         return stocks;
     } catch (err) {
@@ -921,7 +1079,7 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
 
 async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, days: number = 20): Promise<HotConcept[]> {
     const cacheKey = `hot_concepts_${days}_${minFrequency}_${topN}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<HotConcept[]>(cacheKey);
     if (cached) {
         console.log('[HotSectorAnalyzer] 使用缓存的风口概念数据');
         return cached;
@@ -1058,7 +1216,7 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             result[i].leading_stock = stocks[0].name;
             result[i].leading_change = 0;
             // 缓存龙头股结果
-            cacheSet(`concept_leading_${result[i].code}`, stocks);
+            await cacheSet(`concept_leading_${result[i].code}`, stocks);
         }
     }
 
@@ -1120,11 +1278,12 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
                 concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
             }
         }
-    } catch (err: any) {
-        console.warn(`[HotSectorAnalyzer] 资金流向数据获取失败: ${err?.message || err}`);
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[HotSectorAnalyzer] 资金流向数据获取失败: ${errMsg}`);
     }
 
-    cacheSet(cacheKey, result);
+    await cacheSet(cacheKey, result);
     return result;
 }
 
@@ -1152,19 +1311,19 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
 
     // 检查缓存是否在7天内
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        if (fs.existsSync(fp)) {
-            const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < SEVEN_DAYS) {
-                const raw = fs.readFileSync(fp, 'utf-8');
-                const cached = JSON.parse(raw);
-                const map = new Map<string, { name: string; code: string }[]>();
-                for (const [k, v] of Object.entries(cached as Record<string, { name: string; code: string }[]>)) {
-                    map.set(k, v);
-                }
-                return map;
+        const stat = await fs.promises.stat(fp).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs < SEVEN_DAYS) {
+            const raw = await fs.promises.readFile(fp, 'utf-8');
+            const cached = JSON.parse(raw) as Record<string, { name: string; code: string }[]>;
+            const map = new Map<string, { name: string; code: string }[]>();
+            for (const [k, v] of Object.entries(cached)) {
+                map.set(k, v);
             }
+            return map;
+        }
+        if (stat) {
             console.log('[HotSectorAnalyzer] 股票→行业反向映射缓存已过期(>7天)，重新构建');
         }
     } catch { /* ignore */ }
@@ -1193,21 +1352,21 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
     const obj: Record<string, { name: string; code: string }[]> = {};
     for (const [k, v] of map) { obj[k] = v; }
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        fs.writeFileSync(fp, JSON.stringify(obj, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(obj, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 反向映射缓存写入失败:', err);
     }
 
     // 清理构建过程中产生的行业成分股缓存文件
     try {
-        ensureCacheDir();
-        const files = fs.readdirSync(CACHE_DIR);
+        await ensureCacheDir();
+        const files = await fs.promises.readdir(CACHE_DIR);
         let cleaned = 0;
         for (const file of files) {
             if (file.startsWith('board_cons_industry_') && file.endsWith('.json')) {
-                fs.unlinkSync(path.join(CACHE_DIR, file));
+                await fs.promises.unlink(path.join(CACHE_DIR, file));
                 cleaned++;
             }
         }
@@ -1225,7 +1384,7 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
 /** 概念→行业映射（通过知识图谱，替代原来的成分股重叠度计算） */
 async function mapConceptToIndustries(conceptCode: string, conceptName: string, topN: number = 3): Promise<ConceptIndustryResult> {
     const cacheKey = `concept_industry_map_${conceptName}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<ConceptIndustryResult>(cacheKey);
     if (cached) return cached;
 
     try {
@@ -1254,13 +1413,13 @@ async function mapConceptToIndustries(conceptCode: string, conceptName: string, 
         console.log(`[HotSectorAnalyzer] 概念 ${conceptName} KG关联行业: ${stronglyRelated.map(s => `${s.name}(${s.overlap_count})`).join(', ')}`);
 
         const result: ConceptIndustryResult = { strongly_related: stronglyRelated, all_ranked: allRanked };
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
         return result;
     } catch (err) {
         console.warn(`[HotSectorAnalyzer] KG获取概念 ${conceptName} 关联行业失败: ${(err as Error).message}，使用排名接口映射`);
         const fallback = await mapByRankingIndustry(conceptName, topN);
         const result: ConceptIndustryResult = { strongly_related: fallback, all_ranked: fallback };
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
         return result;
     }
 }
@@ -1334,14 +1493,14 @@ ${batch.map((n, i) => `${i + 1}. ${n}`).join('\n')}
         throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
     }
 
-    const json = await resp.json() as any;
+    const json = await resp.json() as AiChatResponse;
     let content = (json?.choices?.[0]?.message?.content || '').trim();
     if (content.startsWith('```')) {
         content = content.split('```')[1] || '';
         if (content.startsWith('json')) content = content.slice(4);
     }
 
-    return JSON.parse(content.trim());
+    return JSON.parse(content.trim()) as Record<string, { upstream: string[]; downstream: string[] }>;
 }
 
 /** 模糊匹配行业名到同花顺行业列表 */
@@ -1367,14 +1526,14 @@ async function buildThsIndustryChain(): Promise<Record<string, { upstream: strin
     // 使用30天TTL
     const THIRTY_DAYS = 30 * 24 * 3600 * 1000;
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        if (fs.existsSync(fp)) {
-            const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < THIRTY_DAYS) {
-                const raw = fs.readFileSync(fp, 'utf-8');
-                return JSON.parse(raw);
-            }
+        const stat = await fs.promises.stat(fp).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs < THIRTY_DAYS) {
+            const raw = await fs.promises.readFile(fp, 'utf-8');
+            return JSON.parse(raw) as Record<string, { upstream: string[]; downstream: string[] }>;
+        }
+        if (stat) {
             console.log('[HotSectorAnalyzer] 同花顺行业产业链缓存已过期，重新生成');
         }
     } catch { /* ignore */ }
@@ -1421,9 +1580,9 @@ async function buildThsIndustryChain(): Promise<Record<string, { upstream: strin
 
     // 缓存
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        fs.writeFileSync(fp, JSON.stringify(chain, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(chain, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 产业链缓存写入失败:', err);
     }
@@ -1655,14 +1814,14 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
             throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
         }
 
-        const json: any = await resp.json();
+        const json = await resp.json() as AiChatResponse;
         let content = json?.choices?.[0]?.message?.content?.trim() || '';
         if (content.startsWith('```')) {
             content = content.split('```')[1];
             if (content.startsWith('json')) content = content.slice(4);
         }
 
-        const result = JSON.parse(content.trim());
+        const result = JSON.parse(content.trim()) as AiAnalysis;
         aiApiAvailable = true;  // AI可用
         return result;
     } catch (err) {
@@ -2525,9 +2684,9 @@ async function extractLeadingStock(
 
 // ==================== 获取关联行业行情统计 ====================
 
-async function getIndustryStats(industryNames: string[]): Promise<any[]> {
+async function getIndustryStats(industryNames: string[]): Promise<IndustryStat[]> {
     const industryBoards = await getIndustryBoards();
-    const result: any[] = [];
+    const result: IndustryStat[] = [];
 
     for (const name of industryNames) {
         const ind = industryBoards.find(i => i.name === name);
@@ -2551,7 +2710,7 @@ async function getIndustryStats(industryNames: string[]): Promise<any[]> {
 
 export interface FullAnalysisResult {
     update_time: string;
-    hot_sectors: any[];
+    hot_sectors: HotSectorAnalysis[];
 }
 
 export class WindLeaderAnalyzerService {
@@ -2570,7 +2729,7 @@ export class WindLeaderAnalyzerService {
     static async runFullAnalysis(): Promise<FullAnalysisResult> {
         console.log('[WindLeaderAnalyzer] 开始执行风口龙头分析...');
         // 清除缓存，确保获取最新数据
-        clearAllCache();
+        await clearAllCache();
 
         // 1. 识别风口概念板块
         let hotConcepts = await identifyHotConcepts(8, 2, 20);
@@ -2587,7 +2746,7 @@ export class WindLeaderAnalyzerService {
         // 预先收集所有候选股代码，用于批量获取Tushare增强数据
         const allCandidateCodes: string[] = [];
         const conceptCodeSets: Map<string, Set<string>> = new Map();
-        const conceptIndustryMap: Map<string, any[]> = new Map(); // 缓存行业映射结果
+        const conceptIndustryMap: Map<string, IndustryMapping[]> = new Map(); // 缓存行业映射结果
         const industryBoards = await getIndustryBoards();
 
         // ===== 并发爬取概念板块页面（成分股+龙头股）=====
@@ -2627,14 +2786,14 @@ export class WindLeaderAnalyzerService {
                     const match = html.match(/id="concept_data"[^>]*>([\s\S]*?)<\/div>/);
                     if (match) {
                         try {
-                            const data = JSON.parse(match[1]);
+                            const data = JSON.parse(match[1]) as { result?: { listdata?: Record<string, string[][]> } };
                             const listData = data.result?.listdata;
                             if (listData) {
                                 const dates = Object.keys(listData);
                                 if (dates.length > 0) {
-                                    constituents = listData[dates[0]].map((s: string[]) => ({
+                                    constituents = listData[dates[0]].map((s) => ({
                                         code: s[0], name: s[1], exchange: s[2] || '',
-                                    })).filter((s: { code: string; name: string }) => s.code && s.name && /^\d{6}$/.test(s.code));
+                                    })).filter((s) => s.code && s.name && /^\d{6}$/.test(s.code));
                                 }
                             }
                         } catch { /* ignore */ }
@@ -2660,13 +2819,13 @@ export class WindLeaderAnalyzerService {
                 const conceptCodes = new Set(conceptCons.map(s => s.code));
                 conceptCodeSets.set(concept.code, conceptCodes);
                 if (conceptCons.length > 0) {
-                    cacheSet(`concept_page_cons_${concept.code}`, conceptCons);
+                    await cacheSet(`concept_page_cons_${concept.code}`, conceptCons);
                 }
 
                 // 龙头股
                 const conceptLeadingStocks = pageResult.leadingStocks;
                 if (conceptLeadingStocks.length > 0) {
-                    cacheSet(`concept_leading_${concept.code}`, conceptLeadingStocks);
+                    await cacheSet(`concept_leading_${concept.code}`, conceptLeadingStocks);
                 }
                 for (const ls of conceptLeadingStocks) {
                     if (ls.code && !allCandidateCodes.includes(ls.code)) {

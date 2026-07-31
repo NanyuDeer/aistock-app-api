@@ -17,11 +17,112 @@ import {
     needsCloseSettlement,
 } from './pushHistorySettlement';
 
+// ==================== 类型定义 ====================
+
+/** 风口龙头数据文件结构（hot-sectors.json） */
+interface WindLeaderData {
+    update_time?: string;
+    hot_sectors?: WindLeaderSector[];
+}
+
+interface WindLeaderSector {
+    code?: string;
+    name?: string;
+    type?: string;
+    frequency?: number;
+    avg_change?: number;
+    today_change?: number;
+    amount_trend?: number;
+    net_inflow?: number;
+    score?: number;
+    leading_stock?: string;
+    leading_change?: number;
+    up_count?: number;
+    down_count?: number;
+    driver?: string;
+    related_industries?: unknown[];
+    industry_data?: unknown[];
+    ai_analysis?: unknown;
+    main_stocks?: WindLeaderStock[];
+    upstream_stocks?: WindLeaderStock[];
+    downstream_stocks?: WindLeaderStock[];
+    flow_data?: unknown;
+    leading_stock_info?: WindLeaderLeadingStockInfo | null;
+}
+
+interface WindLeaderStock {
+    code?: string;
+    name?: string;
+    industry?: string;
+    score?: number;
+    reason?: string;
+    reason_tag?: string;
+    reason_tag_class?: string;
+    in_concept?: boolean;
+    chain_position?: string;
+    source?: string;
+    overlap_ratio?: number;
+    transmission_factor?: number;
+    related_industry?: string;
+    price?: number | null;
+    change_pct?: number | null;
+}
+
+interface WindLeaderLeadingStockInfo {
+    code?: string;
+    price?: number | null;
+    change_pct?: number | null;
+}
+
+interface FormattedStock {
+    code: string;
+    name: string;
+    industry: string;
+    score: number | undefined;
+    reason: string;
+    reason_tag: string;
+    reason_tag_class: string;
+    in_concept: boolean | undefined;
+    chain_position: string;
+    source: string;
+    overlap_ratio: number;
+    transmission_factor: number;
+    related_industry: string;
+    price: number | null;
+    change_pct: number | null;
+}
+
+/** 风口龙头推送历史记录（持久化到 DB / 文件） */
+interface PushHistoryRecord {
+    push_id: string;
+    push_batch_id: string;
+    push_date: string;
+    push_time: string;
+    push_rank: number;
+    stock_code: string;
+    stock_name: string;
+    theme: string;
+    reason: string;
+    strategy_name: string;
+    score: number | null;
+    chain_position: string;
+    source: string;
+    reason_tag: string;
+    push_price: number;
+    latest_price: number;
+    latest_trade_date: string;
+    latest_change_pct: number | null;
+    raw_analysis_price?: number | null;
+    price_basis?: string;
+    realtime_return_pct?: number;
+    realtime_time?: string;
+}
+
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..', '..');
 const DATA_FILE = path.join(PROJECT_ROOT, 'data', 'hot-sectors.json');
 const PUSH_HISTORY_FILE = path.join(PROJECT_ROOT, 'data', 'potential-stock-push-history.json');
 
-let cachedData: any = null;
+let cachedData: WindLeaderData | null = null;
 let cachedTime = 0;
 const CACHE_TTL = 60 * 1000;
 const HOME_SECTOR_LIMIT = 8;
@@ -45,7 +146,7 @@ async function checkDbAvailability(): Promise<boolean> {
     return dbAvailable;
 }
 
-function loadData(): any {
+function loadData(): WindLeaderData | null {
     const now = Date.now();
     if (cachedData && now - cachedTime < CACHE_TTL) {
         return cachedData;
@@ -120,13 +221,13 @@ function safeIdPart(value: unknown, fallback: string, maxLength: number): string
     return (text || fallback).slice(0, maxLength);
 }
 
-function buildPushId(pushDate: string, stock: any, sectorName: string, chainPosition: string): string {
+function buildPushId(pushDate: string, stock: WindLeaderStock, sectorName: string, chainPosition: string): string {
     const theme = safeIdPart(sectorName, 'theme', 24);
     const chain = safeIdPart(chainPosition, 'core', 12);
     return `windleader_${dateCompact(pushDate)}_${stock.code}_${theme}_${chain}`;
 }
 
-function formatStock(s: any): any {
+function formatStock(s: WindLeaderStock): FormattedStock {
     return {
         code: cleanText(s.code, 20),
         name: cleanText(s.name, 80),
@@ -146,15 +247,15 @@ function formatStock(s: any): any {
     };
 }
 
-function selectHomeRecommendedStocks(data: any): Array<{ stock: any; sector: any; chainPosition: string; displayRank: number }> {
+function selectHomeRecommendedStocks(data: WindLeaderData): Array<{ stock: WindLeaderStock; sector: WindLeaderSector; chainPosition: string; displayRank: number }> {
     const seen = new Set<string>();
-    const picked: Array<{ stock: any; sector: any; chainPosition: string }> = [];
+    const picked: Array<{ stock: WindLeaderStock; sector: WindLeaderSector; chainPosition: string }> = [];
 
     for (const sector of (data?.hot_sectors || []).slice(0, HOME_SECTOR_LIMIT)) {
         const sectorStocks = [
-            ...(sector.main_stocks || []).map((stock: any) => ({ stock, chainPosition: stock.chain_position || '核心', priority: 0 })),
-            ...(sector.upstream_stocks || []).map((stock: any) => ({ stock, chainPosition: stock.chain_position || '上游', priority: 1 })),
-            ...(sector.downstream_stocks || []).map((stock: any) => ({ stock, chainPosition: stock.chain_position || '下游', priority: 1 })),
+            ...(sector.main_stocks || []).map((stock: WindLeaderStock) => ({ stock, chainPosition: stock.chain_position || '核心', priority: 0 })),
+            ...(sector.upstream_stocks || []).map((stock: WindLeaderStock) => ({ stock, chainPosition: stock.chain_position || '上游', priority: 1 })),
+            ...(sector.downstream_stocks || []).map((stock: WindLeaderStock) => ({ stock, chainPosition: stock.chain_position || '下游', priority: 1 })),
         ].sort((a, b) => {
             if (a.priority !== b.priority) return a.priority - b.priority;
             return (Number(b.stock.score) || 0) - (Number(a.stock.score) || 0);
@@ -180,12 +281,12 @@ function selectHomeRecommendedStocks(data: any): Array<{ stock: any; sector: any
         .map((item, index) => ({ ...item, displayRank: index + 1 }));
 }
 
-function collectPushRecordsFromData(data: any): any[] {
+function collectPushRecordsFromData(data: WindLeaderData): PushHistoryRecord[] {
     const pushDate = normalizeDateText(data?.update_time);
     const pushBatchId = `windleader_${dateCompact(pushDate)}`;
-    const records = new Map<string, any>();
+    const records = new Map<string, PushHistoryRecord>();
 
-    const addStock = (sector: any, stock: any, defaultChainPosition: string, displayRank: number) => {
+    const addStock = (sector: WindLeaderSector, stock: WindLeaderStock, defaultChainPosition: string, displayRank: number) => {
         const sectorName = cleanText(sector?.name, 80);
         if (!stock?.code) return;
 
@@ -225,7 +326,7 @@ function collectPushRecordsFromData(data: any): any[] {
     return Array.from(records.values());
 }
 
-function readPushHistoryFile(): any[] {
+function readPushHistoryFile(): PushHistoryRecord[] {
     try {
         if (!fs.existsSync(PUSH_HISTORY_FILE)) {
             return [];
@@ -240,7 +341,7 @@ function readPushHistoryFile(): any[] {
     }
 }
 
-function writePushHistoryFile(records: any[]): void {
+function writePushHistoryFile(records: PushHistoryRecord[]): void {
     const dir = path.dirname(PUSH_HISTORY_FILE);
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
@@ -248,7 +349,7 @@ function writePushHistoryFile(records: any[]): void {
     fs.writeFileSync(PUSH_HISTORY_FILE, JSON.stringify(records, null, 2), 'utf-8');
 }
 
-async function readPushHistoryFromDb(): Promise<any[]> {
+async function readPushHistoryFromDb(): Promise<PushHistoryRecord[]> {
     try {
         const result = await pool.query(`
             SELECT push_id, push_batch_id, push_date, push_time, push_rank,
@@ -269,7 +370,7 @@ async function readPushHistoryFromDb(): Promise<any[]> {
     }
 }
 
-async function writePushHistoryToDb(records: any[]): Promise<void> {
+async function writePushHistoryToDb(records: PushHistoryRecord[]): Promise<void> {
     if (!records.length) return;
 
     try {
@@ -323,7 +424,7 @@ async function writePushHistoryToDb(records: any[]): Promise<void> {
     }
 }
 
-async function updatePushHistoryPricesInDb(updatedRecords: any[]): Promise<void> {
+async function updatePushHistoryPricesInDb(updatedRecords: PushHistoryRecord[]): Promise<void> {
     if (!updatedRecords.length) return;
 
     try {
@@ -378,7 +479,7 @@ async function getPreviousClosePrice(symbol: string, pushDate: string): Promise<
         : null;
 }
 
-async function enrichPushPricesWithPreviousClose(records: any[]): Promise<any[]> {
+async function enrichPushPricesWithPreviousClose(records: PushHistoryRecord[]): Promise<PushHistoryRecord[]> {
     const enriched = await Promise.all(records.map(async record => {
         try {
             const previousClose = await getPreviousClosePrice(record.stock_code, record.push_date);
@@ -399,7 +500,7 @@ async function enrichPushPricesWithPreviousClose(records: any[]): Promise<any[]>
     return enriched;
 }
 
-function mergePushRecord(existing: any, next: any): any {
+function mergePushRecord(existing: PushHistoryRecord | undefined, next: PushHistoryRecord): PushHistoryRecord {
     if (!existing) return normalizePushHistoryRecord(next);
     return normalizePushHistoryRecord({
         ...next,
@@ -423,7 +524,7 @@ export class WindLeaderService {
             return null;
         }
 
-        const sectors = (data.hot_sectors || []).slice(0, limit).map((sector: any) => ({
+        const sectors = (data.hot_sectors || []).slice(0, limit).map((sector: WindLeaderSector) => ({
             code: sector.code || '',
             name: sector.name,
             type: sector.type,
@@ -462,7 +563,7 @@ export class WindLeaderService {
             const uniqueCodes = [...new Set(allCodes)];
             if (uniqueCodes.length > 0) {
                 const quotes = await TencentQuoteService.getCachedBatchQuotes(uniqueCodes, 'core');
-                const quoteMap = new Map<string, Record<string, any>>();
+                const quoteMap = new Map<string, Record<string, unknown>>();
                 uniqueCodes.forEach((code, i) => {
                     if (quotes[i] && !('错误' in quotes[i])) quoteMap.set(code, quotes[i]);
                 });
@@ -470,8 +571,8 @@ export class WindLeaderService {
                     if (sector.leading_stock_info?.code) {
                         const q = quoteMap.get(sector.leading_stock_info.code);
                         if (q) {
-                            if (q['最新价'] && q['最新价'] > 0) sector.leading_stock_info.price = q['最新价'];
-                            if (q['涨跌幅'] !== undefined && q['涨跌幅'] !== null) sector.leading_stock_info.change_pct = q['涨跌幅'];
+                            if (Number(q['最新价']) > 0) sector.leading_stock_info.price = Number(q['最新价']);
+                            if (q['涨跌幅'] !== undefined && q['涨跌幅'] !== null) sector.leading_stock_info.change_pct = Number(q['涨跌幅']);
                         }
                     }
                     for (const key of stockLists) {
@@ -479,8 +580,8 @@ export class WindLeaderService {
                             if (!s.code) continue;
                             const q = quoteMap.get(s.code);
                             if (q) {
-                                if (q['最新价'] && q['最新价'] > 0) s.price = q['最新价'];
-                                if (q['涨跌幅'] !== undefined && q['涨跌幅'] !== null) s.change_pct = q['涨跌幅'];
+                                if (Number(q['最新价']) > 0) s.price = Number(q['最新价']);
+                                if (q['涨跌幅'] !== undefined && q['涨跌幅'] !== null) s.change_pct = Number(q['涨跌幅']);
                             }
                         }
                     }
@@ -496,7 +597,7 @@ export class WindLeaderService {
         };
     }
 
-    static async saveData(data: any): Promise<void> {
+    static async saveData(data: WindLeaderData): Promise<void> {
         try {
             const dir = path.dirname(DATA_FILE);
             if (!fs.existsSync(dir)) {
@@ -511,10 +612,10 @@ export class WindLeaderService {
         }
     }
 
-    static async getPotentialPushHistory(): Promise<any[]> {
+    static async getPotentialPushHistory(): Promise<PushHistoryRecord[]> {
         const isDbAvailable = await checkDbAvailability();
         
-        let history: any[];
+        let history: PushHistoryRecord[];
         if (isDbAvailable) {
             history = await readPushHistoryFromDb();
         } else {
@@ -523,7 +624,7 @@ export class WindLeaderService {
 
         const latest = loadData();
         const latestRecords = latest ? collectPushRecordsFromData(latest) : [];
-        const merged = new Map<string, any>();
+        const merged = new Map<string, PushHistoryRecord>();
 
         history.forEach(record => {
             if (record?.push_id) merged.set(record.push_id, record);
@@ -540,7 +641,7 @@ export class WindLeaderService {
         });
     }
 
-    static async getPublishedPotentialPushHistory(): Promise<any[]> {
+    static async getPublishedPotentialPushHistory(): Promise<PushHistoryRecord[]> {
         await this.ensurePushHistoryPricesCurrent();
         const records = await this.getPotentialPushHistory();
         return records.filter(isPushHistoryRecordSettled);
@@ -571,20 +672,20 @@ export class WindLeaderService {
         }
     }
 
-    static async appendPotentialPushHistory(data: any): Promise<void> {
+    static async appendPotentialPushHistory(data: WindLeaderData): Promise<void> {
         const nextRecords = await enrichPushPricesWithPreviousClose(collectPushRecordsFromData(data));
         if (!nextRecords.length) return;
 
         const isDbAvailable = await checkDbAvailability();
         
-        let history: any[];
+        let history: PushHistoryRecord[];
         if (isDbAvailable) {
             history = await readPushHistoryFromDb();
         } else {
             history = readPushHistoryFile();
         }
 
-        const merged = new Map<string, any>();
+        const merged = new Map<string, PushHistoryRecord>();
         history.forEach(record => {
             if (record?.push_id) merged.set(record.push_id, record);
         });
@@ -623,7 +724,7 @@ export class WindLeaderService {
             const expectedTradeDate = getExpectedCloseTradeDate();
             const isDbAvailable = await checkDbAvailability();
             
-            let history: any[];
+            let history: PushHistoryRecord[];
             if (isDbAvailable) {
                 history = await readPushHistoryFromDb();
             } else {
@@ -648,7 +749,7 @@ export class WindLeaderService {
             }
 
             const quotes = await TencentQuoteService.getBatchQuotes(stockCodes, 'core');
-            const quoteMap = new Map<string, Record<string, any>>();
+            const quoteMap = new Map<string, Record<string, unknown>>();
             quotes.forEach((quote, index) => {
                 const code = stockCodes[index];
                 if (code && quote && !('\u9519\u8bef' in quote)) {
@@ -690,8 +791,8 @@ export class WindLeaderService {
             }
 
             console.log(`[PriceUpdate] done: ${updatedRecords.length} records, updated ${updatedCount}`);
-        } catch (err: any) {
-            console.error('[PriceUpdate] failed:', err?.message || err);
+        } catch (err: unknown) {
+            console.error('[PriceUpdate] failed:', err instanceof Error ? err.message : String(err));
         }
     }
 }

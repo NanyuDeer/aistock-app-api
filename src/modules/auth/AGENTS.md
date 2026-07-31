@@ -21,7 +21,7 @@
 - `scanLoginController.ts` — ScanLoginController（扫码登录）
 - `feishuAuthController.ts` — FeishuAuthController（飞书授权/订阅）
 - `userController.ts` — UserController（用户管理）
-- `feishuMessageController.ts` — FeishuMessageController（飞书消息）
+- `feishuMessageController.ts` — FeishuMessageController（飞书消息、OCR及AI处理状态入库）
 
 ## 依赖的 shared 类型
 - `shared/utils/jwt` — JWT 签发/验证
