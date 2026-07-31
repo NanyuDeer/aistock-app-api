@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [changer] 2026-07-31 — 个股异动 Trace 触发（StockTraceTriggerService + 交易日历补齐）
+
+**开发者**: 37588
+
+### 新增
+- `src/modules/crawler/services/StockTraceTriggerService.ts`：个股 Trace 触发 relay，转发到 Python `POST /api/agent/trace/stock/trigger`（fail-closed：token/URL 未配置静默 skipped；90s 超时；绝不抛异常，不影响通知主流程）
+- `scripts/export-historical-close-snapshots.ts`：历史收盘快照导出脚本（配合 2024/2025 交易日历）
+- `src/modules/crawler/__tests__/stockTraceTrigger.spec.ts`：StockTraceTriggerService 单元测试
+
+### 改进
+- `src/modules/crawler/StockInfoPushService.ts`：通知完成后按 symbol 去重触发个股 Trace（倒序取每 symbol 首次 judgement，`traceId = stock-info:<judgementId>`）
+- `src/shared/utils/TradingCalendarService.ts`：补齐 2024 / 2025 年 A 股休市日历（历史快照导出需要）
+
+---
+
 ## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
 **开发者**: Aria
 
