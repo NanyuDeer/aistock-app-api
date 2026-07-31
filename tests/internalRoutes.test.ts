@@ -587,20 +587,32 @@ async function main(): Promise<void> {
             trade_date: '20260720',
             captured_at: '2026-07-20T07:30:00.000Z',
             indexes: [{ ts_code: 'sh000001', name: '上证指数', trade_date: '20260720', close: 3200, pct_chg: 1.2, amount: 3000000000, source: 'tushare:index_daily' }],
-            breadth: { total_count: 0, advance_count: 0, decline_count: 0, flat_count: 0, advance_ratio: 0, source: 'tushare:daily' },
-            turnover: { amount_yuan: 0, previous_amount_yuan: 0, change_pct: 0, source: 'tushare:daily' },
-            limits: { up_count: 0, down_count: 0, broken_count: 0, highest_board: 0 },
+            breadth: { total_count: 10, advance_count: 8, decline_count: 2, flat_count: 0, advance_ratio: 0.8, source: 'tencent:quote' },
+            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            limits: { up_count: 1, down_count: 0, broken_count: null, highest_board: null },
             sectors: { top_gainers: [], top_losers: [], top_inflows: [], top_outflows: [] },
-            main_force: { large_and_extra_large_net_yuan: 0, source: 'tushare:moneyflow_ths' },
+            main_force: { large_and_extra_large_net_yuan: null, source: 'tushare:moneyflow_ths' },
             coverage: { current_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 }, previous_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 } },
             snapshot_kind: 'quick',
+            coverage_info: { has_limit_pool: false, has_moneyflow: false, has_concept_flow: false },
+            quick_data_availability: {
+                breadth: { state: 'available' },
+                turnover: { state: 'unavailable', reason: 'fixture has no verified turnover' },
+                limits: { state: 'partial', available_fields: ['up_count', 'down_count'], approximate: true },
+                sectors: { state: 'unavailable', reason: 'fixture has no sectors' },
+                main_force: { state: 'unavailable', reason: 'fixture has no main force' },
+            },
         })
         try {
             const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
             assert.equal(res.status, 200)
-            const body = res.body as { code: number; data: { snapshot_kind: string } }
+            const body = res.body as {
+                code: number
+                data: { snapshot_kind: string; quick_data_availability: { breadth: { state: string } } }
+            }
             assert.equal(body.code, 200)
             assert.equal(body.data.snapshot_kind, 'quick')
+            assert.equal(body.data.quick_data_availability.breadth.state, 'available')
         } finally {
             TencentSnapshotService.buildQuickSnapshot = originalBuild
         }

@@ -352,6 +352,72 @@ test('fetchMarketBreadth marks malformed activity changes as partial instead of 
     }
 })
 
+test('fetchMarketBreadth marks null change and blank volume rows partial instead of zero', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    __tencentSnapshotDeps.getStockBasicBulk = async () => [
+        { ts_code: '600000.SH', symbol: '600000', name: '浦发银行', industry: '银行', list_date: '19991110' },
+        { ts_code: '000001.SZ', symbol: '000001', name: '平安银行', industry: '银行', list_date: '19910403' },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async () => [
+        { '股票代码': 'sh600000', '涨跌幅': null, '成交量': 1000000 },
+        { '股票代码': 'sz000001', '涨跌幅': 1.2, '成交量': ' ' },
+    ])
+
+    try {
+        const result = await TencentSnapshotService.fetchMarketBreadth()
+        assert.equal(result.breadth, undefined)
+        assert.deepEqual(result.availability, {
+            state: 'partial',
+            available_fields: [],
+            reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
+        })
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('calculateBreadth rejects null, blank, and illegal activity change or volume fields', () => {
+    const invalidRows = [
+        { '涨跌幅': null, '成交量': 1000000 },
+        { '涨跌幅': ' ', '成交量': 1000000 },
+        { '涨跌幅': 'invalid', '成交量': 1000000 },
+        { '涨跌幅': 1.2, '成交量': null },
+        { '涨跌幅': 1.2, '成交量': ' ' },
+        { '涨跌幅': 1.2, '成交量': 'invalid' },
+    ]
+
+    for (const fields of invalidRows) {
+        assert.throws(
+            () => TencentSnapshotService.calculateBreadth([{ '股票代码': 'sh600000', ...fields }]),
+            /missing or non-numeric/,
+        )
+    }
+})
+
+test('fetchMarketBreadth marks blank volume rows partial instead of zero', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    __tencentSnapshotDeps.getStockBasicBulk = async () => [
+        { ts_code: '600000.SH', symbol: '600000', name: '浦发银行', industry: '银行', list_date: '19991110' },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async () => [
+        { '股票代码': 'sh600000', '涨跌幅': 1.2, '成交量': ' ' },
+    ])
+
+    try {
+        const result = await TencentSnapshotService.fetchMarketBreadth()
+        assert.equal(result.breadth, undefined)
+        assert.deepEqual(result.availability, {
+            state: 'partial',
+            available_fields: [],
+            reason: 'Tencent activity rows contain missing or non-numeric 成交量',
+        })
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+        batchQuotesMock.mock.restore()
+    }
+})
+
 test('fetchMarketBreadth marks incomplete batch coverage unavailable', async () => {
     const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
     __tencentSnapshotDeps.getStockBasicBulk = async () => [

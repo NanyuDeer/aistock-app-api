@@ -76,6 +76,7 @@ function toNumber(val: unknown): number {
 }
 
 function toFiniteNumber(val: unknown): number | undefined {
+    if (val === null || (typeof val === 'string' && val.trim() === '')) return undefined
     const n = Number(val)
     return Number.isFinite(n) ? n : undefined
 }
@@ -241,12 +242,17 @@ export class TencentSnapshotService {
                 },
             }
         }
-        if (allCodes.some((code) => toFiniteNumber(quoteByCode.get(code)!['涨跌幅']) === undefined)) {
+        if (allCodes.some((code) => {
+            const quote = quoteByCode.get(code)!
+            return toFiniteNumber(quote['涨跌幅']) === undefined || toFiniteNumber(quote['成交量']) === undefined
+        })) {
             return {
                 availability: {
                     state: 'partial',
                     available_fields: [],
-                    reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
+                    reason: allCodes.some((code) => toFiniteNumber(quoteByCode.get(code)!['涨跌幅']) === undefined)
+                        ? 'Tencent activity rows contain missing or non-numeric 涨跌幅'
+                        : 'Tencent activity rows contain missing or non-numeric 成交量',
                 },
             }
         }
@@ -272,6 +278,10 @@ export class TencentSnapshotService {
             if (changePct === undefined) {
                 throw new Error('Tencent activity row has missing or non-numeric 涨跌幅')
             }
+            const volume = toFiniteNumber(q['成交量'])
+            if (volume === undefined) {
+                throw new Error('Tencent activity row has missing or non-numeric 成交量')
+            }
 
             if (changePct > 0) advance++
             else if (changePct < 0) decline++
@@ -281,7 +291,7 @@ export class TencentSnapshotService {
             if (changePct >= threshold) limitUp++
             if (changePct <= -threshold) limitDown++
 
-            totalVolume += toNumber(q['成交量'])
+            totalVolume += volume
             totalChangePct += changePct
             validCount++
         }
