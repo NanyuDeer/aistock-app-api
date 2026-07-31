@@ -59,6 +59,9 @@ import { HotBurstService } from './modules/monitor/HotBurstService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
+import { StockTraceController } from './modules/stock-trace/controller';
+import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
+import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector';
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
 
@@ -187,6 +190,11 @@ app.post('/api/internal/stock-info/push', (req, res, next) => StockInfoJudgement
 // 个股异动监控 - 前端查询接口，数据来自外部爬虫提交的公告/新闻研判。
 app.get('/api/cn/stock-monitors/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
 app.get('/api/cn/stock-monitors/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
+app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.list(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
+app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
@@ -510,8 +518,8 @@ app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGCon
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
 
 // ==================== Internal API（Python Agent 服务专用） ====================
+app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use('/internal', internalRouter);
-
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -931,6 +939,10 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
+        PriceTriggerDetector.start();
+        StockSyncService.sync().catch((err: unknown) => {
+            console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
+        });
         // 异步同步个股-板块映射（不阻塞启动，首次启动时填充空表）
         syncStockConceptMapping().catch(err => {
             console.error('[Startup] stock_concept_mapping 同步失败:', err?.message || err);
