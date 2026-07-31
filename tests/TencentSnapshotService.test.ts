@@ -6,6 +6,8 @@
  */
 
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
+import https = require('node:https')
 import test from 'node:test'
 import { mock } from 'node:test'
 
@@ -32,6 +34,64 @@ const STOCK_QUOTES: Record<string, unknown>[] = [
     { '股票代码': 'sz000001', '涨跌幅': 0.3, '成交量': 500000, '成交额': 5000000 },
     { '股票代码': 'sz300750', '涨跌幅': 20.0, '成交量': 300000, '成交额': 6000000 },
 ]
+
+function buildTencentQuoteLine(code: string, name: string): string {
+    const fields = Array.from({ length: 47 }, () => '')
+    fields[1] = name
+    fields[2] = code
+    fields[3] = '10.50'
+    fields[4] = '10.00'
+    fields[5] = '10.10'
+    fields[31] = '0.50'
+    fields[32] = '5.00'
+    fields[33] = '10.80'
+    fields[34] = '10.00'
+    fields[36] = '100'
+    fields[37] = '200'
+    fields[38] = '1.00'
+    fields[39] = '20.00'
+    fields[43] = '2.00'
+    fields[46] = '1.00'
+    return `v_${code}="${fields.join('~')}";`
+}
+
+test('explicit Tencent symbols are requested unchanged and retained in parsed batch quotes', async () => {
+    const requestedUrls: string[] = []
+    const requestMock = mock.method(https, 'request', (options, callback) => {
+        requestedUrls.push(`https://${options.hostname}${options.path}`)
+        const request = new EventEmitter()
+        request.end = () => {
+            const response = new EventEmitter() as EventEmitter & {
+                headers: Record<string, string>
+                statusCode: number
+                statusMessage: string
+            }
+            response.headers = {}
+            response.statusCode = 200
+            response.statusMessage = 'OK'
+            callback(response as any)
+            queueMicrotask(() => {
+                response.emit('data', Buffer.from([
+                    buildTencentQuoteLine('sh000001', '上证指数'),
+                    buildTencentQuoteLine('sz000001', '平安银行'),
+                ].join('\n')))
+                response.emit('end')
+            })
+        }
+        return request as any
+    })
+
+    try {
+        const quotes = await TencentQuoteService.getBatchQuotes(['sh000001', 'sz000001'], 'activity')
+
+        assert.equal(requestedUrls.length, 1)
+        assert.match(requestedUrls[0], /q=sh000001,sz000001/)
+        assert.doesNotMatch(requestedUrls[0], /shsh000001|shsz000001/)
+        assert.deepEqual(quotes.map((quote) => quote['股票代码']), ['sh000001', 'sz000001'])
+    } finally {
+        requestMock.mock.restore()
+    }
+})
 
 test('buildQuickSnapshot returns complete snapshot with indexes and breadth', async () => {
     const afterClose = new Date('2026-07-30T07:30:00.000Z') // 15:30 Shanghai
