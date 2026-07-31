@@ -29,7 +29,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
-    'broadcast', 'event_conduction', 'trend_score', 'global_importance',
+    'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
 ]
 
