@@ -104,24 +104,24 @@ export interface CloseMarketSnapshot {
     captured_at: string;
     indexes: CloseIndexFact[];
     breadth: {
-        total_count: number | null;
-        advance_count: number | null;
-        decline_count: number | null;
-        flat_count: number | null;
-        advance_ratio: number | null;
-        source: 'tushare:daily' | 'tencent:quote';
+        total_count: number;
+        advance_count: number;
+        decline_count: number;
+        flat_count: number;
+        advance_ratio: number;
+        source: 'tushare:daily';
     };
     turnover: {
-        amount_yuan: number | null;
-        previous_amount_yuan: number | null;
-        change_pct: number | null;
+        amount_yuan: number;
+        previous_amount_yuan: number;
+        change_pct: number;
         source: 'tushare:daily';
     };
     limits: {
-        up_count: number | null;
-        down_count: number | null;
-        broken_count: number | null;
-        highest_board: number | null;
+        up_count: number;
+        down_count: number;
+        broken_count: number;
+        highest_board: number;
     };
     sectors: {
         top_gainers: SectorFact[];
@@ -130,21 +130,47 @@ export interface CloseMarketSnapshot {
         top_outflows: SectorFact[];
     };
     main_force: {
-        large_and_extra_large_net_yuan: number | null;
+        large_and_extra_large_net_yuan: number;
         source: 'tushare:moneyflow_ths';
     };
     coverage: {
         current_daily: DailyCoverageSummary;
         previous_daily: DailyCoverageSummary;
     };
-    // ---- 以下为 quick snapshot 扩展字段（full snapshot 不填）----
-    /** 快照类型：quick=15:30 腾讯实时，full=20:30 Tushare 完整。缺省视为 full。 */
-    snapshot_kind?: 'quick' | 'full';
-    /** quick snapshot 数据覆盖标识。 */
-    coverage_info?: QuickSnapshotCoverage;
-    /** quick snapshot 各域的数据可用性；full snapshot 不填。 */
-    quick_data_availability?: QuickSnapshotDataAvailability;
-    /** quick snapshot 全市场宽度（含近似涨跌停）。full snapshot 用上方内联 breadth。 */
+}
+
+/** 15:30 后腾讯 quick snapshot 的专用事实契约。 */
+export interface QuickCloseMarketSnapshot extends Omit<
+    CloseMarketSnapshot,
+    'breadth' | 'turnover' | 'limits' | 'main_force'
+> {
+    snapshot_kind: 'quick';
+    breadth: {
+        total_count: number | null;
+        advance_count: number | null;
+        decline_count: number | null;
+        flat_count: number | null;
+        advance_ratio: number | null;
+        source: 'tencent:quote';
+    };
+    turnover: {
+        amount_yuan: null;
+        previous_amount_yuan: null;
+        change_pct: null;
+        source: 'tushare:daily';
+    };
+    limits: {
+        up_count: number | null;
+        down_count: number | null;
+        broken_count: null;
+        highest_board: null;
+    };
+    main_force: {
+        large_and_extra_large_net_yuan: number | null;
+        source: 'tushare:moneyflow_ths';
+    };
+    coverage_info: QuickSnapshotCoverage;
+    quick_data_availability: QuickSnapshotDataAvailability;
     market_breadth?: MarketBreadth;
 }
 
@@ -354,7 +380,7 @@ function selectTopSectors(rows: MoneyflowCntThsRow[]): {
  * 大单 + 特大单净额（万元）→ 元。
  * 单只个股：(buy_lg_amount + buy_elg_amount - sell_lg_amount - sell_elg_amount) × 10000
  */
-function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
+export function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
     let netWan = 0;
     for (const row of rows) {
         netWan += row.buy_lg_amount + row.buy_elg_amount - row.sell_lg_amount - row.sell_elg_amount;

@@ -35,6 +35,21 @@ const STOCK_QUOTES: Record<string, unknown>[] = [
     { '股票代码': 'sz300750', '涨跌幅': 20.0, '成交量': 300000, '成交额': 6000000 },
 ]
 
+const AVAILABLE_BREADTH_RESULT = {
+    breadth: {
+        total_count: 10,
+        advance_count: 8,
+        decline_count: 2,
+        flat_count: 0,
+        limit_up_count: 1,
+        limit_down_count: 0,
+        limit_count_approximate: true,
+        total_volume: 2600000,
+        avg_change_pct: 4.9,
+    },
+    availability: { state: 'available' as const },
+}
+
 function buildTencentQuoteLine(code: string, name: string): string {
     const fields = Array.from({ length: 47 }, () => '')
     fields[1] = name
@@ -97,20 +112,14 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
     const afterClose = new Date('2026-07-30T07:30:00.000Z') // 15:30 Shanghai
 
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
-    const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => ({
-        total_count: 10,
-        advance_count: 8,
-        decline_count: 2,
-        flat_count: 0,
-        limit_up_count: 1,
-        limit_down_count: 0,
-        limit_count_approximate: true,
-        total_volume: 2600000,
-        avg_change_pct: 4.9,
-    }))
+    const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => AVAILABLE_BREADTH_RESULT)
     const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
+    const moneyflowDates: string[] = []
     const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
-    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
+    __tencentSnapshotDeps.getMoneyflowThsByDate = async (tradeDate) => {
+        moneyflowDates.push(tradeDate)
+        throw new Error('moneyflow unavailable')
+    }
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -142,6 +151,12 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.ok(snapshot.coverage_info)
         assert.equal(snapshot.coverage_info!.has_limit_pool, false)
         assert.equal(snapshot.coverage_info!.has_moneyflow, false)
+        assert.equal(snapshot.coverage_info!.has_concept_flow, false)
+        assert.deepEqual(snapshot.quick_data_availability.sectors, {
+            state: 'unavailable',
+            reason: 'Concept-flow fetch returned no sector rows',
+        })
+        assert.deepEqual(moneyflowDates, ['20260730'])
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
@@ -163,6 +178,8 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
     const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => { throw new Error('breadth failed') })
     const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
+    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
+    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -174,6 +191,39 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
         fetchConceptFlowMock.mock.restore()
+        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+    }
+})
+
+test('buildQuickSnapshot keeps a malformed breadth partial and null', async () => {
+    const afterClose = new Date('2026-07-30T07:30:00.000Z')
+    const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
+    const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => ({
+        availability: {
+            state: 'partial' as const,
+            available_fields: [],
+            reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
+        },
+    }))
+    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
+    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
+    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
+
+    try {
+        const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
+        assert.equal(snapshot.breadth.total_count, null)
+        assert.equal(snapshot.market_breadth, undefined)
+        assert.deepEqual(snapshot.quick_data_availability.breadth, {
+            state: 'partial',
+            available_fields: [],
+            reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
+        })
+        assert.equal(snapshot.quick_data_availability.limits.state, 'unavailable')
+    } finally {
+        fetchIndexesMock.mock.restore()
+        fetchBreadthMock.mock.restore()
+        fetchConceptFlowMock.mock.restore()
+        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
     }
 })
 
@@ -262,13 +312,63 @@ test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async 
     const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (symbols, level) => {
         requestedBatches.push(symbols)
         requestedLevels.push(level)
-        return [{ '股票代码': symbols[0], '涨跌幅': 1.2, '成交量': 1000000, '成交额': 10000000 }]
+        return symbols.map((symbol) => ({ '股票代码': symbol, '涨跌幅': 1.2, '成交量': 1000000, '成交额': 10000000 }))
     })
 
     try {
-        await TencentSnapshotService.fetchMarketBreadth()
+        const result = await TencentSnapshotService.fetchMarketBreadth()
         assert.deepEqual(requestedBatches, [['sh600000', 'sz000001']])
         assert.deepEqual(requestedLevels, ['activity'])
+        assert.equal(result.availability.state, 'available')
+        assert.equal(result.breadth!.total_count, 2)
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('fetchMarketBreadth marks malformed activity changes as partial instead of flat', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    __tencentSnapshotDeps.getStockBasicBulk = async () => [
+        { ts_code: '600000.SH', symbol: '600000', name: '浦发银行', industry: '银行', list_date: '19991110' },
+        { ts_code: '000001.SZ', symbol: '000001', name: '平安银行', industry: '银行', list_date: '19910403' },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async () => [
+        { '股票代码': 'sh600000', '涨跌幅': 1.2, '成交量': 1000000 },
+        { '股票代码': 'sz000001', '涨跌幅': 'not-a-number', '成交量': 1000000 },
+    ])
+
+    try {
+        const result = await TencentSnapshotService.fetchMarketBreadth()
+        assert.equal(result.breadth, undefined)
+        assert.deepEqual(result.availability, {
+            state: 'partial',
+            available_fields: [],
+            reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
+        })
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('fetchMarketBreadth marks incomplete batch coverage unavailable', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    __tencentSnapshotDeps.getStockBasicBulk = async () => [
+        { ts_code: '600000.SH', symbol: '600000', name: '浦发银行', industry: '银行', list_date: '19991110' },
+        { ts_code: '000001.SZ', symbol: '000001', name: '平安银行', industry: '银行', list_date: '19910403' },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async () => [
+        { '股票代码': 'sh600000', '涨跌幅': 1.2, '成交量': 1000000 },
+    ])
+
+    try {
+        const result = await TencentSnapshotService.fetchMarketBreadth()
+        assert.equal(result.breadth, undefined)
+        assert.deepEqual(result.availability, {
+            state: 'unavailable',
+            reason: 'Tencent activity quote batch coverage is incomplete',
+        })
     } finally {
         __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
         batchQuotesMock.mock.restore()
