@@ -8,7 +8,8 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
     "test": "node --import tsx --test \"src/**/__tests__/**/*.spec.ts\" \"tests/**/*.test.ts\"",
-    "test:agent": "node --import tsx --test src/modules/agent/__tests__/agent.proxy.spec.ts"
+    "test:agent": "node --import tsx --test src/modules/agent/__tests__/agent.proxy.spec.ts",
+    "test:stock-trace:e2e": "node --import tsx scripts/verify-stock-trace-publication-e2e.ts"
   },
   "keywords": [
     "ai-stock",
