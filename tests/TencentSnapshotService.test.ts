@@ -192,6 +192,43 @@ test('fetchIndexes maps Tencent index symbols to canonical Tushare ts_codes', as
     }
 })
 
+test('fetchIndexes rejects an error placeholder at activity level', async () => {
+    const tencentIndexQuotes = [
+        { '股票代码': 'sh000001', '错误': '未获取到行情数据' },
+        { '股票代码': 'sh000300', '股票简称': '沪深300', '最新价': 4000, '涨跌幅': 0.8, '成交额': 2000000000 },
+        { '股票代码': 'sh000016', '股票简称': '上证50', '最新价': 2800, '涨跌幅': 0.5, '成交额': 1000000000 },
+        { '股票代码': 'sz399001', '股票简称': '深证成指', '最新价': 10500, '涨跌幅': 1.5, '成交额': 3500000000 },
+        { '股票代码': 'sz399006', '股票简称': '创业板指', '最新价': 2100, '涨跌幅': 2.1, '成交额': 1500000000 },
+        { '股票代码': 'sz399303', '股票简称': '国证2000', '最新价': 8000, '涨跌幅': 0.9, '成交额': 800000000 },
+    ]
+    const requestedLevels: string[] = []
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (_symbols, level) => {
+        requestedLevels.push(level)
+        return tencentIndexQuotes
+    })
+
+    try {
+        await assert.rejects(
+            () => TencentSnapshotService.fetchIndexes(),
+            new Error('index sh000001 quote failed'),
+        )
+        assert.deepEqual(requestedLevels, ['activity'])
+    } finally {
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('calculateBreadth skips error placeholders', () => {
+    const breadth = TencentSnapshotService.calculateBreadth([
+        { '股票代码': 'sh600000', '涨跌幅': 1.2, '成交量': 1000000, '成交额': 10000000 },
+        { '股票代码': 'sh600000', '错误': '查询失败' },
+    ])
+
+    assert.equal(breadth.total_count, 1)
+    assert.equal(breadth.advance_count, 1)
+    assert.equal(breadth.flat_count, 0)
+})
+
 test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async () => {
     const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
     const requestedBatches: string[][] = []
@@ -200,14 +237,17 @@ test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async 
         { ts_code: '000001.SZ', symbol: '000001', name: '平安银行', industry: '银行', list_date: '19910403' },
         { ts_code: '430001.BJ', symbol: '430001', name: '北交所股票', industry: '其他', list_date: '20211115' },
     ]
-    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (symbols) => {
+    const requestedLevels: string[] = []
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (symbols, level) => {
         requestedBatches.push(symbols)
+        requestedLevels.push(level)
         return []
     })
 
     try {
         await TencentSnapshotService.fetchMarketBreadth()
         assert.deepEqual(requestedBatches, [['sh600000', 'sz000001']])
+        assert.deepEqual(requestedLevels, ['activity'])
     } finally {
         __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
         batchQuotesMock.mock.restore()
