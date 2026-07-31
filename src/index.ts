@@ -518,9 +518,8 @@ app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGCon
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
 
 // ==================== Internal API（Python Agent 服务专用） ====================
-app.use('/internal', internalRouter);
-
 app.use('/internal/stock-trace', stockTraceInternalRouter);
+app.use('/internal', internalRouter);
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
