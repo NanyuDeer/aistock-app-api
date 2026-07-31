@@ -13,6 +13,7 @@ import {
     TencentSnapshotService,
     __tencentSnapshotDeps,
 } from '../src/modules/quote/TencentSnapshotService'
+import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
 
 // 6 大指数 mock 数据
 const INDEX_FACTS = [
@@ -103,4 +104,65 @@ test('calculateBreadth correctly counts advance/decline/limit', () => {
     assert.equal(breadth.limit_up_count, 1)   // sz300750 (20.0% >= 20% threshold)
     assert.equal(breadth.limit_down_count, 0) // sh601318 -9.5% 未达 -10%
     assert.equal(breadth.limit_count_approximate, true)
+})
+
+test('fetchIndexes maps Tencent index symbols to canonical Tushare ts_codes', async () => {
+    const tencentIndexQuotes = [
+        { '股票代码': 'sh000001', '股票简称': '上证指数', '最新价': 3200, '涨跌幅': 1.2, '成交额': 3000000000 },
+        { '股票代码': 'sh000300', '股票简称': '沪深300', '最新价': 4000, '涨跌幅': 0.8, '成交额': 2000000000 },
+        { '股票代码': 'sh000016', '股票简称': '上证50', '最新价': 2800, '涨跌幅': 0.5, '成交额': 1000000000 },
+        { '股票代码': 'sz399001', '股票简称': '深证成指', '最新价': 10500, '涨跌幅': 1.5, '成交额': 3500000000 },
+        { '股票代码': 'sz399006', '股票简称': '创业板指', '最新价': 2100, '涨跌幅': 2.1, '成交额': 1500000000 },
+        { '股票代码': 'sz399303', '股票简称': '国证2000', '最新价': 8000, '涨跌幅': 0.9, '成交额': 800000000 },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async () => tencentIndexQuotes)
+
+    try {
+        const indexes = await TencentSnapshotService.fetchIndexes()
+        assert.deepEqual(indexes.map((index) => index.ts_code), [
+            '000001.SH',
+            '000300.SH',
+            '000016.SH',
+            '399001.SZ',
+            '399006.SZ',
+            '399303.SZ',
+        ])
+    } finally {
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    const requestedBatches: string[][] = []
+    __tencentSnapshotDeps.getStockBasicBulk = async () => [
+        { ts_code: '600000.SH', symbol: '600000', name: '浦发银行', industry: '银行', list_date: '19991110' },
+        { ts_code: '000001.SZ', symbol: '000001', name: '平安银行', industry: '银行', list_date: '19910403' },
+        { ts_code: '430001.BJ', symbol: '430001', name: '北交所股票', industry: '其他', list_date: '20211115' },
+    ]
+    const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (symbols) => {
+        requestedBatches.push(symbols)
+        return []
+    })
+
+    try {
+        await TencentSnapshotService.fetchMarketBreadth()
+        assert.deepEqual(requestedBatches, [['sh600000', 'sz000001']])
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+        batchQuotesMock.mock.restore()
+    }
+})
+
+test('fetchMarketBreadth safely returns an empty breadth when stock-basic retrieval fails', async () => {
+    const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
+    __tencentSnapshotDeps.getStockBasicBulk = async () => { throw new Error('stock_basic unavailable') }
+
+    try {
+        const breadth = await TencentSnapshotService.fetchMarketBreadth()
+        assert.equal(breadth.total_count, 0)
+        assert.equal(breadth.advance_count, 0)
+    } finally {
+        __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
+    }
 })

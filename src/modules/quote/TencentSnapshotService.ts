@@ -9,7 +9,7 @@
  */
 
 import { TencentQuoteService } from './TencentQuoteService'
-import { getMoneyflowCntThs, type MoneyflowCntThsRow } from './TushareService'
+import { getMoneyflowCntThs, getStockBasicBulk, type MoneyflowCntThsRow } from './TushareService'
 import {
     isAtOrAfterClose,
     type CloseIndexFact,
@@ -36,6 +36,16 @@ const INDEX_NAMES: Record<string, string> = {
     'sz399001': '深证成指',
     'sz399006': '创业板指',
     'sz399303': '国证2000',
+}
+
+/** 腾讯指数代码到 Tushare 标准 ts_code 的映射。 */
+const INDEX_TS_CODES: Record<string, string> = {
+    'sh000001': '000001.SH',
+    'sh000300': '000300.SH',
+    'sh000016': '000016.SH',
+    'sz399001': '399001.SZ',
+    'sz399006': '399006.SZ',
+    'sz399303': '399303.SZ',
 }
 
 const BATCH_SIZE = 50
@@ -110,7 +120,7 @@ export class TencentSnapshotService {
                 throw new Error(`index ${code} not found in batch quotes`)
             }
             indexes.push({
-                ts_code: code,
+                ts_code: INDEX_TS_CODES[code],
                 name: String(row['股票简称'] ?? INDEX_NAMES[code] ?? code),
                 trade_date: '', // 由 assembleSnapshot 填充
                 close: toNumber(row['最新价']),
@@ -125,13 +135,20 @@ export class TencentSnapshotService {
 
     /**
      * 拉全市场宽度（分批并发）。
-     * 当前简化实现：调用 getBatchQuotes 拉所有 A 股代码。
-     * 生产环境需要全市场代码列表（从 TradingCalendarService 或缓存获取）。
+     * 从活跃 SH/SZ stock_basic 列表映射腾讯代码后调用 getBatchQuotes。
      */
     static async fetchMarketBreadth(): Promise<MarketBreadth> {
-        // 获取全市场 A 股代码列表（复用现有 TushareService 或缓存）
-        // 简化：这里通过 __tencentSnapshotDeps 注入，测试可替换
-        const allCodes = await __tencentSnapshotDeps.getAllStockCodes()
+        let allCodes: string[] = []
+        try {
+            const stockBasics = await __tencentSnapshotDeps.getStockBasicBulk()
+            allCodes = stockBasics.flatMap(({ ts_code }) => {
+                const match = ts_code.match(/^(\d{6})\.(SH|SZ)$/)
+                if (!match) return []
+                return [`${match[2] === 'SH' ? 'sh' : 'sz'}${match[1]}`]
+            })
+        } catch {
+            // 宽度数据为非核心，股票池获取失败时安全降级为空列表。
+        }
         const quotes: TencentQuoteRow[] = []
 
         // 分批拉取，BATCH_CONCURRENCY 批并发
@@ -242,18 +259,14 @@ export class TencentSnapshotService {
     }
 }
 
-/** 依赖注入接口（测试可替换 getAllStockCodes）。 */
+/** 依赖注入接口（测试可替换 stock_basic 数据源）。 */
 export interface TencentSnapshotDeps {
-    getAllStockCodes: () => Promise<string[]>
+    getStockBasicBulk: typeof getStockBasicBulk
 }
 
-/** 生产环境默认实现：返回空数组（生产环境需对接全市场代码源）。 */
+/** 生产环境默认实现：复用 Tushare 活跃股票列表。 */
 export const __tencentSnapshotDeps: TencentSnapshotDeps = {
-    getAllStockCodes: async () => {
-        // TODO: 对接全市场 A 股代码列表（从 TushareService 或 TradingCalendarService）
-        // 当前返回简化测试用代码，生产环境部署前需替换
-        return ['sh600000', 'sh601318', 'sz000001', 'sz300750']
-    },
+    getStockBasicBulk,
 }
 
 /** 格式化上海时区日期为 YYYY-MM-DD。 */
