@@ -55,6 +55,17 @@ const LEVEL_FIELDS: Record<QuoteLevel, Set<string>> = {
     'fundamental': FUNDAMENTAL_FIELDS,
 };
 
+function normalizeTencentBatchSymbol(symbol: string): { requestCode: string; explicitCode: string | undefined } {
+    const explicitMatch = symbol.match(/^(sh|sz|bj)(\d{6})$/i);
+    if (explicitMatch) {
+        const explicitCode = `${explicitMatch[1].toLowerCase()}${explicitMatch[2]}`;
+        return { requestCode: explicitCode, explicitCode };
+    }
+
+    const identity = getStockIdentity(symbol);
+    return { requestCode: `${identity.tencentPrefix}${symbol}`, explicitCode: undefined };
+}
+
 export class TencentQuoteService {
     private static readonly BASE_URL = 'https://qt.gtimg.cn/q=';
 
@@ -138,10 +149,8 @@ export class TencentQuoteService {
 
     static async getBatchQuotes(symbols: string[], level: QuoteLevel = 'core'): Promise<Record<string, any>[]> {
         // 腾讯接口支持批量查询，用逗号分隔
-        const codes = symbols.map(symbol => {
-            const identity = getStockIdentity(symbol);
-            return `${identity.tencentPrefix}${symbol}`;
-        });
+        const normalizedSymbols = symbols.map(normalizeTencentBatchSymbol);
+        const codes = normalizedSymbols.map(({ requestCode }) => requestCode);
 
         // 每次最多查询约50只，超出则分批
         const BATCH_SIZE = 50;
@@ -150,6 +159,7 @@ export class TencentQuoteService {
         for (let i = 0; i < codes.length; i += BATCH_SIZE) {
             const batchCodes = codes.slice(i, i + BATCH_SIZE);
             const batchSymbols = symbols.slice(i, i + BATCH_SIZE);
+            const batchNormalizedSymbols = normalizedSymbols.slice(i, i + BATCH_SIZE);
             const url = `${this.BASE_URL}${batchCodes.join(',')}`;
 
             await eastmoneyThrottler.throttle();
@@ -185,11 +195,13 @@ export class TencentQuoteService {
                 for (let j = 0; j < batchSymbols.length; j++) {
                     const sym = batchSymbols[j];
                     const code = batchCodes[j];
+                    const { explicitCode } = batchNormalizedSymbols[j];
                     const lineText = lineMap.get(code);
 
                     if (lineText) {
                         const parsed = this.parseQuote(lineText, level);
                         if (Object.keys(parsed).length > 0) {
+                            if (explicitCode) parsed['股票代码'] = explicitCode;
                             allResults.push(parsed);
                         } else {
                             allResults.push({ '股票代码': sym, '错误': '数据解析失败' });

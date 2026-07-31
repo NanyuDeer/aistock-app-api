@@ -111,13 +111,13 @@ export class TencentSnapshotService {
 
     /** 拉 6 大指数（一次批量请求）。失败抛异常。 */
     static async fetchIndexes(): Promise<CloseIndexFact[]> {
-        const quotes = await TencentQuoteService.getBatchQuotes(INDEX_CODES)
+        const quotes = await TencentQuoteService.getBatchQuotes(INDEX_CODES, 'activity')
         const indexes: CloseIndexFact[] = []
 
         for (const code of INDEX_CODES) {
             const row = quotes.find((q) => q['股票代码'] === code)
-            if (!row) {
-                throw new Error(`index ${code} not found in batch quotes`)
+            if (!row || Object.prototype.hasOwnProperty.call(row, '错误')) {
+                throw new Error(`index ${code} quote failed`)
             }
             indexes.push({
                 ts_code: INDEX_TS_CODES[code],
@@ -156,7 +156,7 @@ export class TencentSnapshotService {
             const batchGroup: Promise<Record<string, any>[]>[] = []
             for (let j = 0; j < BATCH_CONCURRENCY && i + j * BATCH_SIZE < allCodes.length; j++) {
                 const batch = allCodes.slice(i + j * BATCH_SIZE, i + (j + 1) * BATCH_SIZE)
-                batchGroup.push(TencentQuoteService.getBatchQuotes(batch))
+                batchGroup.push(TencentQuoteService.getBatchQuotes(batch, 'activity'))
             }
             const results = await Promise.all(batchGroup)
             for (const batch of results) {
@@ -178,6 +178,7 @@ export class TencentSnapshotService {
         let validCount = 0
 
         for (const q of quotes) {
+            if (Object.prototype.hasOwnProperty.call(q, '错误')) continue
             const code = String(q['股票代码'] ?? '')
             if (!code) continue
             const changePct = toNumber(q['涨跌幅'])
