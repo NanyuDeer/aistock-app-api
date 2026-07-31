@@ -2,6 +2,17 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-07-31 — 火山引擎 TTS 多账号轮换池
+**开发者**: ARIA
+
+### 新增
+- `src/core/services/volcenginePodcast.service.ts`：新增 `readVolcenginePodcastAccounts()` 读取 `VOLC_PODCAST_ACCOUNTS` JSON 数组（兼容 app_id/access_token/secret_key 字段名）；新增 `VolcenginePodcastPool` 类实现 round-robin 轮换 + 失败自动切换下一个账号重试，全部失败才报错
+
+### 修改
+- `src/core/routes/internal.ts`：`synthesizeBroadcast` 改用账号池获取凭证，替代单账号固定读取
+
+---
+
 ## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
 **开发者**: Aria
 

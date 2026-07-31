@@ -892,14 +892,16 @@ import path from 'path'
 import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { AzureMultiVoiceTtsProvider, type DialogueLine } from '../services/tts.service'
-import { readVolcenginePodcastOptions, VolcenginePodcastProvider } from '../services/volcenginePodcast.service'
+import { readVolcenginePodcastAccounts, VolcenginePodcastPool } from '../services/volcenginePodcast.service'
 
 const publicRouter: Router = Router()
 
 async function synthesizeBroadcast(lines: DialogueLine[]): Promise<Buffer> {
     const provider = process.env.TTS_PROVIDER || 'azure'
     if (provider === 'volcengine_podcast') {
-        return new VolcenginePodcastProvider(readVolcenginePodcastOptions(process.env)).synthesize(lines)
+        const accounts = readVolcenginePodcastAccounts(process.env)
+        const pool = new VolcenginePodcastPool(accounts)
+        return pool.synthesize(lines)
     }
 
     if (provider === 'azure') {
