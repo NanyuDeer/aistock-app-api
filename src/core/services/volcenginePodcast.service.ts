@@ -185,6 +185,29 @@ function toBuffer(data: unknown): Buffer {
     return Buffer.from(data as ArrayBuffer)
 }
 
+function leadingId3v2TagLength(chunk: Buffer): number | null {
+    if (chunk.length < 10 || chunk.subarray(0, 3).toString('ascii') !== 'ID3') return null
+    const sizeBytes = chunk.subarray(6, 10)
+    if ([...sizeBytes].some((byte) => (byte & 0x80) !== 0)) return null
+    const hasFooter = (chunk[5] & 0x10) !== 0
+    const totalLength = 10
+        + ((sizeBytes[0] << 21) | (sizeBytes[1] << 14) | (sizeBytes[2] << 7) | sizeBytes[3])
+        + (hasFooter ? 10 : 0)
+    return totalLength <= chunk.length ? totalLength : null
+}
+
+/**
+ * 火山播客会为每轮台词返回一段独立 MP3（每段都带 ID3 头）。
+ * 浏览器只接受文件开头的一份 ID3 元数据，后续片段仅拼接其音频帧。
+ */
+export function mergePodcastMp3Chunks(chunks: Buffer[]): Buffer {
+    return Buffer.concat(chunks.map((chunk, index) => {
+        if (index === 0) return chunk
+        const id3Length = leadingId3v2TagLength(chunk)
+        return id3Length === null ? chunk : chunk.subarray(id3Length)
+    }))
+}
+
 export class VolcenginePodcastProvider {
     private readonly options: VolcenginePodcastProviderOptions
 
@@ -260,7 +283,7 @@ export class VolcenginePodcastProvider {
                     completed = true
                     clearTimeout(timer)
                     socket.close()
-                    resolve(Buffer.concat(audioChunks))
+                    resolve(mergePodcastMp3Chunks(audioChunks))
                 }
             })
 

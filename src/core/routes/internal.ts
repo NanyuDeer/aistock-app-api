@@ -921,6 +921,7 @@ import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { AzureMultiVoiceTtsProvider, type DialogueLine } from '../services/tts.service'
 import { readVolcenginePodcastAccounts, VolcenginePodcastPool } from '../services/volcenginePodcast.service'
+import { parseSingleByteRange } from '../services/audioRange.service'
 
 const publicRouter: Router = Router()
 
@@ -1399,8 +1400,29 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
         return
     }
 
+    const fileSize = fs.statSync(filePath).size
+    const rangeHeader = req.headers.range
+    const range = parseSingleByteRange(rangeHeader, fileSize)
+    res.setHeader('Accept-Ranges', 'bytes')
     res.setHeader('Content-Type', 'audio/mpeg')
-    const stream = fs.createReadStream(filePath)
+
+    if (rangeHeader && !range) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`)
+        res.status(416).end()
+        return
+    }
+
+    const stream = range
+        ? fs.createReadStream(filePath, range)
+        : fs.createReadStream(filePath)
+    if (range) {
+        res.status(206)
+        res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${fileSize}`)
+        res.setHeader('Content-Length', String(range.end - range.start + 1))
+    } else {
+        res.setHeader('Content-Length', String(fileSize))
+    }
+    stream.on('error', () => res.destroy())
     stream.pipe(res)
 })
 
