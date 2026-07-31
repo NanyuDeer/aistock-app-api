@@ -81,6 +81,21 @@ export interface QuickSnapshotCoverage {
     has_concept_flow: boolean;
 }
 
+/** 一个 quick snapshot 数据域的可用性说明。 */
+export type QuickDataAvailability =
+    | { state: 'available' }
+    | { state: 'partial'; available_fields: string[]; approximate?: boolean; reason?: string }
+    | { state: 'unavailable'; reason: string };
+
+/** quick snapshot 各个数据域的真实可用性。 */
+export interface QuickSnapshotDataAvailability {
+    breadth: QuickDataAvailability;
+    turnover: QuickDataAvailability;
+    limits: QuickDataAvailability;
+    sectors: QuickDataAvailability;
+    main_force: QuickDataAvailability;
+}
+
 /** 当日 A 股大盘收盘事实快照。 */
 export interface CloseMarketSnapshot {
     schema_version: '1.0';
@@ -89,24 +104,24 @@ export interface CloseMarketSnapshot {
     captured_at: string;
     indexes: CloseIndexFact[];
     breadth: {
-        total_count: number;
-        advance_count: number;
-        decline_count: number;
-        flat_count: number;
-        advance_ratio: number;
-        source: 'tushare:daily';
+        total_count: number | null;
+        advance_count: number | null;
+        decline_count: number | null;
+        flat_count: number | null;
+        advance_ratio: number | null;
+        source: 'tushare:daily' | 'tencent:quote';
     };
     turnover: {
-        amount_yuan: number;
-        previous_amount_yuan: number;
-        change_pct: number;
+        amount_yuan: number | null;
+        previous_amount_yuan: number | null;
+        change_pct: number | null;
         source: 'tushare:daily';
     };
     limits: {
-        up_count: number;
-        down_count: number;
-        broken_count: number;
-        highest_board: number;
+        up_count: number | null;
+        down_count: number | null;
+        broken_count: number | null;
+        highest_board: number | null;
     };
     sectors: {
         top_gainers: SectorFact[];
@@ -115,7 +130,7 @@ export interface CloseMarketSnapshot {
         top_outflows: SectorFact[];
     };
     main_force: {
-        large_and_extra_large_net_yuan: number;
+        large_and_extra_large_net_yuan: number | null;
         source: 'tushare:moneyflow_ths';
     };
     coverage: {
@@ -127,6 +142,8 @@ export interface CloseMarketSnapshot {
     snapshot_kind?: 'quick' | 'full';
     /** quick snapshot 数据覆盖标识。 */
     coverage_info?: QuickSnapshotCoverage;
+    /** quick snapshot 各域的数据可用性；full snapshot 不填。 */
+    quick_data_availability?: QuickSnapshotDataAvailability;
     /** quick snapshot 全市场宽度（含近似涨跌停）。full snapshot 用上方内联 breadth。 */
     market_breadth?: MarketBreadth;
 }

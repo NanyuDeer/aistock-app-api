@@ -93,14 +93,14 @@ test('explicit Tencent symbols are requested unchanged and retained in parsed ba
     }
 })
 
-test('buildQuickSnapshot returns complete snapshot with indexes and breadth', async () => {
+test('buildQuickSnapshot exposes truthful availability for its quick facts', async () => {
     const afterClose = new Date('2026-07-30T07:30:00.000Z') // 15:30 Shanghai
 
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
     const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => ({
-        total_count: 4,
-        advance_count: 3,
-        decline_count: 1,
+        total_count: 10,
+        advance_count: 8,
+        decline_count: 2,
         flat_count: 0,
         limit_up_count: 1,
         limit_down_count: 0,
@@ -109,14 +109,34 @@ test('buildQuickSnapshot returns complete snapshot with indexes and breadth', as
         avg_change_pct: 4.9,
     }))
     const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
+    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
+    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
         assert.equal(snapshot.status, 'complete')
         assert.equal(snapshot.snapshot_kind, 'quick')
         assert.equal(snapshot.indexes.length, 6)
+        assert.deepEqual(snapshot.breadth, {
+            total_count: 10,
+            advance_count: 8,
+            decline_count: 2,
+            flat_count: 0,
+            advance_ratio: 0.8,
+            source: 'tencent:quote',
+        })
+        assert.deepEqual(snapshot.quick_data_availability!.breadth, { state: 'available' })
+        assert.equal(snapshot.quick_data_availability!.turnover.state, 'unavailable')
+        assert.deepEqual(snapshot.quick_data_availability!.limits, {
+            state: 'partial',
+            available_fields: ['up_count', 'down_count'],
+            approximate: true,
+        })
+        assert.equal(snapshot.turnover.amount_yuan, null)
+        assert.equal(snapshot.limits.broken_count, null)
+        assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, null)
         assert.ok(snapshot.market_breadth, 'market_breadth should be present')
-        assert.equal(snapshot.market_breadth!.advance_count, 3)
+        assert.equal(snapshot.market_breadth!.advance_count, 8)
         assert.equal(snapshot.market_breadth!.limit_up_count, 1)
         assert.equal(snapshot.market_breadth!.limit_count_approximate, true)
         assert.ok(snapshot.coverage_info)
@@ -126,6 +146,7 @@ test('buildQuickSnapshot returns complete snapshot with indexes and breadth', as
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
         fetchConceptFlowMock.mock.restore()
+        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
     }
 })
 
@@ -241,7 +262,7 @@ test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async 
     const batchQuotesMock = mock.method(TencentQuoteService, 'getBatchQuotes', async (symbols, level) => {
         requestedBatches.push(symbols)
         requestedLevels.push(level)
-        return []
+        return [{ '股票代码': symbols[0], '涨跌幅': 1.2, '成交量': 1000000, '成交额': 10000000 }]
     })
 
     try {
@@ -254,14 +275,15 @@ test('fetchMarketBreadth queries only active SH/SZ stock-basic listings', async 
     }
 })
 
-test('fetchMarketBreadth safely returns an empty breadth when stock-basic retrieval fails', async () => {
+test('fetchMarketBreadth reports stock-basic retrieval failure instead of a zero breadth', async () => {
     const originalGetStockBasicBulk = __tencentSnapshotDeps.getStockBasicBulk
     __tencentSnapshotDeps.getStockBasicBulk = async () => { throw new Error('stock_basic unavailable') }
 
     try {
-        const breadth = await TencentSnapshotService.fetchMarketBreadth()
-        assert.equal(breadth.total_count, 0)
-        assert.equal(breadth.advance_count, 0)
+        await assert.rejects(
+            () => TencentSnapshotService.fetchMarketBreadth(),
+            new Error('stock_basic unavailable'),
+        )
     } finally {
         __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
     }
