@@ -4,6 +4,7 @@ import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
+import { PriceTriggerDetector } from './PriceTriggerDetector';
 
 function openidFromRequest(req: Request): string | null {
     const bearer = req.headers.authorization;
@@ -153,6 +154,19 @@ export class StockTraceController {
                 return;
             }
             res.json({ code: 200, data: { event_id: eventIdFromRequest(req), read: true } });
+        } catch (error) {
+            next(error);
+        }
+    }
+
+    /**
+     * 手动触发一次异动检测（绕过交易时段限制）。
+     * 非交易日/非交易时段也能检测自选股异动，检测完前端刷新列表即可看到新事件。
+     */
+    static async detect(_req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            await PriceTriggerDetector.runOnceForce();
+            res.json({ code: 200, data: { triggered: true } });
         } catch (error) {
             next(error);
         }

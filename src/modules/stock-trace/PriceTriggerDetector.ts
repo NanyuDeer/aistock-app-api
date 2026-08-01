@@ -34,6 +34,20 @@ export class PriceTriggerDetector {
 
     static async runOnce(now = new Date()): Promise<void> {
         if (this.running || !(await isAShareTradingTime({ now }))) return;
+        await this.detect(now);
+    }
+
+    /**
+     * 强制执行一次价格检测（绕过交易时段限制）。
+     * 供手动触发使用：非交易日/非交易时段也能检测自选股异动。
+     * 与 runOnce 的区别：不检查 isAShareTradingTime，其余逻辑完全一致。
+     */
+    static async runOnceForce(now = new Date()): Promise<void> {
+        if (this.running) return;
+        await this.detect(now);
+    }
+
+    private static async detect(now: Date): Promise<void> {
         this.running = true;
         try {
             const securities = (await StockTraceService.getFavoriteSecurities())

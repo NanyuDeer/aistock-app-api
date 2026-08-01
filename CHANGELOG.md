@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-01 — 异动监控新增手动触发检测端点
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/stock-trace/controller.ts`：新增 `detect` 静态方法，调 `PriceTriggerDetector.runOnceForce()`
+- `src/index.ts`：注册 `POST /api/cn/favorites/movements/detect`（在 `:eventId` 路由之前，避免 detect 被当作 eventId）
+
+### 改进
+- `src/modules/stock-trace/PriceTriggerDetector.ts`：抽出 `detect()` 私有方法供 `runOnce` 和 `runOnceForce` 共用；`runOnce` 保持交易时段检查（定时轮询用）；新增 `runOnceForce` 绕过 `isAShareTradingTime`（手动触发用）
+
+---
+
 ## [master] 2026-08-01 — 通用播报生成 API + alert 报告按 symbol 查询端点
 
 **开发者**: Aria

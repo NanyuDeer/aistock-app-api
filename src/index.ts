@@ -192,6 +192,7 @@ app.post('/api/internal/stock-info/push', (req, res, next) => StockInfoJudgement
 app.get('/api/cn/stock-monitors/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
 app.get('/api/cn/stock-monitors/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
 app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.list(req, res, next));
+app.post('/api/cn/favorites/movements/detect', (req, res, next) => StockTraceController.detect(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
