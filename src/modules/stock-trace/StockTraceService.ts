@@ -73,13 +73,24 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
 export class StockTraceService {
     static async ensureSchema(): Promise<void> {
         if (!schemaPromise) {
-            schemaPromise = this.createSchema();
+            schemaPromise = this.createSchema().catch((err: unknown) => {
+                // 失败时重置 schemaPromise，允许下次调用重试（避免进程启动时权限问题永久阻塞）
+                schemaPromise = null;
+                throw err;
+            });
         }
         return schemaPromise;
     }
 
     private static async createSchema(): Promise<void> {
-        await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS list_date VARCHAR(8) DEFAULT ''`);
+        // ALTER TABLE stocks 需要 owner 权限，aistock 用户可能无此权限。
+        // 用 try/catch 包住：列已存在或无权限时跳过，不阻塞后续 stock_trace_* 表的创建。
+        // getFavoriteSecurities() 依赖此列，列缺失时会在查询时报错（不影响 /internal/stock-trace/events 手动注入链路）。
+        try {
+            await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS list_date VARCHAR(8) DEFAULT ''`);
+        } catch (err: unknown) {
+            console.warn('[StockTrace] ALTER TABLE stocks ADD list_date skipped:', err instanceof Error ? err.message : err);
+        }
         await pool.query(`
             CREATE TABLE IF NOT EXISTS stock_trace_events (
                 event_id VARCHAR(128) PRIMARY KEY,

@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-08-01 — StockTraceService.ensureSchema 权限容错
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/stock-trace/StockTraceService.ts`：`ensureSchema` 的 `ALTER TABLE stocks ADD COLUMN list_date` 用 try/catch 包住 — aistock 用户无 stocks 表 owner 权限（owner=root）时跳过，不阻塞后续 `stock_trace_*` 表的创建；`schemaPromise` 失败时重置为 null，允许下次调用重试，避免进程启动时权限问题永久阻塞所有 stock-trace 链路
+
+### 改进
+- `.gitignore`：添加 `.worktrees/` 忽略规则
+
+---
+
 ## [changer] 2026-07-31 — 个股异动 Trace 触发（StockTraceTriggerService + 交易日历补齐）
 
 **开发者**: 37588
