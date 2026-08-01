@@ -1,6 +1,16 @@
 # Changelog — aistock-app-api
 
-> 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
+> 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
+
+## [master] 2026-08-01 — 通用播报生成 API + alert 报告按 symbol 查询端点
+
+**开发者**: Aria
+
+### 新增
+- `src/core/routes/internal.ts`：`POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读 text，key 做缓存幂等，文件名 `podcast-{safeKey}.mp3`，复用 `synthesizeBroadcast` 合成）
+- `src/core/routes/internal.ts`：`GET /api/agent/report/alert/:symbol/:date`（publicRouter，按 user_id=symbol 查询当日 alert 报告，与通用 `/report/:intent/:date` 路径段数不同不会冲突）
+
+---
 
 ## [master] 2026-08-01 — Stock Trace get/analysis/evidence 未登录降级修复
 
