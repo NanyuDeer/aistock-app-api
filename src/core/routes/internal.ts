@@ -999,7 +999,7 @@ async function getAnalysisReport(report_type: string, report_date: string) {
  */
 async function getLatestAnalysisReport(report_type: string) {
     const result = await pool.query(
-        `SELECT id, report_type, report_date, content, data_source, status,
+        `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
                 generation_time_ms, model_version,
                 created_at AT TIME ZONE 'UTC' AS created_at
          FROM agent_analysis_reports
