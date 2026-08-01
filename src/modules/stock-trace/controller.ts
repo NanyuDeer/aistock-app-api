@@ -59,16 +59,16 @@ export class StockTraceController {
     static async get(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const openid = openidFromRequest(req);
-            if (!openid) {
-                res.status(401).json({ code: 401, message: 'Unauthorized' });
-                return;
-            }
-            const result = await StockTraceService.getUserEvent(openid, eventIdFromRequest(req));
+            const eventId = eventIdFromRequest(req);
+            // 未登录降级：返回全局事件详情（与 list 接口一致，符合"登录非必须"约束）
+            const result = openid
+                ? await StockTraceService.getUserEvent(openid, eventId)
+                : await StockTraceService.getRecentEvent(eventId);
             if (!result) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
                 return;
             }
-            const presentation = await presentEventAnalysis(eventIdFromRequest(req), result);
+            const presentation = await presentEventAnalysis(eventId, result);
             res.json({
                 code: 200,
                 data: {
@@ -86,12 +86,11 @@ export class StockTraceController {
     static async analysis(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const openid = openidFromRequest(req);
-            if (!openid) {
-                res.status(401).json({ code: 401, message: 'Unauthorized' });
-                return;
-            }
             const eventId = eventIdFromRequest(req);
-            const event = await StockTraceService.getUserEvent(openid, eventId);
+            // 未登录降级：返回全局事件分析（与 list/get 接口一致）
+            const event = openid
+                ? await StockTraceService.getUserEvent(openid, eventId)
+                : await StockTraceService.getRecentEvent(eventId);
             if (!event) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
                 return;
@@ -115,13 +114,12 @@ export class StockTraceController {
     static async evidence(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const openid = openidFromRequest(req);
-            if (!openid) {
-                res.status(401).json({ code: 401, message: 'Unauthorized' });
-                return;
-            }
             const eventId = eventIdFromRequest(req);
             const sourceId = Array.isArray(req.params.sourceId) ? req.params.sourceId[0] || '' : req.params.sourceId || '';
-            const event = await StockTraceService.getUserEvent(openid, eventId);
+            // 未登录降级：查全局事件
+            const event = openid
+                ? await StockTraceService.getUserEvent(openid, eventId)
+                : await StockTraceService.getRecentEvent(eventId);
             if (!event) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
                 return;
@@ -144,8 +142,9 @@ export class StockTraceController {
     static async markRead(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const openid = openidFromRequest(req);
+            // 未登录降级：直接返回成功（未登录无法持久化已读状态，不影响查看）
             if (!openid) {
-                res.status(401).json({ code: 401, message: 'Unauthorized' });
+                res.json({ code: 200, data: { event_id: eventIdFromRequest(req), read: true } });
                 return;
             }
             const updated = await StockTraceService.markRead(openid, eventIdFromRequest(req));

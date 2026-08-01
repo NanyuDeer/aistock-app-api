@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-08-01 — Stock Trace get/analysis/evidence 未登录降级修复
+
+**开发者**: NanyuDeer
+
+### 修复
+- `src/modules/stock-trace/controller.ts`：`get`/`analysis`/`evidence`/`markRead` 接口移除 `if (!openid) return 401`，改为未登录降级（与 `list` 接口一致，符合"登录非必须"约束）。根因：未登录用户在 monitor 页面看到异动卡片（list 降级成功），但点击卡片进入溯源详情时 get/analysis 返回 401，导致前端 DEV 模式回退到 mock 数据
+- `src/modules/stock-trace/StockTraceService.ts`：新增 `getRecentEvent(eventId)` 方法，不经过 `stock_trace_user_events` 关联表，直接查全局事件（返回格式与 `getUserEvent` 一致，`read_at` 固定 null）
+
+---
+
 ## [master] 2026-08-01 — Stock Trace PRD 对齐：sendInitialPush 补齐 trigger_reason
 
 **开发者**: NanyuDeer

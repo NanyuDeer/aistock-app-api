@@ -548,6 +548,46 @@ export class StockTraceService {
         };
     }
 
+    static async getRecentEvent(eventId: string): Promise<Record<string, unknown> | null> {
+        // 未登录降级：不经过 stock_trace_user_events 关联表，直接查全局事件。
+        // 返回格式与 getUserEvent 一致，read_at 固定为 null（未登录无法标记已读）。
+        await this.ensureSchema();
+        const result = await pool.query(`
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
+                   e.window_end_at, e.current_trigger_revision, e.current_severity,
+                   r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
+                   r.threshold_value, r.rule_version, r.data_quality
+            FROM stock_trace_events e
+            INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
+                AND r.trigger_revision = e.current_trigger_revision
+            WHERE e.event_id = $1 AND e.event_status = 'active'
+            LIMIT 1
+        `, [eventId]);
+        if (!result.rows[0]) return null;
+        const row = result.rows[0] as Record<string, unknown>;
+        return {
+            event_id: row.event_id,
+            trigger_revision: row.current_trigger_revision,
+            symbol: row.symbol,
+            stock_name: row.stock_name,
+            event_type: 'price',
+            direction: row.direction,
+            triggered_at: row.triggered_at,
+            first_triggered_at: row.first_triggered_at,
+            window_start_at: row.window_start_at,
+            window_end_at: row.window_end_at,
+            latest_price: toNumber(row.latest_price as string | number),
+            previous_close: toNumber(row.previous_close as string | number),
+            change_pct: toNumber(row.change_pct as string | number),
+            threshold_pct: toNumber(row.threshold_value as string | number),
+            severity: row.current_severity,
+            rule_version: row.rule_version,
+            read_at: null,
+            analysis_status: 'pending',
+            fact_status: 'frozen',
+        };
+    }
+
     static async getInternalEvent(eventId: string): Promise<Record<string, unknown> | null> {
         await this.ensureSchema();
         const eventResult = await pool.query(`
