@@ -2,6 +2,15 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
 
+## [master] 2026-08-01 — Stock Trace PRD 对齐：sendInitialPush 补齐 trigger_reason
+
+**开发者**: NanyuDeer
+
+### 改进
+- `src/modules/stock-trace/StockTraceService.ts`：`sendInitialPush` 插入 `stock_trace_push_records` 时补齐 `trigger_reason='event_created'` 字段（PRD/SPEC 要求 initial push 记录触发原因，便于查询推送历史时区分触发来源）
+
+---
+
 ## [master] 2026-08-01 — StockTraceService.ensureSchema 权限容错
 
 **开发者**: Aria

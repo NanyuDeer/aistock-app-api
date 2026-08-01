@@ -381,8 +381,8 @@ export class StockTraceService {
         const payload = this.toPublicEvent(event);
         await Promise.all(recipients.map(async (openid) => {
             await pool.query(`
-                INSERT INTO stock_trace_push_records (id, event_id, openid, push_kind, status, payload, sent_at)
-                VALUES ($1, $2, $3, 'initial', 'sent', $4::jsonb, CURRENT_TIMESTAMP)
+                INSERT INTO stock_trace_push_records (id, event_id, openid, push_kind, trigger_reason, status, payload, sent_at)
+                VALUES ($1, $2, $3, 'initial', 'event_created', 'sent', $4::jsonb, CURRENT_TIMESTAMP)
                 ON CONFLICT (event_id, openid, push_kind) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
