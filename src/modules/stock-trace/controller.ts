@@ -43,12 +43,13 @@ export class StockTraceController {
     static async list(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             const openid = openidFromRequest(req);
-            if (!openid) {
-                res.status(401).json({ code: 401, message: 'Unauthorized' });
-                return;
-            }
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
-            const result = await StockTraceService.listUserEvents(openid, limitFromRequest(req), typeof cursor === 'string' ? cursor : undefined);
+            const cursorStr = typeof cursor === 'string' ? cursor : undefined;
+            // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
+            // 登录用户仍然按 openid 过滤，只看自己自选股的异动。
+            const result = openid
+                ? await StockTraceService.listUserEvents(openid, limitFromRequest(req), cursorStr)
+                : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr);
             res.json({ code: 200, data: result });
         } catch (error) {
             next(error);

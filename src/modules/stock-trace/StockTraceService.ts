@@ -465,6 +465,50 @@ export class StockTraceService {
         };
     }
 
+    /**
+     * 未登录降级：返回最近的全局异动事件（不按 openid 过滤）。
+     * 用于 monitor 页面在用户未登录时也能看到系统真实数据，符合"登录非必需"项目约束。
+     * read_at 始终为 null（未登录无法记录已读状态）。
+     */
+    static async listRecentEvents(limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+        await this.ensureSchema();
+        const params: unknown[] = [limit + 1];
+        const cursorClause = cursor ? `AND e.first_triggered_at < $2::timestamptz` : '';
+        if (cursor) params.push(cursor);
+        const result = await pool.query(`
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
+                   e.current_severity, r.latest_price, r.previous_close, r.actual_value AS change_pct,
+                   r.threshold_value, r.rule_version
+            FROM stock_trace_events e
+            INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
+                AND r.trigger_revision = e.current_trigger_revision
+            WHERE e.event_status = 'active' ${cursorClause}
+            ORDER BY e.first_triggered_at DESC
+            LIMIT $1
+        `, params);
+        const rows = result.rows.slice(0, limit);
+        return {
+            items: rows.map((row: Record<string, unknown>) => ({
+                event_id: row.event_id,
+                trigger_revision: row.current_trigger_revision,
+                symbol: row.symbol,
+                stock_name: row.stock_name,
+                event_type: 'price',
+                direction: row.direction,
+                triggered_at: (row.first_triggered_at as Date).toISOString(),
+                latest_price: toNumber(row.latest_price as string | number),
+                previous_close: toNumber(row.previous_close as string | number),
+                change_pct: toNumber(row.change_pct as string | number),
+                threshold_pct: toNumber(row.threshold_value as string | number),
+                severity: row.current_severity,
+                rule_version: row.rule_version,
+                read_at: null,
+                analysis_status: 'pending',
+            })),
+            nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
+        };
+    }
+
     static async getUserEvent(openid: string, eventId: string): Promise<Record<string, unknown> | null> {
         await this.ensureSchema();
         const result = await pool.query(`
