@@ -189,6 +189,29 @@ router.get('/news/latest', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/news/telegraph
+ * 财联社当日全量电报流（溯源用，按日期分页拉取）
+ *
+ * 注册在 /news/fulltext/:id 等参数化路由之前，避免 "telegraph" 被 :param 匹配。
+ */
+router.get('/news/telegraph', async (req: Request, res: Response) => {
+    const date = req.query.date as string
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ code: 400, message: 'Invalid date — 必须是 YYYY-MM-DD' })
+    }
+
+    const limit = Math.min(parseInt(req.query.limit as string) || 200, 500)
+
+    try {
+        const data = await ClsStockNewsService.fetchTelegraphByDate(date, { limit })
+        res.json({ code: 200, data })
+    } catch (err: any) {
+        console.error('[Internal] news/telegraph error:', err.message)
+        res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
  * GET /internal/news/fulltext/:id
  * 财联社新闻全文
  */
