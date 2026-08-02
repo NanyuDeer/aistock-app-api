@@ -15,6 +15,7 @@ import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderSer
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
+import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKeywordDetectorService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
@@ -226,6 +227,34 @@ router.get('/forecast/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] forecast/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/stock/resolve
+ * 中文股票名称 → 6 位代码（复用 HotKeywordDetectorService 的 A 股名称映射，stocks 表/Tushare stock_basic）
+ *
+ * - 200：{ code: 200, data: { name: "贵州茅台", symbol: "600519" } }
+ * - 400：name 参数缺失或为空
+ * - 404：未找到匹配股票
+ * - 502：服务异常
+ */
+router.get('/stock/resolve', async (req: Request, res: Response) => {
+    const name = (queryStr(req, 'name') || '').trim()
+    if (!name) {
+        return res.status(400).json({ code: 400, message: 'name 参数缺失或为空' })
+    }
+
+    try {
+        await loadStockNameMap()
+        const hit = resolveStockName(name)
+        if (!hit) {
+            return res.status(404).json({ code: 404, message: '未找到匹配股票' })
+        }
+        res.json({ code: 200, data: { name: hit.name, symbol: hit.symbol } })
+    } catch (err: unknown) {
+        console.error('[Internal] stock/resolve error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 

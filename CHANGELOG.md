@@ -2,6 +2,22 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-02 — M4 名称解析端点 GET /internal/stock/resolve
+
+**开发者**: Aria
+
+### 新增
+- `src/core/routes/internal.ts`：新增 `GET /internal/stock/resolve?name=<名称>` 端点（200 `{code,data:{name,symbol}}` / 400 缺 name / 404 未命中 / 502 服务异常），遵循内部 API 风格，供 Python ChatAgent M1 resolve_symbol 调用
+- `src/modules/monitor/HotKeywordDetectorService.ts`：新增导出 `resolveStockName(name)`（stockNameMap 精确 + sortedNames includes 模糊，未命中返回 null），不改既有导出接口
+
+### 测试
+- `tests/internalRoutes.test.ts`：新增 3 用例（茅台→200+symbol=600519 / 不存在名称→404 / 缺 name→400）
+
+### 文档
+- `README.md`：补充本机已装 PostgreSQL/Redis 时双击 `start-dev.bat` 一键启动说明
+
+---
+
 ## [master] 2026-08-01 — 异动监控新增手动触发检测端点
 
 **开发者**: Aria

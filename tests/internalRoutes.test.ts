@@ -17,6 +17,7 @@ import internalRouter from '../src/core/routes/internal'
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
+import * as HKModule from '../src/modules/monitor/HotKeywordDetectorService'
 import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
@@ -171,6 +172,14 @@ function setupMocks(): void {
     const H = HotBurstService as any
     H.getHotBurst = async () => mockData.hotBurst
     H.getHotBurstHistory = async () => mockData.hotBurstHistory
+
+    // /internal/stock/resolve：loadStockNameMap 不做真实 Tushare 调用，
+    // resolveStockName 由具体用例按需覆盖（默认未命中）。
+    // 路由侧通过具名导入访问模块导出对象，直接改导出属性即可拦截（CJS 属性访问）。
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).loadStockNameMap = async () => {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).resolveStockName = () => null
 }
 
 async function withRealOneHopGraph(fn: () => Promise<void>): Promise<void> {
@@ -294,6 +303,7 @@ const endpoints: EndpointCase[] = [
     { name: 'institution-research', path: '/institution-research' },
     { name: 'institution-research/history', path: '/institution-research/history' },
     { name: 'market/close-snapshot', path: '/market/close-snapshot' },
+    { name: 'stock/resolve', path: '/stock/resolve?name=x' },
 ]
 
 // ==================== 主测试流程 ====================
@@ -649,6 +659,43 @@ async function main(): Promise<void> {
         } finally {
             TencentSnapshotService.buildQuickSnapshot = originalBuild
         }
+    })
+
+    // --- /internal/stock/resolve（M4：中文名称 → 代码解析） ---
+    await runAsyncTest('GET /internal/stock/resolve returns 400 when name missing', async () => {
+        const res = await makeGetRequest(port, '/stock/resolve', INTERNAL_TOKEN)
+        assert.equal(res.status, 400)
+        assert.equal((res.body as { code: number }).code, 400)
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 200 + symbol (贵州茅台 → 600519)', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = (name: string) => {
+            if (name === '贵州茅台' || name === '茅台') return { name: '贵州茅台', symbol: '600519' }
+            return null
+        }
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('贵州茅台')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: { name: string; symbol: string } }
+        assert.equal(body.code, 200)
+        assert.equal(body.data.symbol, '600519')
+        assert.equal(body.data.name, '贵州茅台')
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 404 for unknown name', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = () => null
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('不存在股票名XYZ')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 404)
+        assert.equal((res.body as { code: number }).code, 404)
     })
 
     // 5. 关闭服务器 + 释放长连接资源，让进程自然退出

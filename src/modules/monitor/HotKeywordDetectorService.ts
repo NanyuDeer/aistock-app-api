@@ -232,6 +232,31 @@ export function extractStockCodes(text: string): Map<string, string> {
     return stocks;
 }
 
+/**
+ * 按中文名称精确/模糊解析 A 股代码（长名优先）。
+ *
+ * 与 extractStockCodes（文本批量提取）不同，本函数面向"名称 → 单个代码"的精确查询：
+ * 1. stockNameMap 精确匹配（如"贵州茅台" → 600519）
+ * 2. sortedNames 遍历，名称包含查询词即命中（如"茅台" → "贵州茅台" → 600519）
+ *
+ * 注意：调用前需先 await loadStockNameMap() 预加载名称映射。
+ * 未命中返回 null，不抛异常。
+ */
+export function resolveStockName(name: string): { name: string; symbol: string } | null {
+    const query = name.trim().toLowerCase();
+    if (!query) return null;
+
+    const exact = stockNameMap.get(query);
+    if (exact) return exact;
+
+    for (const entry of sortedNames) {
+        if (entry.name.toLowerCase().includes(query)) {
+            return entry;
+        }
+    }
+    return null;
+}
+
 // ==================== 财联社电报爬取 ====================
 
 const CLS_TELEGRAPH_URL = 'https://www.cls.cn/api/csw?app=CailianpressWeb&os=web&sv=8.4.6&sign=9f8797a1f4de66c2370f7a03990d2737';
