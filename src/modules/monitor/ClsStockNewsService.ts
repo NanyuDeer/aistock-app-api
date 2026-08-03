@@ -163,6 +163,7 @@ export class ClsStockNewsService {
         const dateEnd = this.parseDateToUnixSeconds(date, 16, 0);     // 16:00 止宽松
 
         const items: ClsTelegraphItem[] = [];
+        const processedIds = new Set<string | number>();  // 去重，避免分页边界条目重复
         let lastTime = 0;
         let degraded = false;
         let page = 0;
@@ -182,6 +183,9 @@ export class ClsStockNewsService {
                         // 晚于目标日期上限，跳过（继续向前翻页可能拿到更早的）
                         continue;
                     }
+                    // 去重：分页边界可能返回已处理的条目
+                    if (processedIds.has(item.id)) continue;
+                    processedIds.add(item.id);
                     items.push(item);
                     if (items.length >= limit) break;
                 }
@@ -232,20 +236,23 @@ export class ClsStockNewsService {
             throw new Error(`财联社接口返回错误: ${rawData.msg || 'Unknown error'}`);
         }
 
-        const entries: any[] = rawData?.data?.roll_data ?? [];
+        // 财联社实际返回 {total, list: [...]}（2026-08-03 真实接口验证）
+        const { entries } = this.extractStockNewsEntries(rawData);
         const items: ClsTelegraphItem[] = [];
 
         for (const entry of entries) {
             if (!entry || typeof entry !== 'object') continue;
             const ts = this.parseTimestampSeconds(entry.ctime);
-            if (ts === null || ts < lastTime) continue;
+            // 不再过滤 ts < lastTime：财联社 lastTime 语义是 "load more"（返回 ctime < lastTime 的更早条目），
+            // 过滤会导致分页失效。去重在 fetchTelegraphByDate 层用 Set 处理。
+            if (ts === null) continue;
 
             const parsed = this.extractTelegraphTitleAndContent(entry.content);
             const title = (typeof entry.title === 'string' ? entry.title.trim() : '') || parsed.title;
             const content = parsed.content || this.stripHtml(entry.content);
 
             items.push({
-                id: entry.id || '',
+                id: entry.id ?? '',
                 title,
                 content,
                 time: this.formatClsTimestamp(entry.ctime),

@@ -44,22 +44,22 @@ afterEach(() => {
 
 test('fetchTelegraphByDate 成功拉取指定日期电报', async () => {
     // 模拟分页：第一次返回有 entries，第二次返回空（拉取结束）
+    // 真实接口结构：{total, list: [...]}（2026-08-03 真实接口验证确认）
     const responses = [
         {
             ok: true,
             json: async () => ({
                 errno: 0,
-                data: {
-                    roll_data: [
-                        { id: 1, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },
-                        { id: 2, ctime: CTIME_ITEM2, title: '电报2', content: '<p>内容2</p>' },
-                    ],
-                },
+                total: 2,
+                list: [
+                    { id: 1, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },
+                    { id: 2, ctime: CTIME_ITEM2, title: '电报2', content: '<p>内容2</p>' },
+                ],
             }),
         },
         {
             ok: true,
-            json: async () => ({ errno: 0, data: { roll_data: [] } }),
+            json: async () => ({ errno: 0, total: 0, list: [] }),
         },
     ]
     let callIdx = 0
@@ -83,11 +83,10 @@ test('fetchTelegraphByDate 部分分页失败时 degraded=true', async () => {
             ok: true,
             json: async () => ({
                 errno: 0,
-                data: {
-                    roll_data: [
-                        { id: 1, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },
-                    ],
-                },
+                total: 1,
+                list: [
+                    { id: 1, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },
+                ],
             }),
         },
         new Error('网络错误'),
@@ -103,4 +102,48 @@ test('fetchTelegraphByDate 部分分页失败时 degraded=true', async () => {
 
     assert.equal(result.items.length, 1)
     assert.equal(result.degraded, true)
+})
+
+test('fetchTelegraphByDate 多页去重：分页边界条目重复时只保留一条', async () => {
+    // 财联社 lastTime 是 "load more" 模式，分页边界可能返回重复条目
+    // 第一页返回 2 条（id=1, id=2），第二页返回 id=2（边界重复）+ id=3
+    const responses = [
+        {
+            ok: true,
+            json: async () => ({
+                errno: 0,
+                total: 3,
+                list: [
+                    { id: 1, ctime: CTIME_ITEM2, title: '电报2', content: '<p>内容2</p>' },
+                    { id: 2, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },
+                ],
+            }),
+        },
+        {
+            ok: true,
+            json: async () => ({
+                errno: 0,
+                total: 3,
+                list: [
+                    { id: 2, ctime: CTIME_ITEM1, title: '电报1', content: '<p>内容1</p>' },  // 重复 id=2
+                    { id: 3, ctime: CTIME_ITEM1 - 60, title: '电报0', content: '<p>内容0</p>' },
+                ],
+            }),
+        },
+        {
+            ok: true,
+            json: async () => ({ errno: 0, total: 0, list: [] }),
+        },
+    ]
+    let callIdx = 0
+    __clsNewsDependencies.sessionFetch = async () => {
+        const r = responses[callIdx++]
+        return r
+    }
+
+    const result = await ClsStockNewsService.fetchTelegraphByDate('2026-08-02', { limit: 200 })
+
+    // 应该 3 条（id=1, id=2, id=3），不是 4 条
+    assert.equal(result.items.length, 3)
+    assert.equal(result.degraded, false)
 })
