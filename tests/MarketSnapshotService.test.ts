@@ -25,6 +25,7 @@ import {
 
 import {
     getTodayCloseSnapshot,
+    getLastCloseSnapshot,
     __marketSnapshotDependencies,
     MarketSnapshotUnavailableError,
 } from '../src/modules/quote/MarketSnapshotService'
@@ -648,5 +649,82 @@ test('returns complete at 15:30 +08:00 with complete data', async () => {
     } finally {
         restoreDeps?.()
         restoreDeps = null
+    }
+})
+
+// ============================================================================
+// getLastCloseSnapshot：严格早于今天的最近交易日（P3-fix-3）
+// ============================================================================
+
+/** 注入"目标日 = 20260717（上周五）"的完整 mock：SH 序列含 3 行、5 指数当日行、双日日线。 */
+function applyLastCloseFixture(): void {
+    applyCloseMocks({
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260720', close: 3200, pct_chg: 0.6 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717', close: 3180, pct_chg: 0.3 }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260716', close: 3150, pct_chg: -0.2 }),
+        ],
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260717' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260717' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260717' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260717' })],
+        },
+        dailyResultsByDate: {
+            '20260717': makeCompleteDailyResult('20260717'),
+            '20260716': makeCompleteDailyResult('20260716'),
+        },
+    })
+}
+
+test('getLastCloseSnapshot resolves to the previous trading day regardless of wall clock', async (t) => {
+    const cases = [
+        // 周末 10:00：非交易日
+        { name: 'weekend 10:00', now: () => new Date('2026-07-19T02:00:00.000Z') },
+        // 交易日 15:10：旧实现 getRecentTradingDay(15:00 分界) 返回"今天"→ Tushare 无当日行 → 409 空窗
+        { name: 'trading day 15:10 (empty window)', now: () => new Date('2026-07-20T07:10:00.000Z') },
+        // 交易日 03:00 凌晨
+        { name: 'trading day 03:00', now: () => new Date('2026-07-19T19:00:00.000Z') },
+    ]
+    for (const c of cases) {
+        await t.test(c.name, async () => {
+            applyLastCloseFixture()
+            __marketSnapshotDependencies.now = c.now
+            try {
+                const snapshot = await getLastCloseSnapshot()
+                assert.equal(snapshot.trade_date, '20260717')
+            } finally {
+                restoreDeps?.()
+            }
+        })
+    }
+})
+
+test('getLastCloseSnapshot rejects when the target day daily coverage is incomplete', async () => {
+    applyCloseMocks({
+        shIndexRows: [
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260720' }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260717' }),
+            makeIndexRow({ ts_code: '000001.SH', trade_date: '20260716' }),
+        ],
+        indexRowsByCode: {
+            '399001.SZ': [makeIndexRow({ ts_code: '399001.SZ', trade_date: '20260717' })],
+            '399006.SZ': [makeIndexRow({ ts_code: '399006.SZ', trade_date: '20260717' })],
+            '000300.SH': [makeIndexRow({ ts_code: '000300.SH', trade_date: '20260717' })],
+            '000905.SH': [makeIndexRow({ ts_code: '000905.SH', trade_date: '20260717' })],
+            '000852.SH': [makeIndexRow({ ts_code: '000852.SH', trade_date: '20260717' })],
+        },
+        dailyResultsByDate: {
+            // 目标日 20260717 日线不完整 → 诚实 409（MarketSnapshotUnavailableError）
+            '20260717': { rows: [], complete: false, reason: 'duplicate_page', page_count: 2 },
+            '20260716': makeCompleteDailyResult('20260716'),
+        },
+    })
+    __marketSnapshotDependencies.now = () => new Date('2026-07-19T02:00:00.000Z')
+    try {
+        await assert.rejects(() => getLastCloseSnapshot(), MarketSnapshotUnavailableError)
+    } finally {
+        restoreDeps?.()
     }
 })
