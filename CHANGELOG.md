@@ -2,6 +2,34 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-03 — P3-fix-3 大盘数据正确性最小补丁 + P2 遗留
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-03-p3-fix-3-market-data-correctness.md`
+
+### 新增
+- `src/shared/utils/TradingCalendarService.ts`：新增 `getPreviousTradingDay(date)` — 严格早于指定日期的最近交易日（与时刻无关；返回点归一化 08:00 上海=UTC 午夜），last-close 回退用
+- `src/modules/quote/MarketSnapshotService.ts`：`getLastCloseSnapshot` 目标日改 `getPreviousTradingDay(now)`（消除 15:00–15:30 空窗 409；目标日数据缺失仍诚实 409）
+- `src/modules/quote/TencentSnapshotService.ts`：`buildQuickSnapshot` 先算 tradeDate → `isTradingDayYyyymmdd` 校验（非交易日抛 market_not_closed，映射 409，消除"伪当日"）→ 15:30 时钟门禁
+- `src/core/routes/internal.ts`：`VALID_REPORT_TYPES` 增加 `chat_analysis`（P2 遗留，与 P3-fix-3 一并提交）
+
+### 测试
+- `tests/TradingCalendarService.test.ts` 新建 5 用例（周一 15:10 / 周末白天 / 凌晨 03:00 / 长假回溯 / 覆盖外失败关闭）
+- `tests/MarketSnapshotService.test.ts` +2（三墙钟场景回退、目标日日线不完整 409）
+- `tests/TencentSnapshotService.test.ts` +1（非交易日 15:30 后拒绝，红线）
+- `src/core/routes/__tests__/internal_chat_analysis.spec.ts` 新增（P2 遗留）
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表 +3 行 market 端点（quick 非交易日 409 / close 15:30 门禁 / last-close 严格早于今天）
+
+### 验证
+- `npx tsc --noEmit` 0 错误；定向 3 文件 44/45（唯一失败为既有陈旧断言，归基线）
+- 全量 182 tests：172 pass / 10 fail，失败集 ⊆ 基线（7002295 worktree 对比），新增失败清零
+- SDD 审查：T1-T3 逐 Task Approved + 最终整分支审查 Ready to merge Yes
+
+---
+
 ## [master] 2026-08-02 — M4 名称解析端点 GET /internal/stock/resolve
 
 **开发者**: Aria
