@@ -196,6 +196,34 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body.data.report_type, 'event_conduction');
     });
 
+    it('accepts market_snapshot as a valid report_type', async () => {
+        mockCalls = [];
+        mockResponder = () => ({
+            rows: [
+                { id: 1, report_type: 'market_snapshot', report_date: '2026-07-14', created_at: '2026-07-14T10:00:00Z' },
+            ],
+        });
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'POST',
+            path: '/internal/analysis-reports',
+            headers: { 'content-type': 'application/json', 'x-internal-token': INTERNAL_TOKEN },
+            body: {
+                report_type: 'market_snapshot',
+                report_date: '2026-07-14',
+                content: { summary: 'Evening market snapshot' },
+                data_source: 'snapshot_builder',
+                status: 'completed',
+            },
+        });
+
+        assert.strictEqual(res.status, 201);
+        const body = res.json as { code: number; data: { report_type: string } };
+        assert.strictEqual(body.code, 201);
+        assert.strictEqual(body.data.report_type, 'market_snapshot');
+    });
+
     it('rejects unknown report_type', async () => {
         const app = buildApp();
         const res = await call(app, {

@@ -137,6 +137,32 @@ async function fetchTencentIndexQuotes(tencentCodes: string[]): Promise<Map<stri
     return result;
 }
 
+export interface CnIndexQuoteFact {
+    symbol: string;
+    name: string;
+    latest_price: number | null;
+    change_pct: number | null;
+    change_amount: number | null;
+}
+
+/** Reusable live A-share index facts for Stock Trace collectors. */
+export async function getCnIndexQuoteFacts(symbols: string[]): Promise<CnIndexQuoteFact[]> {
+    const uniqueSymbols = [...new Set(symbols.filter((symbol) => /^\d{6}$/.test(symbol)))];
+    const prefixes: Record<string, string> = { '000680': 'sh', '000688': 'sh' };
+    const names: Record<string, string> = { '000680': '科创综指', '000688': '科创50' };
+    const data = await fetchTencentIndexQuotes(uniqueSymbols.map((symbol) => `${prefixes[symbol] || CN_INDEX_TENCENT_PREFIX[symbol] || 'sh'}${symbol}`));
+    return uniqueSymbols.map((symbol) => {
+        const quote = data.get(symbol);
+        return {
+            symbol,
+            name: names[symbol] || CN_INDEX_NAMES[symbol] || symbol,
+            latest_price: quote ? quote.value : null,
+            change_pct: quote ? quote.change : null,
+            change_amount: quote ? quote.changeAmount : null,
+        };
+    });
+}
+
 export class IndexQuoteController {
     private static buildIndexCacheKey(market: 'cn' | 'gb', symbol: string): string {
         return `${INDEX_QUOTE_CACHE_KEY_PREFIX}${market}:${symbol.toUpperCase()}`;

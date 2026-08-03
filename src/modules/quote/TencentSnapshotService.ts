@@ -5,17 +5,26 @@
  * - 核心数据（6 大指数）严格失败，非核心（宽度/概念流）宽松失败
  * - 批量拉取 50 只/批，10 批并发
  * - 涨跌停为近似值（阈值判断），标记 limit_count_approximate=true
- * - 复用 CloseMarketSnapshot schema，snapshot_kind='quick'
+ * - 使用 QuickCloseMarketSnapshot 契约，snapshot_kind='quick'
  */
 
 import { TencentQuoteService } from './TencentQuoteService'
-import { getMoneyflowCntThs, type MoneyflowCntThsRow } from './TushareService'
+import {
+    getMoneyflowCntThs,
+    getMoneyflowThsByDate,
+    getStockBasicBulk,
+    type MoneyflowCntThsRow,
+    type MoneyflowThsRow,
+} from './TushareService'
 import {
     isAtOrAfterClose,
     type CloseIndexFact,
-    type CloseMarketSnapshot,
+    computeMainForceNetYuan,
+    type QuickCloseMarketSnapshot,
+    type QuickDataAvailability,
     type MarketBreadth,
     type QuickSnapshotCoverage,
+    type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
 
 // 6 大指数代码（腾讯格式）
@@ -38,6 +47,16 @@ const INDEX_NAMES: Record<string, string> = {
     'sz399303': '国证2000',
 }
 
+/** 腾讯指数代码到 Tushare 标准 ts_code 的映射。 */
+const INDEX_TS_CODES: Record<string, string> = {
+    'sh000001': '000001.SH',
+    'sh000300': '000300.SH',
+    'sh000016': '000016.SH',
+    'sz399001': '399001.SZ',
+    'sz399006': '399006.SZ',
+    'sz399303': '399303.SZ',
+}
+
 const BATCH_SIZE = 50
 const BATCH_CONCURRENCY = 10
 const MAX_RETRIES = 3
@@ -56,6 +75,17 @@ function toNumber(val: unknown): number {
     return Number.isFinite(n) ? n : 0
 }
 
+function toFiniteNumber(val: unknown): number | undefined {
+    if (val === null || (typeof val === 'string' && val.trim() === '')) return undefined
+    const n = Number(val)
+    return Number.isFinite(n) ? n : undefined
+}
+
+export interface TencentBreadthFetchResult {
+    breadth?: MarketBreadth
+    availability: QuickDataAvailability
+}
+
 export class TencentSnapshotService {
     /**
      * 构建 quick snapshot（15:30 收盘后立即可用）。
@@ -63,7 +93,7 @@ export class TencentSnapshotService {
      * 核心数据（指数）失败 → 整体抛出。
      * 非核心数据（宽度/概念流）失败 → partial snapshot，coverage 标记 false。
      */
-    static async buildQuickSnapshot(nowOverride?: Date): Promise<CloseMarketSnapshot> {
+    static async buildQuickSnapshot(nowOverride?: Date): Promise<QuickCloseMarketSnapshot> {
         const now = nowOverride ?? new Date()
 
         if (!isAtOrAfterClose(now)) {
@@ -73,44 +103,89 @@ export class TencentSnapshotService {
         }
 
         const tradeDate = formatShanghaiDate(now)
+        const tushareTradeDate = tradeDate.replace(/-/g, '')
         const capturedAt = now.toISOString()
 
         // 1. 核心数据：6 大指数（严格失败）
         const indexes = await this.fetchIndexes()
 
-        // 2. 非核心数据：全市场宽度 + 概念板块资金流（宽松失败）
-        const [breadthResult, conceptFlowResult] = await Promise.allSettled([
+        // 2. 非核心数据：全市场宽度、概念板块、主力资金（宽松失败）
+        // 每项独立 settled，任何单项缺失都必须显式标注，不得用中性数值伪造事实。
+        const [breadthResult, conceptFlowResult, mainForceResult] = await Promise.allSettled([
             this.fetchMarketBreadth(),
-            this.fetchConceptFlow(tradeDate),
+            this.fetchConceptFlow(tushareTradeDate),
+            __tencentSnapshotDeps.getMoneyflowThsByDate(tushareTradeDate),
         ])
 
         const marketBreadth: MarketBreadth | undefined =
-            breadthResult.status === 'fulfilled' ? breadthResult.value : undefined
+            breadthResult.status === 'fulfilled' ? breadthResult.value.breadth : undefined
 
         const conceptFlow: MoneyflowCntThsRow[] =
             conceptFlowResult.status === 'fulfilled' ? conceptFlowResult.value : []
 
+        const mainForceRows: MoneyflowThsRow[] | undefined =
+            mainForceResult.status === 'fulfilled' && mainForceResult.value.length > 0
+                ? mainForceResult.value
+                : undefined
+        const hasMainForce = mainForceRows !== undefined
+        const hasConceptFlow = conceptFlowResult.status === 'fulfilled' && conceptFlow.length > 0
+
         const coverage: QuickSnapshotCoverage = {
             has_limit_pool: false,
-            has_moneyflow: false,
-            has_concept_flow: conceptFlow.length > 0,
+            has_moneyflow: hasMainForce,
+            has_concept_flow: hasConceptFlow,
         }
 
-        return this.assembleSnapshot(tradeDate, capturedAt, indexes, marketBreadth, coverage)
+        const quickDataAvailability: QuickSnapshotDataAvailability = {
+            breadth: breadthResult.status === 'fulfilled'
+                ? breadthResult.value.availability
+                : { state: 'unavailable', reason: 'Tencent market breadth fetch failed' },
+            // Tencent 行情行的“成交量”是 volume，不是已验证为元的全市场成交额。
+            turnover: {
+                state: 'unavailable',
+                reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount',
+            },
+            limits: marketBreadth !== undefined
+                ? {
+                    state: 'partial',
+                    available_fields: ['up_count', 'down_count'],
+                    approximate: true,
+                }
+                : { state: 'unavailable', reason: 'Tencent breadth unavailable; limit counts cannot be estimated' },
+            sectors: hasConceptFlow
+                ? { state: 'available' }
+                : conceptFlowResult.status === 'fulfilled'
+                    ? { state: 'unavailable', reason: 'Concept-flow fetch returned no sector rows' }
+                    : { state: 'unavailable', reason: 'Tencent quick concept-flow fetch failed' },
+            main_force: hasMainForce
+                ? { state: 'available' }
+                : { state: 'unavailable', reason: 'After-close main-force moneyflow is unavailable or empty' },
+        }
+
+        return this.assembleSnapshot(
+            tradeDate,
+            capturedAt,
+            indexes,
+            marketBreadth,
+            coverage,
+            conceptFlow,
+            mainForceRows,
+            quickDataAvailability,
+        )
     }
 
     /** 拉 6 大指数（一次批量请求）。失败抛异常。 */
     static async fetchIndexes(): Promise<CloseIndexFact[]> {
-        const quotes = await TencentQuoteService.getBatchQuotes(INDEX_CODES)
+        const quotes = await TencentQuoteService.getBatchQuotes(INDEX_CODES, 'activity')
         const indexes: CloseIndexFact[] = []
 
         for (const code of INDEX_CODES) {
             const row = quotes.find((q) => q['股票代码'] === code)
-            if (!row) {
-                throw new Error(`index ${code} not found in batch quotes`)
+            if (!row || Object.prototype.hasOwnProperty.call(row, '错误')) {
+                throw new Error(`index ${code} quote failed`)
             }
             indexes.push({
-                ts_code: code,
+                ts_code: INDEX_TS_CODES[code],
                 name: String(row['股票简称'] ?? INDEX_NAMES[code] ?? code),
                 trade_date: '', // 由 assembleSnapshot 填充
                 close: toNumber(row['最新价']),
@@ -125,13 +200,15 @@ export class TencentSnapshotService {
 
     /**
      * 拉全市场宽度（分批并发）。
-     * 当前简化实现：调用 getBatchQuotes 拉所有 A 股代码。
-     * 生产环境需要全市场代码列表（从 TradingCalendarService 或缓存获取）。
+     * 从活跃 SH/SZ stock_basic 列表映射腾讯代码后调用 getBatchQuotes。
      */
-    static async fetchMarketBreadth(): Promise<MarketBreadth> {
-        // 获取全市场 A 股代码列表（复用现有 TushareService 或缓存）
-        // 简化：这里通过 __tencentSnapshotDeps 注入，测试可替换
-        const allCodes = await __tencentSnapshotDeps.getAllStockCodes()
+    static async fetchMarketBreadth(): Promise<TencentBreadthFetchResult> {
+        const stockBasics = await __tencentSnapshotDeps.getStockBasicBulk()
+        const allCodes = stockBasics.flatMap(({ ts_code }) => {
+            const match = ts_code.match(/^(\d{6})\.(SH|SZ)$/)
+            if (!match) return []
+            return [`${match[2] === 'SH' ? 'sh' : 'sz'}${match[1]}`]
+        })
         const quotes: TencentQuoteRow[] = []
 
         // 分批拉取，BATCH_CONCURRENCY 批并发
@@ -139,7 +216,7 @@ export class TencentSnapshotService {
             const batchGroup: Promise<Record<string, any>[]>[] = []
             for (let j = 0; j < BATCH_CONCURRENCY && i + j * BATCH_SIZE < allCodes.length; j++) {
                 const batch = allCodes.slice(i + j * BATCH_SIZE, i + (j + 1) * BATCH_SIZE)
-                batchGroup.push(TencentQuoteService.getBatchQuotes(batch))
+                batchGroup.push(TencentQuoteService.getBatchQuotes(batch, 'activity'))
             }
             const results = await Promise.all(batchGroup)
             for (const batch of results) {
@@ -149,7 +226,40 @@ export class TencentSnapshotService {
             }
         }
 
-        return this.calculateBreadth(quotes)
+        const quoteByCode = new Map<string, TencentQuoteRow>()
+        for (const quote of quotes) {
+            const code = String(quote['股票代码'] ?? '')
+            if (allCodes.includes(code) && !quoteByCode.has(code)) quoteByCode.set(code, quote)
+        }
+        if (allCodes.length === 0 || allCodes.some((code) => {
+            const quote = quoteByCode.get(code)
+            return !quote || Object.prototype.hasOwnProperty.call(quote, '错误')
+        })) {
+            return {
+                availability: {
+                    state: 'unavailable',
+                    reason: 'Tencent activity quote batch coverage is incomplete',
+                },
+            }
+        }
+        if (allCodes.some((code) => {
+            const quote = quoteByCode.get(code)!
+            return toFiniteNumber(quote['涨跌幅']) === undefined || toFiniteNumber(quote['成交量']) === undefined
+        })) {
+            return {
+                availability: {
+                    state: 'partial',
+                    available_fields: [],
+                    reason: allCodes.some((code) => toFiniteNumber(quoteByCode.get(code)!['涨跌幅']) === undefined)
+                        ? 'Tencent activity rows contain missing or non-numeric 涨跌幅'
+                        : 'Tencent activity rows contain missing or non-numeric 成交量',
+                },
+            }
+        }
+        return {
+            breadth: this.calculateBreadth(allCodes.map((code) => quoteByCode.get(code)!)),
+            availability: { state: 'available' },
+        }
     }
 
     /** 从行情行计算全市场宽度。 */
@@ -161,9 +271,17 @@ export class TencentSnapshotService {
         let validCount = 0
 
         for (const q of quotes) {
+            if (Object.prototype.hasOwnProperty.call(q, '错误')) continue
             const code = String(q['股票代码'] ?? '')
             if (!code) continue
-            const changePct = toNumber(q['涨跌幅'])
+            const changePct = toFiniteNumber(q['涨跌幅'])
+            if (changePct === undefined) {
+                throw new Error('Tencent activity row has missing or non-numeric 涨跌幅')
+            }
+            const volume = toFiniteNumber(q['成交量'])
+            if (volume === undefined) {
+                throw new Error('Tencent activity row has missing or non-numeric 成交量')
+            }
 
             if (changePct > 0) advance++
             else if (changePct < 0) decline++
@@ -173,7 +291,7 @@ export class TencentSnapshotService {
             if (changePct >= threshold) limitUp++
             if (changePct <= -threshold) limitDown++
 
-            totalVolume += toNumber(q['成交量'])
+            totalVolume += volume
             totalChangePct += changePct
             validCount++
         }
@@ -191,13 +309,9 @@ export class TencentSnapshotService {
         }
     }
 
-    /** 概念板块资金流（复用 TushareService，失败时降级返回空数组）。 */
+    /** 概念板块资金流（复用 TushareService；失败由 settled 调用方显式标注）。 */
     static async fetchConceptFlow(tradeDate: string): Promise<MoneyflowCntThsRow[]> {
-        try {
-            return await getMoneyflowCntThs(tradeDate)
-        } catch (e) {
-            return []
-        }
+        return getMoneyflowCntThs(tradeDate)
     }
 
     /** 组装最终 snapshot。 */
@@ -207,7 +321,10 @@ export class TencentSnapshotService {
         indexes: CloseIndexFact[],
         marketBreadth: MarketBreadth | undefined,
         coverage: QuickSnapshotCoverage,
-    ): CloseMarketSnapshot {
+        conceptFlow: MoneyflowCntThsRow[] = [],
+        mainForceRows: MoneyflowThsRow[] | undefined,
+        quickDataAvailability: QuickSnapshotDataAvailability,
+    ): QuickCloseMarketSnapshot {
         // 填充 indexes 的 trade_date
         const filledIndexes = indexes.map((idx) => ({ ...idx, trade_date: tradeDate.replace(/-/g, '') }))
 
@@ -219,17 +336,27 @@ export class TencentSnapshotService {
             indexes: filledIndexes,
             // full snapshot 的字段填默认值（quick 版不提供）
             breadth: {
-                total_count: marketBreadth?.total_count ?? 0,
-                advance_count: marketBreadth?.advance_count ?? 0,
-                decline_count: marketBreadth?.decline_count ?? 0,
-                flat_count: marketBreadth?.flat_count ?? 0,
-                advance_ratio: 0,
-                source: 'tushare:daily',
+                total_count: marketBreadth?.total_count ?? null,
+                advance_count: marketBreadth?.advance_count ?? null,
+                decline_count: marketBreadth?.decline_count ?? null,
+                flat_count: marketBreadth?.flat_count ?? null,
+                advance_ratio: marketBreadth && marketBreadth.total_count > 0
+                    ? marketBreadth.advance_count / marketBreadth.total_count
+                    : null,
+                source: 'tencent:quote',
             },
-            turnover: { amount_yuan: 0, previous_amount_yuan: 0, change_pct: 0, source: 'tushare:daily' },
-            limits: { up_count: 0, down_count: 0, broken_count: 0, highest_board: 0 },
-            sectors: { top_gainers: [], top_losers: [], top_inflows: [], top_outflows: [] },
-            main_force: { large_and_extra_large_net_yuan: 0, source: 'tushare:moneyflow_ths' },
+            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            limits: {
+                up_count: marketBreadth?.limit_up_count ?? null,
+                down_count: marketBreadth?.limit_down_count ?? null,
+                broken_count: null,
+                highest_board: null,
+            },
+            sectors: selectQuickSectors(conceptFlow),
+            main_force: {
+                large_and_extra_large_net_yuan: mainForceRows ? computeMainForceNetYuan(mainForceRows) : null,
+                source: 'tushare:moneyflow_ths',
+            },
             coverage: {
                 current_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
                 previous_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
@@ -237,23 +364,50 @@ export class TencentSnapshotService {
             // quick snapshot 扩展字段
             snapshot_kind: 'quick',
             coverage_info: coverage,
+            quick_data_availability: quickDataAvailability,
             market_breadth: marketBreadth,
         }
     }
 }
 
-/** 依赖注入接口（测试可替换 getAllStockCodes）。 */
+/** 依赖注入接口（测试可替换 stock_basic 数据源）。 */
 export interface TencentSnapshotDeps {
-    getAllStockCodes: () => Promise<string[]>
+    getStockBasicBulk: typeof getStockBasicBulk
+    getMoneyflowThsByDate: typeof getMoneyflowThsByDate
 }
 
-/** 生产环境默认实现：返回空数组（生产环境需对接全市场代码源）。 */
+/** 生产环境默认实现：复用 Tushare 活跃股票列表。 */
 export const __tencentSnapshotDeps: TencentSnapshotDeps = {
-    getAllStockCodes: async () => {
-        // TODO: 对接全市场 A 股代码列表（从 TushareService 或 TradingCalendarService）
-        // 当前返回简化测试用代码，生产环境部署前需替换
-        return ['sh600000', 'sh601318', 'sz000001', 'sz300750']
-    },
+    getStockBasicBulk,
+    getMoneyflowThsByDate,
+}
+
+const TOP_SECTOR_COUNT = 5
+
+function toQuickSectorFact(row: MoneyflowCntThsRow): QuickCloseMarketSnapshot['sectors']['top_gainers'][number] {
+    return {
+        ts_code: row.ts_code,
+        name: row.name,
+        pct_change: row.pct_change,
+        net_amount: row.net_amount,
+        lead_stock: row.lead_stock,
+        company_num: row.company_num,
+        trade_date: row.trade_date,
+    }
+}
+
+/** 保留成功获取的概念资金流，并按涨跌与净流入分别排序。 */
+function selectQuickSectors(rows: MoneyflowCntThsRow[]): QuickCloseMarketSnapshot['sectors'] {
+    const byPctDesc = [...rows].sort((a, b) => b.pct_change - a.pct_change)
+    const byPctAsc = [...rows].sort((a, b) => a.pct_change - b.pct_change)
+    const byNetDesc = [...rows].sort((a, b) => b.net_amount - a.net_amount)
+    const byNetAsc = [...rows].sort((a, b) => a.net_amount - b.net_amount)
+    return {
+        top_gainers: byPctDesc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
+        top_losers: byPctAsc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
+        top_inflows: byNetDesc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
+        top_outflows: byNetAsc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
+    }
 }
 
 /** 格式化上海时区日期为 YYYY-MM-DD。 */

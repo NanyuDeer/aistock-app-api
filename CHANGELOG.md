@@ -1,6 +1,100 @@
 # Changelog — aistock-app-api
 
-> 所有修改记录按时间倒序排列。每条记录标注分支、时间区间、开发者。
+> 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
+
+## [master] 2026-08-02 — M4 名称解析端点 GET /internal/stock/resolve
+
+**开发者**: Aria
+
+### 新增
+- `src/core/routes/internal.ts`：新增 `GET /internal/stock/resolve?name=<名称>` 端点（200 `{code,data:{name,symbol}}` / 400 缺 name / 404 未命中 / 502 服务异常），遵循内部 API 风格，供 Python ChatAgent M1 resolve_symbol 调用
+- `src/modules/monitor/HotKeywordDetectorService.ts`：新增导出 `resolveStockName(name)`（stockNameMap 精确 + sortedNames includes 模糊，未命中返回 null），不改既有导出接口
+
+### 测试
+- `tests/internalRoutes.test.ts`：新增 3 用例（茅台→200+symbol=600519 / 不存在名称→404 / 缺 name→400）
+
+### 文档
+- `README.md`：补充本机已装 PostgreSQL/Redis 时双击 `start-dev.bat` 一键启动说明
+
+---
+
+## [master] 2026-08-01 — 异动监控新增手动触发检测端点
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/stock-trace/controller.ts`：新增 `detect` 静态方法，调 `PriceTriggerDetector.runOnceForce()`
+- `src/index.ts`：注册 `POST /api/cn/favorites/movements/detect`（在 `:eventId` 路由之前，避免 detect 被当作 eventId）
+
+### 改进
+- `src/modules/stock-trace/PriceTriggerDetector.ts`：抽出 `detect()` 私有方法供 `runOnce` 和 `runOnceForce` 共用；`runOnce` 保持交易时段检查（定时轮询用）；新增 `runOnceForce` 绕过 `isAShareTradingTime`（手动触发用）
+
+---
+
+## [master] 2026-08-01 — 通用播报生成 API + alert 报告按 symbol 查询端点
+
+**开发者**: Aria
+
+### 新增
+- `src/core/routes/internal.ts`：`POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读 text，key 做缓存幂等，文件名 `podcast-{safeKey}.mp3`，复用 `synthesizeBroadcast` 合成）
+- `src/core/routes/internal.ts`：`GET /api/agent/report/alert/:symbol/:date`（publicRouter，按 user_id=symbol 查询当日 alert 报告，与通用 `/report/:intent/:date` 路径段数不同不会冲突）
+
+---
+
+## [master] 2026-08-01 — Stock Trace get/analysis/evidence 未登录降级修复
+
+**开发者**: NanyuDeer
+
+### 修复
+- `src/modules/stock-trace/controller.ts`：`get`/`analysis`/`evidence`/`markRead` 接口移除 `if (!openid) return 401`，改为未登录降级（与 `list` 接口一致，符合"登录非必须"约束）。根因：未登录用户在 monitor 页面看到异动卡片（list 降级成功），但点击卡片进入溯源详情时 get/analysis 返回 401，导致前端 DEV 模式回退到 mock 数据
+- `src/modules/stock-trace/StockTraceService.ts`：新增 `getRecentEvent(eventId)` 方法，不经过 `stock_trace_user_events` 关联表，直接查全局事件（返回格式与 `getUserEvent` 一致，`read_at` 固定 null）
+
+---
+
+## [master] 2026-08-01 — Stock Trace PRD 对齐：sendInitialPush 补齐 trigger_reason
+
+**开发者**: NanyuDeer
+
+### 改进
+- `src/modules/stock-trace/StockTraceService.ts`：`sendInitialPush` 插入 `stock_trace_push_records` 时补齐 `trigger_reason='event_created'` 字段（PRD/SPEC 要求 initial push 记录触发原因，便于查询推送历史时区分触发来源）
+
+---
+
+## [master] 2026-08-01 — StockTraceService.ensureSchema 权限容错
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/stock-trace/StockTraceService.ts`：`ensureSchema` 的 `ALTER TABLE stocks ADD COLUMN list_date` 用 try/catch 包住 — aistock 用户无 stocks 表 owner 权限（owner=root）时跳过，不阻塞后续 `stock_trace_*` 表的创建；`schemaPromise` 失败时重置为 null，允许下次调用重试，避免进程启动时权限问题永久阻塞所有 stock-trace 链路
+
+### 改进
+- `.gitignore`：添加 `.worktrees/` 忽略规则
+
+---
+
+## [changer] 2026-07-31 — 个股异动 Trace 触发（StockTraceTriggerService + 交易日历补齐）
+
+**开发者**: 37588
+
+### 新增
+- `src/modules/crawler/services/StockTraceTriggerService.ts`：个股 Trace 触发 relay，转发到 Python `POST /api/agent/trace/stock/trigger`（fail-closed：token/URL 未配置静默 skipped；90s 超时；绝不抛异常，不影响通知主流程）
+- `scripts/export-historical-close-snapshots.ts`：历史收盘快照导出脚本（配合 2024/2025 交易日历）
+- `src/modules/crawler/__tests__/stockTraceTrigger.spec.ts`：StockTraceTriggerService 单元测试
+
+### 改进
+- `src/modules/crawler/StockInfoPushService.ts`：通知完成后按 symbol 去重触发个股 Trace（倒序取每 symbol 首次 judgement，`traceId = stock-info:<judgementId>`）
+- `src/shared/utils/TradingCalendarService.ts`：补齐 2024 / 2025 年 A 股休市日历（历史快照导出需要）
+
+## [master] 2026-07-31 — 火山引擎 TTS 多账号轮换池
+**开发者**: ARIA
+
+### 新增
+- `src/core/services/volcenginePodcast.service.ts`：新增 `readVolcenginePodcastAccounts()` 读取 `VOLC_PODCAST_ACCOUNTS` JSON 数组（兼容 app_id/access_token/secret_key 字段名）；新增 `VolcenginePodcastPool` 类实现 round-robin 轮换 + 失败自动切换下一个账号重试，全部失败才报错
+
+### 修改
+- `src/core/routes/internal.ts`：`synthesizeBroadcast` 改用账号池获取凭证，替代单账号固定读取
+
+---
 
 ## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
 **开发者**: Aria

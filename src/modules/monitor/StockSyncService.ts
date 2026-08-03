@@ -39,7 +39,7 @@ export class StockSyncService {
         const rows = await tushareRequest(
             'stock_basic',
             { exchange: '', list_status: 'L' },
-            'ts_code,symbol,name,market,industry',
+            'ts_code,symbol,name,market,industry,list_date',
         );
 
         console.log(`[StockSync] Tushare 返回 ${rows.length} 条上市股票`);
@@ -48,25 +48,27 @@ export class StockSyncService {
         let updated = 0;
 
         for (const row of rows) {
-            const symbol = (row.symbol || '').trim();
-            const name = (row.name || '').trim();
-            const industry = (row.industry || '').trim();
-            const market = this.tsCodeToMarket(row.ts_code || '');
+            const symbol = String(row.symbol || '').trim();
+            const name = String(row.name || '').trim();
+            const industry = String(row.industry || '').trim();
+            const market = this.tsCodeToMarket(String(row.ts_code || ''));
             const py = this.toPinyinInitials(name);
+            const listDate = String(row.list_date || '').trim();
 
             if (!symbol || !name) continue;
 
             try {
                 const result = await pool.query(
-                    `INSERT INTO stocks (symbol, name, pinyin, market, industry)
-                     VALUES ($1, $2, $3, $4, $5)
+                    `INSERT INTO stocks (symbol, name, pinyin, market, industry, list_date)
+                     VALUES ($1, $2, $3, $4, $5, $6)
                      ON CONFLICT (symbol) DO UPDATE SET
                        name = EXCLUDED.name,
                        pinyin = COALESCE(NULLIF(stocks.pinyin, ''), EXCLUDED.pinyin),
                        market = EXCLUDED.market,
-                       industry = EXCLUDED.industry
+                       industry = EXCLUDED.industry,
+                       list_date = EXCLUDED.list_date
                      RETURNING (xmax = 0) AS inserted`,
-                    [symbol, name, py, market, industry],
+                    [symbol, name, py, market, industry, listDate],
                 );
 
                 if (result.rows[0]?.inserted) {

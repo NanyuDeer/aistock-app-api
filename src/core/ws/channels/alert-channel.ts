@@ -23,3 +23,13 @@ export function pushAlertToUser(userId: string, data: any): void {
     }
   })
 }
+
+/** Push an in-place update for an existing movement event. */
+export function pushMovementUpdateToUser(userId: string, data: Record<string, unknown>): void {
+  const msg = JSON.stringify({ type: 'movement.updated', data })
+  getAllClients().forEach((client, ws) => {
+    if (client.userId === userId && ws.readyState === ws.OPEN) {
+      ws.send(msg)
+    }
+  })
+}

@@ -15,6 +15,7 @@ import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderSer
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
+import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKeywordDetectorService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
@@ -29,7 +30,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
-    'broadcast', 'event_conduction', 'trend_score', 'global_importance',
+    'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
 ]
 
@@ -226,6 +227,34 @@ router.get('/forecast/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] forecast/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/stock/resolve
+ * 中文股票名称 → 6 位代码（复用 HotKeywordDetectorService 的 A 股名称映射，stocks 表/Tushare stock_basic）
+ *
+ * - 200：{ code: 200, data: { name: "贵州茅台", symbol: "600519" } }
+ * - 400：name 参数缺失或为空
+ * - 404：未找到匹配股票
+ * - 502：服务异常
+ */
+router.get('/stock/resolve', async (req: Request, res: Response) => {
+    const name = (queryStr(req, 'name') || '').trim()
+    if (!name) {
+        return res.status(400).json({ code: 400, message: 'name 参数缺失或为空' })
+    }
+
+    try {
+        await loadStockNameMap()
+        const hit = resolveStockName(name)
+        if (!hit) {
+            return res.status(404).json({ code: 404, message: '未找到匹配股票' })
+        }
+        res.json({ code: 200, data: { name: hit.name, symbol: hit.symbol } })
+    } catch (err: unknown) {
+        console.error('[Internal] stock/resolve error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
@@ -563,6 +592,34 @@ router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/market/last-close-snapshot
+ * 最近一个已完成交易日的收盘快照（跳过 15:30 时钟门禁）。
+ *
+ * 用途：在盘中或开盘前（如凌晨）需要昨日收盘数据时调用。Python review_full
+ * 链路在 close-snapshot 返回 409 时降级到此接口。
+ *
+ * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
+ * - 409：数据不可用（非交易日连续回溯失败等）
+ * - 502：其它意外异常
+ */
+router.get('/market/last-close-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const data = await MarketSnapshotService.getLastCloseSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        if (err instanceof MarketSnapshotUnavailableError) {
+            res.status(409).json({
+                code: 409,
+                data: { status: err.status, reason: err.reason },
+            })
+            return
+        }
+        console.error('[Internal] market/last-close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/market/quick-snapshot
  * 15:30 收盘后基于腾讯实时行情的简版收盘快照。
  *
@@ -892,14 +949,17 @@ import path from 'path'
 import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { AzureMultiVoiceTtsProvider, type DialogueLine } from '../services/tts.service'
-import { readVolcenginePodcastOptions, VolcenginePodcastProvider } from '../services/volcenginePodcast.service'
+import { readVolcenginePodcastAccounts, VolcenginePodcastPool } from '../services/volcenginePodcast.service'
+import { parseSingleByteRange } from '../services/audioRange.service'
 
 const publicRouter: Router = Router()
 
 async function synthesizeBroadcast(lines: DialogueLine[]): Promise<Buffer> {
     const provider = process.env.TTS_PROVIDER || 'azure'
     if (provider === 'volcengine_podcast') {
-        return new VolcenginePodcastProvider(readVolcenginePodcastOptions(process.env)).synthesize(lines)
+        const accounts = readVolcenginePodcastAccounts(process.env)
+        const pool = new VolcenginePodcastPool(accounts)
+        return pool.synthesize(lines)
     }
 
     if (provider === 'azure') {
@@ -968,7 +1028,7 @@ async function getAnalysisReport(report_type: string, report_date: string) {
  */
 async function getLatestAnalysisReport(report_type: string) {
     const result = await pool.query(
-        `SELECT id, report_type, report_date, content, data_source, status,
+        `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
                 generation_time_ms, model_version,
                 created_at AT TIME ZONE 'UTC' AS created_at
          FROM agent_analysis_reports
@@ -1346,6 +1406,61 @@ publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) =>
 })
 
 /**
+ * GET /api/agent/report/alert/:symbol/:date
+ * 查询指定股票的异动分析报告（公开接口）
+ *
+ * alert 报告写入 DB 时 user_id = symbol，与通用 /report/:intent/:date 端点
+ * （过滤 user_id IS NULL）不兼容，故单独提供按 symbol 查询的端点。
+ *
+ * 路径参数：
+ * - symbol: 6位A股代码，如 603601
+ * - date: 报告日期 YYYY-MM-DD
+ *
+ * 响应：{ code: 0, data: { report_type, report_date, content: { symbol, display_report, podcast_brief } } | null }
+ */
+publicRouter.get('/report/alert/:symbol/:date', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    const date = param(req, 'date')
+
+    if (!isValidAShareSymbol(symbol)) {
+        res.status(400).json({ code: -1, message: `Invalid symbol: ${symbol}` })
+        return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+
+    try {
+        // alert 报告 user_id = symbol，按 symbol + date 精确查询
+        // 时区处理与 getAnalysisReport 一致：覆盖 Asia/Shanghai 当日
+        const start = `${date}T00:00:00+08:00`
+        const end = `${date}T23:59:59+08:00`
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                    generation_time_ms, model_version,
+                    created_at AT TIME ZONE 'UTC' AS created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'alert'
+               AND user_id = $1
+               AND report_date >= $2::timestamptz
+               AND report_date <= $3::timestamptz
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [symbol, start, end]
+        )
+        const row = result.rows.length > 0 ? result.rows[0] : null
+        if (row && row.content) {
+            row.content = cleanReportContent(row.content as Record<string, unknown>)
+        }
+        res.json({ code: 0, data: row })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report/alert GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
  * GET /api/agent/audio/:filename
  * 获取播报音频文件（公开接口）
  *
@@ -1369,9 +1484,93 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
         return
     }
 
+    const fileSize = fs.statSync(filePath).size
+    const rangeHeader = req.headers.range
+    const range = parseSingleByteRange(rangeHeader, fileSize)
+    res.setHeader('Accept-Ranges', 'bytes')
     res.setHeader('Content-Type', 'audio/mpeg')
-    const stream = fs.createReadStream(filePath)
+
+    if (rangeHeader && !range) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`)
+        res.status(416).end()
+        return
+    }
+
+    const stream = range
+        ? fs.createReadStream(filePath, range)
+        : fs.createReadStream(filePath)
+    if (range) {
+        res.status(206)
+        res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${fileSize}`)
+        res.setHeader('Content-Length', String(range.end - range.start + 1))
+    } else {
+        res.setHeader('Content-Length', String(fileSize))
+    }
+    stream.on('error', () => res.destroy())
     stream.pipe(res)
+})
+
+/**
+ * POST /api/agent/brief/generate-podcast
+ * 通用播报生成（公开接口，单主播朗读文本）
+ *
+ * 请求体: { text: string, key: string }
+ * - text: 播报文本（podcast_brief，1-2000字）
+ * - key: 缓存键（如 alert_603601_2026-08-01），用于文件命名和幂等
+ *
+ * 响应: { code: 0, data: { audio_url: string, cached: boolean } }
+ * - 同一 key 的音频已存在时直接返回（cached: true），不重复合成
+ */
+publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: Response) => {
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+    const key = typeof req.body?.key === 'string' ? req.body.key.trim() : ''
+
+    if (!text) {
+        res.status(400).json({ code: -1, message: 'text 不能为空' })
+        return
+    }
+    if (text.length > 2000) {
+        res.status(400).json({ code: -1, message: 'text 长度不能超过 2000 字' })
+        return
+    }
+    if (!key) {
+        res.status(400).json({ code: -1, message: 'key 不能为空' })
+        return
+    }
+
+    // sanitize key：仅保留字母数字下划线连字符，防止路径遍历
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_')
+    if (!safeKey) {
+        res.status(400).json({ code: -1, message: 'key 无效' })
+        return
+    }
+
+    const filename = `podcast-${safeKey}.mp3`
+    const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+    const filePath = path.join(audioDir, filename)
+    const audioUrl = `/api/agent/audio/${filename}`
+
+    try {
+        // 缓存命中：文件已存在直接返回
+        if (fs.existsSync(filePath)) {
+            res.json({ code: 0, data: { audio_url: audioUrl, cached: true } })
+            return
+        }
+
+        // 单主播朗读：包装为单条 host 对话行，复用现有 synthesizeBroadcast
+        const lines: DialogueLine[] = [{ role: 'host', content: text }]
+        const audioBuffer = await synthesizeBroadcast(lines)
+
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.writeFile(tempPath, audioBuffer)
+        await fs.promises.rename(tempPath, filePath)
+
+        res.json({ code: 0, data: { audio_url: audioUrl, cached: false } })
+    } catch (err: unknown) {
+        console.error('[Public] generate-podcast error:', errMsg(err))
+        res.status(502).json({ code: -1, message: errMsg(err) })
+    }
 })
 
 /**

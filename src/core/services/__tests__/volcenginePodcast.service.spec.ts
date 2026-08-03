@@ -8,6 +8,7 @@ import {
     buildFinishConnectionFrame,
     buildStartSessionFrame,
     formatPodcastEventDiagnostic,
+    mergePodcastMp3Chunks,
     parsePodcastResponseFrame,
     readVolcenginePodcastOptions,
     VolcenginePodcastProvider,
@@ -26,6 +27,19 @@ function buildResponseFrame(event: number, payload: Buffer, sessionId = 'abc', m
 }
 
 describe('Volcengine podcast protocol', () => {
+    it('合并分段播客 MP3 时只保留第一个 ID3 标签', () => {
+        const id3 = Buffer.from([0x49, 0x44, 0x33, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        const firstFrame = Buffer.from([0xff, 0xf3, 0xa4, 0xc4, 0x01])
+        const secondFrame = Buffer.from([0xff, 0xf3, 0xa4, 0xc4, 0x02])
+
+        const audio = mergePodcastMp3Chunks([
+            Buffer.concat([id3, firstFrame]),
+            Buffer.concat([id3, secondFrame]),
+        ])
+
+        assert.deepEqual(audio, Buffer.concat([id3, firstFrame, secondFrame]))
+    })
+
     it('将现有双人台词转换为 action=3 请求', () => {
         assert.deepEqual(buildPodcastPayload('session-1', [
             { role: 'host', content: '主持人开场。' },

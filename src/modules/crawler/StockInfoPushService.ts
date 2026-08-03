@@ -2,6 +2,7 @@ import { StockInfoService, StockInfoType, type StockInfoPushWindow } from './Sto
 import { WechatPushService } from '../push/WechatPushService';
 import { MessagePushService } from '../push/MessagePushService';
 import { CacheService } from '../../shared/utils/CacheService';
+import { StockTraceTriggerService } from './services/StockTraceTriggerService';
 
 export interface StockInfoPushRequest {
     window?: string;
@@ -97,6 +98,9 @@ export class StockInfoPushService {
             results: [],
         };
 
+        // 收集所有窗口的候选（用于后续 Trace 触发）
+        const allCandidates: Array<{ id: number; symbol: string }> = [];
+
         for (const window of windows) {
             const candidates = await StockInfoService.getPushCandidates(window);
             summary.candidates += candidates.length;
@@ -136,6 +140,7 @@ export class StockInfoPushService {
                 });
 
                 summary.results.push({ id: judgement.id, symbol: judgement.symbol, ...result });
+                allCandidates.push({ id: judgement.id, symbol: judgement.symbol });
             }
         }
 
@@ -143,6 +148,24 @@ export class StockInfoPushService {
         if (summary.sent > 0 || summary.candidates > 0) {
             await setLastPushTime(new Date());
             console.log(`[StockInfoPush] 已记录推送时间，下次推送起点=${new Date().toISOString()}`);
+        }
+
+        // ── 个股 Trace 触发（不阻塞通知结果） ──
+        // 在通知全部完成后，对每个 symbol 最多触发一次 Trace
+        // 倒序遍历候选（DESC → ASC），取每个 symbol 首次出现的 judgement
+        const seenSymbols = new Set<string>();
+        for (let i = allCandidates.length - 1; i >= 0; i--) {
+            const { symbol, id } = allCandidates[i];
+            if (!symbol || seenSymbols.has(symbol)) continue;
+            seenSymbols.add(symbol);
+
+            const traceId = `stock-info:${id}`;
+            try {
+                await StockTraceTriggerService.triggerStockTrace({ symbol, traceId });
+            } catch {
+                // StockTraceTriggerService 已吞掉所有异常，此处仅防御性兜底
+                console.error(`[StockInfoPush] unexpected error triggering trace for ${symbol}`);
+            }
         }
 
         return summary;

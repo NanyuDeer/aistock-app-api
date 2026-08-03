@@ -55,7 +55,7 @@ async function fetchMoneyFlow(symbol: string, startDate: string): Promise<MoneyF
         ts_code: toTsCode(symbol),
         start_date: startDate,
     });
-    return rows as MoneyFlowRow[];
+    return rows as unknown as MoneyFlowRow[];
 }
 
 function computeStreak(trend: number[]): string {

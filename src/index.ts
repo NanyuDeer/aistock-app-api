@@ -39,7 +39,7 @@ import { MessagePushService } from './modules/push/MessagePushService';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
-import { FeishuMessageController } from './modules/auth/feishuMessageController';
+import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
 import { FeishuAuthController } from './modules/auth/feishuAuthController';
 
 // monitor 监控模块
@@ -56,9 +56,13 @@ import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
+import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
+import { StockTraceController } from './modules/stock-trace/controller';
+import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
+import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector';
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
 
@@ -187,6 +191,12 @@ app.post('/api/internal/stock-info/push', (req, res, next) => StockInfoJudgement
 // 个股异动监控 - 前端查询接口，数据来自外部爬虫提交的公告/新闻研判。
 app.get('/api/cn/stock-monitors/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
 app.get('/api/cn/stock-monitors/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
+app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.list(req, res, next));
+app.post('/api/cn/favorites/movements/detect', (req, res, next) => StockTraceController.detect(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
+app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
@@ -228,8 +238,8 @@ app.post('/api/internal/push-leader', async (req, res) => {
         const force = req.body?.force === true || req.query.force === 'true';
         const result = await MessagePushService.executeLeaderPush(force);
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -244,8 +254,8 @@ app.post('/api/internal/push-institution-research', async (req, res) => {
         const force = req.body?.force === true || req.query.force === 'true';
         const result = await MessagePushService.executeOutbreakPush(testData, force);
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -292,8 +302,8 @@ app.post('/api/internal/push-stock-info', async (req, res) => {
             const result = await StockInfoPushService.push(req.body || { window: 'morning' });
             res.json({ success: true, result });
         }
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -325,9 +335,9 @@ app.post('/api/internal/trigger-trend-batch', async (req, res) => {
         const result = await TrendBatchService.run(force);
         console.log(`[ManualTrigger] trend batch done:`, result);
         res.json({ success: true, result });
-    } catch (err: any) {
-        console.error('[ManualTrigger] trend batch failed:', err?.message || err);
-        res.status(500).json({ error: err?.message || 'batch failed' });
+    } catch (err: unknown) {
+        console.error('[ManualTrigger] trend batch failed:', err instanceof Error ? err.message : String(err));
+        res.status(500).json({ error: (err instanceof Error ? err.message : String(err)) || 'batch failed' });
     }
 });
 
@@ -340,8 +350,8 @@ app.post('/api/internal/crawl/run', async (req, res) => {
     try {
         const result = await StockInfoCrawlService.runOnce(req.body || {});
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -355,8 +365,8 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
         const window = req.body?.window || 'morning';
         const result = await StockInfoCrawlService.runCycle(window, req.body || {});
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -368,9 +378,9 @@ app.post('/api/admin/trigger-price-update', async (_req, res) => {
         console.log('[ManualTrigger] update push history prices');
         await WindLeaderService.updatePushHistoryPrices();
         res.json({ code: 200, message: 'price update succeeded' });
-    } catch (err: any) {
-        console.error('[ManualTrigger] price update failed:', err?.message || err);
-        res.status(500).json({ code: 500, message: 'price update failed', error: err?.message || err });
+    } catch (err: unknown) {
+        console.error('[ManualTrigger] price update failed:', err instanceof Error ? err.message : String(err));
+        res.status(500).json({ code: 500, message: 'price update failed', error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -394,6 +404,8 @@ app.post('/api/cn/stocks/ocr', (req, res, next) => StockOcrController.batchOcr(r
 app.get('/api/cn/stocks/performance-reports', (req, res, next) => PerformanceReportController.getReportList(req, res, next));
 app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => PerformanceReportController.searchReportList(req, res, next));
 app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
+app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
+app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 
@@ -417,7 +429,7 @@ app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
     try {
         const data = await getSemiAnnualReport(symbol);
         res.json({ code: 200, message: 'success', data });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error(`Error fetching semi-annual report for ${symbol}:`, err);
         res.status(500).json({ code: 500, message: err instanceof Error ? err.message : 'Internal Server Error' });
     }
@@ -512,6 +524,7 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 // ==================== Internal API（Python Agent 服务专用） ====================
 app.use('/internal', internalRouter);
 
+app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -528,8 +541,8 @@ cron.schedule('0 2 * * *', async () => {
     try {
         await TrendBatchService.run();
         console.log('[TrendCron] 批量趋势股评分完成');
-    } catch (err: any) {
-        console.error('[TrendCron] 批量趋势股评分失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[TrendCron] 批量趋势股评分失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -545,7 +558,7 @@ cron.schedule('5 19 * * 1-5', async () => {
         const poolModule = await import('./core/db');
         const dbPool = poolModule.default;
         const result = await dbPool.query('SELECT symbol FROM stocks');
-        const symbols = result.rows.map((r: any) => r.symbol as string);
+        const symbols = result.rows.map((r: { symbol: string }) => r.symbol);
         console.log(`[CapitalFlowCron] 共${symbols.length}只股票待预取`);
 
         const { getCapitalFlow } = await import('./modules/quote/TushareCapitalFlowService');
@@ -558,16 +571,16 @@ cron.schedule('5 19 * * 1-5', async () => {
                 const cacheKey = `capital_flow:${symbol}`;
                 const data = await getCapitalFlow(symbol);
                 const ttl = await getAShareAdaptiveCacheTtlSeconds(3 * 60);
-                await CacheService.put(cacheKey, data as unknown as Record<string, any>, ttl);
+                await CacheService.put(cacheKey, data as unknown as Record<string, unknown>, ttl);
                 success++;
-            } catch (err: any) {
+            } catch (err: unknown) {
                 failed++;
-                if (failed <= 5) console.error(`[CapitalFlowCron] ${symbol} error:`, err?.message || err);
+                if (failed <= 5) console.error(`[CapitalFlowCron] ${symbol} error:`, err instanceof Error ? err.message : String(err));
             }
         }
         console.log(`[CapitalFlowCron] 完成: 成功=${success}, 失败=${failed}`);
-    } catch (err: any) {
-        console.error('[CapitalFlowCron] 批量预取失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CapitalFlowCron] 批量预取失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -583,8 +596,8 @@ cron.schedule('0 3 * * *', async () => {
         }
         const result = await WindLeaderAnalyzerService.runFullAnalysis();
         console.log(`[WindLeaderCron] 分析完成: ${result.hot_sectors?.length || 0} 个板块`);
-    } catch (err: any) {
-        console.error('[WindLeaderCron] 分析失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[WindLeaderCron] 分析失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -594,8 +607,8 @@ const runInstitutionResearchDetect = async (label: string) => {
     try {
         const result = await HotBurstService.detectHotBurst();
         console.log(`[InstResearchCron] ${label} 检测完成: ${result.outbreaks.length} 个信号`);
-    } catch (err: any) {
-        console.error(`[InstResearchCron] ${label} 检测失败:`, err?.message || err);
+    } catch (err: unknown) {
+        console.error(`[InstResearchCron] ${label} 检测失败:`, err instanceof Error ? err.message : String(err));
     }
 };
 cron.schedule('30 9 * * 1-5', () => runInstitutionResearchDetect('开盘'), { timezone: 'Asia/Shanghai' });
@@ -605,14 +618,31 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
+// 飞书消息千问分析：每分钟串行处理少量待分析记录。
+cron.schedule('* * * * *', async () => {
+    if (!FeishuMessageAiService.isConfigured()) return;
+    try {
+        const result = await FeishuMessageAiService.processPending(
+            Number(process.env.QWEN_BATCH_SIZE || 3),
+        );
+        if (result.claimed > 0) {
+            console.log(
+                `[FeishuAI] 完成: claimed=${result.claimed}, succeeded=${result.succeeded}, failed=${result.failed}`,
+            );
+        }
+    } catch (err: unknown) {
+        console.error('[FeishuAI] 批处理失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 每日 04:30 刷新个股-板块映射表
 cron.schedule('30 4 * * *', async () => {
     console.log('[StockConceptMappingCron] 开始刷新个股-板块映射');
     try {
         const count = await syncStockConceptMapping();
         console.log(`[StockConceptMappingCron] 刷新完成: ${count} 条记录`);
-    } catch (err: any) {
-        console.error('[StockConceptMappingCron] 刷新失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[StockConceptMappingCron] 刷新失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -623,8 +653,8 @@ cron.schedule('0 8 * * *', async () => {
     try {
         const result = await StockInfoCrawlService.runCycle('morning', { source: 'favorites', limit: 200 });
         console.log(`[CrawlCron] 早盘完成: 抓取${result.crawler.submitted}条, 推送候选${result.push.candidates}条`);
-    } catch (err: any) {
-        console.error('[CrawlCron] 早盘失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CrawlCron] 早盘失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -633,8 +663,8 @@ cron.schedule('0 15 * * *', async () => {
     try {
         const result = await StockInfoCrawlService.runCycle('closing', { source: 'favorites', limit: 200 });
         console.log(`[CrawlCron] 尾盘完成: 抓取${result.crawler.submitted}条, 推送候选${result.push.candidates}条`);
-    } catch (err: any) {
-        console.error('[CrawlCron] 尾盘失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CrawlCron] 尾盘失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -642,8 +672,8 @@ cron.schedule('30 15 * * *', async () => {
     console.log('[PushHistoryPriceUpdateCron] update push history prices');
     try {
         await WindLeaderService.ensurePushHistoryPricesCurrent();
-    } catch (err: any) {
-        console.error('[PushHistoryPriceUpdateCron] failed:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[PushHistoryPriceUpdateCron] failed:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -653,21 +683,22 @@ cron.schedule('0 0 * * *', async () => {
     try {
         const result = await ProfitForecastAutoUpdateService.run();
         console.log(`[ProfitForecastAutoUpdateCron] 完成: method=${result.method}, updated=${result.updated}, skipped=${result.skipped}, errors=${result.errors}`);
-    } catch (err: any) {
-        console.error('[ProfitForecastAutoUpdateCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[ProfitForecastAutoUpdateCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
-// 业绩报告自动更新：每天凌晨 01:00 执行（快报+正式报告）
-cron.schedule('0 1 * * *', async () => {
+// 业绩报告自动更新：每天凌晨 00:00 执行（快报+正式报告）
+cron.schedule('0 0 * * *', async () => {
     console.log('[PerformanceReportCron] 开始执行业绩报告自动更新');
     try {
         const result = await PerformanceReportAutoUpdateService.run();
         console.log(`[PerformanceReportCron] 完成: updated=${result.updated}, skipped=${result.skipped}, errors=${result.errors}`);
-    } catch (err: any) {
-        console.error('[PerformanceReportCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[PerformanceReportCron] 执行失败:', msg);
     }
-});
+}, { timezone: 'Asia/Shanghai' });
 
 // 股票基础数据同步：每天凌晨 00:05 执行（同步新股、更新行业等）
 cron.schedule('5 0 * * *', async () => {
@@ -675,8 +706,8 @@ cron.schedule('5 0 * * *', async () => {
     try {
         const result = await StockSyncService.sync();
         console.log(`[StockSyncCron] 完成: 新增=${result.inserted}, 更新=${result.updated}, 总计=${result.total}`);
-    } catch (err: any) {
-        console.error('[StockSyncCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[StockSyncCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -688,8 +719,8 @@ cron.schedule('0 3 * * *', async () => {
             `DELETE FROM agent_analysis_reports WHERE expires_at < NOW() RETURNING id`
         );
         console.log(`[ReportCleanupCron] 完成: 删除 ${result.rows.length} 条过期报告`);
-    } catch (err: any) {
-        console.error('[ReportCleanupCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[ReportCleanupCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -707,15 +738,22 @@ async function start() {
     try {
         await pool.query('SELECT 1');
         console.log('[PG] Connected successfully');
-    } catch (err: any) {
-        console.error('[PG] Connection failed:', err.message);
+    } catch (err: unknown) {
+        console.error('[PG] Connection failed:', err instanceof Error ? err.message : String(err));
     }
 
     try {
         await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS industry TEXT DEFAULT ''`);
         console.log('[DB] stocks.industry column ready');
-    } catch (err: any) {
-        console.warn('[DB] stocks.industry column check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] stocks.industry column check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ensureFeishuMessageSchema();
+        console.log('[DB] feishu_messages AI columns ready');
+    } catch (err: unknown) {
+        console.warn('[DB] feishu_messages schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -729,8 +767,8 @@ async function start() {
             )
         `);
         console.log('[DB] stock_concept_mapping table ready');
-    } catch (err: any) {
-        console.warn('[DB] stock_concept_mapping table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -774,8 +812,8 @@ async function start() {
             ADD COLUMN IF NOT EXISTS resonance_count INT DEFAULT 0
         `);
         console.log('[DB] institution_research_history table ready');
-    } catch (err: any) {
-        console.warn('[DB] institution_research_history table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] institution_research_history table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -795,10 +833,10 @@ async function start() {
         try {
             await pool.query('ALTER TABLE earnings_forecast ADD CONSTRAINT earnings_forecast_symbol_unique UNIQUE (symbol)');
             console.log('[DB] earnings_forecast: added UNIQUE constraint on symbol');
-        } catch (e: any) {
+        } catch (e: unknown) {
             // 约束已存在则忽略
-            if (!/already exists|duplicate/i.test(e.message)) {
-                console.warn('[DB] earnings_forecast UNIQUE constraint migration:', e.message);
+            if (!/already exists|duplicate/i.test(e instanceof Error ? e.message : String(e))) {
+                console.warn('[DB] earnings_forecast UNIQUE constraint migration:', e instanceof Error ? e.message : String(e));
             }
         }
         // 迁移：添加排序专用列（净利润预测金额、EPS预测、EPS同比）
@@ -807,12 +845,12 @@ async function start() {
             await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps NUMERIC(10,3)');
             await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps_yoy NUMERIC(10,2)');
             console.log('[DB] earnings_forecast: added sort columns (forecast_netprofit, forecast_eps, forecast_eps_yoy)');
-        } catch (e: any) {
-            console.warn('[DB] earnings_forecast sort column migration:', e.message);
+        } catch (e: unknown) {
+            console.warn('[DB] earnings_forecast sort column migration:', e instanceof Error ? e.message : String(e));
         }
         console.log('[DB] earnings_forecast table ready');
-    } catch (err: any) {
-        console.warn('[DB] earnings_forecast table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] earnings_forecast table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩报告表
@@ -840,14 +878,48 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_performance_reports_ann_date ON performance_reports(ann_date DESC)');
         try {
             await pool.query('ALTER TABLE performance_reports ADD CONSTRAINT performance_reports_unique UNIQUE (symbol, report_type, ann_date)');
-        } catch (e: any) {
-            if (!/already exists|duplicate/i.test(e.message)) {
-                console.warn('[DB] performance_reports UNIQUE constraint migration:', e.message);
+        } catch (e: unknown) {
+            if (!/already exists|duplicate/i.test(e instanceof Error ? e.message : String(e))) {
+                console.warn('[DB] performance_reports UNIQUE constraint migration:', e instanceof Error ? e.message : String(e));
             }
         }
         console.log('[DB] performance_reports table ready');
-    } catch (err: any) {
-        console.warn('[DB] performance_reports table check:', err.message);
+
+        // 确保 ai_tag 列存在（后续迁移）
+        try {
+            const hasAiTag = await pool.query(`
+                SELECT column_name FROM information_schema.columns
+                WHERE table_name = 'performance_reports' AND column_name = 'ai_tag'
+            `);
+            if (hasAiTag.rows.length === 0) {
+                await pool.query('ALTER TABLE performance_reports ADD COLUMN ai_tag VARCHAR(20) DEFAULT NULL');
+                console.log('[DB] performance_reports.ai_tag column added');
+            }
+        } catch (e: unknown) {
+            console.warn('[DB] ai_tag column migration:', e instanceof Error ? e.message : String(e));
+        }
+
+        // 创建 stock_ai_scores 表（存储四维评分缓存）
+        try {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS stock_ai_scores (
+                    symbol VARCHAR(20) PRIMARY KEY,
+                    total_score NUMERIC(5,1),
+                    rating VARCHAR(10),
+                    dimensions JSONB DEFAULT '[]',
+                    strengths TEXT[] DEFAULT '{}',
+                    risks TEXT[] DEFAULT '{}',
+                    data_period VARCHAR(50) DEFAULT '',
+                    report_count INT DEFAULT 0,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            console.log('[DB] stock_ai_scores table ready');
+        } catch (e: unknown) {
+            console.warn('[DB] stock_ai_scores table:', e instanceof Error ? e.message : String(e));
+        }
+    } catch (err: unknown) {
+        console.warn('[DB] performance_reports table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -884,8 +956,8 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_push_date ON wind_leader_push_history(push_date DESC)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_stock_code ON wind_leader_push_history(stock_code)');
         console.log('[DB] wind_leader_push_history table ready');
-    } catch (err: any) {
-        console.warn('[DB] wind_leader_push_history table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] wind_leader_push_history table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 趋势股评分表 — 建表 + 补列（ma60_excluded 迁移自动修复，避免漏执行 SQL 文件导致评分写入/查询全部失败）
@@ -912,15 +984,15 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_date ON trend_scores(score_date)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_symbol ON trend_scores(symbol)');
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
-    } catch (err: any) {
-        console.warn('[DB] trend_scores table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
         await redis.ping();
         console.log('[Redis] Connected successfully');
-    } catch (err: any) {
-        console.error('[Redis] Connection failed:', err.message);
+    } catch (err: unknown) {
+        console.error('[Redis] Connection failed:', err instanceof Error ? err.message : String(err));
     }
 
     const server = app.listen(PORT, '0.0.0.0', () => {
@@ -931,9 +1003,13 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
+        PriceTriggerDetector.start();
+        StockSyncService.sync().catch((err: unknown) => {
+            console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
+        });
         // 异步同步个股-板块映射（不阻塞启动，首次启动时填充空表）
         syncStockConceptMapping().catch(err => {
-            console.error('[Startup] stock_concept_mapping 同步失败:', err?.message || err);
+            console.error('[Startup] stock_concept_mapping 同步失败:', err instanceof Error ? err.message : String(err));
         });
         // 启动时：如果是交易日，清除可能残留的旧行情缓存，确保开盘后获取最新数据
         (async () => {
@@ -971,15 +1047,15 @@ async function start() {
                 WindLeaderAnalyzerService.runFullAnalysis().then(result => {
                     console.log(`[Startup] 风口龙头自动分析完成: ${result.hot_sectors?.length || 0} 个板块`);
                 }).catch(err => {
-                    console.error('[Startup] 风口龙头自动分析失败:', err?.message || err);
+                    console.error('[Startup] 风口龙头自动分析失败:', err instanceof Error ? err.message : String(err));
                 });
             }
         }).catch(err => {
-            console.warn('[Startup] 风口龙头数据检查失败:', err?.message || err);
+            console.warn('[Startup] 风口龙头数据检查失败:', err instanceof Error ? err.message : String(err));
         });
         // Compensate a missed post-close settlement after restarts or deployments.
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
-            console.warn('[Startup] 推送历史收盘结算补偿失败:', err?.message || err);
+            console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
         });
     });
 

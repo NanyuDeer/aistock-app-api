@@ -17,6 +17,7 @@ import internalRouter from '../src/core/routes/internal'
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
+import * as HKModule from '../src/modules/monitor/HotKeywordDetectorService'
 import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
@@ -171,6 +172,14 @@ function setupMocks(): void {
     const H = HotBurstService as any
     H.getHotBurst = async () => mockData.hotBurst
     H.getHotBurstHistory = async () => mockData.hotBurstHistory
+
+    // /internal/stock/resolve：loadStockNameMap 不做真实 Tushare 调用，
+    // resolveStockName 由具体用例按需覆盖（默认未命中）。
+    // 路由侧通过具名导入访问模块导出对象，直接改导出属性即可拦截（CJS 属性访问）。
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).loadStockNameMap = async () => {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).resolveStockName = () => null
 }
 
 async function withRealOneHopGraph(fn: () => Promise<void>): Promise<void> {
@@ -294,6 +303,7 @@ const endpoints: EndpointCase[] = [
     { name: 'institution-research', path: '/institution-research' },
     { name: 'institution-research/history', path: '/institution-research/history' },
     { name: 'market/close-snapshot', path: '/market/close-snapshot' },
+    { name: 'stock/resolve', path: '/stock/resolve?name=x' },
 ]
 
 // ==================== 主测试流程 ====================
@@ -587,20 +597,32 @@ async function main(): Promise<void> {
             trade_date: '20260720',
             captured_at: '2026-07-20T07:30:00.000Z',
             indexes: [{ ts_code: 'sh000001', name: '上证指数', trade_date: '20260720', close: 3200, pct_chg: 1.2, amount: 3000000000, source: 'tushare:index_daily' }],
-            breadth: { total_count: 0, advance_count: 0, decline_count: 0, flat_count: 0, advance_ratio: 0, source: 'tushare:daily' },
-            turnover: { amount_yuan: 0, previous_amount_yuan: 0, change_pct: 0, source: 'tushare:daily' },
-            limits: { up_count: 0, down_count: 0, broken_count: 0, highest_board: 0 },
+            breadth: { total_count: 10, advance_count: 8, decline_count: 2, flat_count: 0, advance_ratio: 0.8, source: 'tencent:quote' },
+            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            limits: { up_count: 1, down_count: 0, broken_count: null, highest_board: null },
             sectors: { top_gainers: [], top_losers: [], top_inflows: [], top_outflows: [] },
-            main_force: { large_and_extra_large_net_yuan: 0, source: 'tushare:moneyflow_ths' },
+            main_force: { large_and_extra_large_net_yuan: null, source: 'tushare:moneyflow_ths' },
             coverage: { current_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 }, previous_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 } },
             snapshot_kind: 'quick',
+            coverage_info: { has_limit_pool: false, has_moneyflow: false, has_concept_flow: false },
+            quick_data_availability: {
+                breadth: { state: 'available' },
+                turnover: { state: 'unavailable', reason: 'fixture has no verified turnover' },
+                limits: { state: 'partial', available_fields: ['up_count', 'down_count'], approximate: true },
+                sectors: { state: 'unavailable', reason: 'fixture has no sectors' },
+                main_force: { state: 'unavailable', reason: 'fixture has no main force' },
+            },
         })
         try {
             const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
             assert.equal(res.status, 200)
-            const body = res.body as { code: number; data: { snapshot_kind: string } }
+            const body = res.body as {
+                code: number
+                data: { snapshot_kind: string; quick_data_availability: { breadth: { state: string } } }
+            }
             assert.equal(body.code, 200)
             assert.equal(body.data.snapshot_kind, 'quick')
+            assert.equal(body.data.quick_data_availability.breadth.state, 'available')
         } finally {
             TencentSnapshotService.buildQuickSnapshot = originalBuild
         }
@@ -637,6 +659,43 @@ async function main(): Promise<void> {
         } finally {
             TencentSnapshotService.buildQuickSnapshot = originalBuild
         }
+    })
+
+    // --- /internal/stock/resolve（M4：中文名称 → 代码解析） ---
+    await runAsyncTest('GET /internal/stock/resolve returns 400 when name missing', async () => {
+        const res = await makeGetRequest(port, '/stock/resolve', INTERNAL_TOKEN)
+        assert.equal(res.status, 400)
+        assert.equal((res.body as { code: number }).code, 400)
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 200 + symbol (贵州茅台 → 600519)', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = (name: string) => {
+            if (name === '贵州茅台' || name === '茅台') return { name: '贵州茅台', symbol: '600519' }
+            return null
+        }
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('贵州茅台')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: { name: string; symbol: string } }
+        assert.equal(body.code, 200)
+        assert.equal(body.data.symbol, '600519')
+        assert.equal(body.data.name, '贵州茅台')
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 404 for unknown name', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = () => null
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('不存在股票名XYZ')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 404)
+        assert.equal((res.body as { code: number }).code, 404)
     })
 
     // 5. 关闭服务器 + 释放长连接资源，让进程自然退出

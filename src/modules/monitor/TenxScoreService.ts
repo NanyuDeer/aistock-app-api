@@ -1132,7 +1132,7 @@ const AVG_AMOUNT_THRESHOLD = 500000;
 
 /**
  * 一票否决检查：流动性与生存底线
- * 条件：近20日日均成交额 > 3000万 且 非ST股
+ * 条件：近20日日均成交额 ≥ 5000万（AVG_AMOUNT_THRESHOLD=500000千元）且 非ST股
  */
 export async function vetoCheck(symbol: string): Promise<VetoCheckResult> {
     const reasons: string[] = [];
