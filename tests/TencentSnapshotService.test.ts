@@ -454,3 +454,12 @@ test('fetchMarketBreadth reports stock-basic retrieval failure instead of a zero
         __tencentSnapshotDeps.getStockBasicBulk = originalGetStockBasicBulk
     }
 })
+
+test('buildQuickSnapshot rejects on non-trading days after 15:30 (no fake "today" close)', async () => {
+    // 2026-08-01 为周六；腾讯会返回最近收盘，但不得以当天日期标注冒充"今日已收盘"（红线）。
+    const weekendAfterClose = new Date('2026-08-01T07:30:00.000Z')
+    await assert.rejects(
+        () => TencentSnapshotService.buildQuickSnapshot(weekendAfterClose),
+        /market_not_closed/,
+    )
+})
