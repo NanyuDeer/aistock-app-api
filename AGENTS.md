@@ -177,6 +177,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/flow/:symbol` | 新浪+Tushare | 资金流向 |
 | `GET /internal/leader/:tagCode` | Tushare | 板块龙头 |
 | `GET /internal/news/search/:symbol` | 财联社 | 个股新闻 |
+| `GET /internal/news/telegraph?date=YYYY-MM-DD&limit=200` | 财联社 | 当日全量电报流（溯源用） |
 | `GET /internal/news/latest` | 财联社 | 最新快讯 |
 | `GET /internal/news/fulltext/:id` | 财联社 | 新闻全文 |
 | `GET /internal/forecast/:symbol` | 同花顺 | 盈利预测 |
