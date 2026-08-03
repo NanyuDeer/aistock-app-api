@@ -154,6 +154,8 @@ src/
 > 更新（2026-07-14）：`event_conduction` 加入报告白名单，POST 支持 `event_id` 作为隔离键（复用 `user_id` 列，同日不同事件分别保存、同事件重跑 upsert）；新增公开接口 `GET /api/agent/event/list`（分页列表，返回 eventId/title/source/publishTime/摘要/结论）和 `GET /api/agent/event/:eventId`（详情，返回完整 analysis_reports 含四模块 + event_podcast_brief）
 >
 > 新增接口（2026-07-15）：`POST /internal/push/market-event` — 晨报后重磅市场事件推送。Python morning_agent 生成晨报后解析 MARKET_EVENT_PUSHES 标记，阈值过滤（对称 ±1.5%）后调用此接口，触发微信模板消息 + 飞书卡片推送
+>
+> 更新（2026-08-03）：公开播报接口 `POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读）改为「文本先生成存库 + 音频缓存」：文本限长 250 字（约1分钟播报），首次请求文本+音频双写 `podcast_cache` 表（cache_key 唯一，7天过期），命中缓存直接返回音频路径，生成失败标记 failed；03:00 清理任务同步删除过期记录及对应 `podcast-{key}.mp3` 文件。建表脚本见 `docs/sql/podcast_cache.sql`
 
 ## Vibecoding 工作流
 
