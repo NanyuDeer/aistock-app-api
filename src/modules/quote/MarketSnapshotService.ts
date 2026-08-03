@@ -433,7 +433,10 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
  */
 export async function getLastCloseSnapshot(): Promise<CloseMarketSnapshot> {
     const now = __marketSnapshotDependencies.now();
-    const lastTradingDay = TradingCalendarService.getRecentTradingDay(now);
+    // 目标 = 严格早于今天的最近交易日（与时刻无关）：盘中/15:00-15:30/非交易日/凌晨
+    // 一律回退上一真实交易日，消除 getRecentTradingDay 以 15:00 为界导致的空窗 409。
+    const lastTradingDay = TradingCalendarService.getPreviousTradingDay(now);
+    // —— 以下保持不变（取 Shanghai YYYYMMDD、构造伪时刻、复用 getTodayCloseSnapshot）——
 
     // 取最近交易日的 Shanghai YYYYMMDD
     const lastShanghaiStr = toShanghaiDateYyyymmdd(lastTradingDay);
