@@ -20,6 +20,8 @@ npx tsc --noEmit
 pnpm build && pnpm start
 ```
 
+> 本机已安装 PostgreSQL/Redis 服务时，可直接双击项目根目录的 `start-dev.bat`：自动拉起数据库服务 → 验证直连 → 以 `pnpm dev` 启动后端。
+
 ### 环境变量
 复制 `.env.example` 为 `.env`，填入以下配置：
 - `DATABASE_URL` — PostgreSQL 连接串
