@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/market-trace-improvement] 2026-08-03 — 播报功能优化（文本存库 + 音频缓存 + 限长1分钟）
+
+**开发者**: Aria
+
+### 改进
+- `src/core/routes/internal.ts`：POST /api/agent/brief/generate-podcast 文本限长 2000→250 字（约1分钟）；请求先按 cache_key upsert 进 podcast_cache 表（ON CONFLICT 更新 text），音频生成成功回填 audio_path，失败标记 status='failed' 返回降级文本；音频命中缓存直接复用 audio_url，不重复调用火山 TTS
+
+### 新增
+- `src/index.ts` + `docs/sql/podcast_cache.sql`：podcast_cache 表（cache_key UNIQUE、text、audio_path、status、error_message、expires_at 7天），03:00 清理任务扩展为删除过期行 + 对应 podcast-{key}.mp3
+
+### 测试
+- `tests/internalRoutes.test.ts`：新增 3 个 generate-podcast 校验测试（空文本 / 超250字 / 空 key 均返回 400），42/42 PASS
 ## [changer] 2026-08-03 — P3-fix-3 大盘数据正确性最小补丁 + P2 遗留
 
 **开发者**: Aria

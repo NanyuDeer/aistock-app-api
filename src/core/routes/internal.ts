@@ -1539,11 +1539,11 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
  * 通用播报生成（公开接口，单主播朗读文本）
  *
  * 请求体: { text: string, key: string }
- * - text: 播报文本（podcast_brief，1-2000字）
- * - key: 缓存键（如 alert_603601_2026-08-01），用于文件命名和幂等
+ * - text: 播报文本（podcast_brief，1-250字，约1分钟播报时长）
+ * - key: 缓存键（如 alert_603601_2026-08-01），用于文本落库和音频文件幂等
  *
  * 响应: { code: 0, data: { audio_url: string, cached: boolean } }
- * - 同一 key 的音频已存在时直接返回（cached: true），不重复合成
+ * - 文本先生成存库（podcast_cache 表），音频文件已存在时直接返回（cached: true），不重复合成
  */
 publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: Response) => {
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
@@ -1553,8 +1553,8 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
         res.status(400).json({ code: -1, message: 'text 不能为空' })
         return
     }
-    if (text.length > 2000) {
-        res.status(400).json({ code: -1, message: 'text 长度不能超过 2000 字' })
+    if (text.length > 250) {
+        res.status(400).json({ code: -1, message: 'text 长度不能超过 250 字（约1分钟播报时长）' })
         return
     }
     if (!key) {
@@ -1575,8 +1575,24 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
     const audioUrl = `/api/agent/audio/${filename}`
 
     try {
-        // 缓存命中：文件已存在直接返回
+        // 文本先生成存库：按 key upsert 播报文本（幂等），避免每次依赖前端实时传参，7 天过期随清理任务删除
+        await pool.query(
+            `INSERT INTO podcast_cache (cache_key, text, status, audio_path)
+             VALUES ($1, $2, 'pending', '')
+             ON CONFLICT (cache_key) DO UPDATE SET
+                text = EXCLUDED.text,
+                status = 'pending',
+                error_message = NULL,
+                expires_at = NOW() + INTERVAL '7 days'`,
+            [safeKey, text]
+        )
+
+        // 缓存命中：音频文件已存在直接返回（cached: true）
         if (fs.existsSync(filePath)) {
+            await pool.query(
+                `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+                [safeKey, audioUrl]
+            )
             res.json({ code: 0, data: { audio_url: audioUrl, cached: true } })
             return
         }
@@ -1590,8 +1606,19 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
         await fs.promises.writeFile(tempPath, audioBuffer)
         await fs.promises.rename(tempPath, filePath)
 
+        // 生成成功：回填音频路径与状态
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+            [safeKey, audioUrl]
+        )
+
         res.json({ code: 0, data: { audio_url: audioUrl, cached: false } })
     } catch (err: unknown) {
+        // 生成失败：标记 failed 并保留文本，前端可重试
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'failed', error_message = $2 WHERE cache_key = $1`,
+            [safeKey, errMsg(err).slice(0, 500)]
+        ).catch(() => undefined)
         console.error('[Public] generate-podcast error:', errMsg(err))
         res.status(502).json({ code: -1, message: errMsg(err) })
     }
