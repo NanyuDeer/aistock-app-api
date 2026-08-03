@@ -189,6 +189,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/graph/concepts` | 知识图谱 | 产业链概念列表 |
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
+| `GET /internal/market/quick-snapshot` | 腾讯+Tushare | 15:30 后简版收盘快照（snapshot_kind=quick）；**非交易日 409**（不返回"伪当日"） |
+| `GET /internal/market/close-snapshot` | Tushare | 当日完整收盘快照（15:30 门禁 + 交易日/数据完整性校验） |
+| `GET /internal/market/last-close-snapshot` | Tushare | **严格早于今天的最近交易日**收盘快照（盘中/空窗/非交易日回退用；目标日数据缺失则 409） |
 | `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
 
 ### 7.2 Agent 分析报告持久化接口
