@@ -258,6 +258,25 @@ export function isMonthlyBullish(months: number[]): boolean {
 }
 
 /**
+ * 纯函数：将 Tushare 板块日线行聚合成升序月收盘序列（供测试直接调用）
+ *
+ * 注意：Tushare 日线接口（ths_daily）返回倒序（最新交易日在前），聚合前必须先按
+ * trade_date 升序排序，否则 Map.set 会用同月更早交易日覆盖月末收盘
+ * （与 getBoardHistory 先 sort 再取最近 N 天的模式一致）。
+ */
+export function buildMonthlySeries(
+    daily: Array<{ trade_date: string | number; close: string | number }>,
+): number[] {
+    const sorted = [...daily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    const monthly = new Map<string, number>();
+    for (const row of sorted) {
+        const key = String(row.trade_date).slice(0, 6); // YYYYMM
+        monthly.set(key, Number(row.close)); // 升序下同月最后处理的是月末交易日
+    }
+    return [...monthly.values()];
+}
+
+/**
  * 月线趋势确认：板块指数月线多头排列且同比环比向上 → 长线风口
  *
  * 数据源：getThsIndexNameMap（板块名→ts_code）→ getThsDaily（板块日线）→ 按 YYYYMM 聚合月K
@@ -280,12 +299,7 @@ export async function confirmMonthlyTrend(conceptName: string): Promise<boolean>
         if (!Array.isArray(daily) || daily.length === 0) return false;
 
         // 按 YYYYMM 聚合月K（取每月最后一条 trade_date 的 close 作为月收盘）
-        const monthly = new Map<string, number>();
-        for (const row of daily) {
-            const key = String(row.trade_date).slice(0, 6); // YYYYMM
-            monthly.set(key, Number(row.close));
-        }
-        const months = [...monthly.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(e => e[1]);
+        const months = buildMonthlySeries(daily);
         if (months.length < 13) {
             console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」月K不足13根(${months.length})`);
             return false;
