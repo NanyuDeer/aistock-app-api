@@ -27,6 +27,7 @@ import { isValidTagCode } from '../../shared/utils/validator'
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
+import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -713,6 +714,39 @@ router.get('/market/quick-snapshot', async (_req: Request, res: Response) => {
         }
         console.error('[Internal] market/quick-snapshot error:', msg)
         res.status(502).json({ code: 502, message: msg })
+    }
+})
+
+/**
+ * GET /internal/index/quotes
+ * A 股指数快照（P5 工作线 B：对话快速指数源，复用 IndexQuoteController 缓存+腾讯源）
+ *
+ * - 200: { code: 200, data: { indices: [{ index, name, price, changePercent, changeAmount }] } }
+ * - 400: symbols 缺失 / 非 6 位数字 / 超 MAX_SYMBOLS
+ * - 502: 服务异常
+ */
+router.get('/index/quotes', async (req: Request, res: Response) => {
+    const symbolsParam = queryStr(req, 'symbols')
+    if (!symbolsParam) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数，示例: ?symbols=000001,399001,399006' })
+    }
+    const symbols = [...new Set(symbolsParam.split(',').map((s) => s.trim()).filter(Boolean))]
+    if (symbols.length === 0) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数' })
+    }
+    if (symbols.length > MAX_SYMBOLS) {
+        return res.status(400).json({ code: 400, message: `单次最多查询 ${MAX_SYMBOLS} 只指数` })
+    }
+    if (symbols.some((s) => !isValidAShareSymbol(s))) {
+        return res.status(400).json({ code: 400, message: '指数代码必须是6位数字（不带 sh/sz 前缀）' })
+    }
+    try {
+        const { IndexQuoteController } = await import('../../modules/quote/indexController')
+        const indices = await IndexQuoteController.fetchCnIndexQuotesData(symbols)
+        res.json({ code: 200, data: { indices } })
+    } catch (err: unknown) {
+        console.error('[Internal] index/quotes error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
