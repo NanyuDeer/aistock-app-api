@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import pool from '../src/db';
+import pool from '../src/core/db';
 import {
     buildStockInfoTargets,
     buildStockInfoExistingKeys,
@@ -7,7 +7,7 @@ import {
     shouldPushStockInfoJudgement,
     StockInfoService,
     type StockInfoJudgementRow,
-} from '../src/services/StockInfoService';
+} from '../src/modules/crawler/StockInfoService';
 
 function runTest(name: string, fn: () => void): void {
     try {
@@ -184,6 +184,36 @@ runTest('shouldPushStockInfoJudgement only allows major impact within window and
     }), false);
     assert.equal(shouldPushStockInfoJudgement(base, {
         info_type: 'news',
+        from: new Date('2026-06-07T07:00:00Z'),
+        to: new Date('2026-06-08T01:00:00Z'),
+    }), false);
+    // 中性事件不得推送（8.1 决议：中性事件不展示）
+    assert.equal(shouldPushStockInfoJudgement({ ...base, ai_impact: '中性' }, {
+        info_type: 'announcement',
+        from: new Date('2026-06-07T07:00:00Z'),
+        to: new Date('2026-06-08T01:00:00Z'),
+    }), false);
+    // 利空（非重大）不得推送
+    assert.equal(shouldPushStockInfoJudgement({ ...base, ai_impact: '利空' }, {
+        info_type: 'announcement',
+        from: new Date('2026-06-07T07:00:00Z'),
+        to: new Date('2026-06-08T01:00:00Z'),
+    }), false);
+    // 重大利空应放行（与重大利好同级）
+    assert.equal(shouldPushStockInfoJudgement({ ...base, ai_impact: '重大利空' }, {
+        info_type: 'announcement',
+        from: new Date('2026-06-07T07:00:00Z'),
+        to: new Date('2026-06-08T01:00:00Z'),
+    }), true);
+    // 窗口外（published_at 早于 from）不得推送
+    assert.equal(shouldPushStockInfoJudgement({ ...base, published_at: new Date('2026-06-06T00:00:00Z') }, {
+        info_type: 'announcement',
+        from: new Date('2026-06-07T07:00:00Z'),
+        to: new Date('2026-06-08T01:00:00Z'),
+    }), false);
+    // 窗口外（published_at 晚于 to）不得推送
+    assert.equal(shouldPushStockInfoJudgement({ ...base, published_at: new Date('2026-06-08T02:00:00Z') }, {
+        info_type: 'announcement',
         from: new Date('2026-06-07T07:00:00Z'),
         to: new Date('2026-06-08T01:00:00Z'),
     }), false);
