@@ -19,6 +19,7 @@ import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
 import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKeywordDetectorService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
+import { parseJsonb } from '../../modules/monitor/trendScoreController'
 import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
@@ -453,7 +454,7 @@ router.get('/trend/top', async (req: Request, res: Response) => {
             label: r.label,
             expectedMultiple: r.expected_multiple,
             scoreDate: r.score_date,
-            dimScores: JSON.parse(r.dim_scores as string || '[]'),
+            dimScores: parseJsonb(r.dim_scores),
             description: r.description,
         }))
 
