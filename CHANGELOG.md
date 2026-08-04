@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-04 — ChatAgent P6 退役清理（market-trace-qa 代理契约）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p6-retirement.md`
+
+### 测试
+- `src/modules/agent/__tests__/agent.proxy.spec.ts`：删除 3 条 market-trace-qa 代理契约测试（118 行，Python `POST /market-trace-qa/message` 端点已退役）；其余 `/chat/*`、`/ws` 代理契约测试与 `createAgentProxy` 保留
+- `tests/marketTraceQaInternalRoutes.test.ts`：保留（`GET /internal/analysis-reports/:type/:date` 读取契约，`load_validated_trace`/`trace_loader` 消费），文件头注释同步更新
+
+### 测试
+- `npx tsc --noEmit` 0 errors；定向测试（agent.proxy.spec + marketTraceQaInternalRoutes）29/29 通过
+
+---
+
 ## [changer] 2026-08-04 — ChatAgent P5 两个 internal 端点（kline + index/quotes）
 
 **开发者**: Aria
