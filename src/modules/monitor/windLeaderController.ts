@@ -162,12 +162,15 @@ export class WindLeaderController {
     /**
      * GET /api/cn/institution-research
      * 查询最近机构调研推荐热门股检测结果
-     * 默认返回三源共振及以上（resonanceCount >= 3）的信号（min_resonance=3）
+     * 默认返回二源共振及以上（resonanceCount >= 2）的信号（min_resonance=2）
      */
     static async getHotBurst(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
             const hours = Math.min(Math.max(parseInt(String(req.query.hours || '6'), 10), 1), 72);
-            const minResonance = parseInt(String(req.query.min_resonance || '3'), 10);
+            const minResonance = Math.min(
+                Math.max(parseInt(String(req.query.min_resonance || '2'), 10) || 2, 2),
+                3,
+            );
             const result = await HotBurstService.getRecentBursts(hours, minResonance);
             if (!result) {
                 createResponse(res, 404, '暂无机构调研推荐热门股检测数据');
@@ -205,7 +208,7 @@ export class WindLeaderController {
     /**
      * GET /api/cn/institution-research/history
      * 查询历史机构调研推荐热门股记录
-     * 默认仅返回三源共振及以上（resonance_count >= 3）的记录（min_resonance_only=true）
+     * 默认仅返回二源共振及以上（resonance_count >= 2）的记录（min_resonance_only=true）
      */
     static async getHotBurstHistory(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
@@ -216,7 +219,7 @@ export class WindLeaderController {
             const rawMinResonance = req.query.min_resonance;
             const minResonance = rawMinResonance === undefined
                 ? undefined
-                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 3, 2), 4);
+                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 2, 2), 3);
             const result = await HotBurstService.getHistory(
                 limit,
                 offset,
