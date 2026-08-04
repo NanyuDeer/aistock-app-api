@@ -10,6 +10,8 @@ process.env.TZ = 'Asia/Shanghai';
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
 
 import pool from './core/db';
 import redis from './core/redis';
@@ -722,6 +724,26 @@ cron.schedule('0 3 * * *', async () => {
     } catch (err: unknown) {
         console.error('[ReportCleanupCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
+
+    // 播报缓存清理：删除过期 podcast_cache 行及对应音频文件，避免孤儿文件堆积
+    try {
+        const expired = await pool.query(
+            `SELECT cache_key, audio_path FROM podcast_cache WHERE expires_at < NOW()`
+        );
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        for (const row of expired.rows as { cache_key: string; audio_path: string }[]) {
+            // audio_path 形如 /api/agent/audio/podcast-{key}.mp3，仅清理本模块生成的播报文件
+            const match = /\/podcast-[a-zA-Z0-9_-]+\.mp3$/.exec(row.audio_path)
+            if (match) {
+                const filePath = path.join(audioDir, match[0].replace(/^\//, ''))
+                fs.promises.unlink(filePath).catch(() => undefined)
+            }
+        }
+        await pool.query(`DELETE FROM podcast_cache WHERE expires_at < NOW()`)
+        console.log(`[ReportCleanupCron] 播报缓存清理: 删除 ${expired.rows.length} 条过期缓存`);
+    } catch (err: unknown) {
+        console.error('[ReportCleanupCron] 播报缓存清理失败:', err instanceof Error ? err.message : String(err));
+    }
 }, { timezone: 'Asia/Shanghai' });
 
 // 进程心跳：每10分钟输出一次进程状态，便于排查定时任务停止时间点
@@ -986,6 +1008,26 @@ async function start() {
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
     } catch (err: unknown) {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS podcast_cache (
+                id SERIAL PRIMARY KEY,
+                cache_key VARCHAR(100) NOT NULL UNIQUE,
+                text TEXT NOT NULL,
+                audio_path VARCHAR(255) NOT NULL DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_podcast_cache_expires_at ON podcast_cache(expires_at)');
+        console.log('[DB] podcast_cache table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
