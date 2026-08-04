@@ -1114,7 +1114,7 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             today_change: Math.round(sector.latestZf5 * 100) / 100,
             amount_trend: 0,
             net_inflow: 0,
-            driver: `20日板块轮动上榜${sector.frequency}次`,
+            driver: `${days}日板块轮动上榜${sector.frequency}次`,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -2731,11 +2731,11 @@ export class WindLeaderAnalyzerService {
         // 清除缓存，确保获取最新数据
         await clearAllCache();
 
-        // 1. 识别风口概念板块
-        let hotConcepts = await identifyHotConcepts(8, 2, 20);
+        // 1. 识别风口概念板块（60天波段统计）
+        let hotConcepts = await identifyHotConcepts(8, 2, 60);
         if (hotConcepts.length === 0) {
             console.log('[HotSectorAnalyzer] 未识别到风口概念，降低筛选条件重试');
-            hotConcepts = await identifyHotConcepts(8, 1, 20);
+            hotConcepts = await identifyHotConcepts(8, 1, 60);
         }
 
         const result: FullAnalysisResult = {
