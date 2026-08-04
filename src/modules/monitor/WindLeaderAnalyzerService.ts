@@ -138,6 +138,7 @@ interface IndustryStat {
 /** 风口板块完整分析结果（hot_sectors 元素） */
 interface HotSectorAnalysis {
     code: string;
+    cycle: 'short' | 'long';  // 短线风口 / 长线风口（月线多头确认）
     name: string;
     type: string;
     frequency: number;
@@ -2949,6 +2950,10 @@ export class WindLeaderAnalyzerService {
         for (const concept of hotConcepts) {
             console.log(`[HotSectorAnalyzer] 分析风口概念: ${concept.name}`);
 
+            // 8.1决议：区分短线/长线风口 —— 月线多头排列且同比环比向上 → 长线风口，否则短线风口
+            const cycle: 'short' | 'long' = await confirmMonthlyTrend(concept.name) ? 'long' : 'short';
+            console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口`);
+
             // 2. 映射强关联二级行业
             const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
             const relatedIndNames = industryResult.strongly_related.map(r => r.name);
@@ -3203,6 +3208,7 @@ export class WindLeaderAnalyzerService {
 
             result.hot_sectors.push({
                 code: concept.code,
+                cycle,
                 name: concept.name,
                 type: concept.type,
                 frequency: concept.frequency,
