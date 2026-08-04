@@ -11,6 +11,7 @@ import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
 import { getCapitalFlow } from '../../modules/quote/TushareCapitalFlowService'
+import { TushareKlineService } from '../../modules/quote/TushareKlineService'
 import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderService'
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
@@ -26,6 +27,7 @@ import { isValidTagCode } from '../../shared/utils/validator'
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
+import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -106,6 +108,51 @@ router.get('/quote/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] quote/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/quote/:symbol/kline
+ * 个股日 K 线（P5 D41，复用 TushareKlineService，与公开 /api/cn/stock/quotes/kline 同源）
+ *
+ * - 200: { code: 200, data: { symbol, klt, days, rows } }
+ * - 400: symbol 非 6 位 / klt≠101 / days∉[1,120] / fqt∉[0,2]
+ * - 502: 服务异常
+ */
+router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 120) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-120 的整数' })
+    }
+    const klt = queryInt(req, 'klt', 101)
+    if (klt !== 101) {
+        return res.status(400).json({ code: 400, message: 'Invalid klt — 对话场景仅支持日线 (101)' })
+    }
+    const fqt = queryInt(req, 'fqt', 1)
+    if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
+        return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
+    }
+    try {
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
+        // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
+        // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+    } catch (err: unknown) {
+        console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
@@ -667,6 +714,39 @@ router.get('/market/quick-snapshot', async (_req: Request, res: Response) => {
         }
         console.error('[Internal] market/quick-snapshot error:', msg)
         res.status(502).json({ code: 502, message: msg })
+    }
+})
+
+/**
+ * GET /internal/index/quotes
+ * A 股指数快照（P5 工作线 B：对话快速指数源，复用 IndexQuoteController 缓存+腾讯源）
+ *
+ * - 200: { code: 200, data: { indices: [{ index, name, price, changePercent, changeAmount }] } }
+ * - 400: symbols 缺失 / 非 6 位数字 / 超 MAX_SYMBOLS
+ * - 502: 服务异常
+ */
+router.get('/index/quotes', async (req: Request, res: Response) => {
+    const symbolsParam = queryStr(req, 'symbols')
+    if (!symbolsParam) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数，示例: ?symbols=000001,399001,399006' })
+    }
+    const symbols = [...new Set(symbolsParam.split(',').map((s) => s.trim()).filter(Boolean))]
+    if (symbols.length === 0) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数' })
+    }
+    if (symbols.length > MAX_SYMBOLS) {
+        return res.status(400).json({ code: 400, message: `单次最多查询 ${MAX_SYMBOLS} 只指数` })
+    }
+    if (symbols.some((s) => !isValidAShareSymbol(s))) {
+        return res.status(400).json({ code: 400, message: '指数代码必须是6位数字（不带 sh/sz 前缀）' })
+    }
+    try {
+        const { IndexQuoteController } = await import('../../modules/quote/indexController')
+        const indices = await IndexQuoteController.fetchCnIndexQuotesData(symbols)
+        res.json({ code: 200, data: { indices } })
+    } catch (err: unknown) {
+        console.error('[Internal] index/quotes error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 

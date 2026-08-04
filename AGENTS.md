@@ -193,6 +193,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/market/quick-snapshot` | 腾讯+Tushare | 15:30 后简版收盘快照（snapshot_kind=quick）；**非交易日 409**（不返回"伪当日"） |
 | `GET /internal/market/close-snapshot` | Tushare | 当日完整收盘快照（15:30 门禁 + 交易日/数据完整性校验） |
 | `GET /internal/market/last-close-snapshot` | Tushare | **严格早于今天的最近交易日**收盘快照（盘中/空窗/非交易日回退用；目标日数据缺失则 409） |
+| `GET /internal/quote/:symbol/kline` | Tushare | 个股日 K 线（P5 D41：days≤120、klt=101、fqt∈{0,1,2}；复用 TushareKlineService，返回英文键行 trade_date/open/high/low/close/pct_chg） |
+| `GET /internal/index/quotes` | 腾讯行情 | A 股指数快照（P5 工作线 B：6 位纯数字代码、逗号分隔去重、上限 MAX_SYMBOLS；复用 IndexQuoteController 缓存+腾讯源，驼峰输出 index/name/price/changePercent/changeAmount；腾讯源失败单指数 → null 不整体 500） |
 | `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
 
 ### 7.2 Agent 分析报告持久化接口
