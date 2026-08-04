@@ -11,6 +11,7 @@ import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
 import { getCapitalFlow } from '../../modules/quote/TushareCapitalFlowService'
+import { TushareKlineService } from '../../modules/quote/TushareKlineService'
 import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderService'
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
@@ -106,6 +107,51 @@ router.get('/quote/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] quote/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/quote/:symbol/kline
+ * 个股日 K 线（P5 D41，复用 TushareKlineService，与公开 /api/cn/stock/quotes/kline 同源）
+ *
+ * - 200: { code: 200, data: { symbol, klt, days, rows } }
+ * - 400: symbol 非 6 位 / klt≠101 / days∉[1,120] / fqt∉[0,2]
+ * - 502: 服务异常
+ */
+router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 120) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-120 的整数' })
+    }
+    const klt = queryInt(req, 'klt', 101)
+    if (klt !== 101) {
+        return res.status(400).json({ code: 400, message: 'Invalid klt — 对话场景仅支持日线 (101)' })
+    }
+    const fqt = queryInt(req, 'fqt', 1)
+    if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
+        return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
+    }
+    try {
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
+        // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
+        // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+    } catch (err: unknown) {
+        console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
