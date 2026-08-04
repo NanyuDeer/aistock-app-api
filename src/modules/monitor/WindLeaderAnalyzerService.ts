@@ -138,6 +138,7 @@ interface IndustryStat {
 /** 风口板块完整分析结果（hot_sectors 元素） */
 interface HotSectorAnalysis {
     code: string;
+    cycle: 'short' | 'long';  // 短线风口 / 长线风口（月线多头确认）
     name: string;
     type: string;
     frequency: number;
@@ -234,6 +235,81 @@ async function getThsIndexNameMap(): Promise<Map<string, string>> {
     }
     thsIndexNameMap = map;
     return map;
+}
+
+/**
+ * 纯函数：给定月收盘序列，判断是否月线多头排列且同比环比向上（供测试直接调用）
+ *
+ * 判定（8.1决议：月线多头发散且同比环比均向上确认趋势）：
+ * - 多头排列：最新月收盘 > MA5 > MA10（近5/10月收盘均值）
+ * - 发散：近3月收盘递增（latest > prev > prev2）
+ * - 同比环比向上：latest > yoy（12个月前）且 latest > prev
+ * - 数据不足13个月 → false（同比需要第13根）
+ */
+export function isMonthlyBullish(months: number[]): boolean {
+    if (months.length < 13) return false;
+    const ma5 = months.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const ma10 = months.slice(-10).reduce((a, b) => a + b, 0) / 10;
+    const latest = months[months.length - 1];
+    const prev = months[months.length - 2];
+    const prev2 = months[months.length - 3];
+    const yoy = months[months.length - 13]; // 去年同期（12个月前）
+    return latest > ma5 && ma5 > ma10 && latest > prev && prev > prev2 && latest > yoy && latest > prev;
+}
+
+/**
+ * 纯函数：将 Tushare 板块日线行聚合成升序月收盘序列（供测试直接调用）
+ *
+ * 注意：Tushare 日线接口（ths_daily）返回倒序（最新交易日在前），聚合前必须先按
+ * trade_date 升序排序，否则 Map.set 会用同月更早交易日覆盖月末收盘
+ * （与 getBoardHistory 先 sort 再取最近 N 天的模式一致）。
+ */
+export function buildMonthlySeries(
+    daily: Array<{ trade_date: string | number; close: string | number }>,
+): number[] {
+    const sorted = [...daily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    const monthly = new Map<string, number>();
+    for (const row of sorted) {
+        const key = String(row.trade_date).slice(0, 6); // YYYYMM
+        monthly.set(key, Number(row.close)); // 升序下同月最后处理的是月末交易日
+    }
+    return [...monthly.values()];
+}
+
+/**
+ * 月线趋势确认：板块指数月线多头排列且同比环比向上 → 长线风口
+ *
+ * 数据源：getThsIndexNameMap（板块名→ts_code）→ getThsDaily（板块日线）→ 按 YYYYMM 聚合月K
+ * 降级：无映射/无数据/数据不足/异常 → 返回 false（不阻塞主流程）
+ */
+export async function confirmMonthlyTrend(conceptName: string): Promise<boolean> {
+    try {
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) {
+            console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 板块「${conceptName}」无Tushare指数映射`);
+            return false;
+        }
+
+        // 拉取近 2 年板块日线（约 24 个月），覆盖同比所需 13 个月
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 2);
+        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length === 0) return false;
+
+        // 按 YYYYMM 聚合月K（取每月最后一条 trade_date 的 close 作为月收盘）
+        const months = buildMonthlySeries(daily);
+        if (months.length < 13) {
+            console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」月K不足13根(${months.length})`);
+            return false;
+        }
+
+        return isMonthlyBullish(months);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」异常:`, (err as Error).message);
+        return false;
+    }
 }
 
 async function ensureCacheDir(): Promise<void> {
@@ -1114,7 +1190,7 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             today_change: Math.round(sector.latestZf5 * 100) / 100,
             amount_trend: 0,
             net_inflow: 0,
-            driver: `20日板块轮动上榜${sector.frequency}次`,
+            driver: `${days}日板块轮动上榜${sector.frequency}次`,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -2731,11 +2807,11 @@ export class WindLeaderAnalyzerService {
         // 清除缓存，确保获取最新数据
         await clearAllCache();
 
-        // 1. 识别风口概念板块
-        let hotConcepts = await identifyHotConcepts(8, 2, 20);
+        // 1. 识别风口概念板块（60天波段统计）
+        let hotConcepts = await identifyHotConcepts(8, 2, 60);
         if (hotConcepts.length === 0) {
             console.log('[HotSectorAnalyzer] 未识别到风口概念，降低筛选条件重试');
-            hotConcepts = await identifyHotConcepts(8, 1, 20);
+            hotConcepts = await identifyHotConcepts(8, 1, 60);
         }
 
         const result: FullAnalysisResult = {
@@ -2887,6 +2963,10 @@ export class WindLeaderAnalyzerService {
 
         for (const concept of hotConcepts) {
             console.log(`[HotSectorAnalyzer] 分析风口概念: ${concept.name}`);
+
+            // 8.1决议：区分短线/长线风口 —— 月线多头排列且同比环比向上 → 长线风口，否则短线风口
+            const cycle: 'short' | 'long' = await confirmMonthlyTrend(concept.name) ? 'long' : 'short';
+            console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口`);
 
             // 2. 映射强关联二级行业
             const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
@@ -3142,6 +3222,7 @@ export class WindLeaderAnalyzerService {
 
             result.hot_sectors.push({
                 code: concept.code,
+                cycle,
                 name: concept.name,
                 type: concept.type,
                 frequency: concept.frequency,

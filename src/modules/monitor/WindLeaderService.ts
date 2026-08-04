@@ -27,6 +27,7 @@ interface WindLeaderData {
 
 interface WindLeaderSector {
     code?: string;
+    cycle?: 'short' | 'long';
     name?: string;
     type?: string;
     frequency?: number;
@@ -526,6 +527,7 @@ export class WindLeaderService {
 
         const sectors = (data.hot_sectors || []).slice(0, limit).map((sector: WindLeaderSector) => ({
             code: sector.code || '',
+            cycle: sector.cycle ?? 'short',
             name: sector.name,
             type: sector.type,
             frequency: sector.frequency,

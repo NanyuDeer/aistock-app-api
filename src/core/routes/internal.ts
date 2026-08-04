@@ -602,7 +602,7 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const rawMinResonance = queryStr(req, 'min_resonance')
         const minResonance = rawMinResonance === undefined
             ? undefined
-            : Math.min(Math.max(queryInt(req, 'min_resonance', 3), 2), 4)
+            : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 3)
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
@@ -619,13 +619,16 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
 
 /**
  * GET /internal/institution-research
- * 机构调研推荐热门股检测结果（四信号源共振模型）
+ * 机构调研推荐热门股检测结果（三信号源共振模型）
  */
 router.get('/institution-research', async (req: Request, res: Response) => {
     try {
+        const rawMinResonanceCount = queryInt(req, 'min_resonance_count', 0)
         const data = await HotBurstService.getHotBurst({
             hours: queryInt(req, 'hours', 6),
-            minResonanceCount: queryInt(req, 'min_resonance_count', 0),
+            minResonanceCount: rawMinResonanceCount === 0
+                ? 0
+                : Math.min(Math.max(rawMinResonanceCount, 2), 3),
             limit: queryInt(req, 'limit', 20),
         })
         res.json({ code: 200, data })
