@@ -171,6 +171,18 @@
 
 ---
 
+## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/MarketSnapshotService.ts`：扩展 `CloseMarketSnapshot` schema，新增 `MarketBreadth`、`QuickSnapshotCoverage` 接口和 `snapshot_kind` / `coverage_info` / `market_breadth` 可选字段；导出 `isAtOrAfterClose`
+- `src/modules/quote/TencentSnapshotService.ts`：新增 `TencentSnapshotService`，15:30 收盘后基于腾讯实时行情构建简版收盘快照（6 大指数 + 全市场宽度 + 概念板块资金流），分级失败策略（指数严格、非核心宽松）
+- `src/core/routes/internal.ts`：新增 `GET /internal/market/quick-snapshot` 路由，200/409/502 三种响应
+- `tests/TencentSnapshotService.test.ts`：4 个单元测试覆盖正常构建、未收盘拒绝、降级策略、涨跌停计数
+- `tests/internalRoutes.test.ts`：3 个路由测试覆盖 200/409/502
+
+---
+
 ## [master] 2026-07-25 — 统一内部路由 token 读取优先级（INTERNAL_API_TOKEN || INTERNAL_TOKEN）
 **开发者**: Aria
 
