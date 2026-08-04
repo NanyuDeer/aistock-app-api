@@ -2,6 +2,26 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-04 — ChatAgent P5 两个 internal 端点（kline + index/quotes）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p5-capability.md`
+
+### 新增
+- `src/core/routes/internal.ts`：`GET /internal/quote/:symbol/kline`（Tushare 日 K 线，days≤120/klt=101/fqt∈{0,1,2}，复用 TushareKlineService，双键兼容映射——服务实际返回中文键）
+- `src/core/routes/internal.ts`：`GET /internal/index/quotes`（A 股指数快照，6 位纯数字代码/逗号分隔/上限 MAX_SYMBOLS，复用 IndexQuoteController，驼峰输出，腾讯源失败单指数 → null 不整体 500）
+- `src/modules/quote/indexController.ts`：抽取 `fetchCnIndexQuotesData(symbols)` 供 public + internal 复用（public `/api/cn/index/quotes` 响应体字节不变）
+
+### 测试
+- 新建 `src/core/routes/internal.kline.test.ts`（5 用例）+ `internal.index-quotes.test.ts`（6 用例），共 11/11 通过
+- 既有 internal 路由测试 42/42 无回归；`npx tsc --noEmit` 0 errors
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表补 2 端点
+
+---
+
 ## [changer] 2026-08-03 — P3-fix-3 大盘数据正确性最小补丁 + P2 遗留
 
 **开发者**: Aria
