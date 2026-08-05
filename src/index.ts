@@ -37,6 +37,7 @@ import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
 import { MessagePushService } from './modules/push/MessagePushService';
 import { UsageController } from './modules/chat/usageController';
+import { SessionUsageController } from './modules/chat/sessionUsageController';
 
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
