@@ -69,6 +69,7 @@ import { StockSyncService } from './modules/monitor/StockSyncService';
 // insight 自选股洞察模块
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
+import { InsightController } from './modules/insight/controller';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -201,6 +202,10 @@ app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => Sto
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
 app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
+
+// 自选股洞察 - 前端查询接口（登录用户自选股过滤，数据来自涨停雷达采集 + Python 归因）
+app.get('/api/cn/favorites/insights', (req, res, next) => InsightController.list(req, res, next));
+app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightController.get(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
