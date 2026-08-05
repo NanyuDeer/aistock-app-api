@@ -838,6 +838,32 @@ async function start() {
         console.warn('[DB] institution_research_history table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // P10 线 2：chat_token_usage 计费表（user_id 维度；session_id 预留外键，
+    // 线 4 补会话维度不返工表结构）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_token_usage (
+                id BIGSERIAL PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                session_id VARCHAR(64),
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                question TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_user ON chat_token_usage(user_id, created_at DESC)'
+        );
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_session ON chat_token_usage(user_id, session_id, created_at DESC)'
+        );
+        console.log('[DB] chat_token_usage table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_token_usage table check:', err instanceof Error ? err.message : String(err));
+    }
+
     // 业绩预测表
     try {
         await pool.query(`

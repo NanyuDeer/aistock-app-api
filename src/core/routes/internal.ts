@@ -957,6 +957,50 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
     }
 })
 
+// ==================== Chat token 用量计费接口（P10 线 2） ====================
+
+/**
+ * POST /internal/usage/records
+ * 记录一次对话 token 用量（Python ws.py 计费回调）
+ *
+ * 请求体: { user_id(必填非空), session_id?, prompt_tokens, completion_tokens, total_tokens, question? }
+ * 成功: { code: 200, data: { id } }
+ * 400: user_id 空 / token 字段非非负整数（含 total_tokens<0）
+ */
+router.post('/usage/records', async (req: Request, res: Response) => {
+    const user_id = req.body.user_id ?? '';
+    const session_id = req.body.session_id ?? null;
+    const prompt_tokens = req.body.prompt_tokens ?? 0;
+    const completion_tokens = req.body.completion_tokens ?? 0;
+    const total_tokens = req.body.total_tokens ?? 0;
+    const question = req.body.question ?? null;
+
+    if (typeof user_id !== 'string' || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+    if (
+        !Number.isInteger(prompt_tokens) || prompt_tokens < 0 ||
+        !Number.isInteger(completion_tokens) || completion_tokens < 0 ||
+        !Number.isInteger(total_tokens) || total_tokens < 0
+    ) {
+        return res.status(400).json({ code: 400, message: 'token 字段必须是非负整数' });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO chat_token_usage
+                (user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id`,
+            [user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question]
+        );
+        res.json({ code: 200, data: { id: result.rows[0]?.id ?? null } });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/records POST error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**
