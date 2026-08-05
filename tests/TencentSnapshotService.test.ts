@@ -46,6 +46,7 @@ const AVAILABLE_BREADTH_RESULT = {
         limit_count_approximate: true,
         total_volume: 2600000,
         avg_change_pct: 4.9,
+        total_amount_yuan: 29000000,
     },
     availability: { state: 'available' as const },
 }
@@ -135,13 +136,20 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
             source: 'tencent:quote',
         })
         assert.deepEqual(snapshot.quick_data_availability!.breadth, { state: 'available' })
-        assert.equal(snapshot.quick_data_availability!.turnover.state, 'unavailable')
+        // 成交额由全市场行情行聚合（腾讯源近似）→ partial + approximate
+        assert.deepEqual(snapshot.quick_data_availability!.turnover, {
+            state: 'partial',
+            available_fields: ['amount_yuan'],
+            approximate: true,
+        })
         assert.deepEqual(snapshot.quick_data_availability!.limits, {
             state: 'partial',
             available_fields: ['up_count', 'down_count'],
             approximate: true,
         })
-        assert.equal(snapshot.turnover.amount_yuan, null)
+        assert.equal(snapshot.turnover.amount_yuan, 29000000)
+        assert.equal(snapshot.turnover.source, 'tencent:quote')
+        assert.equal(snapshot.turnover.approximate, true)
         assert.equal(snapshot.limits.broken_count, null)
         assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, null)
         assert.ok(snapshot.market_breadth, 'market_breadth should be present')
@@ -235,6 +243,7 @@ test('calculateBreadth correctly counts advance/decline/limit', () => {
     assert.equal(breadth.limit_up_count, 1)   // sz300750 (20.0% >= 20% threshold)
     assert.equal(breadth.limit_down_count, 0) // sh601318 -9.5% 未达 -10%
     assert.equal(breadth.limit_count_approximate, true)
+    assert.equal(breadth.total_amount_yuan, 29000000) // 各行情行成交额合计
 })
 
 test('fetchIndexes maps Tencent index symbols to canonical Tushare ts_codes', async () => {

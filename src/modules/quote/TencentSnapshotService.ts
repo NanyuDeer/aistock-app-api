@@ -150,11 +150,12 @@ export class TencentSnapshotService {
             breadth: breadthResult.status === 'fulfilled'
                 ? breadthResult.value.availability
                 : { state: 'unavailable', reason: 'Tencent market breadth fetch failed' },
-            // Tencent 行情行的“成交量”是 volume，不是已验证为元的全市场成交额。
-            turnover: {
-                state: 'unavailable',
-                reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount',
-            },
+            // 成交额：由全市场行情行“成交额”聚合（万元→元），腾讯源近似，非 Tushare 精确口径。
+            turnover: breadthResult.status === 'fulfilled'
+                && breadthResult.value.breadth !== undefined
+                && breadthResult.value.breadth.total_amount_yuan > 0
+                ? { state: 'partial', available_fields: ['amount_yuan'], approximate: true }
+                : { state: 'unavailable', reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount' },
             limits: marketBreadth !== undefined
                 ? {
                     state: 'partial',
@@ -169,7 +170,14 @@ export class TencentSnapshotService {
                     : { state: 'unavailable', reason: 'Tencent quick concept-flow fetch failed' },
             main_force: hasMainForce
                 ? { state: 'available' }
-                : { state: 'unavailable', reason: 'After-close main-force moneyflow is unavailable or empty' },
+                : hasConceptFlow
+                    ? {
+                        state: 'partial',
+                        available_fields: ['large_and_extra_large_net_yuan'],
+                        approximate: true,
+                        reason: 'moneyflow_ths unavailable; approximated from concept-flow net_amount',
+                    }
+                    : { state: 'unavailable', reason: 'After-close main-force moneyflow is unavailable or empty' },
         }
 
         return this.assembleSnapshot(
@@ -278,6 +286,7 @@ export class TencentSnapshotService {
         let limitUp = 0, limitDown = 0
         let totalVolume = 0
         let totalChangePct = 0
+        let totalAmountYuan = 0
         let validCount = 0
 
         for (const q of quotes) {
@@ -303,6 +312,7 @@ export class TencentSnapshotService {
 
             totalVolume += volume
             totalChangePct += changePct
+            totalAmountYuan += toFiniteNumber(q['成交额']) ?? 0
             validCount++
         }
 
@@ -316,6 +326,7 @@ export class TencentSnapshotService {
             limit_count_approximate: true,
             total_volume: totalVolume,
             avg_change_pct: validCount > 0 ? totalChangePct / validCount : 0,
+            total_amount_yuan: totalAmountYuan,
         }
     }
 
@@ -355,7 +366,15 @@ export class TencentSnapshotService {
                     : null,
                 source: 'tencent:quote',
             },
-            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            turnover: marketBreadth && marketBreadth.total_amount_yuan > 0
+                ? {
+                    amount_yuan: marketBreadth.total_amount_yuan,
+                    previous_amount_yuan: null,
+                    change_pct: null,
+                    source: 'tencent:quote',
+                    approximate: true,
+                }
+                : { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
             limits: {
                 up_count: marketBreadth?.limit_up_count ?? null,
                 down_count: marketBreadth?.limit_down_count ?? null,
@@ -363,10 +382,22 @@ export class TencentSnapshotService {
                 highest_board: null,
             },
             sectors: selectQuickSectors(conceptFlow),
-            main_force: {
-                large_and_extra_large_net_yuan: mainForceRows ? computeMainForceNetYuan(mainForceRows) : null,
-                source: 'tushare:moneyflow_ths',
-            },
+            main_force: mainForceRows
+                ? {
+                    large_and_extra_large_net_yuan: computeMainForceNetYuan(mainForceRows),
+                    source: 'tushare:moneyflow_ths',
+                }
+                : conceptFlow.length > 0
+                    ? {
+                        // moneyflow_ths 收盘前不可用时，用概念板块净流入合计近似主力净额
+                        // （net_amount 单位亿元 → 元；概念板块互有重叠，仅作方向性参考）。
+                        large_and_extra_large_net_yuan: conceptFlow.reduce(
+                            (sum, row) => sum + (Number(row.net_amount) || 0), 0,
+                        ) * 1e8,
+                        source: 'tushare:moneyflow_cnt_ths',
+                        approximate: true,
+                    }
+                    : { large_and_extra_large_net_yuan: null, source: 'tushare:moneyflow_ths' },
             coverage: {
                 current_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
                 previous_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
