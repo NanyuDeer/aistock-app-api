@@ -419,8 +419,8 @@ export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
 function computeHighestBoard(rows: LimitStepRow[]): number {
     let max = 0;
     for (const row of rows) {
-        if (Number.isFinite(row.limit_times) && row.limit_times > max) {
-            max = row.limit_times;
+        if (Number.isFinite(row.nums) && row.nums > max) {
+            max = row.nums;
         }
     }
     return max;
