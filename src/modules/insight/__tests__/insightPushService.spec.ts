@@ -86,6 +86,7 @@ describe('pushCreated', () => {
                 primary_driver: { label: '涨停板', category: '资金' },
                 attribution_status: 'confirmed',
                 confidence: 'high',
+                feishu_open_id: 'feishu_open_id_1',
             }],
             insertReturning: true,
         });
@@ -108,18 +109,48 @@ describe('pushCreated', () => {
                 symbol: '000962',
             },
         });
-        // 微信/飞书发送入参一致
+        // 微信/飞书发送入参一致（飞书目标为 feishu_open_id 而非微信 openid）
         const expectedContent = '【自选股洞察】东方钽业(000962) 涨停板 · 置信度 high';
         assert.deepStrictEqual(wxArgs[0], ['openid_1', expectedContent, EVENT_ID]);
-        assert.deepStrictEqual(feishuArgs[0], ['openid_1', expectedContent, EVENT_ID]);
+        assert.deepStrictEqual(feishuArgs[0], ['feishu_open_id_1', expectedContent, EVENT_ID], '飞书通道收到 feishu_open_id 而非微信 openid');
         // 命中查询 SQL 契约：过滤 watchlist_insight_push 开关（默认开启）+ 归因版本
         assert.ok(executed[0].includes("r.analysis_version = 'watchlist-insight-v1'"));
         assert.ok(executed[0].includes("s.setting_type = 'watchlist_insight_push'"));
         assert.ok(executed[0].includes('(s.enabled IS NULL OR s.enabled != 0)'));
+        // 飞书通道解析契约：命中查询必须从 user_subscriptions 取 feishu_open_id（仅非空绑定）
+        assert.ok(executed[0].includes('LEFT JOIN user_subscriptions fs'));
+        assert.ok(executed[0].includes('fs.feishu_open_id'));
+        assert.ok(executed[0].includes("fs.status = 'subscribed'"));
         // push_records 插入走 UNIQUE 冲突 DO NOTHING（016 契约）
         const insertSqls = executed.filter(t => t.includes('INSERT INTO watchlist_insight_push_records'));
         assert.equal(insertSqls.length, 2, '微信 + 飞书各一次判重插入');
         assert.ok(insertSqls.every(t => t.includes('ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING')));
+    });
+
+    it('无飞书绑定用户仅走 WS + 微信，跳过飞书通道', async () => {
+        buildQueryMock({
+            users: [{
+                openid: 'openid_1',
+                symbol: '000962',
+                stock_name: '东方钽业',
+                primary_driver: { label: '涨停板', category: '资金' },
+                attribution_status: 'confirmed',
+                confidence: 'high',
+                feishu_open_id: null,
+            }],
+            insertReturning: true,
+        });
+
+        const { sends } = registerFakeWsClient('openid_1');
+        const { wxArgs, feishuArgs } = mockSendChannels();
+
+        const sent = await pushCreated(EVENT_ID);
+
+        assert.equal(sent, 1, '微信/WS 成功即计 sent');
+        assert.equal(sends.length, 1, 'WS 定向推送不受飞书绑定影响');
+        assert.equal(wxArgs.length, 1, '微信照常发送');
+        assert.deepStrictEqual(wxArgs[0], ['openid_1', '【自选股洞察】东方钽业(000962) 涨停板 · 置信度 high', EVENT_ID]);
+        assert.equal(feishuArgs.length, 0, '未绑定飞书的用户不触发飞书推送');
     });
 
     it('push_records 已存在（DO NOTHING 无返回行）时跳过微信/飞书发送，WS 仍推送', async () => {
@@ -131,6 +162,7 @@ describe('pushCreated', () => {
                 primary_driver: null,
                 attribution_status: 'unconfirmed',
                 confidence: 'low',
+                feishu_open_id: 'feishu_open_id_1',
             }],
             insertReturning: false,
         });

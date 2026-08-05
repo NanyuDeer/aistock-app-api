@@ -16,6 +16,8 @@ interface InsightPushRow {
     primary_driver: { label?: string } | null;
     attribution_status: string;
     confidence: string;
+    /** 飞书 open_id（user_subscriptions 解析，未绑定/非订阅为 null），飞书通道仅对非空值下发 */
+    feishu_open_id: string | null;
 }
 
 /**
@@ -25,11 +27,12 @@ interface InsightPushRow {
  */
 export async function pushCreated(eventId: string): Promise<number> {
     const { rows } = await pool.query(
-        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, r.primary_driver, r.attribution_status, r.confidence
+        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
          FROM watchlist_insight_events e
          JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
          JOIN user_stocks us ON us.symbol = e.symbol
          JOIN users u ON u.openid = us.openid
+         LEFT JOIN user_subscriptions fs ON fs.user_openid = u.openid AND fs.status = 'subscribed' AND fs.feishu_open_id IS NOT NULL AND fs.feishu_open_id != ''
          LEFT JOIN user_settings s ON s.openid = u.openid AND s.setting_type = 'watchlist_insight_push'
          WHERE e.event_id = $1 AND (s.enabled IS NULL OR s.enabled != 0)`, [eventId],
     );
@@ -44,7 +47,9 @@ export async function pushCreated(eventId: string): Promise<number> {
         pushAlertToUser(r.openid, { type: 'insight.created', eventId, content, symbol: r.symbol });
         // 微信 + 飞书（复用现有推送基础设施，幂等去重走 push_records）
         const wx = await sendWechat(r.openid, content, eventId);
-        const feishu = await sendFeishu(r.openid, content, eventId);
+        // 飞书通道：仅已绑定飞书（feishu_open_id 非空）的用户下发；未绑定者跳过，微信/WS 不受影响
+        const feishuOpenId = r.feishu_open_id?.trim() || '';
+        const feishu = feishuOpenId ? await sendFeishu(r.openid, feishuOpenId, content, eventId) : false;
         if (wx || feishu) sent++;
     }
     return sent;
@@ -62,14 +67,16 @@ async function sendWechat(openid: string, content: string, eventId: string): Pro
     return WechatPushService.dispatchInsightPush(openid, content, eventId);
 }
 
-/** 飞书推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖） */
-async function sendFeishu(openid: string, content: string, eventId: string): Promise<boolean> {
+/** 飞书推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖）。
+ *  recordOpenid 为用户微信 openid（push_records 去重键，保证同一用户/事件/通道只发一次）；
+ *  feishuOpenId 为真实发送目标（来自 user_subscriptions.feishu_open_id）。 */
+async function sendFeishu(recordOpenid: string, feishuOpenId: string, content: string, eventId: string): Promise<boolean> {
     const res = await pool.query(
         `INSERT INTO watchlist_insight_push_records (event_id, openid, push_kind, channel)
          VALUES ($1,$2,'created','feishu') ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING RETURNING id`,
-        [eventId, openid],
+        [eventId, recordOpenid],
     );
     if (res.rows.length === 0) return false;
     const { MessagePushService } = await import('../push/MessagePushService');
-    return MessagePushService.dispatchInsightToFeishu(openid, content, eventId);
+    return MessagePushService.dispatchInsightToFeishu(feishuOpenId, content, eventId);
 }
