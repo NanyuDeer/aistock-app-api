@@ -20,6 +20,7 @@ import {
     isAtOrAfterClose,
     type CloseIndexFact,
     computeMainForceNetYuan,
+    hasCompleteMainForceFields,
     type QuickCloseMarketSnapshot,
     type QuickDataAvailability,
     type MarketBreadth,
@@ -137,7 +138,12 @@ export class TencentSnapshotService {
             mainForceResult.status === 'fulfilled' && mainForceResult.value.length > 0
                 ? mainForceResult.value
                 : undefined
-        const hasMainForce = mainForceRows !== undefined
+        // hasMainForce 需同时满足「有数据」且「大单/特大单字段完整」。
+        // Tushare moneyflow_ths 收盘后分批发回，可能出现 buy_lg_amount 有值、
+        // 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 为 undefined 的部分数据，
+        // 此时直接用 computeMainForceNetYuan 会得到 NaN（JSON 序列化为 null），
+        // 必须降级到概念板块近似（partial）或标记 unavailable，不能返回 available+null。
+        const hasMainForce = mainForceRows !== undefined && hasCompleteMainForceFields(mainForceRows)
         const hasConceptFlow = conceptFlowResult.status === 'fulfilled' && conceptFlow.length > 0
 
         const coverage: QuickSnapshotCoverage = {
@@ -382,7 +388,7 @@ export class TencentSnapshotService {
                 highest_board: null,
             },
             sectors: selectQuickSectors(conceptFlow),
-            main_force: mainForceRows
+            main_force: mainForceRows && hasCompleteMainForceFields(mainForceRows)
                 ? {
                     large_and_extra_large_net_yuan: computeMainForceNetYuan(mainForceRows),
                     source: 'tushare:moneyflow_ths',

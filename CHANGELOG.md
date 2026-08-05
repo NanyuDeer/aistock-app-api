@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-05 — moneyflow 接口字段错配修复 + main_force NaN 防护
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/quote/TushareService.ts`：`getMoneyflowThs`/`getMoneyflowThsByDate` 由 `moneyflow_ths` 接口改为原版 `moneyflow` 接口。原实现请求的字段（`buy_elg_amount`/`sell_lg_amount`/`sell_elg_amount`/`net_mf_amount`）是原版 `moneyflow` 的字段名，但 `moneyflow_ths` 实际只有 `buy_lg_amount`（大单净流入）/`net_amount`/`net_d5_amount` 等，导致除 `buy_lg_amount` 外全部 undefined → `computeMainForceNetYuan` 得 NaN 被 JSON 序列化为 null（quick 快照 `main_force=available+null` 根因）
+- `src/modules/quote/MarketSnapshotService.ts`：`computeMainForceNetYuan` 加 `Number(x)||0` 防护避免 NaN；新增 `hasCompleteMainForceFields` 字段完整性检查
+- `src/modules/quote/TencentSnapshotService.ts`：`hasMainForce` 与 `assembleSnapshot` 的 main_force 分支改为「有数据且字段完整」才用 Tushare 精确值，否则降级概念板块近似（partial+approximate）或 unavailable，不再返回 available+null
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：新增 2 个回归用例（字段不完整降级 conceptFlow、`hasCompleteMainForceFields` 判定）
+
+---
+
 ## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
 
 **开发者**: Aria

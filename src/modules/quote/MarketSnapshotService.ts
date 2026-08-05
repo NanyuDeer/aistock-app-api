@@ -389,9 +389,30 @@ function selectTopSectors(rows: MoneyflowCntThsRow[]): {
 export function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
     let netWan = 0;
     for (const row of rows) {
-        netWan += row.buy_lg_amount + row.buy_elg_amount - row.sell_lg_amount - row.sell_elg_amount;
+        // Number(x) || 0 防护：Tushare moneyflow_ths 当日数据未完全就绪时，
+        // buy_elg_amount 等字段可能为 undefined，直接相加会得到 NaN，
+        // JSON 序列化后变成 null（曾被误判为数据缺失的根因）。
+        netWan += (Number(row.buy_lg_amount) || 0)
+            + (Number(row.buy_elg_amount) || 0)
+            - (Number(row.sell_lg_amount) || 0)
+            - (Number(row.sell_elg_amount) || 0);
     }
     return Math.round(netWan * 10000);
+}
+
+/**
+ * 判断 moneyflow_ths 行是否包含完整的大单/特大单买卖字段。
+ *
+ * Tushare moneyflow_ths 在收盘后数据分批发回，可能出现 buy_lg_amount 已有值、
+ * 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 仍为 undefined 的部分数据。
+ * 此时 computeMainForceNetYuan 会把缺失字段当 0，得到偏差巨大的结果，
+ * 调用方（如 TencentSnapshotService）应据此降级到概念板块近似或标记 unavailable。
+ */
+export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
+    return rows.every((row) =>
+        [row.buy_lg_amount, row.buy_elg_amount, row.sell_lg_amount, row.sell_elg_amount]
+            .every((v) => typeof v === 'number' && Number.isFinite(v)),
+    );
 }
 
 /** 连板天梯最高板数；无数据返回 0。 */
