@@ -2,6 +2,27 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p9-session-management.md`、`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p10-user-billing-backend.md`
+
+### 新增
+- `src/index.ts`：启动时自动建表 `chat_sessions`（P9 会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at，索引 idx_chat_sessions_user(user_id, last_message_at DESC)）与 `chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、prompt/completion/total_tokens、question、created_at，索引 idx_chat_token_usage_user + idx_chat_token_usage_session）
+- `src/modules/chat/sessionController.ts`（新增）：`POST /api/chat/sessions`（幂等 upsert，title=question 前 30 字；同 id 重复上报仅刷新 last_message_at，id 已归属他人→409）、`GET /api/chat/sessions`（当前用户最近 50 会话）、`DELETE /api/chat/sessions/:id`（id+归属双条件防越权）；鉴权 = JWT openid（Authorization Bearer + Cookie 兜底）
+- `src/modules/chat/usageController.ts`（新增）：`GET /api/chat/usage/summary` 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0）
+- `src/core/routes/internal.ts`：`POST /internal/usage/records`（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数，成功 `{code:200,data:{id}}`）+ `GET /internal/usage/summary?user_id=`（SUM/COUNT 聚合，无记录全 0）
+
+### 测试
+- `src/modules/chat/__tests__/session.spec.ts`（新增）+ `usageSummary.spec.ts`（新增）+ `src/core/routes/__tests__/internal_token_usage.spec.ts`（新增）
+
+### 文档
+- `README.md`：API 路由表 + Internal API 表补 chat 会话/用量端点，补充两张新表说明
+- `AGENTS.md`：§2 业务模块表 + §3 目录结构 + §7.1 Internal API 表 + 新增 §7.5 Chat 会话与用量公开接口
+
+---
+
 ## [changer] 2026-08-04 — ChatAgent P6 退役清理（market-trace-qa 代理契约）
 
 **开发者**: Aria
