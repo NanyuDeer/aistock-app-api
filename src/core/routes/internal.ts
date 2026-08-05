@@ -11,6 +11,7 @@ import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
 import { getCapitalFlow } from '../../modules/quote/TushareCapitalFlowService'
+import { TushareKlineService } from '../../modules/quote/TushareKlineService'
 import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderService'
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
@@ -26,12 +27,14 @@ import { isValidTagCode } from '../../shared/utils/validator'
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
+import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
+    'chat_analysis',
 ]
 
 const router: Router = Router()
@@ -105,6 +108,51 @@ router.get('/quote/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] quote/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/quote/:symbol/kline
+ * 个股日 K 线（P5 D41，复用 TushareKlineService，与公开 /api/cn/stock/quotes/kline 同源）
+ *
+ * - 200: { code: 200, data: { symbol, klt, days, rows } }
+ * - 400: symbol 非 6 位 / klt≠101 / days∉[1,120] / fqt∉[0,2]
+ * - 502: 服务异常
+ */
+router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 120) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-120 的整数' })
+    }
+    const klt = queryInt(req, 'klt', 101)
+    if (klt !== 101) {
+        return res.status(400).json({ code: 400, message: 'Invalid klt — 对话场景仅支持日线 (101)' })
+    }
+    const fqt = queryInt(req, 'fqt', 1)
+    if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
+        return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
+    }
+    try {
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
+        // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
+        // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+    } catch (err: unknown) {
+        console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
@@ -185,6 +233,29 @@ router.get('/news/latest', async (req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: any) {
         console.error('[Internal] news/latest error:', err.message)
+        res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/news/telegraph
+ * 财联社当日全量电报流（溯源用，按日期分页拉取）
+ *
+ * 注册在 /news/fulltext/:id 等参数化路由之前，避免 "telegraph" 被 :param 匹配。
+ */
+router.get('/news/telegraph', async (req: Request, res: Response) => {
+    const date = req.query.date as string
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ code: 400, message: 'Invalid date — 必须是 YYYY-MM-DD' })
+    }
+
+    const limit = Math.min(parseInt(req.query.limit as string) || 200, 500)
+
+    try {
+        const data = await ClsStockNewsService.fetchTelegraphByDate(date, { limit })
+        res.json({ code: 200, data })
+    } catch (err: any) {
+        console.error('[Internal] news/telegraph error:', err.message)
         res.status(500).json({ code: 500, message: err.message })
     }
 })
@@ -531,7 +602,7 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const rawMinResonance = queryStr(req, 'min_resonance')
         const minResonance = rawMinResonance === undefined
             ? undefined
-            : Math.min(Math.max(queryInt(req, 'min_resonance', 3), 2), 4)
+            : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 3)
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
@@ -548,13 +619,16 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
 
 /**
  * GET /internal/institution-research
- * 机构调研推荐热门股检测结果（四信号源共振模型）
+ * 机构调研推荐热门股检测结果（三信号源共振模型）
  */
 router.get('/institution-research', async (req: Request, res: Response) => {
     try {
+        const rawMinResonanceCount = queryInt(req, 'min_resonance_count', 0)
         const data = await HotBurstService.getHotBurst({
             hours: queryInt(req, 'hours', 6),
-            minResonanceCount: queryInt(req, 'min_resonance_count', 0),
+            minResonanceCount: rawMinResonanceCount === 0
+                ? 0
+                : Math.min(Math.max(rawMinResonanceCount, 2), 3),
             limit: queryInt(req, 'limit', 20),
         })
         res.json({ code: 200, data })
@@ -643,6 +717,39 @@ router.get('/market/quick-snapshot', async (_req: Request, res: Response) => {
         }
         console.error('[Internal] market/quick-snapshot error:', msg)
         res.status(502).json({ code: 502, message: msg })
+    }
+})
+
+/**
+ * GET /internal/index/quotes
+ * A 股指数快照（P5 工作线 B：对话快速指数源，复用 IndexQuoteController 缓存+腾讯源）
+ *
+ * - 200: { code: 200, data: { indices: [{ index, name, price, changePercent, changeAmount }] } }
+ * - 400: symbols 缺失 / 非 6 位数字 / 超 MAX_SYMBOLS
+ * - 502: 服务异常
+ */
+router.get('/index/quotes', async (req: Request, res: Response) => {
+    const symbolsParam = queryStr(req, 'symbols')
+    if (!symbolsParam) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数，示例: ?symbols=000001,399001,399006' })
+    }
+    const symbols = [...new Set(symbolsParam.split(',').map((s) => s.trim()).filter(Boolean))]
+    if (symbols.length === 0) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数' })
+    }
+    if (symbols.length > MAX_SYMBOLS) {
+        return res.status(400).json({ code: 400, message: `单次最多查询 ${MAX_SYMBOLS} 只指数` })
+    }
+    if (symbols.some((s) => !isValidAShareSymbol(s))) {
+        return res.status(400).json({ code: 400, message: '指数代码必须是6位数字（不带 sh/sz 前缀）' })
+    }
+    try {
+        const { IndexQuoteController } = await import('../../modules/quote/indexController')
+        const indices = await IndexQuoteController.fetchCnIndexQuotesData(symbols)
+        res.json({ code: 200, data: { indices } })
+    } catch (err: unknown) {
+        console.error('[Internal] index/quotes error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
@@ -849,6 +956,91 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
         res.status(500).json({ code: 500, message: errMsg(err) })
     }
 })
+
+// ==================== Chat token 用量计费接口（P10 线 2） ====================
+
+/**
+ * POST /internal/usage/records
+ * 记录一次对话 token 用量（Python ws.py 计费回调）
+ *
+ * 请求体: { user_id(必填非空), session_id?, prompt_tokens, completion_tokens, total_tokens, question? }
+ * 成功: { code: 200, data: { id } }
+ * 400: user_id 空 / token 字段非非负整数（含 total_tokens<0）
+ */
+router.post('/usage/records', async (req: Request, res: Response) => {
+    const user_id = req.body.user_id ?? '';
+    const session_id = req.body.session_id ?? null;
+    const prompt_tokens = req.body.prompt_tokens ?? 0;
+    const completion_tokens = req.body.completion_tokens ?? 0;
+    const total_tokens = req.body.total_tokens ?? 0;
+    const question = req.body.question ?? null;
+
+    if (typeof user_id !== 'string' || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+    if (
+        !Number.isInteger(prompt_tokens) || prompt_tokens < 0 ||
+        !Number.isInteger(completion_tokens) || completion_tokens < 0 ||
+        !Number.isInteger(total_tokens) || total_tokens < 0
+    ) {
+        return res.status(400).json({ code: 400, message: 'token 字段必须是非负整数' });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO chat_token_usage
+                (user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id`,
+            [user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question]
+        );
+        res.json({ code: 200, data: { id: result.rows[0]?.id ?? null } });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/records POST error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
+/**
+ * GET /internal/usage/summary?user_id=xxx
+ * 按 user_id 累计 token 用量（无记录全 0）
+ *
+ * 成功: { code: 200, data: { user_id, prompt_tokens, completion_tokens, total_tokens, turn_count } }
+ * 400: user_id 缺失
+ */
+router.get('/usage/summary', async (req: Request, res: Response) => {
+    const user_id = queryStr(req, 'user_id');
+    if (!user_id || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COUNT(*) AS turn_count
+             FROM chat_token_usage
+             WHERE user_id = $1`,
+            [user_id]
+        );
+        const row = result.rows[0] ?? {};
+        res.json({
+            code: 200,
+            data: {
+                user_id,
+                prompt_tokens: Number(row.prompt_tokens ?? 0),
+                completion_tokens: Number(row.completion_tokens ?? 0),
+                total_tokens: Number(row.total_tokens ?? 0),
+                turn_count: Number(row.turn_count ?? 0),
+            },
+        });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/summary GET error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
 
 // ==================== 行业向量搜索（pgvector） ====================
 
@@ -1515,11 +1707,11 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
  * 通用播报生成（公开接口，单主播朗读文本）
  *
  * 请求体: { text: string, key: string }
- * - text: 播报文本（podcast_brief，1-2000字）
- * - key: 缓存键（如 alert_603601_2026-08-01），用于文件命名和幂等
+ * - text: 播报文本（podcast_brief，1-250字，约1分钟播报时长）
+ * - key: 缓存键（如 alert_603601_2026-08-01），用于文本落库和音频文件幂等
  *
  * 响应: { code: 0, data: { audio_url: string, cached: boolean } }
- * - 同一 key 的音频已存在时直接返回（cached: true），不重复合成
+ * - 文本先生成存库（podcast_cache 表），音频文件已存在时直接返回（cached: true），不重复合成
  */
 publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: Response) => {
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
@@ -1529,8 +1721,8 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
         res.status(400).json({ code: -1, message: 'text 不能为空' })
         return
     }
-    if (text.length > 2000) {
-        res.status(400).json({ code: -1, message: 'text 长度不能超过 2000 字' })
+    if (text.length > 250) {
+        res.status(400).json({ code: -1, message: 'text 长度不能超过 250 字（约1分钟播报时长）' })
         return
     }
     if (!key) {
@@ -1551,8 +1743,24 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
     const audioUrl = `/api/agent/audio/${filename}`
 
     try {
-        // 缓存命中：文件已存在直接返回
+        // 文本先生成存库：按 key upsert 播报文本（幂等），避免每次依赖前端实时传参，7 天过期随清理任务删除
+        await pool.query(
+            `INSERT INTO podcast_cache (cache_key, text, status, audio_path)
+             VALUES ($1, $2, 'pending', '')
+             ON CONFLICT (cache_key) DO UPDATE SET
+                text = EXCLUDED.text,
+                status = 'pending',
+                error_message = NULL,
+                expires_at = NOW() + INTERVAL '7 days'`,
+            [safeKey, text]
+        )
+
+        // 缓存命中：音频文件已存在直接返回（cached: true）
         if (fs.existsSync(filePath)) {
+            await pool.query(
+                `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+                [safeKey, audioUrl]
+            )
             res.json({ code: 0, data: { audio_url: audioUrl, cached: true } })
             return
         }
@@ -1566,8 +1774,19 @@ publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: R
         await fs.promises.writeFile(tempPath, audioBuffer)
         await fs.promises.rename(tempPath, filePath)
 
+        // 生成成功：回填音频路径与状态
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+            [safeKey, audioUrl]
+        )
+
         res.json({ code: 0, data: { audio_url: audioUrl, cached: false } })
     } catch (err: unknown) {
+        // 生成失败：标记 failed 并保留文本，前端可重试
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'failed', error_message = $2 WHERE cache_key = $1`,
+            [safeKey, errMsg(err).slice(0, 500)]
+        ).catch(() => undefined)
         console.error('[Public] generate-podcast error:', errMsg(err))
         res.status(502).json({ code: -1, message: errMsg(err) })
     }

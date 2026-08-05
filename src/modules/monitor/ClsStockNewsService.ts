@@ -24,6 +24,37 @@ export interface ClsStockNewsOptions {
     lastTime: number;
 }
 
+export interface ClsTelegraphItem {
+    id: string | number;
+    title: string;
+    content: string;
+    time: string;       // 格式化后的上海时间字符串
+    timestamp: number;   // unix 秒
+}
+
+export interface ClsTelegraphResult {
+    date: string;        // YYYY-MM-DD
+    items: ClsTelegraphItem[];
+    total: number;
+    degraded: boolean;    // 部分分页失败时为 true
+}
+
+// ============================================================================
+// 依赖注入（便于单测替换 sessionFetch / cailianpressThrottler；
+// 生产环境默认指向真实导出。tsx 使用 ESM live binding，named import 不可
+// monkey-patch，故通过对象属性注入。与 MarketSnapshotService 同一约定）
+// ============================================================================
+
+export interface ClsStockNewsDeps {
+    sessionFetch: typeof sessionFetch;
+    cailianpressThrottler: typeof cailianpressThrottler;
+}
+
+export const __clsNewsDependencies: ClsStockNewsDeps = {
+    sessionFetch,
+    cailianpressThrottler,
+};
+
 export class ClsStockNewsService {
     private static readonly STOCK_NEWS_URL = 'https://www.cls.cn/api/csw?app=CailianpressWeb&os=web&sv=8.4.6&sign=9f8797a1f4de66c2370f7a03990d2737';
     private static readonly STOCK_NEWS_HEADERS = {
@@ -111,6 +142,125 @@ export class ClsStockNewsService {
      */
     static async getLatestNews(limit: number = 10): Promise<ClsStockNewsResult> {
         return this.fetchAndParseNews('', '', limit, 0);
+    }
+
+    /**
+     * 按日期拉取财联社当日全量电报流（用于溯源事件证据）。
+     *
+     * 通过 lastTime 分页向前翻页，拉取指定日期 09:00-15:30 的全量电报。
+     * 复用 cailianpressThrottler 限流，避免触发反爬。
+     *
+     * @param date YYYY-MM-DD 格式日期
+     * @param options.limit 最大条数，默认 200
+     */
+    static async fetchTelegraphByDate(
+        date: string,
+        options: { limit?: number } = {},
+    ): Promise<ClsTelegraphResult> {
+        const limit = Math.min(options.limit ?? 200, 500);
+        // 当日 09:00-15:30 上海时间转 unix 秒（边界宽松 ±30 分钟）
+        const dateStart = this.parseDateToUnixSeconds(date, 8, 30);   // 08:30 起宽松
+        const dateEnd = this.parseDateToUnixSeconds(date, 16, 0);     // 16:00 止宽松
+
+        const items: ClsTelegraphItem[] = [];
+        const processedIds = new Set<string | number>();  // 去重，避免分页边界条目重复
+        let lastTime = 0;
+        let degraded = false;
+        let page = 0;
+        const MAX_PAGES = 10;
+
+        while (page < MAX_PAGES && items.length < limit) {
+            try {
+                const pageItems = await this.fetchTelegraphPage(lastTime);
+                if (pageItems.length === 0) break;
+
+                for (const item of pageItems) {
+                    if (item.timestamp < dateStart) {
+                        // 已早于目标日期，停止
+                        return { date, items: items.slice(0, limit), total: items.length, degraded };
+                    }
+                    if (item.timestamp > dateEnd) {
+                        // 晚于目标日期上限，跳过（继续向前翻页可能拿到更早的）
+                        continue;
+                    }
+                    // 去重：分页边界可能返回已处理的条目
+                    if (processedIds.has(item.id)) continue;
+                    processedIds.add(item.id);
+                    items.push(item);
+                    if (items.length >= limit) break;
+                }
+
+                // 下一页的 lastTime 用本页最早一条的 timestamp
+                lastTime = pageItems[pageItems.length - 1].timestamp;
+                page++;
+            } catch (err) {
+                console.error(`[ClsStockNews] telegraph page ${page} failed:`, err);
+                degraded = true;
+                break;
+            }
+        }
+
+        return { date, items: items.slice(0, limit), total: items.length, degraded };
+    }
+
+    private static parseDateToUnixSeconds(date: string, hour: number, minute: number): number {
+        // YYYY-MM-DD → 当日 hour:minute 上海时间 → unix 秒
+        const [y, m, d] = date.split('-').map(Number);
+        // 上海时间 UTC+8
+        const utcMs = Date.UTC(y, m - 1, d, hour - 8, minute, 0);
+        return Math.floor(utcMs / 1000);
+    }
+
+    private static async fetchTelegraphPage(lastTime: number): Promise<ClsTelegraphItem[]> {
+        const payload = {
+            'lastTime': lastTime,
+            'keyword': '',
+            'category': '',
+            'os': 'web',
+            'sv': '8.4.6',
+            'app': 'CailianpressWeb',
+        };
+
+        await __clsNewsDependencies.cailianpressThrottler.throttle();
+
+        const response = await __clsNewsDependencies.sessionFetch(this.STOCK_NEWS_URL, {
+            method: 'POST',
+            headers: this.STOCK_NEWS_HEADERS,
+            body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) throw new Error(`财联社电报接口请求失败: ${response.status}`);
+
+        const rawData: any = await response.json();
+        if (typeof rawData?.errno === 'number' && rawData.errno !== 0) {
+            throw new Error(`财联社接口返回错误: ${rawData.msg || 'Unknown error'}`);
+        }
+
+        // 财联社实际返回 {total, list: [...]}（2026-08-03 真实接口验证）
+        const { entries } = this.extractStockNewsEntries(rawData);
+        const items: ClsTelegraphItem[] = [];
+
+        for (const entry of entries) {
+            if (!entry || typeof entry !== 'object') continue;
+            const ts = this.parseTimestampSeconds(entry.ctime);
+            // 不再过滤 ts < lastTime：财联社 lastTime 语义是 "load more"（返回 ctime < lastTime 的更早条目），
+            // 过滤会导致分页失效。去重在 fetchTelegraphByDate 层用 Set 处理。
+            if (ts === null) continue;
+
+            const parsed = this.extractTelegraphTitleAndContent(entry.content);
+            const title = (typeof entry.title === 'string' ? entry.title.trim() : '') || parsed.title;
+            const content = parsed.content || this.stripHtml(entry.content);
+
+            items.push({
+                id: entry.id ?? '',
+                title,
+                content,
+                time: this.formatClsTimestamp(entry.ctime),
+                timestamp: ts,
+            });
+        }
+
+        return items;
     }
 
     private static async fetchAndParseNews(

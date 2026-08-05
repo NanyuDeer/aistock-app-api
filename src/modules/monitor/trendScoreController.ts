@@ -5,7 +5,7 @@ import { VetoError } from './TenxScoreService';
 import pool from '../../core/db';
 
 /** 安全解析 jsonb 字段：pg 驱动已将 jsonb 解析为 JS 对象，无需再 JSON.parse */
-function parseJsonb(val: unknown): unknown[] {
+export function parseJsonb(val: unknown): unknown[] {
     if (Array.isArray(val)) return val;
     if (typeof val === 'string') {
         try { return JSON.parse(val); } catch { return []; }

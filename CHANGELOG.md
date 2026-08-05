@@ -2,6 +2,115 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`/internal/trend/top` 的 `dimScores` 从 `parseJsonb(r.dim_scores)` 回退为 `JSON.parse(r.dim_scores as string || '[]')`，移除 parseJsonb import
+- `tests/StockInfoService.test.ts`：修正 import 路径（`src/core/db` → `src/db`、`src/modules/crawler/StockInfoService` → `src/services/StockInfoService`）；删除重复的推送过滤边界断言（中性/利空/重大利空/窗口外用例，已由专门测试覆盖）
+
+---
+
+## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p9-session-management.md`、`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p10-user-billing-backend.md`
+
+### 新增
+- `src/index.ts`：启动时自动建表 `chat_sessions`（P9 会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at，索引 idx_chat_sessions_user(user_id, last_message_at DESC)）与 `chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、prompt/completion/total_tokens、question、created_at，索引 idx_chat_token_usage_user + idx_chat_token_usage_session）
+- `src/modules/chat/sessionController.ts`（新增）：`POST /api/chat/sessions`（幂等 upsert，title=question 前 30 字；同 id 重复上报仅刷新 last_message_at，id 已归属他人→409）、`GET /api/chat/sessions`（当前用户最近 50 会话）、`DELETE /api/chat/sessions/:id`（id+归属双条件防越权）；鉴权 = JWT openid（Authorization Bearer + Cookie 兜底）
+- `src/modules/chat/usageController.ts`（新增）：`GET /api/chat/usage/summary` 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0）
+- `src/core/routes/internal.ts`：`POST /internal/usage/records`（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数，成功 `{code:200,data:{id}}`）+ `GET /internal/usage/summary?user_id=`（SUM/COUNT 聚合，无记录全 0）
+
+### 测试
+- `src/modules/chat/__tests__/session.spec.ts`（新增）+ `usageSummary.spec.ts`（新增）+ `src/core/routes/__tests__/internal_token_usage.spec.ts`（新增）
+
+### 文档
+- `README.md`：API 路由表 + Internal API 表补 chat 会话/用量端点，补充两张新表说明
+- `AGENTS.md`：§2 业务模块表 + §3 目录结构 + §7.1 Internal API 表 + 新增 §7.5 Chat 会话与用量公开接口
+
+---
+
+## [changer] 2026-08-04 — ChatAgent P6 退役清理（market-trace-qa 代理契约）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p6-retirement.md`
+
+### 测试
+- `src/modules/agent/__tests__/agent.proxy.spec.ts`：删除 3 条 market-trace-qa 代理契约测试（118 行，Python `POST /market-trace-qa/message` 端点已退役）；其余 `/chat/*`、`/ws` 代理契约测试与 `createAgentProxy` 保留
+- `tests/marketTraceQaInternalRoutes.test.ts`：保留（`GET /internal/analysis-reports/:type/:date` 读取契约，`load_validated_trace`/`trace_loader` 消费），文件头注释同步更新
+
+### 测试
+- `npx tsc --noEmit` 0 errors；定向测试（agent.proxy.spec + marketTraceQaInternalRoutes）29/29 通过
+
+---
+
+## [changer] 2026-08-04 — ChatAgent P5 两个 internal 端点（kline + index/quotes）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p5-capability.md`
+
+### 新增
+- `src/core/routes/internal.ts`：`GET /internal/quote/:symbol/kline`（Tushare 日 K 线，days≤120/klt=101/fqt∈{0,1,2}，复用 TushareKlineService，双键兼容映射——服务实际返回中文键）
+- `src/core/routes/internal.ts`：`GET /internal/index/quotes`（A 股指数快照，6 位纯数字代码/逗号分隔/上限 MAX_SYMBOLS，复用 IndexQuoteController，驼峰输出，腾讯源失败单指数 → null 不整体 500）
+- `src/modules/quote/indexController.ts`：抽取 `fetchCnIndexQuotesData(symbols)` 供 public + internal 复用（public `/api/cn/index/quotes` 响应体字节不变）
+
+### 测试
+- 新建 `src/core/routes/internal.kline.test.ts`（5 用例）+ `internal.index-quotes.test.ts`（6 用例），共 11/11 通过
+- 既有 internal 路由测试 42/42 无回归；`npx tsc --noEmit` 0 errors
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表补 2 端点
+
+---
+
+## [feat/market-trace-improvement] 2026-08-03 — 播报功能优化（文本存库 + 音频缓存 + 限长1分钟）
+
+**开发者**: Aria
+
+### 改进
+- `src/core/routes/internal.ts`：POST /api/agent/brief/generate-podcast 文本限长 2000→250 字（约1分钟）；请求先按 cache_key upsert 进 podcast_cache 表（ON CONFLICT 更新 text），音频生成成功回填 audio_path，失败标记 status='failed' 返回降级文本；音频命中缓存直接复用 audio_url，不重复调用火山 TTS
+
+### 新增
+- `src/index.ts` + `docs/sql/podcast_cache.sql`：podcast_cache 表（cache_key UNIQUE、text、audio_path、status、error_message、expires_at 7天），03:00 清理任务扩展为删除过期行 + 对应 podcast-{key}.mp3
+
+### 测试
+- `tests/internalRoutes.test.ts`：新增 3 个 generate-podcast 校验测试（空文本 / 超250字 / 空 key 均返回 400），42/42 PASS
+
+---
+
+## [changer] 2026-08-03 — P3-fix-3 大盘数据正确性最小补丁 + P2 遗留
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-03-p3-fix-3-market-data-correctness.md`
+
+### 新增
+- `src/shared/utils/TradingCalendarService.ts`：新增 `getPreviousTradingDay(date)` — 严格早于指定日期的最近交易日（与时刻无关；返回点归一化 08:00 上海=UTC 午夜），last-close 回退用
+- `src/modules/quote/MarketSnapshotService.ts`：`getLastCloseSnapshot` 目标日改 `getPreviousTradingDay(now)`（消除 15:00–15:30 空窗 409；目标日数据缺失仍诚实 409）
+- `src/modules/quote/TencentSnapshotService.ts`：`buildQuickSnapshot` 先算 tradeDate → `isTradingDayYyyymmdd` 校验（非交易日抛 market_not_closed，映射 409，消除"伪当日"）→ 15:30 时钟门禁
+- `src/core/routes/internal.ts`：`VALID_REPORT_TYPES` 增加 `chat_analysis`（P2 遗留，与 P3-fix-3 一并提交）
+
+### 测试
+- `tests/TradingCalendarService.test.ts` 新建 5 用例（周一 15:10 / 周末白天 / 凌晨 03:00 / 长假回溯 / 覆盖外失败关闭）
+- `tests/MarketSnapshotService.test.ts` +2（三墙钟场景回退、目标日日线不完整 409）
+- `tests/TencentSnapshotService.test.ts` +1（非交易日 15:30 后拒绝，红线）
+- `src/core/routes/__tests__/internal_chat_analysis.spec.ts` 新增（P2 遗留）
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表 +3 行 market 端点（quick 非交易日 409 / close 15:30 门禁 / last-close 严格早于今天）
+
+### 验证
+- `npx tsc --noEmit` 0 错误；定向 3 文件 44/45（唯一失败为既有陈旧断言，归基线）
+- 全量 182 tests：172 pass / 10 fail，失败集 ⊆ 基线（7002295 worktree 对比），新增失败清零
+- SDD 审查：T1-T3 逐 Task Approved + 最终整分支审查 Ready to merge Yes
+
+---
+
 ## [master] 2026-08-02 — M4 名称解析端点 GET /internal/stock/resolve
 
 **开发者**: Aria
@@ -93,6 +202,18 @@
 
 ### 修改
 - `src/core/routes/internal.ts`：`synthesizeBroadcast` 改用账号池获取凭证，替代单账号固定读取
+
+---
+
+## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/MarketSnapshotService.ts`：扩展 `CloseMarketSnapshot` schema，新增 `MarketBreadth`、`QuickSnapshotCoverage` 接口和 `snapshot_kind` / `coverage_info` / `market_breadth` 可选字段；导出 `isAtOrAfterClose`
+- `src/modules/quote/TencentSnapshotService.ts`：新增 `TencentSnapshotService`，15:30 收盘后基于腾讯实时行情构建简版收盘快照（6 大指数 + 全市场宽度 + 概念板块资金流），分级失败策略（指数严格、非核心宽松）
+- `src/core/routes/internal.ts`：新增 `GET /internal/market/quick-snapshot` 路由，200/409/502 三种响应
+- `tests/TencentSnapshotService.test.ts`：4 个单元测试覆盖正常构建、未收盘拒绝、降级策略、涨跌停计数
+- `tests/internalRoutes.test.ts`：3 个路由测试覆盖 200/409/502
 
 ---
 

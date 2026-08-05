@@ -12,7 +12,7 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import express from 'express'
-import internalRouter from '../src/core/routes/internal'
+import internalRouter, { publicRouter } from '../src/core/routes/internal'
 
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
@@ -120,6 +120,42 @@ function makeGetRequest(
             },
         )
         req.on('error', reject)
+    })
+}
+
+function makePostRequest(
+    port: number,
+    path: string,
+    body: unknown,
+): Promise<HttpResponse> {
+    return new Promise((resolve, reject) => {
+        const payload = JSON.stringify(body)
+        const req = http.request(
+            {
+                hostname: '127.0.0.1',
+                port,
+                path: `/agent${path}`,
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'content-length': Buffer.byteLength(payload),
+                },
+            },
+            (res) => {
+                let data = ''
+                res.on('data', (chunk: Buffer) => (data += chunk.toString()))
+                res.on('end', () => {
+                    try {
+                        resolve({ status: res.statusCode || 0, body: JSON.parse(data) })
+                    } catch {
+                        resolve({ status: res.statusCode || 0, body: data })
+                    }
+                })
+            },
+        )
+        req.on('error', reject)
+        req.write(payload)
+        req.end()
     })
 }
 
@@ -313,6 +349,8 @@ async function main(): Promise<void> {
     const app = express()
     app.use(express.json())
     app.use('/internal', internalRouter)
+    // 挂载公开路由（/agent/*），用于 generate-podcast 播报缓存接口校验测试
+    app.use('/agent', publicRouter)
 
     // 2. 启动 HTTP 服务器（随机端口）
     const server = http.createServer(app)
@@ -659,6 +697,32 @@ async function main(): Promise<void> {
         } finally {
             TencentSnapshotService.buildQuickSnapshot = originalBuild
         }
+    })
+
+    // --- 公开接口 generate-podcast 校验测试（校验在 DB 访问之前，无需 mock DB）---
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when text empty', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', { text: '', key: 'k1' })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
+    })
+
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when text > 250 chars', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', {
+            text: '测'.repeat(251),
+            key: 'k1',
+        })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
+        assert.match(body.message, /250/)
+    })
+
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when key empty', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', { text: '播报文本', key: '' })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
     })
 
     // --- /internal/stock/resolve（M4：中文名称 → 代码解析） ---

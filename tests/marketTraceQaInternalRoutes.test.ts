@@ -1,8 +1,8 @@
 /**
- * market_trace_qa 报告读取契约测试
+ * analysis-reports 报告读取契约测试（trace_loader 消费方）
  *
  * 验证 GET /internal/analysis-reports/:type/:date 的 404/500/200/400/403 契约。
- * Python Agent（market_trace_qa）通过此端点读取 review 报告：
+ * Python Agent（services/trace_loader.py）通过此端点读取 review 报告：
  *   - 404 Report not found → Python 据此生成 degraded trace（degraded=true）
  *   - 500 DB error        → Python 错误处理
  *   - 200 + 报告数据      → Python 正常生成回答
@@ -70,7 +70,7 @@ function setPoolQuery(fn: (...args: unknown[]) => Promise<QueryResult>): void {
     ;(pool as any).query = fn
 }
 
-describe('market_trace_qa report-read contract: GET /internal/analysis-reports/:type/:date', () => {
+describe('analysis-reports report-read contract (trace_loader): GET /internal/analysis-reports/:type/:date', () => {
     let server: http.Server
     let port: number
     // 保存原始 pool.query 以便恢复（pool.query 来自原型，直接赋值会遮蔽）。

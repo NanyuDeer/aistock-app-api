@@ -154,6 +154,30 @@ export class TradingCalendarService {
         }
     }
 
+    /**
+     * 获取严格早于指定日期的最近一个交易日（与当前时刻无关）。
+     *
+     * 与 getRecentTradingDay 的区别：后者以 15:00 为界（≥15:00 返回当天），
+     * 本方法永远从"昨天"开始回溯，用于 last-close 快照的"最近已完成交易日"语义，
+     * 避免 15:00–15:30 空窗期把尚未发布的"今天"当作目标。
+     */
+    static getPreviousTradingDay(date: Date = new Date()): Date {
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        result = previousShanghaiCalendarDate(result);
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
+                // 归一化墙钟为 08:00 上海（=UTC 午夜）：避免保留输入时刻导致
+                // 上海 0-7 点时 hour-8 为负、UTC 日期回退一天（如 03:00 输入会
+                // 返回前一 UTC 日），保证返回 Date 的 UTC 日期 == 交易日上海日期。
+                return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
+            }
+            result = previousShanghaiCalendarDate(result);
+        }
+    }
+
     private static assertCalendarCoverage(year: number): void {
         if (!A_SHARE_HOLIDAYS_BY_YEAR[year]) {
             throw new Error(`Trading calendar is not available for ${year}`);

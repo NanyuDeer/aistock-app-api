@@ -26,6 +26,7 @@ import {
     type QuickSnapshotCoverage,
     type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 
 // 6 大指数代码（腾讯格式）
 const INDEX_CODES = [
@@ -96,14 +97,23 @@ export class TencentSnapshotService {
     static async buildQuickSnapshot(nowOverride?: Date): Promise<QuickCloseMarketSnapshot> {
         const now = nowOverride ?? new Date()
 
+        const tradeDate = formatShanghaiDate(now)
+        const tushareTradeDate = tradeDate.replace(/-/g, '')
+
+        // 非交易日（周末/节假日）即使已过 15:30 也不得返回快照：腾讯返回最近收盘，
+        // 若以当天日期标注会冒充"今日已收盘"（红线）。必须先于时钟门禁校验交易日。
+        if (!TradingCalendarService.isTradingDayYyyymmdd(tushareTradeDate)) {
+            const err = new Error('market_not_closed: not an A-share trading day')
+            err.name = 'MarketSnapshotUnavailable'
+            throw err
+        }
+
         if (!isAtOrAfterClose(now)) {
             const err = new Error('market_not_closed: before 15:30 Shanghai time')
             err.name = 'MarketSnapshotUnavailable'
             throw err
         }
 
-        const tradeDate = formatShanghaiDate(now)
-        const tushareTradeDate = tradeDate.replace(/-/g, '')
         const capturedAt = now.toISOString()
 
         // 1. 核心数据：6 大指数（严格失败）
