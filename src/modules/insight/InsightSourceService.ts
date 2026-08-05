@@ -22,8 +22,10 @@ export interface SourceArticle {
 /**
  * 逐条 upsert 来源文章。
  * - 列清单与 016 迁移 watchlist_insight_sources 逐字一致；
- * - ON CONFLICT (article_id)：已存在仅刷新 content_hash（版本化）；
- * - RETURNING xmax = 0 为 PG 合法写法，行是新插入（未被更新）时返回 true。
+ * - ON CONFLICT (article_id)：已存在则刷新正文/标题/关键词/提及标的/发布时间 + content_hash/parser_version，
+ *   PRD §5.3 要求"来源轻微修改→更新来源记录"，保证 DB 正文与 content_hash 一致（否则 Python context 读旧正文
+ *   却对上新 hash，导致证据错配）；
+ * - RETURNING xmax = 0 为 PG 合法写法，行是新插入（未被更新）时返回 true（仅对 INSERT 新行成立，不受 DO UPDATE 影响）。
  * @returns 本次新插入的行数
  */
 export async function upsertSources(articles: SourceArticle[]): Promise<number> {
@@ -34,7 +36,14 @@ export async function upsertSources(articles: SourceArticle[]): Promise<number> 
             `INSERT INTO watchlist_insight_sources
                (source_id, source_url, article_id, trade_date, title, keywords, content, mentioned_symbols, published_at, content_hash, parser_version)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-             ON CONFLICT (article_id) DO UPDATE SET content_hash = EXCLUDED.content_hash
+             ON CONFLICT (article_id) DO UPDATE SET
+               content = EXCLUDED.content,
+               title = EXCLUDED.title,
+               keywords = EXCLUDED.keywords,
+               mentioned_symbols = EXCLUDED.mentioned_symbols,
+               published_at = EXCLUDED.published_at,
+               content_hash = EXCLUDED.content_hash,
+               parser_version = EXCLUDED.parser_version
              RETURNING xmax = 0 AS was_inserted`,
             [a.articleId, a.detailUrl, a.articleId, a.tradeDate, a.title, JSON.stringify(a.keywords),
              a.content, JSON.stringify(a.mentionedSymbols), a.publishedAt, hash, PARSER_VERSION],

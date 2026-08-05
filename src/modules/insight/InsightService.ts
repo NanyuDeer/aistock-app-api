@@ -56,7 +56,15 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
         const created = await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate);
         // 每个命中事件都接入任务队列：enqueue 幂等（(event_id, analysis_version) 唯一键 DO NOTHING），
         // 事件已存在时重复调用安全且具备自愈能力，保证 watchlist-insight.jobs Stream 必有消息
-        await enqueue(buildEventId(hit.symbol, a.tradeDate));
+        const eventId = buildEventId(hit.symbol, a.tradeDate);
+        try {
+            await enqueue(eventId);
+        } catch (e) {
+            // 单事件入队失败（如 DB 抖动）只记日志后跳过，不中断整轮循环：
+            // 一旦中断，该事件已建但 job 缺失成为孤儿（文章已入 known 集合，下轮不会重建），
+            // 且高水位不推进；本轮其余事件仍正常入队，孤儿可经下轮幂等路径补入队
+            console.warn('[insight] enqueue failed:', e instanceof Error ? e.message : String(e));
+        }
         if (created) events++;
     }
     await setHighWatermark(todayStr());
@@ -112,19 +120,19 @@ function twoTradingDaysAgo(date: Date = new Date()): string {
     return formatShanghaiDate(day);
 }
 
-/** getRecentTradingDay 返回的 Date 的 UTC 年月日即上海日历年月日（见 TradingCalendarService.toDate） */
+/** 上海时区 YYYY-MM-DD：经 Asia/Shanghai 时区转换取年月日，任何时刻调用都得到上海当地日期（不依赖 getUTC* 归一化前提） */
 function formatShanghaiDate(date: Date): string {
-    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
-}
-
-/** 上海时区当日 YYYY-MM-DD（高水位键格式） */
-function todayStr(): string {
     const parts = new Intl.DateTimeFormat('en-US', {
         timeZone: 'Asia/Shanghai',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
-    }).formatToParts(new Date());
+    }).formatToParts(date);
     const get = (type: string) => parts.find(p => p.type === type)?.value ?? '';
     return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** 上海时区当日 YYYY-MM-DD（高水位键格式） */
+function todayStr(): string {
+    return formatShanghaiDate(new Date());
 }

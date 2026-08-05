@@ -145,7 +145,15 @@ describe('upsertSources', () => {
         assert.ok(capturedSql.includes(
             'source_id, source_url, article_id, trade_date, title, keywords, content, mentioned_symbols, published_at, content_hash, parser_version',
         ));
-        assert.ok(capturedSql.includes('ON CONFLICT (article_id) DO UPDATE SET content_hash = EXCLUDED.content_hash'));
+        assert.ok(capturedSql.includes('ON CONFLICT (article_id) DO UPDATE SET'));
+        // 冲突时同步刷新正文/标题/关键词/提及标的/发布时间 + content_hash/parser_version（正文与 hash 一致）
+        assert.ok(capturedSql.includes('content = EXCLUDED.content'));
+        assert.ok(capturedSql.includes('title = EXCLUDED.title'));
+        assert.ok(capturedSql.includes('keywords = EXCLUDED.keywords'));
+        assert.ok(capturedSql.includes('mentioned_symbols = EXCLUDED.mentioned_symbols'));
+        assert.ok(capturedSql.includes('published_at = EXCLUDED.published_at'));
+        assert.ok(capturedSql.includes('content_hash = EXCLUDED.content_hash'));
+        assert.ok(capturedSql.includes('parser_version = EXCLUDED.parser_version'));
         assert.ok(capturedSql.includes('RETURNING xmax = 0 AS was_inserted'));
 
         const expectedHash = createHash('sha256').update(sampleArticle.content).digest('hex');

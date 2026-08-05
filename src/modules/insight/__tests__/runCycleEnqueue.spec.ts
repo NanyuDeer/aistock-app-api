@@ -50,12 +50,17 @@ const VERSION = 'watchlist-insight-v1';
 /**
  * 模拟一轮采集：1 篇文章提及 000962，用户自选股包含 000962。
  * eventExists 控制 createEvent 是否新建成功（false 模拟幂等已存在路径）。
+ * opts.enqueueThrows=true 时模拟 enqueue 抛错（如 DB 抖动）。
  * 返回 enqueue 事务中 watchlist_insight_jobs / outbox 的 INSERT 调用记录。
  */
-async function runOneCycle(eventExists: boolean): Promise<{
+async function runOneCycle(
+    eventExists: boolean,
+    opts: { enqueueThrows?: boolean } = {},
+): Promise<{
     result: { collected: number; events: number };
     jobInserts: { text: string; params: unknown[] }[];
     outboxInserts: { text: string; params: unknown[] }[];
+    setHighWatermarkCalls: () => number;
 }> {
     // 爬虫：列表/详情 HTML 按 URL 分发（fetchLatest 最多取 2 个空页后停止）
     const crawlerUtils = req('../../../shared/utils/crawler');
@@ -68,7 +73,7 @@ async function runOneCycle(eventExists: boolean): Promise<{
 
     // Redis：高水位 / 写入
     mock.method(redis, 'get', (async () => '2026-08-04') as unknown as typeof redis.get);
-    mock.method(redis, 'set', (async () => 'OK') as unknown as typeof redis.set);
+    const setHighWatermarkMock = mock.method(redis, 'set', (async () => 'OK') as unknown as typeof redis.set);
     mock.method(redis, 'xadd', (async () => '0-0') as unknown as typeof redis.xadd);
 
     // pool.query：known 集合 / 自选股 / createEvent / publishPending（无 pending）
@@ -82,7 +87,7 @@ async function runOneCycle(eventExists: boolean): Promise<{
     }) as unknown as typeof pool.query;
     mock.method(pool, 'query', poolQueryMock);
 
-    // pool.connect：enqueue 事务客户端（记录 job/outbox INSERT）
+    // pool.connect：enqueue 事务客户端（记录 job/outbox INSERT）；enqueueThrows 时模拟连接抛错
     const jobInserts: { text: string; params: unknown[] }[] = [];
     const outboxInserts: { text: string; params: unknown[] }[] = [];
     const clientQuery = (async (text: string, params?: unknown[]) => {
@@ -96,10 +101,12 @@ async function runOneCycle(eventExists: boolean): Promise<{
         }
         return { rows: [] };
     }) as unknown as typeof pool.query;
-    mock.method(pool, 'connect', (async () => ({ query: clientQuery, release: () => {} })) as unknown as typeof pool.connect);
+    mock.method(pool, 'connect', opts.enqueueThrows
+        ? (async () => { throw new Error('connection lost'); }) as unknown as typeof pool.connect
+        : (async () => ({ query: clientQuery, release: () => {} })) as unknown as typeof pool.connect);
 
     const result = await runCycle();
-    return { result, jobInserts, outboxInserts };
+    return { result, jobInserts, outboxInserts, setHighWatermarkCalls: () => setHighWatermarkMock.mock.callCount() };
 }
 
 describe('runCycle → enqueue 接线', () => {
@@ -131,5 +138,16 @@ describe('runCycle → enqueue 接线', () => {
             [EXPECTED_EVENT_ID, VERSION],
             '重复入队仍以同一 event_id',
         );
+    });
+
+    it('enqueue 抛错（DB 抖动）时仅记日志跳过，不中断整轮循环', async () => {
+        const warn = mock.method(console, 'warn', () => {});
+        const { result, jobInserts, outboxInserts, setHighWatermarkCalls } = await runOneCycle(true, { enqueueThrows: true });
+
+        assert.equal(result.events, 1, '事件创建计数不受入队失败影响');
+        assert.equal(jobInserts.length, 0, '入队失败不应产生 job INSERT');
+        assert.equal(outboxInserts.length, 0, '入队失败不应产生 outbox INSERT');
+        assert.equal(warn.mock.callCount(), 1, '入队失败应记录告警日志');
+        assert.equal(setHighWatermarkCalls(), 1, '高水位仍推进，下轮增量回溯不受影响');
     });
 });
