@@ -1066,12 +1066,12 @@ interface HotConcept {
 
 /** 从同花顺板块轮动API获取板块轮动数据（截取指定天数） */
 export async function fetchBlockRotationData(days: number = 20): Promise<{
-    sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
+    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 }> {
-    const cacheKey = `block_rotation_${days}`;
+    const cacheKey = `block_rotation_${days}_v2`;
     const cached = await cacheGet<{
-        sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
+        sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
         rawData: BlockRotationDay[];
     }>(cacheKey);
     if (cached) {
@@ -1138,10 +1138,12 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     console.log(`[HotSectorAnalyzer] 板块轮动API返回 ${allDataLists.length} 天数据，截取前 ${dataLists.length} 天`);
 
     // 统计每个板块的上榜次数和涨幅
-    const sectorStats = new Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>();
+    const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
 
-    for (const dayData of dataLists) {
-        const blockList = dayData.block_list || [];
+    // dataLists 契约：降序（最新在前，首日=最新交易日；已由数据探查验证：首日 2026-08-05 / 末日 2026-05-13）。
+    // freq20 统计数组前 20 位（最新 20 天）。
+    for (let i = 0; i < dataLists.length; i++) {
+        const blockList = dataLists[i].block_list || [];
         for (const block of blockList) {
             const key = block.name;
             const zf5 = parseFloat(block.info?.zf5 || '0');
@@ -1151,16 +1153,34 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
                     name: block.name,
                     code: block.code,
                     frequency: 1,
+                    freq20: i < 20 ? 1 : 0,
+                    freq_delta: 0,
                     avgZf5: zf5,
                     latestZf5: zf5,
                 });
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
+                if (i < 20) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf5) / stat.frequency;
                 stat.latestZf5 = zf5; // 保留最新一天的涨幅
             }
         }
+    }
+
+    // 频次变化率 Δ：近10日（数组前10位，降序最新在前）逐日标记后反转为升序（旧→新），近5日 = 后5位
+    const windowDays = dataLists.slice(0, 10);
+    const hitsMap = new Map<string, number[]>();
+    for (let d = windowDays.length - 1; d >= 0; d--) {
+        const daySet = new Set((windowDays[d].block_list || []).map(b => b.name));
+        for (const name of sectorStats.keys()) {
+            const hits = hitsMap.get(name) || [];
+            hits.push(daySet.has(name) ? 1 : 0);
+            hitsMap.set(name, hits);
+        }
+    }
+    for (const stat of sectorStats.values()) {
+        stat.freq_delta = calcFreqDelta(hitsMap.get(stat.name) || []);
     }
 
     console.log(`[HotSectorAnalyzer] 板块轮动统计完成: ${sectorStats.size} 个板块`);
@@ -1335,8 +1355,8 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
     }
 }
 
-async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, days: number = 20): Promise<HotConcept[]> {
-    const cacheKey = `hot_concepts_${days}_${minFrequency}_${topN}`;
+async function identifyHotConcepts(topN: number = 16, days: number = 60): Promise<HotConcept[]> {
+    const cacheKey = `hot_concepts_${days}_${topN}`;
     const cached = await cacheGet<HotConcept[]>(cacheKey);
     if (cached) {
         console.log('[HotSectorAnalyzer] 使用缓存的风口概念数据');
@@ -1347,20 +1367,18 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
     console.log('[HotSectorAnalyzer] 使用同花顺板块轮动表筛选风口板块');
     const { sectorStats } = await fetchBlockRotationData(days);
 
-    // 全行业覆盖：不再筛选AI相关板块，直接使用全部板块
+    // 全行业覆盖：直接使用全部板块
     const allSectors = Array.from(sectorStats.values());
     console.log(`[HotSectorAnalyzer] 全行业板块: ${allSectors.length} 个`);
 
     // 按上榜频次排序，频次相同按平均涨幅排序
     allSectors.sort((a, b) => b.frequency - a.frequency || b.avgZf5 - a.avgZf5);
 
-    // 构建HotConcept列表
+    // 构建HotConcept列表（含 freq20/freq_delta；driver 占位与 amount_trend 已移除）
     const candidates: HotConcept[] = allSectors.map(sector => {
-        // 评分：上榜频次(40%) + 资金净流入(30%) + 平均涨幅(20%) + 最新涨幅(10%)
         const freqScore = Math.min(10, sector.frequency * 1.2);
         const avgChangeScore = Math.min(10, Math.abs(sector.avgZf5) * 1.5);
         const latestChangeScore = Math.min(10, Math.abs(sector.latestZf5) * 1.0);
-        // 资金评分初始为0，补充资金数据后重新计算
         const score = Math.round((freqScore * 4.0 + avgChangeScore * 2.0 + latestChangeScore * 1.0) * 100) / 100;
 
         return {
@@ -1368,11 +1386,11 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             name: sector.name,
             type: 'concept',
             frequency: sector.frequency,
+            freq20: sector.freq20,
+            freq_delta: sector.freq_delta,
             avg_change: Math.round(sector.avgZf5 * 100) / 100,
             today_change: Math.round(sector.latestZf5 * 100) / 100,
-            amount_trend: 0,
             net_inflow: 0,
-            driver: `${days}日板块轮动上榜${sector.frequency}次`,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -1381,23 +1399,22 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
         };
     });
 
-    // 筛选上榜频次 >= minFrequency 的概念
-    let hotConcepts = candidates.filter(c => c.frequency >= minFrequency);
-    if (hotConcepts.length < topN) {
-        hotConcepts = candidates.filter(c => c.frequency >= Math.max(1, minFrequency - 1));
+    // 双池预筛：长线池(freq60≥8) ∪ 短线池(freq20≥3)，交集板块两链都跑（无兜底降级）
+    const longNames = new Set(candidates.filter(c => c.frequency >= 8).map(c => c.name));
+    const shortNames = new Set(candidates.filter(c => (c.freq20 ?? 0) >= 3).map(c => c.name));
+    if (longNames.size === 0 && shortNames.size === 0) {
+        console.log('[HotSectorAnalyzer] 双池为空（freq60<8 且 freq20<3）');
+        return [];
     }
-    if (hotConcepts.length < topN) {
-        hotConcepts = candidates
-            .sort((a, b) => b.score - a.score)
-            .slice(0, topN);
-    }
+    const result: HotConcept[] = candidates
+        .filter(c => longNames.has(c.name) || shortNames.has(c.name))
+        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topN);
 
-    hotConcepts.sort((a, b) => b.score - a.score);
-    const result = hotConcepts.slice(0, topN);
-
-    console.log(`[HotSectorAnalyzer] 风口板块筛选完成: ${result.length} 个`);
+    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个 / 短线池: ${shortNames.size} 个，取 top${topN} 做 AI 研判`);
     for (const c of result) {
-        console.log(`  ${c.name}: 上榜${c.frequency}次, 均涨幅${c.avg_change}%, 评分${c.score}`);
+        console.log(`  ${c.name}: freq60=${c.frequency} freq20=${c.freq20} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
     }
 
     // 从同花顺概念板块页面并发爬取龙头股
@@ -3091,11 +3108,11 @@ export class WindLeaderAnalyzerService {
         // 清除缓存，确保获取最新数据
         await clearAllCache();
 
-        // 1. 识别风口概念板块（60天波段统计）
-        let hotConcepts = await identifyHotConcepts(8, 2, 60);
+        // 1. 识别风口候选池（60天波段统计 + freq20，候选池预筛 freq60≥8 || freq20≥3）
+        const hotConcepts = await identifyHotConcepts(16, 60);
+        // 候选池为空 → 空榜（不再降低条件重试）
         if (hotConcepts.length === 0) {
-            console.log('[HotSectorAnalyzer] 未识别到风口概念，降低筛选条件重试');
-            hotConcepts = await identifyHotConcepts(8, 1, 60);
+            console.log('[HotSectorAnalyzer] 候选池为空（freq60<8 且 freq20<3），返回空榜');
         }
 
         const result: FullAnalysisResult = {
