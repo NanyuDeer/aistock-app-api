@@ -382,6 +382,109 @@ export async function confirmLongTermMonthly(conceptName: string): Promise<'stro
     }
 }
 
+/** MA60 位置：站上(+x%)/跌破(-x%)/贴近/数据不足（closes 升序，最新在后） */
+export function calcMa60Status(closes: number[]): string {
+    if (closes.length < 60) return '数据不足';
+    const window = closes.slice(-60);
+    const last = window[window.length - 1];
+    const ma60 = window.reduce((s, v) => s + v, 0) / 60;
+    const pct = (last - ma60) / ma60 * 100;
+    if (pct > 2) return `站上(+${pct.toFixed(1)}%)`;
+    if (pct < -2) return `跌破(${pct.toFixed(1)}%)`;
+    return '贴近60日线';
+}
+
+/** 量能趋势：近5日均量 vs 前5日均量（vols 升序，最新在后） */
+export function calcVolTrend(vols: number[]): string {
+    if (vols.length < 10) return '数据不足';
+    const recent = vols.slice(-5).reduce((s, v) => s + v, 0) / 5;
+    const prev = vols.slice(-10, -5).reduce((s, v) => s + v, 0) / 5;
+    if (prev <= 0) return '平量';
+    const ratio = recent / prev;
+    if (ratio > 1.2) return '放量';
+    if (ratio < 0.8) return '缩量';
+    return '平量';
+}
+
+/** 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（hits 升序，1=上榜；前5日为0且近5日>0 → 99 陡升哨兵） */
+export function calcFreqDelta(hits: number[]): number {
+    if (hits.length < 10) return 0;
+    const recent = hits.slice(-5).reduce((s, v) => s + v, 0);
+    const prev = hits.slice(-10, -5).reduce((s, v) => s + v, 0);
+    if (prev === 0) return recent > 0 ? 99 : 0;
+    return recent / prev;
+}
+
+/**
+ * 长线链证据：MA60 位置（仅长线池板块调用）
+ * 降级：无映射/无数据/异常 → '未知'（不阻塞）
+ */
+export async function fetchLongEvidence(conceptName: string): Promise<{ ma60_status: string }> {
+    const fallback = { ma60_status: '未知' };
+    try {
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) return fallback;
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length < 60) return fallback;
+        const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+        return { ma60_status: calcMa60Status(sorted.map(d => d.close)) };
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] fetchLongEvidence: 「${conceptName}」异常:`, (err as Error).message);
+        return fallback;
+    }
+}
+
+/**
+ * 短线链证据：量能趋势 + 换手率 + 涨停家数/最高连板（仅短线池板块调用）
+ * 涨停/连板复用主流程已拉取的 limitListMap（0 次额外 Tushare 调用）
+ * 降级：无映射/无数据/异常 → 默认值
+ */
+export async function fetchShortEvidence(
+    conceptName: string,
+    limitListMap?: Map<string, LimitListThsRow>,
+    conceptCodes?: Set<string>,
+): Promise<{ vol_trend: string; turnover: number; limit_up_count: number; max_boards: number }> {
+    const fallback = { vol_trend: '未知', turnover: 0, limit_up_count: 0, max_boards: 0 };
+    try {
+        // 涨停家数/最高连板：从已有 limitListMap 统计（status 如 "2连板"、"3天2板"，解析数字）
+        let limitUpCount = 0, maxBoards = 0;
+        if (limitListMap && conceptCodes && conceptCodes.size > 0) {
+            for (const [code, row] of limitListMap) {
+                const shortCode = code.replace(/\.(SS|SZ|BJ)$/, '');
+                if (!conceptCodes.has(shortCode)) continue;
+                limitUpCount += 1;
+                const m = (row.status || '').match(/(\d+)(?:连)?板/);
+                const boards = m ? parseInt(m[1], 10) : 1;
+                maxBoards = Math.max(maxBoards, boards);
+            }
+        }
+
+        // 量能/换手：ths_daily（近60日足够算近5vs前5均量）
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 60);
+        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length < 10) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
+        const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+        return {
+            vol_trend: calcVolTrend(sorted.map(d => d.vol)),
+            turnover: sorted[sorted.length - 1]?.turnover_rate ?? 0,
+            limit_up_count: limitUpCount,
+            max_boards: maxBoards,
+        };
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] fetchShortEvidence: 「${conceptName}」异常:`, (err as Error).message);
+        return fallback;
+    }
+}
+
 async function ensureCacheDir(): Promise<void> {
     // recursive 选项在目录已存在时不抛错，无需 existsSync 预检查
     await fs.promises.mkdir(CACHE_DIR, { recursive: true });
