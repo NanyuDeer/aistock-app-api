@@ -1042,6 +1042,53 @@ router.get('/usage/summary', async (req: Request, res: Response) => {
     }
 });
 
+/**
+ * GET /internal/usage/sessions?user_id=xxx
+ * 会话维度 token 用量聚合（P10 线 4：会话列表 + 历史用量查询）。
+ *
+ * 只读聚合 chat_token_usage（session_id 由计划 B 的 ws.py 每轮写入），
+ * 按 session_id GROUP BY；pg 对 SUM(...)::bigint 返回 string，统一 Number() 数值化。
+ *
+ * 成功: { code: 200, data: { user_id, items: [{ session_id, turn_count,
+ *          total_tokens, prompt_tokens, completion_tokens, last_used_at }] } }
+ * 400: user_id 缺失或为空
+ */
+router.get('/usage/sessions', async (req: Request, res: Response) => {
+    const user_id = queryStr(req, 'user_id');
+    if (!user_id || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                session_id,
+                COUNT(*)::int AS turn_count,
+                SUM(total_tokens)::bigint AS total_tokens,
+                SUM(prompt_tokens)::bigint AS prompt_tokens,
+                SUM(completion_tokens)::bigint AS completion_tokens,
+                MAX(created_at) AS last_used_at
+             FROM chat_token_usage
+             WHERE user_id = $1 AND session_id IS NOT NULL
+             GROUP BY session_id
+             ORDER BY last_used_at DESC`,
+            [user_id]
+        );
+        const items = result.rows.map((row: Record<string, unknown>) => ({
+            session_id: row.session_id,
+            turn_count: Number(row.turn_count ?? 0),
+            total_tokens: Number(row.total_tokens ?? 0),
+            prompt_tokens: Number(row.prompt_tokens ?? 0),
+            completion_tokens: Number(row.completion_tokens ?? 0),
+            last_used_at: row.last_used_at ?? null,
+        }));
+        res.json({ code: 200, data: { user_id, items } });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/sessions GET error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**
