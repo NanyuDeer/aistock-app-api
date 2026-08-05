@@ -1835,21 +1835,53 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
         ])
 
         // 构建 event_id → rank / direction / level 的映射
+        // 读取优先级（历史兼容三级回退）：
+        //   ① top_bullish_event / top_bearish_event（新 Schema）
+        //   ② current_focus_event / ongoing_significant_event（旧 Schema）
+        //   ③ events[]（最旧格式）
         const giRankMap = new Map<string, number>()
         const giDirectionMap = new Map<string, string>()
         const giLevelMap = new Map<string, string>()
         if (giResult.rows.length > 0) {
             const giContent = (giResult.rows[0]['content'] as Record<string, unknown>) || {}
-            const events = (giContent['events'] as Array<Record<string, unknown>>) || []
-            events.forEach((ev) => {
+
+            const applyGiEvent = (ev: Record<string, unknown> | undefined, rank: number): void => {
+                if (!ev) return
                 const eventId = String(ev['event_id'] || '')
-                const rank = Number(ev['rank']) || 0
-                if (eventId && rank > 0) {
+                if (eventId) {
                     giRankMap.set(eventId, rank)
                     giDirectionMap.set(eventId, String(ev['direction'] || ''))
                     giLevelMap.set(eventId, String(ev['importance_level'] || ''))
                 }
-            })
+            }
+
+            const topBullish = giContent['top_bullish_event'] as Record<string, unknown> | undefined
+            const topBearish = giContent['top_bearish_event'] as Record<string, unknown> | undefined
+            if (topBullish || topBearish) {
+                // 新 Schema：最大利好 → rank=1，最大利空 → rank=2
+                applyGiEvent(topBullish, 1)
+                applyGiEvent(topBearish, 2)
+            } else {
+                const focus = giContent['current_focus_event'] as Record<string, unknown> | undefined
+                const ongoing = giContent['ongoing_significant_event'] as Record<string, unknown> | undefined
+                if (focus || ongoing) {
+                    // 旧 Schema 双事件：焦点 → rank=1，持续 → rank=2
+                    applyGiEvent(focus, 1)
+                    applyGiEvent(ongoing, 2)
+                } else {
+                    // 最旧格式 events[]（含 rank 字段）
+                    const legacyEvents = (giContent['events'] as Array<Record<string, unknown>>) || []
+                    legacyEvents.forEach((ev) => {
+                        const eventId = String(ev['event_id'] || '')
+                        const rank = Number(ev['rank']) || 0
+                        if (eventId && rank > 0) {
+                            giRankMap.set(eventId, rank)
+                            giDirectionMap.set(eventId, String(ev['direction'] || ''))
+                            giLevelMap.set(eventId, String(ev['importance_level'] || ''))
+                        }
+                    })
+                }
+            }
         }
 
         const items = dataResult.rows.map((row: Record<string, unknown>) => {
