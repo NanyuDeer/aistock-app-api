@@ -9,6 +9,7 @@
 //   采集器据此判断是否已越过回溯日期。
 import * as cheerio from 'cheerio';
 import { thsCrawler } from '../../shared/utils/crawler';
+import type { MentionedSymbol } from './types';
 
 const LIST_URL = 'https://yuanchuang.10jqka.com.cn/mrnxgg_list/';
 const MAX_PAGES = 30;                 // 安全上限（PRD：连续 2 页无新 ID 或 30 页上限）
@@ -25,7 +26,8 @@ export interface RawArticle {
 
 export interface ParsedDetail {
     content: string;          // 异动原因揭秘正文（含免责声明前全文）
-    mentionedSymbols: Array<{ symbol: string; name: string; changePct?: string }>;
+    // 与 types.ts MentionedSymbol 对齐（change_pct），避免 camelCase 死字段
+    mentionedSymbols: MentionedSymbol[];
     publishedAt: string;      // "2026-08-05 11:26:03"
 }
 

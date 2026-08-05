@@ -66,6 +66,9 @@ import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
 
+// insight 自选股洞察模块
+import { runCycle as runInsightCycle } from './modules/insight/InsightService';
+
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
 import { StockInfoJudgementController } from './modules/crawler/judgementController';
@@ -732,6 +735,16 @@ cron.schedule('*/10 * * * *', () => {
         `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
     );
 }, { timezone: 'Asia/Shanghai' });
+
+// 自选股洞察：交易时段（周一至周五 9:00-15:59）每 10 分钟轮询采集
+cron.schedule('*/10 9-15 * * 1-5', async () => {
+    try {
+        const { collected, events } = await runInsightCycle();
+        console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
+    } catch (err: unknown) {
+        console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 }
 
 async function start() {
@@ -986,6 +999,14 @@ async function start() {
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
     } catch (err: unknown) {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
+    try {
+        await pool.query('SELECT 1 FROM watchlist_insight_sources LIMIT 1');
+        console.log('[DB] watchlist_insight_sources table ready');
+    } catch (err: unknown) {
+        console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
     }
 
     try {
