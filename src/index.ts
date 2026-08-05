@@ -1033,7 +1033,11 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        PriceTriggerDetector.start();
+        // 旧 stock_trace 事件发现/价格触发：默认停用，仅 STOCK_TRACE_TRIGGER_ENABLED === 'true' 时启动
+        // （保留代码路径便于回滚；新自选股洞察已由 insight 模块替代旧 stock_trace 写入）
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
+            PriceTriggerDetector.start();
+        }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
         });
