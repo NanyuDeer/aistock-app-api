@@ -1,13 +1,15 @@
 // src/modules/insight/InsightService.ts
-// 自选股洞察：来源文章采集 → 自选股筛选 → 洞察事件创建
+// 自选股洞察：来源文章采集 → 自选股筛选 → 洞察事件创建 → 任务入队
 //
 // 数据流：
 //   fetchLatest（增量抓取，跳过已知文章）→ fetchDetail + parseTitleKeywords 组装
-//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → createEvent（幂等）→ 推进高水位
+//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → createEvent（幂等）
+//   → enqueue 接入任务队列（outbox → Redis Stream）→ 推进高水位
 import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { fetchLatest, fetchDetail, parseTitleKeywords } from './LimitUpRadarCrawler';
 import { upsertSources, getHighWatermark, setHighWatermark } from './InsightSourceService';
+import { enqueue } from './InsightJobService';
 import type { SourceArticle } from './InsightSourceService';
 
 /**
@@ -15,7 +17,8 @@ import type { SourceArticle } from './InsightSourceService';
  * 1. 冷启动回溯 2 个交易日，此后从上一高水位开始增量抓取；
  * 2. 详情解析并入库；
  * 3. 文章提及标的中命中用户自选股的，创建洞察事件（业务唯一键幂等）；
- * 4. 推进高水位，供下次增量回溯。
+ * 4. 命中事件接入任务队列（enqueue，幂等），供 Python 消费端经 Redis Stream 消费；
+ * 5. 推进高水位，供下次增量回溯。
  * @returns 新入库文章数与新建事件数
  */
 export async function runCycle(): Promise<{ collected: number; events: number }> {
@@ -50,7 +53,11 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
     for (const a of enriched) {
         const hit = a.mentionedSymbols.find(s => watchlist.has(s.symbol));
         if (!hit) continue;
-        if (await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate)) events++;
+        const created = await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate);
+        // 每个命中事件都接入任务队列：enqueue 幂等（(event_id, analysis_version) 唯一键 DO NOTHING），
+        // 事件已存在时重复调用安全且具备自愈能力，保证 watchlist-insight.jobs Stream 必有消息
+        await enqueue(buildEventId(hit.symbol, a.tradeDate));
+        if (created) events++;
     }
     await setHighWatermark(todayStr());
     return { collected: inserted, events };
@@ -65,6 +72,15 @@ async function getWatchlistSymbols(): Promise<Set<string>> {
 }
 
 /**
+ * 生成洞察事件 ID：wi_YYYYMMDD_symbol_limit_up。
+ * 事件 ID 由 createEvent 内部生成，runCycle 入队时需同源复用，故抽为导出辅助，
+ * 保证与 016 迁移及 watchlist_insight_jobs.event_id 关联键格式一致。
+ */
+export function buildEventId(symbol: string, tradeDate: string): string {
+    return `wi_${tradeDate.replace(/-/g, '')}_${symbol}_limit_up`;
+}
+
+/**
  * 创建洞察事件。
  * 业务唯一键 (symbol, trade_date, direction, insight_group)，direction='up'、insight_group='limit_up_radar'
  * 均由表默认值填充；重复调用命中 ON CONFLICT DO NOTHING，返回 false（幂等）。
@@ -76,7 +92,7 @@ export async function createEvent(
     sourceId: string,
     tradeDate: string,
 ): Promise<boolean> {
-    const eventId = `wi_${tradeDate.replace(/-/g, '')}_${symbol}_limit_up`;
+    const eventId = buildEventId(symbol, tradeDate);
     const res = await pool.query(
         `INSERT INTO watchlist_insight_events (event_id, symbol, stock_name, trade_date, source_id)
          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (symbol, trade_date, direction, insight_group) DO NOTHING RETURNING event_id`,
