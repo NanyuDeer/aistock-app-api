@@ -138,19 +138,25 @@ interface IndustryStat {
 /** 风口板块完整分析结果（hot_sectors 元素） */
 interface HotSectorAnalysis {
     code: string;
-    cycle: 'short' | 'long';  // 短线风口 / 长线风口（月线多头确认）
+    cycle: 'short' | 'long' | 'both';  // 短线风口 / 长线风口 / 长短线同时成立
     name: string;
     type: string;
     frequency: number;
+    freq20?: number;
+    freq_delta?: number;
     avg_change: number;
     today_change: number;
-    amount_trend: number;
     net_inflow: number;
+    driver_type?: string;
+    ma60_status?: string;
+    vol_trend?: string;
+    turnover?: number;
+    limit_up_count?: number;
+    max_boards?: number;
     leading_stock: string;
     leading_change: number;
     up_count: number;
     down_count: number;
-    driver: string;
     score: number;
     related_industries: string[];
     industry_data: IndustryStat[];
@@ -870,11 +876,20 @@ interface HotConcept {
     name: string;
     type: string;
     frequency: number;
-    avg_change: number;
+    freq20?: number;        // 近20日上榜次数（短线活跃度）
+    freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
+    avg_change: number;     // 60日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
-    amount_trend: number;
-    net_inflow: number;  // 板块主力净流入（万元，来自东方财富）
-    driver: string;
+    net_inflow: number;     // 板块主力净流入（万元，moneyflow_cnt_ths；amount_trend 已合并移除）
+    driver?: string;        // 驱动文本（当前无数据源，不填占位文本）
+    driver_type?: string;   // 驱动类型：政策/业绩/事件/技术（AI 研判回填，非规则归类）
+    ma60_status?: string;   // MA60 位置：站上(+x%)/跌破(-x%)/贴近/数据不足
+    vol_trend?: string;     // 近5日量能：放量/平量/缩量
+    turnover?: number;      // 换手率（ths_daily，缺失为 0）
+    limit_up_count?: number; // 板块内涨停家数（limit_list_ths，短线情绪）
+    max_boards?: number;     // 板块内最高连板数（limit_list_ths，短线高度）
+    in_long_pool?: boolean;  // 是否进入长线池（freq60≥8）
+    in_short_pool?: boolean; // 是否进入短线池（freq20≥3）
     leading_stock: string;
     leading_change: number;
     up_count: number;
@@ -1310,7 +1325,6 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
                 // net_amount单位是亿元，转为万元存储（前端formatNetInflow会转换显示）
                 const netAmountWan = (mf.net_amount || 0) * 10000;
                 concept.net_inflow = netAmountWan;
-                concept.amount_trend = netAmountWan;
                 // 用lead_stock补充领涨股（如果爬取失败）
                 if (concept.leading_stock === '--' && mf.lead_stock) {
                     concept.leading_stock = mf.lead_stock;
@@ -1811,6 +1825,15 @@ function pearsonCorrelation(x: number[], y: number[]): number {
 interface AiAnalysis {
     persistence: string;
     persistence_reason: string;
+    long_term_days: number;      // 长线影响预计持续天数（0~90）
+    long_confidence: number;     // 长线置信度（0~1）
+    logic_type: string;          // 长线置信度依据标签：政策/业绩/资金/无支撑（前端 Tag）
+    long_reason: string;         // 长线研判理由（50字内，喂给 agent 长线链简报）
+    short_term_days: number;     // 短线影响预计持续天数（0~30）
+    short_heat: number;          // 短线热度（0~1）
+    heat_stage: string;          // 短线热度阶段标签：启动期/发酵期/高潮期/衰退期（前端 Tag）
+    short_reason: string;        // 短线研判理由（50字内，喂给 agent 短线链简报）
+    driver_type?: string;        // 驱动类型：政策/业绩/事件/技术（AI 推断）
     heat_transfer: boolean;
     transfer_direction: string;
     transfer_reason: string;
