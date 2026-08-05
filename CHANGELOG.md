@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`/internal/trend/top` 的 `dimScores` 从 `parseJsonb(r.dim_scores)` 回退为 `JSON.parse(r.dim_scores as string || '[]')`，移除 parseJsonb import
+- `tests/StockInfoService.test.ts`：修正 import 路径（`src/core/db` → `src/db`、`src/modules/crawler/StockInfoService` → `src/services/StockInfoService`）；删除重复的推送过滤边界断言（中性/利空/重大利空/窗口外用例，已由专门测试覆盖）
+
+---
+
 ## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
 
 **开发者**: Aria
