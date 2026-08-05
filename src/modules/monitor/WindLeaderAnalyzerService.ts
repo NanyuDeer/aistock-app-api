@@ -282,6 +282,41 @@ export function buildMonthlySeries(
     return [...monthly.values()];
 }
 
+/** 单月多头排列：该月收盘 > MA5 > MA10（MA5/MA10 = 最近5/10个月收盘均值） */
+function isMonthBullish(monthIndex: number, months: number[]): boolean {
+    if (monthIndex < 9) return false; // 需要至少 10 个月的均线数据
+    const closes = months.slice(0, monthIndex + 1);
+    const last = closes[closes.length - 1];
+    const ma5 = closes.slice(-5).reduce((s, v) => s + v, 0) / 5;
+    const ma10 = closes.slice(-10).reduce((s, v) => s + v, 0) / 10;
+    return last > ma5 && ma5 > ma10;
+}
+
+/**
+ * 月线连续优先分级（作为 AI 研判输入因素，非硬条件）
+ * 强信号：最近 3 月连续多头排列；次信号：近 6 月多头月 ≥4 且最近 1 月多头；否则未确认
+ * 需 ≥16 个月月K
+ */
+export function classifyMonthlySignal(months: number[]): 'strong' | 'weak' | 'none' {
+    if (months.length < 16) return 'none';
+    const len = months.length;
+    const last3Bullish = [len - 1, len - 2, len - 3].every(idx => isMonthBullish(idx, months));
+    if (last3Bullish) return 'strong';
+    let recent6BullishCount = 0;
+    for (let offset = 0; offset < 6; offset++) {
+        if (isMonthBullish(len - 6 + offset, months)) recent6BullishCount += 1;
+    }
+    if (recent6BullishCount >= 4 && isMonthBullish(len - 1, months)) return 'weak';
+    return 'none';
+}
+
+/** 月线分级结果 → AI prompt 文本 */
+export function monthlySignalText(signal: 'strong' | 'weak' | 'none'): string {
+    if (signal === 'strong') return '强信号(近3月连续多头排列)';
+    if (signal === 'weak') return '次信号(近6月多头月≥4且最近1月多头)';
+    return '月线未确认';
+}
+
 /**
  * 月线趋势确认：板块指数月线多头排列且同比环比向上 → 长线风口
  *
@@ -315,6 +350,35 @@ export async function confirmMonthlyTrend(conceptName: string): Promise<boolean>
     } catch (err) {
         console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」异常:`, (err as Error).message);
         return false;
+    }
+}
+
+/**
+ * 月线连续优先分级（AI 输入因素）。复用 getThsIndexNameMap + getThsDaily 拉近2年日线。
+ * 降级：无映射/无数据/数据不足/异常 → 'none'（不阻塞主流程）
+ */
+export async function confirmLongTermMonthly(conceptName: string): Promise<'strong' | 'weak' | 'none'> {
+    try {
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) {
+            console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 板块「${conceptName}」无Tushare指数映射`);
+            return 'none';
+        }
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 2);
+        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length === 0) return 'none';
+        const months = buildMonthlySeries(daily);
+        if (months.length < 16) {
+            console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 「${conceptName}」月K不足16根(${months.length})`);
+            return 'none';
+        }
+        return classifyMonthlySignal(months);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 「${conceptName}」异常:`, (err as Error).message);
+        return 'none';
     }
 }
 
