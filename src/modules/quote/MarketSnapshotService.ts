@@ -72,6 +72,8 @@ export interface MarketBreadth {
     limit_count_approximate: boolean;
     total_volume: number;
     avg_change_pct: number;
+    /** 全市场成交额合计（元），来自腾讯行情行“成交额”（万元→元）。 */
+    total_amount_yuan: number;
 }
 
 /** quick snapshot 数据覆盖标识。 */
@@ -154,10 +156,12 @@ export interface QuickCloseMarketSnapshot extends Omit<
         source: 'tencent:quote';
     };
     turnover: {
-        amount_yuan: null;
-        previous_amount_yuan: null;
-        change_pct: null;
-        source: 'tushare:daily';
+        amount_yuan: number | null;
+        previous_amount_yuan: number | null;
+        change_pct: number | null;
+        source: 'tushare:daily' | 'tencent:quote';
+        /** quick 版成交额为全市场行情行聚合近似（腾讯源），非 Tushare 精确口径。 */
+        approximate?: boolean;
     };
     limits: {
         up_count: number | null;
@@ -167,7 +171,9 @@ export interface QuickCloseMarketSnapshot extends Omit<
     };
     main_force: {
         large_and_extra_large_net_yuan: number | null;
-        source: 'tushare:moneyflow_ths';
+        source: 'tushare:moneyflow_ths' | 'tushare:moneyflow_cnt_ths';
+        /** quick 版主力净额为概念板块净流入合计近似（moneyflow_cnt_ths），非个股大单/特大单精确口径。 */
+        approximate?: boolean;
     };
     coverage_info: QuickSnapshotCoverage;
     quick_data_availability: QuickSnapshotDataAvailability;
