@@ -106,3 +106,79 @@ describe('InsightController.list', () => {
         assert.deepEqual(resState.body, { code: 200, data: fakeRows }, '响应格式应为 { code, data }');
     });
 });
+
+describe('InsightController.get', () => {
+    const EVENT_ID = 'wi_20260805_000962_limit_up';
+
+    it('未登录（无 Bearer token）返回 401 且不查询数据库', async () => {
+        process.env.JWT_SECRET = TEST_SECRET;
+        let queryCalled = false;
+        mock.method(pool, 'query', (async () => {
+            queryCalled = true;
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+
+        const req = { params: { eventId: EVENT_ID }, headers: {} } as unknown as Request;
+        const resState = makeRes();
+        const res = resState as unknown as Response;
+        const next: NextFunction = () => {};
+
+        await InsightController.get(req, res, next);
+
+        const body = resState.body as { code?: number } | undefined;
+        assert.equal(body?.code, 401, '未登录应返回 code 401');
+        assert.equal(queryCalled, false, '未登录不应发起数据库查询');
+    });
+
+    it('登录但无自选股归属返回 404', async () => {
+        process.env.JWT_SECRET = TEST_SECRET;
+        const token = buildToken(TEST_OPENID);
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+
+        const req = {
+            params: { eventId: EVENT_ID },
+            headers: { authorization: `Bearer ${token}` },
+        } as unknown as Request;
+        const resState = makeRes();
+        const res = resState as unknown as Response;
+        const next: NextFunction = () => {};
+
+        await InsightController.get(req, res, next);
+
+        const body = resState.body as { code?: number } | undefined;
+        assert.equal(body?.code, 404, '无自选股归属应返回 code 404');
+    });
+
+    it('登录且有自选股归属返回 200，SQL 含 user_stocks JOIN 与 openid 参数', async () => {
+        process.env.JWT_SECRET = TEST_SECRET;
+        const token = buildToken(TEST_OPENID);
+        const fakeRow = { event_id: EVENT_ID, symbol: '000962', stock_name: '东方钽业' };
+        let captured: { text: string; params: unknown[] } | null = null;
+        mock.method(pool, 'query', (async (text: string, params?: unknown[]) => {
+            captured = { text, params: params ?? [] };
+            return { rows: [fakeRow] };
+        }) as unknown as typeof pool.query);
+
+        const req = {
+            params: { eventId: EVENT_ID },
+            headers: { authorization: `Bearer ${token}` },
+        } as unknown as Request;
+        const resState = makeRes();
+        const res = resState as unknown as Response;
+        const next: NextFunction = () => {};
+
+        await InsightController.get(req, res, next);
+
+        assert.ok(captured, '登录用户应发起数据库查询');
+        const sql = captured as { text: string; params: unknown[] };
+        assert.match(
+            sql.text,
+            /JOIN user_stocks us ON us\.symbol = e\.symbol AND us\.openid = \$1/,
+            '详情 SQL 应按登录用户自选股过滤',
+        );
+        assert.match(sql.text, /WHERE e\.event_id = \$2/, '详情 SQL 应以 eventId 为第二参数');
+        assert.equal(sql.params[0], TEST_OPENID, '第一个参数应为 openid');
+        assert.equal(sql.params[1], EVENT_ID, '第二个参数应为 eventId');
+        assert.deepEqual(resState.body, { code: 200, data: fakeRow }, '响应格式应为 { code, data }');
+    });
+});
