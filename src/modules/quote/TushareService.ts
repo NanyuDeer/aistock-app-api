@@ -919,28 +919,34 @@ export interface MoneyflowThsRow {
     mf_5day: number;          // 5日主力净额（万元）
 }
 
-/** 获取同花顺个股资金流向（增强版，替代moneyflow）
+/** 获取个股资金流向（原版 moneyflow，含大单/特大单买卖分项）
  * 频率限制：6000条/次
  * 注意：按ts_code查询时单次返回1条，按trade_date查询返回全市场
+ *
+ * 修复说明：原实现调用 moneyflow_ths（同花顺口径），但请求字段是原版 moneyflow
+ * 的字段名（buy_elg_amount/sell_lg_amount/sell_elg_amount/net_mf_amount 等），
+ * moneyflow_ths 并不存在这些字段，Tushare 只返回能识别的 buy_lg_amount，
+ * 其余为 undefined → computeMainForceNetYuan 得到 NaN（JSON 序列化为 null）。
+ * 此处改为调用原版 moneyflow，字段与 MoneyflowThsRow 接口完全匹配。
  */
 export async function getMoneyflowThs(tsCode: string, startDate?: string, endDate?: string): Promise<MoneyflowThsRow[]> {
     const params: Record<string, unknown> = { ts_code: tsCode };
     if (startDate) params.start_date = startDate;
     if (endDate) params.end_date = endDate;
     const rows = await tushareRequest(
-        'moneyflow_ths',
+        'moneyflow',
         params,
-        'ts_code,trade_date,buy_sm_amount,buy_md_amount,buy_lg_amount,buy_elg_amount,sell_sm_amount,sell_md_amount,sell_lg_amount,sell_elg_amount,net_mf_amount,net_mf_vol,buy_sm_ratio,buy_md_ratio,buy_lg_ratio,buy_elg_ratio,sell_sm_ratio,sell_md_ratio,sell_lg_ratio,sell_elg_ratio,net_mf_ratio,mf_5day',
+        'ts_code,trade_date,buy_sm_amount,buy_md_amount,buy_lg_amount,buy_elg_amount,sell_sm_amount,sell_md_amount,sell_lg_amount,sell_elg_amount,net_mf_amount,net_mf_vol',
     );
     return rows as unknown as MoneyflowThsRow[];
 }
 
-/** 获取单日全市场同花顺资金流向（用于批量选股） */
+/** 获取单日全市场资金流向（用于批量选股） */
 export async function getMoneyflowThsByDate(tradeDate: string): Promise<MoneyflowThsRow[]> {
     const rows = await tushareRequest(
-        'moneyflow_ths',
+        'moneyflow',
         { trade_date: tradeDate },
-        'ts_code,trade_date,buy_lg_amount,buy_elg_amount,sell_lg_amount,sell_elg_amount,net_mf_amount,net_mf_ratio,mf_5day',
+        'ts_code,trade_date,buy_lg_amount,buy_elg_amount,sell_lg_amount,sell_elg_amount,net_mf_amount,net_mf_vol',
     );
     return rows as unknown as MoneyflowThsRow[];
 }

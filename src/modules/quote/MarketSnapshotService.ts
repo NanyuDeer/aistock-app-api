@@ -72,6 +72,8 @@ export interface MarketBreadth {
     limit_count_approximate: boolean;
     total_volume: number;
     avg_change_pct: number;
+    /** 全市场成交额合计（元），来自腾讯行情行“成交额”（万元→元）。 */
+    total_amount_yuan: number;
 }
 
 /** quick snapshot 数据覆盖标识。 */
@@ -154,10 +156,12 @@ export interface QuickCloseMarketSnapshot extends Omit<
         source: 'tencent:quote';
     };
     turnover: {
-        amount_yuan: null;
-        previous_amount_yuan: null;
-        change_pct: null;
-        source: 'tushare:daily';
+        amount_yuan: number | null;
+        previous_amount_yuan: number | null;
+        change_pct: number | null;
+        source: 'tushare:daily' | 'tencent:quote';
+        /** quick 版成交额为全市场行情行聚合近似（腾讯源），非 Tushare 精确口径。 */
+        approximate?: boolean;
     };
     limits: {
         up_count: number | null;
@@ -167,7 +171,9 @@ export interface QuickCloseMarketSnapshot extends Omit<
     };
     main_force: {
         large_and_extra_large_net_yuan: number | null;
-        source: 'tushare:moneyflow_ths';
+        source: 'tushare:moneyflow_ths' | 'tushare:moneyflow_cnt_ths';
+        /** quick 版主力净额为概念板块净流入合计近似（moneyflow_cnt_ths），非个股大单/特大单精确口径。 */
+        approximate?: boolean;
     };
     coverage_info: QuickSnapshotCoverage;
     quick_data_availability: QuickSnapshotDataAvailability;
@@ -383,9 +389,30 @@ function selectTopSectors(rows: MoneyflowCntThsRow[]): {
 export function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
     let netWan = 0;
     for (const row of rows) {
-        netWan += row.buy_lg_amount + row.buy_elg_amount - row.sell_lg_amount - row.sell_elg_amount;
+        // Number(x) || 0 防护：Tushare moneyflow_ths 当日数据未完全就绪时，
+        // buy_elg_amount 等字段可能为 undefined，直接相加会得到 NaN，
+        // JSON 序列化后变成 null（曾被误判为数据缺失的根因）。
+        netWan += (Number(row.buy_lg_amount) || 0)
+            + (Number(row.buy_elg_amount) || 0)
+            - (Number(row.sell_lg_amount) || 0)
+            - (Number(row.sell_elg_amount) || 0);
     }
     return Math.round(netWan * 10000);
+}
+
+/**
+ * 判断 moneyflow_ths 行是否包含完整的大单/特大单买卖字段。
+ *
+ * Tushare moneyflow_ths 在收盘后数据分批发回，可能出现 buy_lg_amount 已有值、
+ * 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 仍为 undefined 的部分数据。
+ * 此时 computeMainForceNetYuan 会把缺失字段当 0，得到偏差巨大的结果，
+ * 调用方（如 TencentSnapshotService）应据此降级到概念板块近似或标记 unavailable。
+ */
+export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
+    return rows.every((row) =>
+        [row.buy_lg_amount, row.buy_elg_amount, row.sell_lg_amount, row.sell_elg_amount]
+            .every((v) => typeof v === 'number' && Number.isFinite(v)),
+    );
 }
 
 /** 连板天梯最高板数；无数据返回 0。 */

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildMonthlySeries, isMonthlyBullish } from '../src/modules/monitor/WindLeaderAnalyzerService';
+import { buildMonthlySeries, isMonthlyBullish, classifyMonthlySignal } from '../src/modules/monitor/WindLeaderAnalyzerService';
 
 /** 构造单调递增/递减的月收盘序列（从 base 起，每月 +step 或 -step） */
 function buildMonths(count: number, base = 100, step = 3): number[] {
@@ -45,6 +45,28 @@ test('buildMonthlySeries: 倒序输入仍取每月月末收盘（Tushare日线�
     ];
     // 升序聚合：6月末100、7月末110、8月末120（取月末收盘而非月初）
     assert.deepEqual(buildMonthlySeries(rows), [100, 110, 120]);
+});
+
+test('classifyMonthlySignal: 近3月连续多头为强信号', () => {
+    // 单调上行序列：最近3月均满足 close > MA5 > MA10
+    const months = [100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122, 124, 126, 128, 130];
+    assert.equal(classifyMonthlySignal(months), 'strong');
+});
+
+test('classifyMonthlySignal: 近6月多头≥4且最近1月多头为次信号', () => {
+    // 近6月走强且多头月≥5，但倒数第2月回调打破近3月连续 → weak
+    const months = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 112, 114, 108, 116, 118];
+    assert.equal(classifyMonthlySignal(months), 'weak');
+});
+
+test('classifyMonthlySignal: 月K不足16根返回 none', () => {
+    const months = [100, 102, 104, 106, 108, 110, 112, 114, 116, 118, 120, 122, 124, 126, 128];
+    assert.equal(classifyMonthlySignal(months), 'none');
+});
+
+test('classifyMonthlySignal: 近6月多头月不足4返回 none', () => {
+    const months = [100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87, 86, 85];
+    assert.equal(classifyMonthlySignal(months), 'none');
 });
 
 test('buildMonthlySeries: 乱序输入结果稳定', () => {

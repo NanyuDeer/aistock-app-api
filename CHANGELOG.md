@@ -20,6 +20,39 @@
 
 ---
 
+## [master] 2026-08-05 — cls_news 缺失修复：telegraph 分页上限不足
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/ClsStockNewsService.ts`：`fetchTelegraphByDate` 的 `MAX_PAGES` 由 10 提高到 50（约 500 条）。财联社电报约 3 分钟/条，晚间触发（20:30 review_full / 手动 review_quick）时最新电报晚于 dateEnd(16:00) 被跳过，需翻页跨越数小时才能到 08:30-16:00 窗口；原 MAX_PAGES=10（100 条）翻不到 → items 空 → total=0 → cls_news 缺失
+
+---
+
+## [master] 2026-08-05 — moneyflow 接口字段错配修复 + main_force NaN 防护
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/quote/TushareService.ts`：`getMoneyflowThs`/`getMoneyflowThsByDate` 由 `moneyflow_ths` 接口改为原版 `moneyflow` 接口。原实现请求的字段（`buy_elg_amount`/`sell_lg_amount`/`sell_elg_amount`/`net_mf_amount`）是原版 `moneyflow` 的字段名，但 `moneyflow_ths` 实际只有 `buy_lg_amount`（大单净流入）/`net_amount`/`net_d5_amount` 等，导致除 `buy_lg_amount` 外全部 undefined → `computeMainForceNetYuan` 得 NaN 被 JSON 序列化为 null（quick 快照 `main_force=available+null` 根因）
+- `src/modules/quote/MarketSnapshotService.ts`：`computeMainForceNetYuan` 加 `Number(x)||0` 防护避免 NaN；新增 `hasCompleteMainForceFields` 字段完整性检查
+- `src/modules/quote/TencentSnapshotService.ts`：`hasMainForce` 与 `assembleSnapshot` 的 main_force 分支改为「有数据且字段完整」才用 Tushare 精确值，否则降级概念板块近似（partial+approximate）或 unavailable，不再返回 available+null
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：新增 2 个回归用例（字段不完整降级 conceptFlow、`hasCompleteMainForceFields` 判定）
+
+---
+
+## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`/internal/trend/top` 的 `dimScores` 从 `parseJsonb(r.dim_scores)` 回退为 `JSON.parse(r.dim_scores as string || '[]')`，移除 parseJsonb import
+- `tests/StockInfoService.test.ts`：修正 import 路径（`src/core/db` → `src/db`、`src/modules/crawler/StockInfoService` → `src/services/StockInfoService`）；删除重复的推送过滤边界断言（中性/利空/重大利空/窗口外用例，已由专门测试覆盖）
+
+---
+
 ## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
 
 **开发者**: Aria
@@ -210,6 +243,18 @@
 
 ### 修改
 - `src/core/routes/internal.ts`：`synthesizeBroadcast` 改用账号池获取凭证，替代单账号固定读取
+
+---
+
+## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/MarketSnapshotService.ts`：扩展 `CloseMarketSnapshot` schema，新增 `MarketBreadth`、`QuickSnapshotCoverage` 接口和 `snapshot_kind` / `coverage_info` / `market_breadth` 可选字段；导出 `isAtOrAfterClose`
+- `src/modules/quote/TencentSnapshotService.ts`：新增 `TencentSnapshotService`，15:30 收盘后基于腾讯实时行情构建简版收盘快照（6 大指数 + 全市场宽度 + 概念板块资金流），分级失败策略（指数严格、非核心宽松）
+- `src/core/routes/internal.ts`：新增 `GET /internal/market/quick-snapshot` 路由，200/409/502 三种响应
+- `tests/TencentSnapshotService.test.ts`：4 个单元测试覆盖正常构建、未收盘拒绝、降级策略、涨跌停计数
+- `tests/internalRoutes.test.ts`：3 个路由测试覆盖 200/409/502
 
 ---
 
