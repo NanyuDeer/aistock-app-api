@@ -2,6 +2,15 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-05 — cls_news 缺失修复：telegraph 分页上限不足
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/ClsStockNewsService.ts`：`fetchTelegraphByDate` 的 `MAX_PAGES` 由 10 提高到 50（约 500 条）。财联社电报约 3 分钟/条，晚间触发（20:30 review_full / 手动 review_quick）时最新电报晚于 dateEnd(16:00) 被跳过，需翻页跨越数小时才能到 08:30-16:00 窗口；原 MAX_PAGES=10（100 条）翻不到 → items 空 → total=0 → cls_news 缺失
+
+---
+
 ## [master] 2026-08-05 — moneyflow 接口字段错配修复 + main_force NaN 防护
 
 **开发者**: Aria

@@ -167,7 +167,11 @@ export class ClsStockNewsService {
         let lastTime = 0;
         let degraded = false;
         let page = 0;
-        const MAX_PAGES = 10;
+        // 翻页上限：财联社电报约 3 分钟/条，从晚间触发（如 20:30 review_full）翻回
+        // 当日 08:30-16:00 窗口需要跨越数小时（约 200-400 条）。
+        // 原 MAX_PAGES=10（约 100 条）在晚间触发时会翻不到窗口内数据 → total=0（线上根因）。
+        // 50 页 × 10 条 = 500 条，覆盖 08:30-触发时刻的全量电报，同时受 items.length<limit 限制。
+        const MAX_PAGES = 50;
 
         while (page < MAX_PAGES && items.length < limit) {
             try {
