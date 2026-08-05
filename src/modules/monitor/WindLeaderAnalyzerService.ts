@@ -2195,6 +2195,28 @@ export function deriveCycle(a: {
     return 'short';
 }
 
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重 ≤16 */
+export function applyDualRankings<T extends {
+    name: string;
+    cycle: 'short' | 'long' | 'both';
+    long_term_days?: number;
+    short_term_days?: number;
+}>(sectors: T[]): T[] {
+    const longBoard = sectors
+        .filter(s => s.cycle === 'long' || s.cycle === 'both')
+        .sort((a, b) => (b.long_term_days ?? 0) - (a.long_term_days ?? 0))
+        .slice(0, 8);
+    const shortBoard = sectors
+        .filter(s => s.cycle === 'short' || s.cycle === 'both')
+        .sort((a, b) => (b.short_term_days ?? 0) - (a.short_term_days ?? 0))
+        .slice(0, 8);
+    const merged = new Map<string, T>();
+    for (const s of [...longBoard, ...shortBoard]) {
+        if (!merged.has(s.name)) merged.set(s.name, s);
+    }
+    return [...merged.values()];
+}
+
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
     const freq = sectorData.frequency;
     const avgChange = sectorData.avg_change;
@@ -3265,22 +3287,46 @@ export class WindLeaderAnalyzerService {
         for (const concept of hotConcepts) {
             console.log(`[HotSectorAnalyzer] 分析风口概念: ${concept.name}`);
 
-            // 8.1决议：区分短线/长线风口 —— 月线多头排列且同比环比向上 → 长线风口，否则短线风口
-            const cycle: 'short' | 'long' = await confirmMonthlyTrend(concept.name) ? 'long' : 'short';
-            console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口`);
+            // 获取概念成分股代码集合（供短线证据统计涨停/连板）
+            const conceptCodes = conceptCodeSets.get(concept.code) || new Set();
+
+            // 双链分流数据获取（Tushare 限频：仅进池板块才拉对应数据）
+            let monthlySignal: 'strong' | 'weak' | 'none' = 'none';
+            if (concept.in_long_pool) {
+                monthlySignal = await confirmLongTermMonthly(concept.name);
+                const longEv = await fetchLongEvidence(concept.name);
+                concept.ma60_status = longEv.ma60_status;
+            }
+            if (concept.in_short_pool) {
+                const shortEv = await fetchShortEvidence(concept.name, enhancement.limitListMap, conceptCodes);
+                concept.vol_trend = shortEv.vol_trend;
+                concept.turnover = shortEv.turnover;
+                concept.limit_up_count = shortEv.limit_up_count;
+                concept.max_boards = shortEv.max_boards;
+            }
+            console.log(`[HotSectorAnalyzer] ${concept.name}: 月线=${monthlySignal} MA60=${concept.ma60_status} 量能=${concept.vol_trend} 涨停=${concept.limit_up_count} 连板=${concept.max_boards}`);
 
             // 2. 映射强关联二级行业
             const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
             const relatedIndNames = industryResult.strongly_related.map(r => r.name);
 
-            // 获取概念成分股代码集合
-            const conceptCodes = conceptCodeSets.get(concept.code) || new Set();
-
             // 3. 计算上下游传导（使用全排名行业）
             const transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
 
-            // 4. AI判断持续性
-            const aiAnalysis = await aiAnalyzeSector(concept.name, concept, transmission);
+            // 4. 双链分流 AI 研判（长线池→长线链 / 短线池→短线链 / 交集→both）
+            const chain: 'long' | 'short' | 'both' = concept.in_long_pool && concept.in_short_pool ? 'both'
+                : concept.in_long_pool ? 'long' : 'short';
+            const aiAnalysis = await aiAnalyzeSector(concept.name, concept, transmission, monthlySignal, chain);
+            // 非本链字段裁剪：避免前端展示缺失链的假数据
+            if (chain === 'short') {
+                aiAnalysis.long_term_days = 0; aiAnalysis.long_confidence = 0; aiAnalysis.logic_type = '无支撑'; aiAnalysis.long_reason = '';
+            }
+            if (chain === 'long') {
+                aiAnalysis.short_term_days = 0; aiAnalysis.short_heat = 0; aiAnalysis.heat_stage = '未知'; aiAnalysis.short_reason = '';
+            }
+            if (aiAnalysis.driver_type) concept.driver_type = aiAnalysis.driver_type; // AI 推断驱动类型回填
+            const cycle: 'short' | 'long' | 'both' = deriveCycle(aiAnalysis);
+            console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口 (long=${aiAnalysis.long_term_days}d/conf=${aiAnalysis.long_confidence}/${aiAnalysis.logic_type}, short=${aiAnalysis.short_term_days}d/heat=${aiAnalysis.short_heat}/${aiAnalysis.heat_stage})`);
 
             // 5. 选股 - 强关联行业（风口精选）
             const mainStocks: SelectedStock[] = [];
@@ -3523,19 +3569,25 @@ export class WindLeaderAnalyzerService {
 
             result.hot_sectors.push({
                 code: concept.code,
-                cycle,
+                cycle,                       // 'short' | 'long' | 'both'
                 name: concept.name,
                 type: concept.type,
                 frequency: concept.frequency,
+                freq20: concept.freq20,
+                freq_delta: concept.freq_delta,
                 avg_change: concept.avg_change,
                 today_change: concept.today_change,
-                amount_trend: concept.amount_trend,
                 net_inflow: concept.net_inflow,
                 leading_stock: concept.leading_stock,
                 leading_change: concept.leading_change,
                 up_count: concept.up_count,
                 down_count: concept.down_count,
-                driver: concept.driver,
+                driver_type: concept.driver_type,
+                ma60_status: concept.ma60_status,
+                vol_trend: concept.vol_trend,
+                turnover: concept.turnover,
+                limit_up_count: concept.limit_up_count,
+                max_boards: concept.max_boards,
                 score: sectorScore,
                 related_industries: relatedIndNames,
                 industry_data: industryData,
@@ -3547,6 +3599,9 @@ export class WindLeaderAnalyzerService {
                 leading_stock_info: leadingStockInfo,
             });
         }
+
+        // 双榜合并：长线榜 top8 + 短线榜 top8（可重复），按 name 去重 ≤16
+        result.hot_sectors = applyDualRankings(result.hot_sectors);
 
         if (result.hot_sectors.length === 0) {
             // 空结果不覆盖旧数据，避免因外部 API 暂时不可用导致历史数据丢失
