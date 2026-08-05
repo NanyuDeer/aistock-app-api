@@ -36,6 +36,7 @@ import { createAgentProxy } from './modules/agent/agent.proxy';
 import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
 import { MessagePushService } from './modules/push/MessagePushService';
+import { UsageController } from './modules/chat/usageController';
 
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
@@ -183,6 +184,7 @@ app.get('/api/users/me/push-history', (req, res, next) => UserController.getPush
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
 
 app.get('/api/internal/stock-info/targets', (req, res, next) => StockInfoJudgementController.getTargets(req, res, next));

@@ -1001,6 +1001,47 @@ router.post('/usage/records', async (req: Request, res: Response) => {
     }
 });
 
+/**
+ * GET /internal/usage/summary?user_id=xxx
+ * 按 user_id 累计 token 用量（无记录全 0）
+ *
+ * 成功: { code: 200, data: { user_id, prompt_tokens, completion_tokens, total_tokens, turn_count } }
+ * 400: user_id 缺失
+ */
+router.get('/usage/summary', async (req: Request, res: Response) => {
+    const user_id = queryStr(req, 'user_id');
+    if (!user_id || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COUNT(*) AS turn_count
+             FROM chat_token_usage
+             WHERE user_id = $1`,
+            [user_id]
+        );
+        const row = result.rows[0] ?? {};
+        res.json({
+            code: 200,
+            data: {
+                user_id,
+                prompt_tokens: Number(row.prompt_tokens ?? 0),
+                completion_tokens: Number(row.completion_tokens ?? 0),
+                total_tokens: Number(row.total_tokens ?? 0),
+                turn_count: Number(row.turn_count ?? 0),
+            },
+        });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/summary GET error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**

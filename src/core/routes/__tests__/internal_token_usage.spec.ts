@@ -201,4 +201,75 @@ describe('Internal Token Usage API', () => {
         const body = res.json as { code: number };
         assert.strictEqual(body.code, 400);
     });
+
+    // ── Task 5: GET /internal/usage/summary ──
+
+    it('GET /internal/usage/summary aggregates by user_id (all-zero when none)', async () => {
+        mockCalls = [];
+        mockResponder = () => ({
+            rows: [
+                { prompt_tokens: '100', completion_tokens: '200', total_tokens: '300', turn_count: '5' },
+            ],
+        });
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/internal/usage/summary?user_id=u_42',
+            headers: { 'x-internal-token': INTERNAL_TOKEN },
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as {
+            code: number;
+            data: { user_id: string; prompt_tokens: number; completion_tokens: number; total_tokens: number; turn_count: number };
+        };
+        assert.strictEqual(body.code, 200);
+        assert.deepStrictEqual(body.data, {
+            user_id: 'u_42',
+            prompt_tokens: 100,
+            completion_tokens: 200,
+            total_tokens: 300,
+            turn_count: 5,
+        });
+
+        const selectCalls = mockCalls.filter((c) => c.sql.includes('SUM'));
+        assert.strictEqual(selectCalls.length, 1);
+        assert.deepStrictEqual(selectCalls[0].params, ['u_42']);
+    });
+
+    it('GET /internal/usage/summary returns all-zero when no records', async () => {
+        mockCalls = [];
+        mockResponder = () => ({ rows: [] });
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/internal/usage/summary?user_id=u_99',
+            headers: { 'x-internal-token': INTERNAL_TOKEN },
+        });
+
+        const body = res.json as { code: number; data: { prompt_tokens: number; turn_count: number } };
+        assert.strictEqual(body.code, 200);
+        assert.deepStrictEqual(body.data, {
+            user_id: 'u_99',
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            total_tokens: 0,
+            turn_count: 0,
+        });
+    });
+
+    it('GET /internal/usage/summary rejects missing user_id with 400', async () => {
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/internal/usage/summary',
+            headers: { 'x-internal-token': INTERNAL_TOKEN },
+        });
+
+        assert.strictEqual(res.status, 400);
+        const body = res.json as { code: number };
+        assert.strictEqual(body.code, 400);
+    });
 });
