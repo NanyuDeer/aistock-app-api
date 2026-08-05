@@ -223,4 +223,31 @@ describe('pushCreated', () => {
         assert.equal(sendCalls, 0);
         assert.equal(executed.length, 1, '仅执行命中查询，无判重插入');
     });
+
+    it('微信/飞书发送失败时删除 push_records 判重记录，允许下次触发重试', async () => {
+        const { executed } = buildQueryMock({
+            users: [{
+                openid: 'openid_1',
+                symbol: '000962',
+                stock_name: '东方钽业',
+                primary_driver: { label: '涨停板', category: '资金' },
+                attribution_status: 'confirmed',
+                confidence: 'high',
+                feishu_open_id: 'feishu_open_id_1',
+            }],
+            insertReturning: true,
+        });
+        registerFakeWsClient('openid_1');
+        mock.method(WechatPushService, 'dispatchInsightPush',
+            (async () => false) as unknown as typeof WechatPushService.dispatchInsightPush);
+        mock.method(MessagePushService, 'dispatchInsightToFeishu',
+            (async () => false) as unknown as typeof MessagePushService.dispatchInsightToFeishu);
+
+        const sent = await pushCreated(EVENT_ID);
+
+        assert.equal(sent, 0, '微信/飞书均失败不计 sent');
+        const deletes = executed.filter(t => t.includes('DELETE FROM watchlist_insight_push_records'));
+        assert.equal(deletes.length, 2, '微信 + 飞书发送失败各删除一次判重记录');
+        assert.ok(deletes.every(t => t.includes('WHERE id = $1')), '按插入返回的 id 精确删除');
+    });
 });

@@ -55,7 +55,8 @@ export async function pushCreated(eventId: string): Promise<number> {
     return sent;
 }
 
-/** 微信推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖） */
+/** 微信推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖）。
+ *  发送失败会删除刚插入的判重记录，避免 insert-before-send 语义下唯一键永久挡住后续重试。 */
 async function sendWechat(openid: string, content: string, eventId: string): Promise<boolean> {
     const res = await pool.query(
         `INSERT INTO watchlist_insight_push_records (event_id, openid, push_kind, channel)
@@ -63,8 +64,14 @@ async function sendWechat(openid: string, content: string, eventId: string): Pro
         [eventId, openid],
     );
     if (res.rows.length === 0) return false;
+    const recordId = res.rows[0].id as number;
     const { WechatPushService } = await import('../push/WechatPushService');
-    return WechatPushService.dispatchInsightPush(openid, content, eventId);
+    const ok = await WechatPushService.dispatchInsightPush(openid, content, eventId);
+    if (!ok) {
+        // 发送失败：删除刚插入的判重记录，使下次触发可重试；成功则保留（去重语义不变）
+        await removePushRecord(recordId);
+    }
+    return ok;
 }
 
 /** 飞书推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖）。
@@ -77,6 +84,21 @@ async function sendFeishu(recordOpenid: string, feishuOpenId: string, content: s
         [eventId, recordOpenid],
     );
     if (res.rows.length === 0) return false;
+    const recordId = res.rows[0].id as number;
     const { MessagePushService } = await import('../push/MessagePushService');
-    return MessagePushService.dispatchInsightToFeishu(feishuOpenId, content, eventId);
+    const ok = await MessagePushService.dispatchInsightToFeishu(feishuOpenId, content, eventId);
+    if (!ok) {
+        await removePushRecord(recordId);
+    }
+    return ok;
+}
+
+/** 删除判重记录：发送失败后调用，保证唯一键不残留、下次触发可重新尝试 */
+async function removePushRecord(id: number): Promise<void> {
+    try {
+        await pool.query('DELETE FROM watchlist_insight_push_records WHERE id = $1', [id]);
+    } catch (e) {
+        // 删除失败（如 DB 抖动）仅记日志不抛错：本轮推送结果已定，避免删除动作拖垮推送链路
+        console.warn('[insight] failed to remove push record:', e instanceof Error ? e.message : String(e));
+    }
 }
