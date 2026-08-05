@@ -1999,20 +1999,50 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
     }
 }
 
+/** 由 AI 长/短线持续天数与置信度/热度推导 cycle（阈值常量见本函数上方） */
+export const LONG_DAYS_MIN = 30;
+export const LONG_CONF_MIN = 0.5;
+export const SHORT_DAYS_MIN = 1;
+export const SHORT_HEAT_MIN = 0.3;
+export const OVERHEAT_TURNOVER = 12;
+export const FREQ_DELTA_SURGE = 1.5;
+
+export function deriveCycle(a: {
+    long_term_days?: number;
+    long_confidence?: number;
+    short_term_days?: number;
+    short_heat?: number;
+}): 'both' | 'long' | 'short' {
+    const isLong = (a.long_term_days ?? 0) >= LONG_DAYS_MIN && (a.long_confidence ?? 0) >= LONG_CONF_MIN;
+    const isShort = (a.short_term_days ?? 0) >= SHORT_DAYS_MIN && (a.short_heat ?? 0) >= SHORT_HEAT_MIN;
+    if (isLong && isShort) return 'both';
+    if (isLong) return 'long';
+    return 'short';
+}
+
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
     const freq = sectorData.frequency;
     const avgChange = sectorData.avg_change;
-    const amountTrend = sectorData.amount_trend;
+    const amountTrend = sectorData.net_inflow; // amount_trend 已合并到 net_inflow
 
-    let persistence: string, reason: string;
+    // 规则引擎降级八字段（仅降级，不写入 prompt）
+    let longTermDays = 0, longConfidence = 0, shortTermDays = 5, shortHeat = 0.4;
+    let logicType = '无支撑', heatStage = '启动期';
+    let longReason = '频次较低持续性存疑', shortReason = '热度低迷';
+    let persistence = '短期(1-3天)', reason: string;
     if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
+        longTermDays = 45; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
+        logicType = '资金'; heatStage = '发酵期';
+        longReason = '高频上榜+资金加速流入，趋势强劲'; shortReason = '资金活跃但换手需警惕';
         persistence = '长期(1月+)';
         reason = '高频上榜+持续放量+资金加速流入，趋势强劲';
     } else if (freq >= 4 && avgChange > 1) {
+        longTermDays = 21; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
+        logicType = '无支撑'; heatStage = '启动期';
+        longReason = '中频上榜涨幅稳定，有一定持续性'; shortReason = '热度温和启动';
         persistence = '中期(1-2周)';
         reason = '中频上榜+涨幅稳定，有一定持续性';
     } else {
-        persistence = '短期(1-3天)';
         reason = '上榜频次较低或资金流出，持续性存疑';
     }
 
@@ -2042,6 +2072,15 @@ function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmiss
     return {
         persistence,
         persistence_reason: reason,
+        long_term_days: longTermDays,
+        long_confidence: longConfidence,
+        logic_type: logicType,
+        long_reason: longReason,
+        short_term_days: shortTermDays,
+        short_heat: shortHeat,
+        heat_stage: heatStage,
+        short_reason: shortReason,
+        driver_type: undefined,
         heat_transfer: heatTransfer,
         transfer_direction: direction,
         transfer_reason: transferReason,
