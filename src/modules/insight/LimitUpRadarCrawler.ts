@@ -38,6 +38,19 @@ export function parseTitleKeywords(title: string): string[] {
     return m[1].split(/[+＋]/).map(s => s.trim()).filter(Boolean);
 }
 
+/**
+ * 提取标题中的主体股票名（"触及涨停/触及跌停"前的最后一段，可带括号代码）。
+ * 涨停雷达标题格式：'涨停雷达：关键词+关键词 股票名触及涨停'。
+ * 事件归属锚定主体股票（而非详情页推荐链接里的任意股票），避免事件挂错标的。
+ * 非涨停雷达类标题（如"涨停复盘：…"）或无主体股票返回 null。
+ */
+export function parseTitleStockName(title: string): string | null {
+    const m = title.match(/([\u4e00-\u9fa5A-Za-z0-9*]+(?:[（(]\d{6}[)）])?)\s*(?:触及涨停|触及跌停)/);
+    if (!m) return null;
+    const name = m[1].replace(/[（(]\d{6}[)）]/g, '').trim();
+    return name || null;
+}
+
 /** 从详情 URL 提取文章日期：/20260805/c678683171.shtml → '2026-08-05'；无法提取返回空串 */
 export function extractTradeDate(detailUrl: string): string {
     const m = detailUrl.match(/\/(\d{8})\//);
@@ -76,16 +89,23 @@ export async function fetchListPage(page: number): Promise<RawArticle[]> {
     return parseListHtml(html);
 }
 
-/** 按页抓取，遇连续无新文章或到达上限停止 */
+/** 按页抓取，遇连续无新文章或到达上限停止。
+ *  注意：mrnxgg 列表分页（index_N.shtml）实测返回相同内容（加载更多为 JS/AJAX 机制），
+ *  因此循环内必须按 articleId 去重，避免同一文章被重复抓取与重复抓详情。 */
 export async function fetchLatest(
     knownArticleIds: Set<string>,
     sinceDate: string, // YYYY-MM-DD，冷启动回溯 2 个交易日
 ): Promise<RawArticle[]> {
     const result: RawArticle[] = [];
+    const seen = new Set<string>(knownArticleIds); // 循环内累积去重（含跨页重复）
     let consecutiveEmpty = 0;
     for (let page = 1; page <= MAX_PAGES; page++) {
         const items = await fetchListPage(page);
-        const fresh = items.filter(i => !knownArticleIds.has(i.articleId));
+        const fresh = items.filter(i => {
+            if (seen.has(i.articleId)) return false;
+            seen.add(i.articleId);
+            return true;
+        });
         if (fresh.length === 0) {
             consecutiveEmpty++;
             if (consecutiveEmpty >= CONSECUTIVE_EMPTY_LIMIT) break;
@@ -110,12 +130,13 @@ export function parseDetailHtml(html: string): ParsedDetail {
         const name = $(el).text().trim().replace(/（\d{6}）/g, '');
         if (sym && name) mentionedSymbols.push({ symbol: sym, name });
     });
-    const publishedAt = ($('.time, .pub_time, .atc_time').first().text().trim()) || '';
+    // 详情页发布时间形如 "2026-08-05 16:03:06"，按正则提取（页面为 Tailwind 类名 span，无稳定 class）
+    const publishedAt = html.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/)?.[1] || '';
     return { content, mentionedSymbols, publishedAt };
 }
 
-/** 抓取详情页正文、文章提及标的、发布时间 */
+/** 抓取详情页正文、文章提及标的、发布时间（详情页为 UTF-8，需显式指定编码） */
 export async function fetchDetail(detailUrl: string): Promise<ParsedDetail> {
-    const html = await thsCrawler.fetchHtml(detailUrl);
+    const html = await thsCrawler.fetchHtml(detailUrl, undefined, 'utf-8');
     return parseDetailHtml(html);
 }

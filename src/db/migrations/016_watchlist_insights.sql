@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS watchlist_insight_results (
     analysis_version VARCHAR(32) NOT NULL DEFAULT 'watchlist-insight-v1',
     attribution_status VARCHAR(16) NOT NULL
         CHECK (attribution_status IN ('confirmed','unconfirmed')),
-    confidence VARCHAR(8) NOT NULL DEFAULT 'low'
+    confidence VARCHAR(16) NOT NULL DEFAULT 'low'
         CHECK (confidence IN ('high','medium','low','unconfirmed')),
     primary_driver JSONB NOT NULL DEFAULT '{}',   -- {label,category,confidence,evidence_quote,source_ids}
     secondary_drivers JSONB NOT NULL DEFAULT '[]',

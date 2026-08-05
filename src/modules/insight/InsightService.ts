@@ -7,7 +7,7 @@
 //   → enqueue 接入任务队列（outbox → Redis Stream）→ 推进高水位
 import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
-import { fetchLatest, fetchDetail, parseTitleKeywords } from './LimitUpRadarCrawler';
+import { fetchLatest, fetchDetail, parseTitleKeywords, parseTitleStockName } from './LimitUpRadarCrawler';
 import { upsertSources, getHighWatermark, setHighWatermark } from './InsightSourceService';
 import { enqueue } from './InsightJobService';
 import type { SourceArticle } from './InsightSourceService';
@@ -32,26 +32,35 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
 
     const enriched: SourceArticle[] = [];
     for (const a of articles) {
-        const detail = await fetchDetail(a.detailUrl);
-        enriched.push({
-            articleId: a.articleId,
-            detailUrl: a.detailUrl,
-            title: a.title,
-            keywords: parseTitleKeywords(a.title),
-            content: detail.content,
-            mentionedSymbols: detail.mentionedSymbols,
-            publishedAt: detail.publishedAt,
-            // 交易日直接从列表解析结果取（YYYY-MM-DD），无需再次截取
-            tradeDate: a.tradeDate,
-        });
+        try {
+            const detail = await fetchDetail(a.detailUrl);
+            enriched.push({
+                articleId: a.articleId,
+                detailUrl: a.detailUrl,
+                title: a.title,
+                keywords: parseTitleKeywords(a.title),
+                content: detail.content,
+                mentionedSymbols: detail.mentionedSymbols,
+                publishedAt: detail.publishedAt,
+                // 交易日直接从列表解析结果取（YYYY-MM-DD），无需再次截取
+                tradeDate: a.tradeDate,
+            });
+        } catch (e) {
+            // 单篇详情抓取失败（如陈旧链接 404）只记日志跳过，不中断整轮采集
+            console.warn(`[insight] fetchDetail failed: ${a.articleId}`,
+                e instanceof Error ? e.message : String(e));
+        }
     }
     const inserted = await upsertSources(enriched);
 
-    // 自选股筛选：文章"文章提及标的" ∩ 用户自选股
+    // 自选股筛选：事件股票必须与标题主体股票一致（详情页推荐链接的股票不建事件），
+    // 且该主体股票命中用户自选股 —— 防止事件挂到页面推荐/相关股票上（数据错配根因）
     const watchlist = await getWatchlistSymbols();
     let events = 0;
     for (const a of enriched) {
-        const hit = a.mentionedSymbols.find(s => watchlist.has(s.symbol));
+        const titleStock = parseTitleStockName(a.title);
+        if (!titleStock) continue;
+        const hit = a.mentionedSymbols.find(s => s.name === titleStock && watchlist.has(s.symbol));
         if (!hit) continue;
         const created = await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate);
         // 每个命中事件都接入任务队列：enqueue 幂等（(event_id, analysis_version) 唯一键 DO NOTHING），

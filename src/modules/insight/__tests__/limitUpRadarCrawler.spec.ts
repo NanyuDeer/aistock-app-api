@@ -16,6 +16,7 @@ import {
     parseDetailHtml,
     parseListHtml,
     parseTitleKeywords,
+    parseTitleStockName,
 } from '../LimitUpRadarCrawler';
 
 afterEach(() => {
@@ -46,6 +47,31 @@ describe('parseTitleKeywords', () => {
     it('负向：非涨停雷达标题返回空数组', () => {
         assert.deepStrictEqual(parseTitleKeywords('每日早盘资讯 大盘走势分析'), []);
         assert.deepStrictEqual(parseTitleKeywords(''), []);
+    });
+});
+
+// ==================== parseTitleStockName ====================
+
+describe('parseTitleStockName', () => {
+    it('提取"触及涨停"前的主体股票名', () => {
+        assert.equal(parseTitleStockName('涨停雷达：人形机器人概念+电子皮肤+汽车内饰 明新旭腾触及涨停'), '明新旭腾');
+        assert.equal(parseTitleStockName('涨停雷达：CPO+AI数据中心+半年报预增+海底光缆 亨通光电触及涨停'), '亨通光电');
+    });
+
+    it('无关键词前缀时仍能提取股票名', () => {
+        assert.equal(parseTitleStockName('涨停雷达：东方钽业触及涨停'), '东方钽业');
+    });
+
+    it('股票名带括号代码时去除代码', () => {
+        assert.equal(parseTitleStockName('涨停雷达：算力+CPO 中际旭创(300308)触及涨停'), '中际旭创');
+        assert.equal(parseTitleStockName('涨停雷达：算力+CPO 中际旭创（300308）触及涨停'), '中际旭创');
+    });
+
+    it('负向：涨停复盘类标题（无主体股票）返回 null', () => {
+        assert.equal(parseTitleStockName('涨停复盘：科创50指数低开低走跌超5% 核电板块逆势走强'), null);
+        assert.equal(parseTitleStockName('涨停复盘：创业板指高开高走大涨5.64% 算力硬件股集体爆发'), null);
+        assert.equal(parseTitleStockName(''), null);
+        assert.equal(parseTitleStockName('每日早盘资讯'), null);
     });
 });
 
