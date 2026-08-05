@@ -50,12 +50,23 @@ SELECT count(*) FROM watchlist_insight_sources;
 
 ## 4. 部署 agent-py（归因消费侧）
 
-部署时显式声明以下环境变量（与代码默认值一致，防止环境继承历史值导致回归）：
+部署时显式声明以下环境变量（两个消费开关与代码默认值一致，防止环境继承历史值导致回归）：
 
 ```bash
 INSIGHT_CONSUMER_ENABLED=true
 STOCK_TRACE_CONSUMER_ENABLED=false
+INSIGHT_REDIS_URL=<与 Node 侧 REDIS_URL 完全一致的生产 Redis 地址>
 ```
+
+> **`INSIGHT_REDIS_URL` 必须与 Node 侧 `REDIS_URL` 指向同一 Redis 实例与 db（生产约定 db=9）。** Node 侧（app-api）将任务写入 `watchlist-insight.jobs` Stream，Python consumer 从同一实例同一 db 的该 Stream 消费；若两者指向不同实例或 db，consumer 将永远收不到消息，整条归因链路静默失效。代码默认值为 `redis://localhost:6379/3`（db=3），部署时**必须**显式覆盖为生产地址，不能沿用默认值或本地 `.env` 的值。
+
+配置校验（部署后在 agent-py 机器执行，确认队列能读到 Node 侧写入的消息）：
+
+```bash
+redis-cli -u "$INSIGHT_REDIS_URL" XLEN watchlist-insight.jobs
+```
+
+返回值应与 Node 侧 `REDIS_URL` 下同命令一致，且随采集不断增长（交易时段每 10 分钟有新增）。若返回 `(nil)` 或长时间为 0 而 app-api 日志显示已入队，即为实例/db 未对齐。
 
 1. 更新环境变量后重启 agent-py（PM2：`pm2 restart aistock-agent`，配置参考 `deploy/ecosystem.config.json`）。
 2. 确认新 consumer 消费 `watchlist-insight.jobs`：日志出现归因结果回写 `POST /internal/insight/results/external`，`watchlist_insight_results` 表开始有记录。
