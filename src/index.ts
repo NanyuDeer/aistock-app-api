@@ -41,6 +41,8 @@ import { MessagePushService } from './modules/push/MessagePushService';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+// chat 会话元数据（P9 会话管理）
+import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
 import { FeishuAuthController } from './modules/auth/feishuAuthController';
 
@@ -184,6 +186,11 @@ app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPush
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
+
+// 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
+app.post('/api/chat/sessions', (req, res, next) => SessionController.upsert(req, res, next));
+app.get('/api/chat/sessions', (req, res, next) => SessionController.list(req, res, next));
+app.delete('/api/chat/sessions/:id', (req, res, next) => SessionController.remove(req, res, next));
 
 app.get('/api/internal/stock-info/targets', (req, res, next) => StockInfoJudgementController.getTargets(req, res, next));
 app.post('/api/internal/stock-info/existing', (req, res, next) => StockInfoJudgementController.getExisting(req, res, next));
@@ -1028,6 +1035,23 @@ async function start() {
         console.log('[DB] podcast_cache table ready');
     } catch (err: unknown) {
         console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 会话元数据表（P9 会话管理）：消息仍前端本地存储，服务端只存会话标题/时间
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id VARCHAR(64) PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                title VARCHAR(200) NOT NULL DEFAULT '新会话',
+                last_message_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, last_message_at DESC)');
+        console.log('[DB] chat_sessions table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_sessions table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
