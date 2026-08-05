@@ -64,6 +64,11 @@ export class SessionController {
             [sessionId, openid, title],
         );
         const row = result.rows[0];
+        if (!row) {
+            SessionController.log('upsert', '⚠️ 会话归属冲突（session_id 已归属其他用户）', { openid, session_id: sessionId });
+            createResponse(res, 409, '该会话已归属其他用户');
+            return;
+        }
 
         SessionController.log('upsert', '✅ 完成', { openid, session_id: row.id });
         createResponse(res, 200, 'success', {
