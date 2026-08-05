@@ -1907,7 +1907,93 @@ interface AiAnalysis {
 /** AI API是否可用的标记（首次失败后直接跳过，避免重复超时） */
 let aiApiAvailable: boolean | null = null;
 
-async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): Promise<AiAnalysis> {
+/** 构建 AI 研判 prompt（chain 分流：仅含当前池的数据与输出字段；修复原"近20日上榜频次"硬编码，frequency 现为 ${days} 日口径） */
+export function buildAiPrompt(
+    sectorName: string,
+    sectorData: HotConcept,
+    transmission: TransmissionResult,
+    monthlySignal: 'strong' | 'weak' | 'none',
+    days: number = 60,
+    chain: 'long' | 'short' | 'both' = 'both',
+): string {
+    const formatTransmission = (items: TransmissionItem[]) => {
+        if (items.length === 0) return '无';
+        return items.map(i => `${i.name}(传导因子:${i.factor.toFixed(2)}, 来源:${i.source_industry})`).join('; ');
+    };
+    const longData = chain !== 'short'
+        ? `- MA60位置：${sectorData.ma60_status ?? '未知'}（板块指数收盘vs60日均线）\n- 月线规则：${monthlySignalText(monthlySignal)}`
+        : '';
+    const freqDelta = sectorData.freq_delta ?? 0;
+    const deltaDesc = freqDelta >= 1.5 ? `陡升(×${freqDelta.toFixed(1)})` : (freqDelta > 0 ? `平稳(×${freqDelta.toFixed(1)})` : '数据不足');
+    const turnoverDesc = (sectorData.turnover ?? 0) > 12 ? '过热(>12%)' : `${sectorData.turnover ?? 0}%`;
+    const shortData = chain !== 'long'
+        ? `- 频次变化率：${deltaDesc}（近5日 vs 前5日上榜天数）\n- 量能/换手率：${sectorData.vol_trend ?? '未知'}，换手${turnoverDesc}\n- 涨停家数：${sectorData.limit_up_count ?? 0}家；最高连板：${sectorData.max_boards ?? 0}板`
+        : '';
+    const longFields = chain !== 'short'
+        ? `1. long_term_days: 长线影响预计持续天数，整数0~90（0=无长期趋势）
+2. long_confidence: 长线置信度，0~1（双支撑[政策+业绩]→0.7+，单支撑→0.5）
+3. logic_type: 长线置信度依据标签，取"政策"/"业绩"/"资金"/"无支撑"之一
+4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间判断依据）
+5. driver_type: 驱动类型，取"政策"/"业绩"/"事件"/"技术"之一（从板块名/领涨股/连板推断）`
+        : '';
+    const shortFields = chain !== 'long'
+        ? `6. short_term_days: 短线影响预计持续天数，整数0~30
+7. short_heat: 短线热度，0~1
+8. heat_stage: 短线热度阶段标签，取"启动期"/"发酵期"/"高潮期"/"衰退期"之一
+9. short_reason: 短线研判理由，50字内（结合热度捕捉/资金博弈/位置风险给出热度阶段与持续预计依据）`
+        : '';
+    const longGuide = chain !== 'short'
+        ? `【长线链】（侧重确定性+时间）：
+1. 热度筛选：freq60 是否平稳上升/持续高位？（剔除断续或爆发后沉寂）
+2. 趋势确认：月线多头排列且价格站上MA60？否→即使热度高也判反弹非反转
+3. 逻辑验证：从板块名称/领涨股/连板推断驱动类型，给出置信度依据（政策/业绩/资金/无支撑）
+4. 资金验证：板块净流入方向
+`
+        : '';
+    const shortGuide = chain !== 'long'
+        ? `【短线链】（侧重爆发力+热度维持）：
+1. 热度捕捉：freq20 与频次变化率是否陡升/连续霸榜
+2. 催化剂定性：从板块名/领涨股推断事件类型（突发→短炒；技术突破→1-2波）
+3. 资金博弈：涨停家数/连板高度（游资情绪近似），连板高度决定持续时间
+4. 位置风险：换手率是否过热（>12% 高潮期，1-3天见顶）；首次放量且换手温和→启动期（5-10天）
+`
+        : '';
+    return `你是一位资深A股市场分析师。请沿当前研判链分析该风口概念板块的持续性与热度。
+
+## 概念板块数据
+- 概念名称：${sectorName}
+- 板块评分：${sectorData.score}分
+- ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
+- 近20日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
+- 今日涨幅：${sectorData.today_change}%
+- 板块净流入：${sectorData.net_inflow}万元
+- 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
+- 上涨/下跌家数：${sectorData.up_count}/${sectorData.down_count}（行业维度）
+${longData}${shortData}
+## 上下游传导
+- 上游行业：${formatTransmission(transmission.upstream)}
+- 下游行业：${formatTransmission(transmission.downstream)}
+
+## 研判要求
+${longGuide}${shortGuide}
+请以JSON格式返回${chain === 'both' ? '以下全部' : '以下'}字段：
+${longFields}${longFields && shortFields ? '\n' : ''}${shortFields}
+10. persistence_reason: 持续性判断理由（80字以内）
+11. heat_transfer: 热度是否会在板块间传递，true/false
+12. transfer_direction: 传递方向（如"上游→中游"、"中游→下游"、"无明显传递"）
+13. transfer_reason: 传递判断理由（50字以内）
+14. risk_warning: 风险提示（30字以内）
+
+只返回JSON，不要其他文字。`;
+}
+
+async function aiAnalyzeSector(
+    sectorName: string,
+    sectorData: HotConcept,
+    transmission: TransmissionResult,
+    monthlySignal: 'strong' | 'weak' | 'none' = 'none',
+    chain: 'long' | 'short' | 'both' = 'both',
+): Promise<AiAnalysis> {
     const apiKey = process.env.OPENAI_API_KEY || '';
     let apiBase = process.env.OPENAI_API_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
     // 兼容URL已包含/chat/completions的情况（其他Service直接用完整URL）
@@ -1924,38 +2010,7 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
     }
 
     try {
-        // 格式化上下游传导数据
-        const formatTransmission = (items: TransmissionItem[]) => {
-            if (items.length === 0) return '无';
-            return items.map(i => `${i.name}(传导因子:${i.factor.toFixed(2)}, 来源:${i.source_industry})`).join('; ');
-        };
-
-        const prompt = `你是一位资深A股市场分析师。请根据以下数据，分析该风口概念板块的持续性和热度传递。
-
-## 概念板块数据
-- 概念名称：${sectorName}
-- 板块评分：${sectorData.score}分（综合频次、涨幅、资金等因素）
-- 近20日上榜频次：${sectorData.frequency}天
-- 近20日平均涨幅：${sectorData.avg_change}%
-- 今日涨幅：${sectorData.today_change}%
-- 主力净流入：${sectorData.amount_trend}万元
-- 板块净流入：${sectorData.net_inflow}万元
-- 驱动因素：${sectorData.driver}
-- 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
-
-## 上下游传导
-- 上游行业：${formatTransmission(transmission.upstream)}
-- 下游行业：${formatTransmission(transmission.downstream)}
-
-请以JSON格式返回分析结果，包含以下字段：
-1. persistence: 持续时间判断，值为"短期(1-3天)"/"中期(1-2周)"/"长期(1月+)"
-2. persistence_reason: 持续性判断理由（50字以内，需结合上榜频次、涨幅、资金等因素综合分析）
-3. heat_transfer: 热度是否会在板块间传递，true/false
-4. transfer_direction: 传递方向（如"上游→中游"、"中游→下游"、"无明显传递"）
-5. transfer_reason: 传递判断理由（50字以内，需结合上下游传导因子分析）
-6. risk_warning: 风险提示（30字以内）
-
-只返回JSON，不要其他文字。`;
+        const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
 
         const resp = await sessionFetch(chatUrl, {
             method: 'POST',
