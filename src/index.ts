@@ -68,6 +68,7 @@ import { StockSyncService } from './modules/monitor/StockSyncService';
 
 // insight 自选股洞察模块
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
+import insightInternalRouter from './modules/insight/internalRouter';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -528,6 +529,9 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 app.use('/internal', internalRouter);
 
 app.use('/internal/stock-trace', stockTraceInternalRouter);
+
+app.use('/internal/insight', insightInternalRouter);
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
