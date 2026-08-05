@@ -2,6 +2,24 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p10-session-dimension.md`（T1）
+
+### 新增
+- `src/core/routes/internal.ts`：`GET /internal/usage/sessions?user_id=`（X-Internal-Token）按 session_id 聚合 chat_token_usage（turn_count/total_tokens/prompt_tokens/completion_tokens/last_used_at，pg SUM/COUNT 统一 `Number()` 数值化；user_id 缺失/空→400；无记录 items 空数组）
+- `src/modules/chat/sessionUsageController.ts`（新增）：`GET /api/chat/usage/sessions`（聚合 + LEFT JOIN chat_sessions 补标题，JOIN 不到为空串，按 last_used_at DESC）+ `GET /api/chat/usage/sessions/:id`（单会话最近 20 条明细，`WHERE user_id=$1 AND session_id=$2` 归属校验防越权）；鉴权 = JWT openid（Authorization Bearer + Cookie 兜底）
+- `src/index.ts`：注册 2 条公开路由（静态 `/sessions` 先于参数化 `/sessions/:id`）
+
+### 测试
+- `src/core/routes/__tests__/internal_session_usage.spec.ts`（新增，4 用例）+ `src/modules/chat/__tests__/sessionUsage.spec.ts`（新增，5 用例）；定向 `npx tsx --test` 9/9 通过，`npx tsc --noEmit` 0 错误
+
+> 遗留：前端会话列表用量展示（线 6）未做（2026-08-05 用户指示本次只做线 4）；6 项 Minor 收尾清单见 `docs/superpowers/plans/chat-agent-roadmap.md` §6.6；app-api `AGENTS.md` §7.1/§7.5 API 表补 3 端点待做。
+
+---
+
 ## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
 
 **开发者**: Aria
