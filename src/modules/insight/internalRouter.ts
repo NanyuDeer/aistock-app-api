@@ -115,6 +115,9 @@ router.post('/results/external', async (req: Request, res: Response) => {
              JSON.stringify(result.secondary_drivers || []), JSON.stringify(result.display_report || {}),
              result.podcast_brief || '', result.validation_status || 'llm', result.model_provider || ''],
         );
+        // 结果落库后触发洞察推送（fire-and-forget：失败只记日志，不影响回写响应）
+        void import('./InsightPushService').then(m => m.pushCreated(result.event_id)).catch(e =>
+            console.error('[insight] push failed', e));
         res.status(201).json({ code: 201, data: {} });
     } catch (error: unknown) {
         res.status(500).json({ code: 500, message: errMsg(error) });
