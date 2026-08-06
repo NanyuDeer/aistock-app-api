@@ -2150,6 +2150,10 @@ async function aiAnalyzeSector(
                     model,
                     messages: [{ role: 'user', content: prompt }],
                     temperature: 0.3,
+                    // DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，max_tokens 会被
+                    // reasoning_content 耗尽导致 content 为空；显式关闭思考（reasoning_effort="none"，
+                    // 服务器实测有效）让模型直接输出 JSON。仅对 deepseek 模型附加，避免影响其他模型。
+                    ...(model.toLowerCase().includes('deepseek') ? { reasoning_effort: 'none' } : {}),
                     max_tokens: MAX_TOKENS_TRIES[tryIdx],
                 }),
             });
@@ -2180,6 +2184,9 @@ async function aiAnalyzeSector(
             }
 
             const result = JSON.parse(content.trim()) as AiAnalysis;
+            // AI 输出健壮性：天数约束在 schema 范围内（长期0~90、短期0~30），防 LLM 越界值
+            result.long_term_days = Math.min(90, Math.max(0, Number(result.long_term_days) || 0));
+            result.short_term_days = Math.min(30, Math.max(0, Number(result.short_term_days) || 0));
             aiApiAvailable = true;  // AI可用
             return result;
         } catch (err) {
