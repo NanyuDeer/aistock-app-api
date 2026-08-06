@@ -43,7 +43,7 @@
 - `modules/crawler/StockInfoService` — 股票信息（研判）
 
 ## 开发注意事项
-- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）
+- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 60 天，板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
 - 飞书消息 AI 任务每分钟执行一次；仅处理正文/OCR非空且已有候选股票代码的消息，失败不自动重试

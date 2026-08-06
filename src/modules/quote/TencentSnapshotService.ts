@@ -20,12 +20,15 @@ import {
     isAtOrAfterClose,
     type CloseIndexFact,
     computeMainForceNetYuan,
+    hasCompleteMainForceFields,
     type QuickCloseMarketSnapshot,
     type QuickDataAvailability,
     type MarketBreadth,
     type QuickSnapshotCoverage,
     type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
 
 // 6 大指数代码（腾讯格式）
 const INDEX_CODES = [
@@ -96,14 +99,23 @@ export class TencentSnapshotService {
     static async buildQuickSnapshot(nowOverride?: Date): Promise<QuickCloseMarketSnapshot> {
         const now = nowOverride ?? new Date()
 
+        const tradeDate = shanghaiDateStr(now)
+        const tushareTradeDate = tradeDate.replace(/-/g, '')
+
+        // 非交易日（周末/节假日）即使已过 15:30 也不得返回快照：腾讯返回最近收盘，
+        // 若以当天日期标注会冒充"今日已收盘"（红线）。必须先于时钟门禁校验交易日。
+        if (!TradingCalendarService.isTradingDayYyyymmdd(tushareTradeDate)) {
+            const err = new Error('market_not_closed: not an A-share trading day')
+            err.name = 'MarketSnapshotUnavailable'
+            throw err
+        }
+
         if (!isAtOrAfterClose(now)) {
             const err = new Error('market_not_closed: before 15:30 Shanghai time')
             err.name = 'MarketSnapshotUnavailable'
             throw err
         }
 
-        const tradeDate = formatShanghaiDate(now)
-        const tushareTradeDate = tradeDate.replace(/-/g, '')
         const capturedAt = now.toISOString()
 
         // 1. 核心数据：6 大指数（严格失败）
@@ -127,7 +139,12 @@ export class TencentSnapshotService {
             mainForceResult.status === 'fulfilled' && mainForceResult.value.length > 0
                 ? mainForceResult.value
                 : undefined
-        const hasMainForce = mainForceRows !== undefined
+        // hasMainForce 需同时满足「有数据」且「大单/特大单字段完整」。
+        // Tushare moneyflow_ths 收盘后分批发回，可能出现 buy_lg_amount 有值、
+        // 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 为 undefined 的部分数据，
+        // 此时直接用 computeMainForceNetYuan 会得到 NaN（JSON 序列化为 null），
+        // 必须降级到概念板块近似（partial）或标记 unavailable，不能返回 available+null。
+        const hasMainForce = mainForceRows !== undefined && hasCompleteMainForceFields(mainForceRows)
         const hasConceptFlow = conceptFlowResult.status === 'fulfilled' && conceptFlow.length > 0
 
         const coverage: QuickSnapshotCoverage = {
@@ -140,11 +157,12 @@ export class TencentSnapshotService {
             breadth: breadthResult.status === 'fulfilled'
                 ? breadthResult.value.availability
                 : { state: 'unavailable', reason: 'Tencent market breadth fetch failed' },
-            // Tencent 行情行的“成交量”是 volume，不是已验证为元的全市场成交额。
-            turnover: {
-                state: 'unavailable',
-                reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount',
-            },
+            // 成交额：由全市场行情行“成交额”聚合（万元→元），腾讯源近似，非 Tushare 精确口径。
+            turnover: breadthResult.status === 'fulfilled'
+                && breadthResult.value.breadth !== undefined
+                && breadthResult.value.breadth.total_amount_yuan > 0
+                ? { state: 'partial', available_fields: ['amount_yuan'], approximate: true }
+                : { state: 'unavailable', reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount' },
             limits: marketBreadth !== undefined
                 ? {
                     state: 'partial',
@@ -159,7 +177,14 @@ export class TencentSnapshotService {
                     : { state: 'unavailable', reason: 'Tencent quick concept-flow fetch failed' },
             main_force: hasMainForce
                 ? { state: 'available' }
-                : { state: 'unavailable', reason: 'After-close main-force moneyflow is unavailable or empty' },
+                : hasConceptFlow
+                    ? {
+                        state: 'partial',
+                        available_fields: ['large_and_extra_large_net_yuan'],
+                        approximate: true,
+                        reason: 'moneyflow_ths unavailable; approximated from concept-flow net_amount',
+                    }
+                    : { state: 'unavailable', reason: 'After-close main-force moneyflow is unavailable or empty' },
         }
 
         return this.assembleSnapshot(
@@ -268,6 +293,7 @@ export class TencentSnapshotService {
         let limitUp = 0, limitDown = 0
         let totalVolume = 0
         let totalChangePct = 0
+        let totalAmountYuan = 0
         let validCount = 0
 
         for (const q of quotes) {
@@ -293,6 +319,7 @@ export class TencentSnapshotService {
 
             totalVolume += volume
             totalChangePct += changePct
+            totalAmountYuan += toFiniteNumber(q['成交额']) ?? 0
             validCount++
         }
 
@@ -306,6 +333,7 @@ export class TencentSnapshotService {
             limit_count_approximate: true,
             total_volume: totalVolume,
             avg_change_pct: validCount > 0 ? totalChangePct / validCount : 0,
+            total_amount_yuan: totalAmountYuan,
         }
     }
 
@@ -345,7 +373,15 @@ export class TencentSnapshotService {
                     : null,
                 source: 'tencent:quote',
             },
-            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            turnover: marketBreadth && marketBreadth.total_amount_yuan > 0
+                ? {
+                    amount_yuan: marketBreadth.total_amount_yuan,
+                    previous_amount_yuan: null,
+                    change_pct: null,
+                    source: 'tencent:quote',
+                    approximate: true,
+                }
+                : { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
             limits: {
                 up_count: marketBreadth?.limit_up_count ?? null,
                 down_count: marketBreadth?.limit_down_count ?? null,
@@ -353,10 +389,22 @@ export class TencentSnapshotService {
                 highest_board: null,
             },
             sectors: selectQuickSectors(conceptFlow),
-            main_force: {
-                large_and_extra_large_net_yuan: mainForceRows ? computeMainForceNetYuan(mainForceRows) : null,
-                source: 'tushare:moneyflow_ths',
-            },
+            main_force: mainForceRows && hasCompleteMainForceFields(mainForceRows)
+                ? {
+                    large_and_extra_large_net_yuan: computeMainForceNetYuan(mainForceRows),
+                    source: 'tushare:moneyflow_ths',
+                }
+                : conceptFlow.length > 0
+                    ? {
+                        // moneyflow_ths 收盘前不可用时，用概念板块净流入合计近似主力净额
+                        // （net_amount 单位亿元 → 元；概念板块互有重叠，仅作方向性参考）。
+                        large_and_extra_large_net_yuan: conceptFlow.reduce(
+                            (sum, row) => sum + (Number(row.net_amount) || 0), 0,
+                        ) * 1e8,
+                        source: 'tushare:moneyflow_cnt_ths',
+                        approximate: true,
+                    }
+                    : { large_and_extra_large_net_yuan: null, source: 'tushare:moneyflow_ths' },
             coverage: {
                 current_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
                 previous_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
@@ -408,13 +456,4 @@ function selectQuickSectors(rows: MoneyflowCntThsRow[]): QuickCloseMarketSnapsho
         top_inflows: byNetDesc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
         top_outflows: byNetAsc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
     }
-}
-
-/** 格式化上海时区日期为 YYYY-MM-DD。 */
-function formatShanghaiDate(now: Date): string {
-    const shanghai = new Date(now.getTime() + 8 * 60 * 60 * 1000)
-    const y = shanghai.getUTCFullYear()
-    const m = String(shanghai.getUTCMonth() + 1).padStart(2, '0')
-    const d = String(shanghai.getUTCDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
 }
