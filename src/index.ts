@@ -61,6 +61,7 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
@@ -704,6 +705,23 @@ cron.schedule('30 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
+cron.schedule('35 15 * * *', async () => {
+    console.log('[RotationBoardCron] 开始同步板块轮动榜');
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
+            return;
+        }
+        const count = await RotationBoardStore.syncRotationHistory();
+        console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
+    } catch (err: unknown) {
+        console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 业绩预测自动更新：每天凌晨 00:00 执行
 cron.schedule('0 0 * * *', async () => {
     console.log('[ProfitForecastAutoUpdateCron] 开始执行业绩预测自动更新');
@@ -826,6 +844,14 @@ async function start() {
         console.log('[DB] stock_concept_mapping table ready');
     } catch (err: unknown) {
         console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 板块轮动榜表（网页同款口径：每日涨幅/跌幅前10），风口龙头与趋势股评分共用
+        await RotationBoardStore.ensureRotationSchema();
+        console.log('[DB] board_rotation_daily table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -1188,6 +1214,12 @@ async function start() {
         // Compensate a missed post-close settlement after restarts or deployments.
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
             console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
+        });
+        // 启动时同步板块轮动榜（首次回填近140个交易日，之后每日增量；不阻塞启动）
+        RotationBoardStore.syncRotationHistory().then(count => {
+            console.log(`[Startup] 板块轮动榜同步完成: ${count} 条`);
+        }).catch(err => {
+            console.warn('[Startup] 板块轮动榜同步失败:', err instanceof Error ? err.message : String(err));
         });
     });
 
