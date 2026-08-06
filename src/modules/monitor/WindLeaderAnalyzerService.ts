@@ -124,7 +124,11 @@ interface BlockRotationDay {
 
 /** AI Chat Completions API 响应（仅取所需字段） */
 interface AiChatResponse {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+        message?: { content?: string; reasoning_content?: unknown };
+        finish_reason?: string;
+    }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; [k: string]: unknown };
 }
 
 /** 行业行情统计 */
@@ -139,7 +143,7 @@ interface IndustryStat {
 /** 风口板块完整分析结果（hot_sectors 元素） */
 interface HotSectorAnalysis {
     code: string;
-    cycle: 'short' | 'long' | 'both';  // 短线风口 / 长线风口 / 长短线同时成立
+    cycle: 'short' | 'long' | 'both' | 'none';  // 短线风口 / 长线风口 / 长短线同时成立 / 均不成立
     name: string;
     type: string;
     frequency: number;
@@ -2133,9 +2137,14 @@ async function aiAnalyzeSector(
 
     let respStatus = 0;
     let respRaw = '';
-    // 推理模型（如 deepseek-reasoner/v4 推理版）会把 token 消耗在 reasoning_content 上，
-    // 导致 content 为空（"AI 返回空 content"）。此时提高 max_tokens 重试一次，让其完成推理并输出 JSON。
-    const MAX_TOKENS_TRIES = [2000, 6000];
+    let respFinish = '';
+    let respUsage = '';
+    // DeepSeek V4-Flash（2026-07-31 发布）默认开启深度思考：思考(reasoning_content)与正文(content)
+    // 共用同一个 max_tokens 池子，预算被思考耗尽后 content 为空（HTTP 200、不报错）。
+    // 官方 API 实测 reasoning_effort:"none" 与 thinking:{type:"disabled"} 均可彻底关闭思考
+    // （关闭后响应不再含 reasoning_content）。生产走本地代理网关(127.0.0.1:3300)，参数可能被剥离，
+    // 因此用大 max_tokens 兜底：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）。
+    const MAX_TOKENS_TRIES = [8000, 16000];
     for (let tryIdx = 0; tryIdx < MAX_TOKENS_TRIES.length; tryIdx++) {
         try {
             const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
@@ -2152,9 +2161,12 @@ async function aiAnalyzeSector(
                     messages: [{ role: 'user', content: prompt }],
                     temperature: 0.3,
                     // DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，max_tokens 会被
-                    // reasoning_content 耗尽导致 content 为空；显式关闭思考（reasoning_effort="none"，
-                    // 服务器实测有效）让模型直接输出 JSON。仅对 deepseek 模型附加，避免影响其他模型。
-                    ...(model.toLowerCase().includes('deepseek') ? { reasoning_effort: 'none' } : {}),
+                    // reasoning_content 耗尽导致 content 为空。双参数关闭思考：reasoning_effort="none"
+                    // （OpenAI o 系列风格）+ thinking:{type:"disabled"}（Anthropic 风格，V4 官方均兼容），
+                    // 任一个被网关透传即生效。仅对 deepseek 模型附加，避免影响其他模型。
+                    ...(model.toLowerCase().includes('deepseek')
+                        ? { reasoning_effort: 'none', thinking: { type: 'disabled' } }
+                        : {}),
                     max_tokens: MAX_TOKENS_TRIES[tryIdx],
                 }),
             });
@@ -2169,6 +2181,8 @@ async function aiAnalyzeSector(
             // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
             respRaw = await resp.text();
             const json = JSON.parse(respRaw) as AiChatResponse;
+            respFinish = String(json?.choices?.[0]?.finish_reason ?? '');
+            respUsage = json?.usage ? JSON.stringify(json.usage) : '';
             let content = json?.choices?.[0]?.message?.content?.trim() || '';
             if (content.startsWith('```')) {
                 content = content.split('```')[1];
@@ -2176,12 +2190,12 @@ async function aiAnalyzeSector(
             }
             if (!content) {
                 // 推理模型：思考未完成导致 content 为空 → 提高 max_tokens 重试
-                const reasoning = (json?.choices?.[0]?.message as { reasoning_content?: unknown } | undefined)?.reasoning_content;
+                const reasoning = json?.choices?.[0]?.message?.reasoning_content;
                 if (reasoning && tryIdx < MAX_TOKENS_TRIES.length - 1) {
-                    console.log(`[HotSectorAnalyzer] AI 推理未完成（content 空、reasoning 有内容），提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}`);
+                    console.log(`[HotSectorAnalyzer] AI 推理未完成（content 空、reasoning 有内容，finish=${respFinish} usage=${respUsage}），提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}`);
                     continue;
                 }
-                throw new Error(`AI 返回空 content（原始响应前300: ${respRaw.slice(0, 300)}）`);
+                throw new Error(`AI 返回空 content（finish=${respFinish} usage=${respUsage}，原始响应前300: ${respRaw.slice(0, 300)}）`);
             }
 
             const result = JSON.parse(content.trim()) as AiAnalysis;
@@ -2202,7 +2216,7 @@ async function aiAnalyzeSector(
             if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
                 aiApiAvailable = false;
             }
-            console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
+            console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，finish=${respFinish} usage=${respUsage}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
             return ruleBasedAnalysis(sectorName, sectorData, transmission);
         }
     }
@@ -2222,18 +2236,20 @@ export function deriveCycle(a: {
     long_confidence?: number;
     short_term_days?: number;
     short_heat?: number;
-}): 'both' | 'long' | 'short' {
+}): 'both' | 'long' | 'short' | 'none' {
     const isLong = (a.long_term_days ?? 0) >= LONG_DAYS_MIN && (a.long_confidence ?? 0) >= LONG_CONF_MIN;
     const isShort = (a.short_term_days ?? 0) >= SHORT_DAYS_MIN && (a.short_heat ?? 0) >= SHORT_HEAT_MIN;
     if (isLong && isShort) return 'both';
     if (isLong) return 'long';
-    return 'short';
+    if (isShort) return 'short';
+    return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重 ≤16 */
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重；
+ * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
-    cycle: 'short' | 'long' | 'both';
+    cycle: 'short' | 'long' | 'both' | 'none';
     long_term_days?: number;
     short_term_days?: number;
 }>(sectors: T[]): T[] {
@@ -2248,6 +2264,9 @@ export function applyDualRankings<T extends {
     const merged = new Map<string, T>();
     for (const s of [...longBoard, ...shortBoard]) {
         if (!merged.has(s.name)) merged.set(s.name, s);
+    }
+    for (const s of sectors) {
+        if (s.cycle === 'none' && !merged.has(s.name)) merged.set(s.name, s);
     }
     return [...merged.values()];
 }
@@ -3374,7 +3393,7 @@ export class WindLeaderAnalyzerService {
                 aiAnalysis.short_term_days = 0; aiAnalysis.short_heat = 0; aiAnalysis.heat_stage = '未知'; aiAnalysis.short_reason = '';
             }
             if (aiAnalysis.driver_type) concept.driver_type = aiAnalysis.driver_type; // AI 推断驱动类型回填
-            const cycle: 'short' | 'long' | 'both' = deriveCycle(aiAnalysis);
+            const cycle: 'short' | 'long' | 'both' | 'none' = deriveCycle(aiAnalysis);
             console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口 (long=${aiAnalysis.long_term_days}d/conf=${aiAnalysis.long_confidence}/${aiAnalysis.logic_type}, short=${aiAnalysis.short_term_days}d/heat=${aiAnalysis.short_heat}/${aiAnalysis.heat_stage})`);
 
             // 5. 选股 - 强关联行业（风口精选）

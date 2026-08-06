@@ -2,6 +2,24 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-06 — 风口龙头双链修复：deriveCycle 四态化 + AI 空 content 根因修复
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.deriveCycle`：新增 `'none'` 态（长短线均不成立时不再无条件归为 `short`），修复"长线池板块长线信号弱时被误判为短线、以 0 天塞入短线档"的缺陷
+- `WindLeaderAnalyzerService.applyDualRankings`：`'none'` 板块保留在合并结果末尾，供前端取全量后按天数过滤
+- `HotSectorAnalysis` / `WindLeaderService.WindLeaderSector`：`cycle` 类型增加 `'none'`
+- AI 空 content 根因修复（DeepSeek V4-Flash 于 2026-07-31 发布，默认开启深度思考：思考 `reasoning_content` 与正文 `content` 共用同一个 `max_tokens` 池，预算被思考耗尽后 content 为空且 HTTP 200 不报错）：
+  - 请求体双参数关闭思考 `reasoning_effort:"none"` + `thinking:{type:"disabled"}`（官方 API 实测均生效，防本地代理网关 127.0.0.1:3300 剥离任一参数）
+  - `max_tokens` 提档 [2000,6000] → [8000,16000]：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）
+  - 失败日志补充 `finish_reason` + `usage`，定位思考耗尽/截断的最终证据
+
+### 部署注意
+- app-api 以 `node dist/index.js` 运行：服务器必须 `npm run build` 后再 `pm2 restart`，否则跑的是旧 dist。今日服务器日志行为与 e569d97 时代代码一致（无重试分支、无 reasoning_effort），说明 git HEAD 虽为 26b8cf4，但运行的是旧编译产物
+
+---
+
 ## [junliang] 2026-08-06 — 自选股洞察：事件归属锚定标题主体股票 + 归因回写修复
 
 **开发者**: Aria
