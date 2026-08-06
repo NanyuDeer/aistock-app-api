@@ -2,6 +2,46 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-06 — moneyflow 资金流合并 + Tushare 请求字段对齐 + 无效接口改替代数据源
+
+**开发者**: Aria
+
+### 重构
+- `TushareService.ts`：合并资金流数据源，删除 `getMoneyflowByDate`/`getMoneyflow`/`MoneyflowRow`；`getMoneyflowThsByDate` 请求字段升级为原版 `moneyflow` 完整分项（buy/sell × sm/md/lg/elg + net_mf_amount/net_mf_vol），`WindLeaderAnalyzerService.fetchTushareEnhancement` 只保留单一 `moneyflowThsMap`
+- 资金流 `mf_5day`（5日主力净额）：原版接口无此字段，新增 `getMoneyflowThs5dMap`（moneyflow_ths 接口 `net_d5_amount`，需 6000 积分），在风口与 TenxScore 预加载处回填；moneyflow_ths 输出仅含 net_amount/net_d5_amount/buy_lg|md|sm_amount(+_rate)，无 buy_elg/sell_* 分项，仅作补充
+
+### 修复
+- 对照 Tushare 官方文档核对全部接口请求字段，修复 5 处不一致：`limit_step`（改用 nums，`MarketSnapshotService.computeHighestBoard` 同步）、`stk_surv`（surv_date/rece_org，TenxScore 调研统计同步）、`broker_recommend`（无评级字段移除）、`limit_cpt_list`（days/cons_nums/up_nums）、`hk_hold`（删不存在的 amount）
+- `daily_basic` 无 `is_st` 字段 → `getStStatus` 改用 `stock_basic` 的 name 判断 ST（ST/*ST/S*ST/SST 前缀）
+- `stk_holdertype` 接口不存在 → 删除 getInstitutionalHold；机构持股比例改用 `top10_holders` 实测 `holder_type` 字段（机构类白名单/非机构黑名单：一般企业/自然人/国资局），TenxScore 市场认可度评分权重恢复（机构 25% + 北向 15%）
+- `stk_analyst`/`major_news` 不可用 → `getAnalystRating` 仅走 `report_rc`（rating/org_name 均有评级字段）
+- `net_mf_ratio` 两个接口均不存在（此前风口因子5恒为常数5分、TenxScore 1g 净占比恒为0）→ 新增 `calcMainForceNetRatio` 用金额分项推导主力（大单+特大单）净流入占比，替换两处消费点
+
+---
+
+## [master] 2026-08-05 — cls_news 缺失修复：telegraph 分页上限不足
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/ClsStockNewsService.ts`：`fetchTelegraphByDate` 的 `MAX_PAGES` 由 10 提高到 50（约 500 条）。财联社电报约 3 分钟/条，晚间触发（20:30 review_full / 手动 review_quick）时最新电报晚于 dateEnd(16:00) 被跳过，需翻页跨越数小时才能到 08:30-16:00 窗口；原 MAX_PAGES=10（100 条）翻不到 → items 空 → total=0 → cls_news 缺失
+
+---
+
+## [master] 2026-08-05 — moneyflow 接口字段错配修复 + main_force NaN 防护
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/quote/TushareService.ts`：`getMoneyflowThs`/`getMoneyflowThsByDate` 由 `moneyflow_ths` 接口改为原版 `moneyflow` 接口。原实现请求的字段（`buy_elg_amount`/`sell_lg_amount`/`sell_elg_amount`/`net_mf_amount`）是原版 `moneyflow` 的字段名，但 `moneyflow_ths` 实际只有 `buy_lg_amount`（大单净流入）/`net_amount`/`net_d5_amount` 等，导致除 `buy_lg_amount` 外全部 undefined → `computeMainForceNetYuan` 得 NaN 被 JSON 序列化为 null（quick 快照 `main_force=available+null` 根因）
+- `src/modules/quote/MarketSnapshotService.ts`：`computeMainForceNetYuan` 加 `Number(x)||0` 防护避免 NaN；新增 `hasCompleteMainForceFields` 字段完整性检查
+- `src/modules/quote/TencentSnapshotService.ts`：`hasMainForce` 与 `assembleSnapshot` 的 main_force 分支改为「有数据且字段完整」才用 Tushare 精确值，否则降级概念板块近似（partial+approximate）或 unavailable，不再返回 available+null
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：新增 2 个回归用例（字段不完整降级 conceptFlow、`hasCompleteMainForceFields` 判定）
+
+---
+
 ## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
 
 **开发者**: Aria

@@ -472,3 +472,58 @@ test('buildQuickSnapshot rejects on non-trading days after 15:30 (no fake "today
         /market_not_closed/,
     )
 })
+
+test('main_force falls back to concept-flow approximation when moneyflow_ths fields are incomplete', async () => {
+    // 回归用例：Tushare moneyflow_ths 收盘后分批发回，buy_lg_amount 已有值，
+    // 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 为 undefined 时，
+    // 不得返回 available+null 的矛盾状态（NaN 被 JSON 序列化为 null 的根因），
+    // 应降级为概念板块近似（partial + approximate）。
+    const afterClose = new Date('2026-07-30T07:30:00.000Z')
+    const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
+    const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => AVAILABLE_BREADTH_RESULT)
+    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [
+        { ts_code: '885338.TI', name: '融资融券', pct_change: 1.5, net_amount: 100, lead_stock: 'A', company_num: 10, trade_date: '20260730' },
+        { ts_code: '885520.TI', name: '沪股通', pct_change: 1.0, net_amount: 50, lead_stock: 'B', company_num: 20, trade_date: '20260730' },
+    ])
+    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
+    // 模拟 Tushare 部分数据：buy_lg_amount 有值，其余三个字段缺失（undefined）
+    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => [
+        { ts_code: '600000.SH', trade_date: '20260730', buy_lg_amount: -4233.99 } as never,
+    ]
+
+    try {
+        const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
+        // 字段不完整 → hasMainForce=false → availability 为 partial（conceptFlow 近似）
+        assert.equal(snapshot.quick_data_availability.main_force.state, 'partial')
+        assert.deepEqual(snapshot.quick_data_availability.main_force.available_fields, ['large_and_extra_large_net_yuan'])
+        assert.equal(snapshot.quick_data_availability.main_force.approximate, true)
+        // main_force 值为 conceptFlow 合计（(100+50)亿 → 元），且不是 null/NaN
+        assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, 150 * 1e8)
+        assert.equal(snapshot.main_force.source, 'tushare:moneyflow_cnt_ths')
+        assert.equal(snapshot.main_force.approximate, true)
+        assert.equal(snapshot.coverage_info.has_moneyflow, false)
+        assert.equal(snapshot.coverage_info.has_concept_flow, true)
+    } finally {
+        fetchIndexesMock.mock.restore()
+        fetchBreadthMock.mock.restore()
+        fetchConceptFlowMock.mock.restore()
+        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+    }
+})
+
+test('hasCompleteMainForceFields rejects rows with missing big/extra-large fields', () => {
+    const { hasCompleteMainForceFields } = require('../src/modules/quote/MarketSnapshotService')
+    assert.equal(
+        hasCompleteMainForceFields([
+            { buy_lg_amount: -4233.99, buy_elg_amount: undefined, sell_lg_amount: undefined, sell_elg_amount: undefined },
+        ]),
+        false,
+    )
+    assert.equal(
+        hasCompleteMainForceFields([
+            { buy_lg_amount: 1, buy_elg_amount: 2, sell_lg_amount: 3, sell_elg_amount: 4 },
+            { buy_lg_amount: 5, buy_elg_amount: 6, sell_lg_amount: 7, sell_elg_amount: 8 },
+        ]),
+        true,
+    )
+})
