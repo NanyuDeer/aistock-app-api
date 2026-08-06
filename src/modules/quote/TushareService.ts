@@ -1,6 +1,7 @@
 import { getStockIdentity } from '../../shared/utils/stock';
 import { createThrottler } from '../../shared/utils/throttle';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 const TUSHARE_MIN_INTERVAL_MS = 320;
 const tushareThrottler = createThrottler(TUSHARE_MIN_INTERVAL_MS);
@@ -323,7 +324,7 @@ export async function getIndustryRevenueGrowth(indexCode: string): Promise<{
 
     const twoYearsAgo = new Date();
     twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 3);
-    const startDate = twoYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate = shanghaiDateYyyymmdd(twoYearsAgo);
 
     let totalRevenue = 0;
     let prevRevenue = 0;
@@ -379,8 +380,9 @@ export async function getForecast(symbol: string, startDate?: string): Promise<F
 }
 
 export interface StkSurvivalRow {
-    ts_code: string; ann_date: string; visit_date: string;
-    visitors: number; institution_name: string; institution_type: string;
+    ts_code: string; ann_date?: string; surv_date: string;
+    fund_visitors: number; rece_place: string; rece_mode: string;
+    rece_org: string; org_type: string; comp_rece: string; content: string;
 }
 
 export async function getStkSurvival(symbol: string, startDate?: string): Promise<StkSurvivalRow[]> {
@@ -389,27 +391,28 @@ export async function getStkSurvival(symbol: string, startDate?: string): Promis
     const rows = await tushareRequest(
         'stk_surv', // Tushare 官方接口名为 stk_surv（非 stk_survival）
         params,
-        'ts_code,ann_date,visit_date,visitors,institution_name,institution_type',
+        'ts_code,name,surv_date,fund_visitors,rece_place,rece_mode,rece_org,org_type,comp_rece,content',
     );
     return rows as unknown as StkSurvivalRow[];
 }
 
 /**
  * 获取股票ST状态
- * 通过 daily_basic 接口的 is_st 字段判断
+ * daily_basic 接口无 is_st 字段（文档未提供），改用 stock_basic 的 name 判断（A股ST股名称以 ST/*ST/S*ST/SST 开头）
  */
-export async function getStStatus(symbol: string, tradeDate?: string): Promise<boolean> {
-    const params: Record<string, unknown> = { ts_code: toTsCode(symbol) };
-    if (tradeDate) params.trade_date = tradeDate;
-    const rows = await tushareRequest(
-        'daily_basic',
-        params,
-        'ts_code,trade_date,is_st',
-    );
-    if (rows.length === 0) return false;
-    // 取最新一条，is_st=1表示ST
-    const latest = rows.sort((a, b) => String(b.trade_date).localeCompare(String(a.trade_date)))[0];
-    return latest.is_st === 1;
+export async function getStStatus(symbol: string, _tradeDate?: string): Promise<boolean> {
+    try {
+        const rows = await tushareRequest(
+            'stock_basic',
+            { ts_code: toTsCode(symbol) },
+            'ts_code,name',
+        );
+        if (rows.length === 0) return false;
+        const name = String(rows[0].name || '');
+        return name.startsWith('ST') || name.startsWith('*ST') || name.startsWith('S*ST') || name.startsWith('SST');
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -419,7 +422,7 @@ export async function getStStatus(symbol: string, tradeDate?: string): Promise<b
 export async function getAvgAmount(symbol: string, days: number = 20): Promise<number | null> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days * 2); // 多取一些确保有足够交易日
-    const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateStr = shanghaiDateYyyymmdd(startDate);
     const rows = await tushareRequest(
         'daily',
         { ts_code: toTsCode(symbol), start_date: startDateStr },
@@ -434,49 +437,14 @@ export async function getAvgAmount(symbol: string, days: number = 20): Promise<n
     return totalAmount / recent.length;
 }
 
-/**
- * 获取机构持股比例（季度数据）
- * 通过 stk_holdertype 接口获取机构持股汇总
- */
-export interface InstitutionalHoldRow {
-    ts_code: string; ann_date: string; end_date: string;
-    hold_ratio: number;  // 机构持股占流通股比例
-}
-
-export async function getInstitutionalHold(symbol: string, startDate?: string): Promise<InstitutionalHoldRow[]> {
-    const tsCode = toTsCode(symbol);
-    try {
-        const params: Record<string, unknown> = { ts_code: tsCode };
-        if (startDate) params.start_date = startDate;
-        const rows = await tushareRequest(
-            'stk_holdertype',
-            params,
-            'ts_code,ann_date,end_date,hold_ratio',
-        );
-        if (rows.length > 0) return rows as unknown as InstitutionalHoldRow[];
-    } catch {}
-
-    // 回退：尝试用cyq_perf（筹码分布）或f10 Holdings
-    try {
-        const params: Record<string, unknown> = { ts_code: tsCode };
-        if (startDate) params.start_date = startDate;
-        const rows = await tushareRequest(
-            'stk_holdertype',
-            { ...params, period: '1' },
-            'ts_code,ann_date,end_date,hold_ratio',
-        );
-        if (rows.length > 0) return rows as unknown as InstitutionalHoldRow[];
-    } catch {}
-
-    return [];
-}
+// ==================== 股东户数 ====================
 
 /**
  * 获取北向资金持股（沪港通/深港通）
  */
 export interface HkHoldRow {
-    ts_code: string; trade_date: string; vol: number;
-    amount: number; ratio: number; hold_change: number;
+    ts_code: string; trade_date: string; name: string;
+    vol: number; ratio: number; exchange: string;
 }
 
 export async function getHkHold(symbol: string, startDate?: string): Promise<HkHoldRow[]> {
@@ -488,7 +456,7 @@ export async function getHkHold(symbol: string, startDate?: string): Promise<HkH
         const rows = await tushareRequest(
             'hk_hold',
             params,
-            'ts_code,trade_date,vol,amount,ratio',
+            'ts_code,trade_date,name,vol,ratio,exchange',
         );
         if (rows.length > 0) return rows as unknown as HkHoldRow[];
     } catch {}
@@ -503,12 +471,12 @@ export async function getHkHold(symbol: string, startDate?: string): Promise<HkH
             d.setDate(d.getDate() - i);
             // 跳过周末
             if (d.getDay() === 0 || d.getDay() === 6) continue;
-            const tradeDate = d.toISOString().slice(0, 10).replace(/-/g, '');
+            const tradeDate = shanghaiDateYyyymmdd(d);
             params.trade_date = tradeDate;
             const rows = await tushareRequest(
                 'hk_hold',
                 params,
-                'ts_code,trade_date,vol,amount,ratio',
+                'ts_code,trade_date,name,vol,ratio,exchange',
             );
             const filtered = rows.filter((r: Record<string, unknown>) => r.ts_code === tsCode);
             if (filtered.length > 0) return filtered as unknown as HkHoldRow[];
@@ -528,78 +496,30 @@ export interface AnalystRatingRow {
 
 export async function getAnalystRating(symbol: string, startDate?: string): Promise<AnalystRatingRow[]> {
     const tsCode = toTsCode(symbol);
-    // 方式1：stk_analyst接口
+    // 评级数据源：report_rc（卖方盈利预测，含 rating 评级 + org_name 机构字段，对齐文档）
+    // 注：原第一优先级 stk_analyst 接口官方文档无此接口（实测不可用），已移除；
+    //     原 broker_recommend（券商金股，仅 month/broker）与 major_news（新闻）均无评级字段，已移除。
     try {
         const params: Record<string, unknown> = { ts_code: tsCode };
         if (startDate) params.start_date = startDate;
-        const rows = await tushareRequest(
-            'stk_analyst',
-            params,
-            'ts_code,ann_date,org_name,rating',
-        );
-        if (rows.length > 0) return rows as unknown as AnalystRatingRow[];
-    } catch {}
-
-    // 方式2：broker_recommend接口（研报推荐）
-    try {
-        const params: Record<string, unknown> = { ts_code: tsCode };
-        if (startDate) params.start_date = startDate;
-        const rows = await tushareRequest(
-            'broker_recommend',
-            params,
-            'ts_code,ann_date,org_name,rating',
-        );
-        if (rows.length > 0) return rows as unknown as AnalystRatingRow[];
-    } catch {}
-
-    // 方式3：news_content接口（新闻/研报标题）
-    try {
-        const params: Record<string, unknown> = { ts_code: tsCode };
-        if (startDate) params.start_date = startDate;
-        const rows = await tushareRequest(
-            'major_news',
-            params,
-            'ts_code,ann_date,org_name,rating',
-        );
-        if (rows.length > 0) return rows as unknown as AnalystRatingRow[];
+        const rows = await getReportRc(params);
+        if (rows.length > 0) {
+            // 仅保留带评级的行，映射为统一评级结构：ann_date←report_date
+            return rows
+                .filter(r => r.rating)
+                .map((r) => ({
+                    ts_code: r.ts_code,
+                    ann_date: r.report_date || '',
+                    org_name: r.org_name || '',
+                    rating: r.rating || '',
+                }));
+        }
     } catch {}
 
     return [];
 }
 
 // ==================== 风口爆发股专用接口 ====================
-
-export interface MoneyflowRow {
-    ts_code: string; trade_date: string;
-    buy_sm_amount: number; sell_sm_amount: number;
-    buy_md_amount: number; sell_md_amount: number;
-    buy_lg_amount: number; sell_lg_amount: number;
-    buy_elg_amount: number; sell_elg_amount: number;
-    net_mf_amount: number;  // 净流入额（万元）
-}
-
-/** 获取个股资金流向 */
-export async function getMoneyflow(symbol: string, startDate?: string, endDate?: string): Promise<MoneyflowRow[]> {
-    const params: Record<string, unknown> = { ts_code: toTsCode(symbol) };
-    if (startDate) params.start_date = startDate;
-    if (endDate) params.end_date = endDate;
-    const rows = await tushareRequest(
-        'moneyflow',
-        params,
-        'ts_code,trade_date,buy_sm_amount,sell_sm_amount,buy_md_amount,sell_md_amount,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount',
-    );
-    return rows as unknown as MoneyflowRow[];
-}
-
-/** 获取单日全市场资金流向（用于批量选股） */
-export async function getMoneyflowByDate(tradeDate: string): Promise<MoneyflowRow[]> {
-    const rows = await tushareRequest(
-        'moneyflow',
-        { trade_date: tradeDate },
-        'ts_code,trade_date,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount',
-    );
-    return rows as unknown as MoneyflowRow[];
-}
 
 export interface DailyBasicFullRow {
     ts_code: string; trade_date: string;
@@ -608,15 +528,16 @@ export interface DailyBasicFullRow {
     pb: number; ps: number; ps_ttm: number;
     total_share: number; float_share: number; free_share: number;
     total_mv: number; circ_mv: number;
-    is_st?: number;
 }
 
-/** 获取单日全市场每日指标（用于批量选股） */
+/** 获取单日全市场每日指标（用于批量选股）
+ * 注：daily_basic 接口文档无 is_st 字段（ST 判断走 getStStatus 的 stock_basic name 方案）
+ */
 export async function getDailyBasicByDate(tradeDate: string): Promise<DailyBasicFullRow[]> {
     const rows = await tushareRequest(
         'daily_basic',
         { trade_date: tradeDate },
-        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv,is_st',
+        'ts_code,trade_date,close,turnover_rate,turnover_rate_f,volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,total_share,float_share,free_share,total_mv,circ_mv',
     );
     return rows as unknown as DailyBasicFullRow[];
 }
@@ -625,7 +546,7 @@ export async function getDailyBasicByDate(tradeDate: string): Promise<DailyBasic
 export async function getStockDailyRecent(symbol: string, days: number = 10): Promise<DailyPriceRow[]> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days * 2);
-    const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateStr = shanghaiDateYyyymmdd(startDate);
     const rows = await tushareRequest(
         'daily',
         { ts_code: toTsCode(symbol), start_date: startDateStr },
@@ -750,11 +671,12 @@ export interface LimitCptListRow {
     trade_date: string;       // 交易日期
     ts_code: string;          // 概念代码
     name: string;             // 概念名称
+    days: number;             // 连续上榜天数
     up_stat: string;          // 涨跌统计 涨/平/跌
-    limit_times: number;      // 涨停家数
-    con_up_stat: string;      // 连板统计 连板/涨停
-    up_type: string;          // 涨停类型
-    limit: number;            // 涨停数量
+    cons_nums: number;        // 概念成分股数量
+    up_nums: number;          // 上涨家数
+    pct_chg: number;          // 板块涨幅%
+    rank: number;             // 排名
 }
 
 /** 获取涨停板块统计（替代同花顺概念涨幅排序爬虫）
@@ -764,7 +686,7 @@ export async function getLimitCptList(tradeDate: string): Promise<LimitCptListRo
     const rows = await tushareRequest(
         'limit_cpt_list',
         { trade_date: tradeDate },
-        'trade_date,ts_code,name,up_stat,limit_times,con_up_stat,up_type,limit',
+        'trade_date,ts_code,name,days,up_stat,cons_nums,up_nums,pct_chg,rank',
     );
     return rows as unknown as LimitCptListRow[];
 }
@@ -842,14 +764,10 @@ export async function getLimitListThs(tradeDate: string, limitType?: string): Pr
 
 /** 连板天梯 */
 export interface LimitStepRow {
-    trade_date: string;       // 交易日期
     ts_code: string;          // 股票代码
     name: string;             // 股票名称
-    close: number;            // 收盘价
-    pct_chg: number;          // 涨跌幅
-    limit_times: number;      // 连板数
-    up_stat: string;          // 涨跌统计
-    con_tag: string;          // 概念标签
+    trade_date: string;       // 交易日期
+    nums: number;             // 连板次数
 }
 
 /** 获取连板天梯
@@ -859,7 +777,7 @@ export async function getLimitStep(tradeDate: string): Promise<LimitStepRow[]> {
     const rows = await tushareRequest(
         'limit_step',
         { trade_date: tradeDate },
-        'trade_date,ts_code,name,close,pct_chg,limit_times,up_stat,con_tag',
+        'ts_code,name,trade_date,nums',
     );
     return rows as unknown as LimitStepRow[];
 }
@@ -941,14 +859,51 @@ export async function getMoneyflowThs(tsCode: string, startDate?: string, endDat
     return rows as unknown as MoneyflowThsRow[];
 }
 
-/** 获取单日全市场资金流向（用于批量选股） */
+/** 获取单日全市场资金流向（用于批量选股）
+ * 请求完整分项（小/中/大/特大单买卖金额 + 净流入），与 moneyflow 接口输出参数一致。
+ * 注：MoneyflowThsRow 中的 *_ratio / mf_5day 为同花顺增强口径字段，moneyflow 接口不返回（undefined），
+ *     北交所股票由新浪接口补齐（见 SinaMoneyFlowService）。
+ */
 export async function getMoneyflowThsByDate(tradeDate: string): Promise<MoneyflowThsRow[]> {
     const rows = await tushareRequest(
         'moneyflow',
         { trade_date: tradeDate },
-        'ts_code,trade_date,buy_lg_amount,buy_elg_amount,sell_lg_amount,sell_elg_amount,net_mf_amount,net_mf_vol',
+        'ts_code,trade_date,buy_sm_amount,sell_sm_amount,buy_md_amount,sell_md_amount,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount,net_mf_vol',
     );
     return rows as unknown as MoneyflowThsRow[];
+}
+
+/** 计算主力（大单+特大单）净流入占比（%）
+ * moneyflow 原版与 moneyflow_ths 接口均无现成的 net_mf_ratio 字段，用金额分项推导：
+ * 主力净流入 = (大单买入-大单卖出) + (特大单买入-特大单卖出)
+ * 总成交额 ≈ 买方全部成交 = 小单买入 + 中单买入 + 大单买入 + 特大单买入（万元）
+ * 占比 = 主力净流入 / 总成交额 × 100；数据缺失（总成交额<=0）返回 0
+ */
+export function calcMainForceNetRatio(row: MoneyflowThsRow): number {
+    const totalAmount = (row.buy_sm_amount || 0) + (row.buy_md_amount || 0) + (row.buy_lg_amount || 0) + (row.buy_elg_amount || 0);
+    if (totalAmount <= 0) return 0;
+    const mainNet = (row.buy_lg_amount || 0) - (row.sell_lg_amount || 0) + (row.buy_elg_amount || 0) - (row.sell_elg_amount || 0);
+    return (mainNet / totalAmount) * 100;
+}
+
+/** 获取单日全市场同花顺资金流向 5 日主力净额（moneyflow_ths 接口 → mf_5day 字段）
+ * moneyflow 原版接口无 mf_5day（5日主力净额）字段，需 moneyflow_ths 接口的 net_d5_amount 补充。
+ * 需 6000 积分；文档注明 2027-07-06 起该接口不再提供 5 日主力净额和占比数据（届时返回空 Map，调用方降级）。
+ * 注：moneyflow_ths 输出仅含 net_amount/net_d5_amount/buy_lg|md|sm_amount(+_rate) 等字段，
+ *     无原版 moneyflow 的 buy_elg/sell_* 分项，故仅用于补充 mf_5day，不可作为主资金流数据源。
+ */
+export async function getMoneyflowThs5dMap(tradeDate: string): Promise<Map<string, number>> {
+    const result = new Map<string, number>();
+    const rows = await tushareRequest(
+        'moneyflow_ths',
+        { trade_date: tradeDate },
+        'ts_code,net_d5_amount',
+    );
+    for (const row of rows) {
+        const v = Number(row.net_d5_amount);
+        if (Number.isFinite(v)) result.set(String(row.ts_code), v);
+    }
+    return result;
 }
 
 /** 开盘啦概念题材成分股 */

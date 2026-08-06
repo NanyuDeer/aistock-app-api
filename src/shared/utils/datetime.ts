@@ -1,7 +1,6 @@
+import { shanghaiDateTimeStr } from './shanghaiTime';
+
+/** 将毫秒时间戳格式化为上海时区时间字符串 YYYY-MM-DD HH:mm:ss（统一走 shanghaiTime 通用函数） */
 export function formatToChinaTime(timestamp: number): string {
-    const date = new Date(timestamp);
-    const utc8Time = date.getTime() + (date.getTimezoneOffset() * 60000) + (8 * 3600000);
-    const d = new Date(utc8Time);
-    const pad = (n: number) => n.toString().padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return shanghaiDateTimeStr(timestamp);
 }

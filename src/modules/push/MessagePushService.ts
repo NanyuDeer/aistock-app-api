@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import cron from 'node-cron';
 import { HotBurstService } from '../monitor/HotBurstService';
+import { shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 
 const FEISHU_APP_ID = process.env.FEISHU_APP_ID || '';
 const FEISHU_APP_SECRET = process.env.FEISHU_APP_SECRET || '';
@@ -321,7 +322,7 @@ function buildStockInfoFeishuCard(event: StockInfoPushEventData): any {
     elements.push({ tag: 'hr' });
 
     const eventType = event.info_type === 'announcement' ? '公告研判' : '新闻研判';
-    const time = new Date(event.published_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+    const time = shanghaiDateTimeStr(new Date(event.published_at).getTime());
 
     elements.push({
         tag: 'div',

@@ -4,6 +4,7 @@ import { createResponse } from '../../shared/utils/response';
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateStr, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 
 interface EarningsForecastRow {
     update_time: string;
@@ -64,13 +65,7 @@ export class ProfitForecastController {
     private static readonly ALLOWED_SORT_ORDER = new Set<ForecastSortOrder>(['asc', 'desc']);
 
     private static formatToChinaTimeWithMs(timestamp: number): string {
-        const date = new Date(timestamp);
-        const utc8Time = date.getTime() + (date.getTimezoneOffset() * 60000) + (8 * 3600000);
-        const d = new Date(utc8Time);
-        const pad2 = (n: number) => n.toString().padStart(2, '0');
-        const pad3 = (n: number) => n.toString().padStart(3, '0');
-        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
-            `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
+        return shanghaiDateTimeMsStr(timestamp);
     }
 
     private static parseForecastDetail(raw: unknown): any[] {
@@ -407,7 +402,7 @@ export class ProfitForecastController {
         }
 
         // 每天最多一次限制：检查今天是否已经爬取过（Redis 持久化 + 内存备份）
-        const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+        const today = shanghaiDateStr(); // YYYY-MM-DD
         const redisLastDate = await CacheService.get<string>('profit_forecast:batch:date');
         const lastDate = redisLastDate || ProfitForecastController.batchStatus.lastBatchDate;
         if (lastDate === today) {
@@ -592,7 +587,7 @@ export class ProfitForecastController {
         const s = ProfitForecastController.batchStatus;
         const elapsedMs = s.running ? Date.now() - s.startedAt : (s.finishedAt - s.startedAt);
         const progress = s.total > 0 ? Math.round((s.current / s.total) * 100) : 0;
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         // 优先从 Redis 读取（持久化），内存作为备份
         const redisLastDate = await CacheService.get<string>('profit_forecast:batch:date');
         const lastBatchDate = redisLastDate || s.lastBatchDate;

@@ -2,7 +2,7 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
-## [changer] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
+## [master] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
 
 **开发者**: Aria
 
@@ -17,6 +17,23 @@
 - `src/core/routes/__tests__/internal_session_usage.spec.ts`（新增，4 用例）+ `src/modules/chat/__tests__/sessionUsage.spec.ts`（新增，5 用例）；定向 `npx tsx --test` 9/9 通过，`npx tsc --noEmit` 0 错误
 
 > 遗留：前端会话列表用量展示（线 6）未做（2026-08-05 用户指示本次只做线 4）；6 项 Minor 收尾清单见 `docs/superpowers/plans/chat-agent-roadmap.md` §6.6；app-api `AGENTS.md` §7.1/§7.5 API 表补 3 端点待做。
+
+---
+
+## [master] 2026-08-06 — moneyflow 资金流合并 + Tushare 请求字段对齐 + 无效接口改替代数据源
+
+**开发者**: Aria
+
+### 重构
+- `TushareService.ts`：合并资金流数据源，删除 `getMoneyflowByDate`/`getMoneyflow`/`MoneyflowRow`；`getMoneyflowThsByDate` 请求字段升级为原版 `moneyflow` 完整分项（buy/sell × sm/md/lg/elg + net_mf_amount/net_mf_vol），`WindLeaderAnalyzerService.fetchTushareEnhancement` 只保留单一 `moneyflowThsMap`
+- 资金流 `mf_5day`（5日主力净额）：原版接口无此字段，新增 `getMoneyflowThs5dMap`（moneyflow_ths 接口 `net_d5_amount`，需 6000 积分），在风口与 TenxScore 预加载处回填；moneyflow_ths 输出仅含 net_amount/net_d5_amount/buy_lg|md|sm_amount(+_rate)，无 buy_elg/sell_* 分项，仅作补充
+
+### 修复
+- 对照 Tushare 官方文档核对全部接口请求字段，修复 5 处不一致：`limit_step`（改用 nums，`MarketSnapshotService.computeHighestBoard` 同步）、`stk_surv`（surv_date/rece_org，TenxScore 调研统计同步）、`broker_recommend`（无评级字段移除）、`limit_cpt_list`（days/cons_nums/up_nums）、`hk_hold`（删不存在的 amount）
+- `daily_basic` 无 `is_st` 字段 → `getStStatus` 改用 `stock_basic` 的 name 判断 ST（ST/*ST/S*ST/SST 前缀）
+- `stk_holdertype` 接口不存在 → 删除 getInstitutionalHold；机构持股比例改用 `top10_holders` 实测 `holder_type` 字段（机构类白名单/非机构黑名单：一般企业/自然人/国资局），TenxScore 市场认可度评分权重恢复（机构 25% + 北向 15%）
+- `stk_analyst`/`major_news` 不可用 → `getAnalystRating` 仅走 `report_rc`（rating/org_name 均有评级字段）
+- `net_mf_ratio` 两个接口均不存在（此前风口因子5恒为常数5分、TenxScore 1g 净占比恒为0）→ 新增 `calcMainForceNetRatio` 用金额分项推导主力（大单+特大单）净流入占比，替换两处消费点
 
 ---
 

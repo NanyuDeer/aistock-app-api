@@ -79,6 +79,19 @@ function errMsg(err: unknown): string {
 }
 
 /**
+ * 安全解析 jsonb/json 字段：pg 驱动已将 json 解析为 JS 对象/数组，
+ * 对已是数组的值直接返回，字符串才 JSON.parse，异常时回退空数组。
+ * 避免裸 JSON.parse 在值为数组对象时（先 toString 成 "47,85,65,49"）抛 502。
+ */
+function parseJsonSafe(val: unknown): unknown[] {
+    if (Array.isArray(val)) return val
+    if (typeof val === 'string') {
+        try { return JSON.parse(val) } catch { return [] }
+    }
+    return []
+}
+
+/**
  * GET /internal/health
  * 轻量健康探针，供 Python Agent 服务 /health/ready 探测 Node.js 连通性。
  *
@@ -453,7 +466,7 @@ router.get('/trend/top', async (req: Request, res: Response) => {
             label: r.label,
             expectedMultiple: r.expected_multiple,
             scoreDate: r.score_date,
-            dimScores: JSON.parse(r.dim_scores as string || '[]'),
+            dimScores: parseJsonSafe(r.dim_scores),
             description: r.description,
         }))
 
@@ -1088,6 +1101,7 @@ router.get('/usage/sessions', async (req: Request, res: Response) => {
         res.status(500).json({ code: 500, message: errMsg(err) });
     }
 });
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**

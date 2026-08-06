@@ -16,6 +16,7 @@ import {
     isPushHistoryRecordSettled,
     needsCloseSettlement,
 } from './pushHistorySettlement';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 
 // ==================== 类型定义 ====================
 
@@ -198,11 +199,11 @@ function cleanTextList(value: unknown): string[] {
 }
 
 function normalizeDateText(value: unknown): string {
-    if (!value) return new Date().toISOString().slice(0, 10);
+    if (!value) return shanghaiDateStr();
 
     const text = cleanText(value, 40);
     const match = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
-    if (!match) return new Date().toISOString().slice(0, 10);
+    if (!match) return shanghaiDateStr();
 
     const [, year, month, day] = match;
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;

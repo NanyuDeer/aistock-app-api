@@ -3,6 +3,7 @@ import { createResponse } from '../../shared/utils/response';
 import { TrendScoreService } from './TrendScoreService';
 import { VetoError } from './TenxScoreService';
 import pool from '../../core/db';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 
 /** 安全解析 jsonb 字段：pg 驱动已将 jsonb 解析为 JS 对象，无需再 JSON.parse */
 export function parseJsonb(val: unknown): unknown[] {
@@ -216,7 +217,7 @@ export class TrendScoreController {
     }
 
     private static async saveToDB(symbol: string, result: { score: number; label: string; expectedMultiple: string; description: string; aiConclusion: string; dimScores: number[]; dimensions: unknown[]; rawData: unknown; ma60Excluded: boolean; updatedAt: string }): Promise<void> {
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const rawDataJson = result.rawData ? JSON.stringify(result.rawData) : null;
 
         try {

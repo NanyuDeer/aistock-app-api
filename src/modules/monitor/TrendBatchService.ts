@@ -3,6 +3,7 @@ import { TrendScoreService } from './TrendScoreService';
 import { ensureCacheBuilt, getBestBoardForStock, getCacheStatus } from './RotationBoardCache';
 import * as LeaderStockCache from './LeaderStockCache';
 import * as TushareService from '../quote/TushareService';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 export interface TrendBatchResult {
     total: number;
@@ -37,7 +38,7 @@ function getRecentCalendarDays(days: number): string[] {
     for (let i = 0; i <= days; i++) {
         const d = new Date();
         d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+        dates.push(shanghaiDateYyyymmdd(d));
     }
     return dates;
 }
@@ -145,7 +146,7 @@ export class TrendBatchService {
         // 则向前回退查找最近一个有交易数据的日期，避免动量筛选因数据为空而完全失效
         const momentumDate = new Date();
         momentumDate.setDate(momentumDate.getDate() - 90); // 90 自然日 ≈ 60 交易日
-        const momentumDateStr = momentumDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const momentumDateStr = shanghaiDateYyyymmdd(momentumDate);
         const close60dAgoMap = new Map<string, number>();
         let actualMomentumDateStr = '';
         try {
@@ -153,7 +154,7 @@ export class TrendBatchService {
             for (let offset = 0; offset <= MAX_FALLBACK_DAYS; offset++) {
                 const tryDate = new Date(momentumDate);
                 tryDate.setDate(tryDate.getDate() - offset);
-                const tryDateStr = tryDate.toISOString().slice(0, 10).replace(/-/g, '');
+                const tryDateStr = shanghaiDateYyyymmdd(tryDate);
                 const daily = await TushareService.getDailyByDate(tryDateStr);
                 if (daily.length > 0) {
                     actualMomentumDateStr = tryDateStr;
@@ -283,7 +284,7 @@ export class TrendBatchService {
         let prefiltered = 0;
 
         try {
-            const today = new Date().toISOString().slice(0, 10);
+            const today = shanghaiDateStr();
             console.log(`[TrendBatch] 开始批量趋势股评分, force=${force}, date=${today}`);
 
             // 预热板块轮动反向缓存（~112次 ths_member 调用，覆盖全市股票）
