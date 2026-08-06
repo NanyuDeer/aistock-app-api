@@ -2010,7 +2010,7 @@ function pearsonCorrelation(x: number[], y: number[]): number {
 interface AiAnalysis {
     persistence: string;
     persistence_reason: string;
-    long_term_days: number;      // 长线影响预计持续天数（0~90）
+    long_term_days: number;      // 长线影响预计持续天数（0~180，可按半月估算如45）
     long_confidence: number;     // 长线置信度（0~1）
     logic_type: string;          // 长线置信度依据标签：政策/业绩/资金/无支撑（前端 Tag）
     long_reason: string;         // 长线研判理由（50字内，喂给 agent 长线链简报）
@@ -2051,10 +2051,10 @@ export function buildAiPrompt(
         ? `- 频次变化率：${deltaDesc}（近5日 vs 前5日上榜天数）\n- 量能/换手率：${sectorData.vol_trend ?? '未知'}，换手${turnoverDesc}\n- 涨停家数：${sectorData.limit_up_count ?? 0}家；最高连板：${sectorData.max_boards ?? 0}板`
         : '';
     const longFields = chain !== 'short'
-        ? `1. long_term_days: 长线影响预计持续月数，按月分档输出整数（1个月=30、2个月=60、3个月=90；0=无长期趋势），结合月线/趋势给出档位依据
+        ? `1. long_term_days: 长线影响预计持续天数，按月估算且允许半月（1个月=30、1.5个月=45、2个月=60、3个月=90、4个月=120、5个月=150、6个月=180；0=无长期趋势），结合月线/趋势给出具体天数
 2. long_confidence: 长线置信度，0~1（双支撑[政策+业绩]→0.7+，单支撑→0.5）
 3. logic_type: 长线置信度依据标签，取"政策"/"业绩"/"资金"/"无支撑"之一
-4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间档位判断依据）
+4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间天数判断依据）
 5. driver_type: 驱动类型，取"政策"/"业绩"/"事件"/"技术"之一（从板块名/领涨股/连板推断）`
         : '';
     const shortFields = chain !== 'long'
@@ -2185,8 +2185,8 @@ async function aiAnalyzeSector(
             }
 
             const result = JSON.parse(content.trim()) as AiAnalysis;
-            // AI 输出健壮性：天数约束在 schema 范围内（长期0~90、短期0~30），防 LLM 越界值
-            result.long_term_days = Math.min(90, Math.max(0, Number(result.long_term_days) || 0));
+            // AI 输出健壮性：天数约束在 schema 范围内（长期0~180、短期0~30），防 LLM 越界值
+            result.long_term_days = Math.min(180, Math.max(0, Number(result.long_term_days) || 0));
             result.short_term_days = Math.min(30, Math.max(0, Number(result.short_term_days) || 0));
             aiApiAvailable = true;  // AI可用
             return result;
