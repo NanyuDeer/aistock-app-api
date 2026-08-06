@@ -1411,13 +1411,22 @@ async function identifyHotConcepts(topN: number = 16, days: number = 60): Promis
         console.log('[HotSectorAnalyzer] 双池为空（freq60<8 且 freq20<3）');
         return [];
     }
-    const result: HotConcept[] = candidates
+    // 双轨选板：长线池与短线池各自按评分取 topN 再取并集（交集去重）。
+    // 原单池 topN 截断会把短线池成员挤出（评分公式 freqScore×4 权重偏向 freq60 长线），
+    // 导致短线档候选不足——实测短线池 35 个成员被截得只剩 3 个交集成员。
+    const marked = candidates
         .filter(c => longNames.has(c.name) || shortNames.has(c.name))
-        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topN);
+        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }));
+    const byScore = (a: HotConcept, b: HotConcept) => b.score - a.score;
+    const longTrack = marked.filter(c => c.in_long_pool).sort(byScore).slice(0, topN);
+    const shortTrack = marked.filter(c => c.in_short_pool).sort(byScore).slice(0, topN);
+    const merged = new Map<string, HotConcept>();
+    for (const c of [...longTrack, ...shortTrack]) {
+        merged.set(c.name, c);  // 交集板块两边都出现，flags 一致，后写覆盖
+    }
+    const result = [...merged.values()];
 
-    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个 / 短线池: ${shortNames.size} 个，取 top${topN} 做 AI 研判`);
+    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个（选 top${topN}）/ 短线池: ${shortNames.size} 个（选 top${topN}），并集 ${result.length} 个做 AI 研判`);
     for (const c of result) {
         console.log(`  ${c.name}: freq60=${c.frequency} freq20=${c.freq20} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
     }
