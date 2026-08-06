@@ -1115,7 +1115,6 @@ async function start() {
     } catch (err: unknown) {
         console.warn('[DB] chat_sessions table check:', err instanceof Error ? err.message : String(err));
     }
-    }
 
     try {
         await redis.ping();
