@@ -13,7 +13,7 @@
 **开发者**: Aria
 
 ### 修复
-- `WindLeaderAnalyzerService.buildAiPrompt`：`long_term_days` 引导由"整数月分档（30/60/90）"改为"按月估算允许半月（30/45/60/90/120/150/180，0=无趋势）"，支持 1.5 个月（45 天）等非整数
+- `WindLeaderAnalyzerService.buildAiPrompt`：`long_term_days` 引导由"整数月分档（30/60/90）"改为"按月估算允许任意半月粒度（45=1.5 个月、75=2.5 个月、105=3.5 个月），整数 0~180，不要局限于固定档位"，支持 1.5/2.5/3.5 个月等非整数
 - `aiAnalyzeSector` clamp：长期天数上限 90→180（配合前端长线榜显示更长预测）
 
 ---
