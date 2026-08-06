@@ -2132,56 +2132,68 @@ async function aiAnalyzeSector(
 
     let respStatus = 0;
     let respRaw = '';
-    try {
-        const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
+    // 推理模型（如 deepseek-reasoner/v4 推理版）会把 token 消耗在 reasoning_content 上，
+    // 导致 content 为空（"AI 返回空 content"）。此时提高 max_tokens 重试一次，让其完成推理并输出 JSON。
+    const MAX_TOKENS_TRIES = [1200, 4000];
+    for (let tryIdx = 0; tryIdx < MAX_TOKENS_TRIES.length; tryIdx++) {
+        try {
+            const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
 
-        const resp = await sessionFetch(chatUrl, {
-            method: 'POST',
-            signal: AbortSignal.timeout(45000),  // 45秒超时，32B模型复杂分析需要更长时间
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.3,
-                // 500 token 不够：14字段+80字理由的中文JSON易被截断 → JSON.parse 报 Unexpected end of JSON input
-                max_tokens: 1200,
-            }),
-        });
-        respStatus = resp.status;
+            const resp = await sessionFetch(chatUrl, {
+                method: 'POST',
+                signal: AbortSignal.timeout(60000),  // 60秒超时：推理模型思考更久
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.3,
+                    max_tokens: MAX_TOKENS_TRIES[tryIdx],
+                }),
+            });
+            respStatus = resp.status;
+            respRaw = '';
 
-        if (!resp.ok) {
-            const errBody = await resp.text().catch(() => '');
-            throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
-        }
+            if (!resp.ok) {
+                const errBody = await resp.text().catch(() => '');
+                throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+            }
 
-        // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
-        respRaw = await resp.text();
-        const json = JSON.parse(respRaw) as AiChatResponse;
-        let content = json?.choices?.[0]?.message?.content?.trim() || '';
-        if (content.startsWith('```')) {
-            content = content.split('```')[1];
-            if (content.startsWith('json')) content = content.slice(4);
-        }
-        if (!content) {
-            throw new Error(`AI 返回空 content（原始响应前300: ${respRaw.slice(0, 300)}）`);
-        }
+            // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
+            respRaw = await resp.text();
+            const json = JSON.parse(respRaw) as AiChatResponse;
+            let content = json?.choices?.[0]?.message?.content?.trim() || '';
+            if (content.startsWith('```')) {
+                content = content.split('```')[1];
+                if (content.startsWith('json')) content = content.slice(4);
+            }
+            if (!content) {
+                // 推理模型：思考未完成导致 content 为空 → 提高 max_tokens 重试
+                const reasoning = (json?.choices?.[0]?.message as { reasoning_content?: unknown } | undefined)?.reasoning_content;
+                if (reasoning && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                    console.log(`[HotSectorAnalyzer] AI 推理未完成（content 空、reasoning 有内容），提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}`);
+                    continue;
+                }
+                throw new Error(`AI 返回空 content（原始响应前300: ${respRaw.slice(0, 300)}）`);
+            }
 
-        const result = JSON.parse(content.trim()) as AiAnalysis;
-        aiApiAvailable = true;  // AI可用
-        return result;
-    } catch (err) {
-        const errMsg = (err as Error).message || '';
-        // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
-        // 超时只是暂时问题，不标记
-        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
-            aiApiAvailable = false;
+            const result = JSON.parse(content.trim()) as AiAnalysis;
+            aiApiAvailable = true;  // AI可用
+            return result;
+        } catch (err) {
+            const errMsg = (err as Error).message || '';
+            // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
+            // 超时只是暂时问题，不标记
+            if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
+                aiApiAvailable = false;
+            }
+            console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
+            return ruleBasedAnalysis(sectorName, sectorData, transmission);
         }
-        console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
-        return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
+    return ruleBasedAnalysis(sectorName, sectorData, transmission);
 }
 
 /** 由 AI 长/短线持续天数与置信度/热度推导 cycle（阈值常量见本函数上方） */
