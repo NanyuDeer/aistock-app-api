@@ -2080,6 +2080,7 @@ export function buildAiPrompt(
 `
         : '';
     return `你是一位资深A股市场分析师。请沿当前研判链分析该风口概念板块的持续性与热度。
+注意：输入数据可能存在异常（如领涨股涨幅为0、涨跌家数为0），这是数据源口径问题，请忽略并直接基于现有数据判断，不要质疑或分析数据本身。
 
 ## 概念板块数据
 - 概念名称：${sectorName}
@@ -2134,14 +2135,14 @@ async function aiAnalyzeSector(
     let respRaw = '';
     // 推理模型（如 deepseek-reasoner/v4 推理版）会把 token 消耗在 reasoning_content 上，
     // 导致 content 为空（"AI 返回空 content"）。此时提高 max_tokens 重试一次，让其完成推理并输出 JSON。
-    const MAX_TOKENS_TRIES = [1200, 4000];
+    const MAX_TOKENS_TRIES = [2000, 6000];
     for (let tryIdx = 0; tryIdx < MAX_TOKENS_TRIES.length; tryIdx++) {
         try {
             const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
 
             const resp = await sessionFetch(chatUrl, {
                 method: 'POST',
-                signal: AbortSignal.timeout(60000),  // 60秒超时：推理模型思考更久
+                signal: AbortSignal.timeout(90000),  // 90秒超时：推理模型思考更久
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${apiKey}`,
@@ -2191,6 +2192,11 @@ async function aiAnalyzeSector(
             return result;
         } catch (err) {
             const errMsg = (err as Error).message || '';
+            // content 有值但 JSON 被截断（如 "Unterminated string in JSON"）→ 提高 max_tokens 重试，避免直接降级
+            if (errMsg.includes('JSON') && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                console.log(`[HotSectorAnalyzer] AI JSON 截断/解析失败，提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}: ${errMsg.slice(0, 100)}`);
+                continue;
+            }
             // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
             // 超时只是暂时问题，不标记
             if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
