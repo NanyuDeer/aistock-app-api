@@ -42,6 +42,16 @@ function getRecentCalendarDays(days: number): string[] {
     return dates;
 }
 
+/**
+ * 上海时区日期 YYYY-MM-DD。
+ * 注意：不能用 new Date().toISOString()（UTC），凌晨 0-8 点会错位成前一天，
+ * 导致 score_date 写入错误日期（2026-08-06 02:45 补跑写成 08-05 的线上事故）。
+ * en-CA locale 默认输出 YYYY-MM-DD。
+ */
+function shanghaiDateStr(): string {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+}
+
 export class TrendBatchService {
     private static running = false;
 
@@ -283,7 +293,7 @@ export class TrendBatchService {
         let prefiltered = 0;
 
         try {
-            const today = new Date().toISOString().slice(0, 10);
+            const today = shanghaiDateStr();
             console.log(`[TrendBatch] 开始批量趋势股评分, force=${force}, date=${today}`);
 
             // 预热板块轮动反向缓存（~112次 ths_member 调用，覆盖全市股票）
