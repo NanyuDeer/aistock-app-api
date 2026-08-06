@@ -12,6 +12,7 @@
 import * as cheerio from 'cheerio';
 import type { EastmoneyAnnouncement, EastmoneyNews } from './types';
 import { sessionFetch } from '../../../shared/utils/httpAgent';
+import { shanghaiDateStr } from '../../../shared/utils/shanghaiTime';
 
 const EASTMONEY_NOTICE_API = 'https://np-anotice-stock.eastmoney.com/api/security/ann';
 const EASTMONEY_NEWS_API = 'https://search-api-web.eastmoney.com/search/jsonp';
@@ -204,8 +205,8 @@ export class EastmoneyCrawler {
     ): Promise<EastmoneyAnnouncement[]> {
         const end = new Date();
         const begin = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
-        const beginDate = begin.toISOString().slice(0, 10);
-        const endDate = end.toISOString().slice(0, 10);
+        const beginDate = shanghaiDateStr(begin);
+        const endDate = shanghaiDateStr(end);
         const url = buildNoticeApiUrl(symbol, beginDate, endDate, pageSize);
 
         const response = await sessionFetch(url, {

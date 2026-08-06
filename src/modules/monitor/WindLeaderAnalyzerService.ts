@@ -18,6 +18,7 @@ import { IndustryKGService } from './IndustryKGService';
 import { WindLeaderService } from './WindLeaderService';
 import { thsCrawler, thsApiCrawler } from '../../shared/utils/crawler';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd, shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 import {
     tushareRequest,
     getDailyBasicByDate,
@@ -123,7 +124,11 @@ interface BlockRotationDay {
 
 /** AI Chat Completions API 响应（仅取所需字段） */
 interface AiChatResponse {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+        message?: { content?: string; reasoning_content?: unknown };
+        finish_reason?: string;
+    }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; [k: string]: unknown };
 }
 
 /** 行业行情统计 */
@@ -138,7 +143,7 @@ interface IndustryStat {
 /** 风口板块完整分析结果（hot_sectors 元素） */
 interface HotSectorAnalysis {
     code: string;
-    cycle: 'short' | 'long' | 'both';  // 短线风口 / 长线风口 / 长短线同时成立
+    cycle: 'short' | 'long' | 'both' | 'none';  // 短线风口 / 长线风口 / 长短线同时成立 / 均不成立
     name: string;
     type: string;
     frequency: number;
@@ -335,7 +340,7 @@ export async function confirmMonthlyTrend(conceptName: string): Promise<boolean>
         // 拉取近 2 年板块日线（约 24 个月），覆盖同比所需 13 个月
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length === 0) return false;
 
@@ -367,7 +372,7 @@ export async function confirmLongTermMonthly(conceptName: string): Promise<'stro
         }
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length === 0) return 'none';
         const months = buildMonthlySeries(daily);
@@ -427,7 +432,7 @@ export async function fetchLongEvidence(conceptName: string): Promise<{ ma60_sta
         if (!tsCode) return fallback;
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 1);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length < 60) return fallback;
         const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
@@ -469,7 +474,7 @@ export async function fetchShortEvidence(
         if (!tsCode) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - 60);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length < 10) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
         const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
@@ -757,7 +762,7 @@ async function getIndustryBoards(): Promise<IndustryBoard[]> {
 async function saveDailySnapshot(type: 'concept' | 'industry', data: readonly unknown[]): Promise<void> {
     try {
         await ensureCacheDir();
-        const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const today = shanghaiDateYyyymmdd();
         const fp = path.join(CACHE_DIR, `snapshot_${type}_${today}.json`);
         // 仅当快照不存在时写入（每日首条 wins）
         await fs.promises.access(fp).catch(async () => {
@@ -779,7 +784,7 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<Bo
     try {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days * 2);
-        const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
 
         const hist = await getThsDaily(tsCode, startDateStr);
         const result: BoardHistoryItem[] = hist
@@ -1033,7 +1038,7 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
 }
 
 function formatDate(d: Date): string {
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 // ==================== 风口概念板块识别 ====================
@@ -1406,13 +1411,22 @@ async function identifyHotConcepts(topN: number = 16, days: number = 60): Promis
         console.log('[HotSectorAnalyzer] 双池为空（freq60<8 且 freq20<3）');
         return [];
     }
-    const result: HotConcept[] = candidates
+    // 双轨选板：长线池与短线池各自按评分取 topN 再取并集（交集去重）。
+    // 原单池 topN 截断会把短线池成员挤出（评分公式 freqScore×4 权重偏向 freq60 长线），
+    // 导致短线档候选不足——实测短线池 35 个成员被截得只剩 3 个交集成员。
+    const marked = candidates
         .filter(c => longNames.has(c.name) || shortNames.has(c.name))
-        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, topN);
+        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }));
+    const byScore = (a: HotConcept, b: HotConcept) => b.score - a.score;
+    const longTrack = marked.filter(c => c.in_long_pool).sort(byScore).slice(0, topN);
+    const shortTrack = marked.filter(c => c.in_short_pool).sort(byScore).slice(0, topN);
+    const merged = new Map<string, HotConcept>();
+    for (const c of [...longTrack, ...shortTrack]) {
+        merged.set(c.name, c);  // 交集板块两边都出现，flags 一致，后写覆盖
+    }
+    const result = [...merged.values()];
 
-    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个 / 短线池: ${shortNames.size} 个，取 top${topN} 做 AI 研判`);
+    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个（选 top${topN}）/ 短线池: ${shortNames.size} 个（选 top${topN}），并集 ${result.length} 个做 AI 研判`);
     for (const c of result) {
         console.log(`  ${c.name}: freq60=${c.frequency} freq20=${c.freq20} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
     }
@@ -2009,7 +2023,7 @@ function pearsonCorrelation(x: number[], y: number[]): number {
 interface AiAnalysis {
     persistence: string;
     persistence_reason: string;
-    long_term_days: number;      // 长线影响预计持续天数（0~90）
+    long_term_days: number;      // 长线影响预计持续天数（0~180，可按半月估算如45）
     long_confidence: number;     // 长线置信度（0~1）
     logic_type: string;          // 长线置信度依据标签：政策/业绩/资金/无支撑（前端 Tag）
     long_reason: string;         // 长线研判理由（50字内，喂给 agent 长线链简报）
@@ -2050,35 +2064,38 @@ export function buildAiPrompt(
         ? `- 频次变化率：${deltaDesc}（近5日 vs 前5日上榜天数）\n- 量能/换手率：${sectorData.vol_trend ?? '未知'}，换手${turnoverDesc}\n- 涨停家数：${sectorData.limit_up_count ?? 0}家；最高连板：${sectorData.max_boards ?? 0}板`
         : '';
     const longFields = chain !== 'short'
-        ? `1. long_term_days: 长线影响预计持续天数，整数0~90（0=无长期趋势）
+        ? `1. long_term_days: 长线影响预计持续天数，整数0~180，按月估算并支持任意半月粒度（如45=1.5个月、75=2.5个月、105=3.5个月、150=5个月），不要局限于固定档位。按趋势强度分档：月线多头排列+站上MA60+资金净流入→90~180天；趋势确立但信号一般→45~75天；初期确认/信号较弱→30天；仅当明确无长期趋势（月线走坏/频次骤降/资金持续流出）才输出0。切勿因"60日上榜频次"锚定输出60天，应结合月线位置与资金方向差异化判断
 2. long_confidence: 长线置信度，0~1（双支撑[政策+业绩]→0.7+，单支撑→0.5）
 3. logic_type: 长线置信度依据标签，取"政策"/"业绩"/"资金"/"无支撑"之一
-4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间判断依据）
+4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间天数判断依据）
 5. driver_type: 驱动类型，取"政策"/"业绩"/"事件"/"技术"之一（从板块名/领涨股/连板推断）`
         : '';
     const shortFields = chain !== 'long'
-        ? `6. short_term_days: 短线影响预计持续天数，整数0~30
-7. short_heat: 短线热度，0~1
+        ? `6. short_term_days: 短线影响预计持续天数，整数1~30（已进入短线池的板块默认具备短线热度，应给出≥1天；0仅用于明确无短线机会）
+7. short_heat: 短线热度，0~1（综合涨停家数/连板高度/量能/上榜频次评定；存在涨停或连板时不应低于0.3）
 8. heat_stage: 短线热度阶段标签，取"启动期"/"发酵期"/"高潮期"/"衰退期"之一
 9. short_reason: 短线研判理由，50字内（结合热度捕捉/资金博弈/位置风险给出热度阶段与持续预计依据）`
         : '';
     const longGuide = chain !== 'short'
         ? `【长线链】（侧重确定性+时间）：
 1. 热度筛选：freq60 是否平稳上升/持续高位？（剔除断续或爆发后沉寂）
-2. 趋势确认：月线多头排列且价格站上MA60？否→即使热度高也判反弹非反转
+2. 趋势确认：月线多头排列且站上MA60→高天数90~180；月线走平/刚站稳→中天数45~75；月线走坏→可判反弹非反转，输出0或低天数
 3. 逻辑验证：从板块名称/领涨股/连板推断驱动类型，给出置信度依据（政策/业绩/资金/无支撑）
-4. 资金验证：板块净流入方向
+4. 资金验证：板块净流入方向（持续净流入→加档；持续流出→降档）
+5. 已进入长线池（60日上榜≥8次）即具备长线基础：除非月线明确走坏或频次骤降，否则应给出≥30天的长线研判，避免一刀切输出0天
 `
         : '';
     const shortGuide = chain !== 'long'
         ? `【短线链】（侧重爆发力+热度维持）：
-1. 热度捕捉：freq20 与频次变化率是否陡升/连续霸榜
-2. 催化剂定性：从板块名/领涨股推断事件类型（突发→短炒；技术突破→1-2波）
+1. 热度捕捉：freq20 与频次变化率是否陡升/连续霸榜（上榜频次高即热度基础，默认给出≥1天短线研判）
+2. 催化剂定性：从板块名/领涨股推断事件类型（突发→短炒1~5天；技术突破→1~2波5~15天）
 3. 资金博弈：涨停家数/连板高度（游资情绪近似），连板高度决定持续时间
 4. 位置风险：换手率是否过热（>12% 高潮期，1-3天见顶）；首次放量且换手温和→启动期（5-10天）
+5. 数据缺失（涨停0家/连板0板/换手0%）多为数据源口径，不应据此判0天，应基于上榜频次与涨跌幅仍给出短线研判与热度
 `
         : '';
     return `你是一位资深A股市场分析师。请沿当前研判链分析该风口概念板块的持续性与热度。
+注意：输入数据可能存在异常（如领涨股涨幅为0、涨跌家数为0、涨停家数/连板/换手率为0），这是数据源口径问题，请忽略并直接基于现有数据判断，不要质疑或分析数据本身。
 
 ## 概念板块数据
 - 概念名称：${sectorName}
@@ -2129,49 +2146,92 @@ async function aiAnalyzeSector(
         return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
 
-    try {
-        const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
+    let respStatus = 0;
+    let respRaw = '';
+    let respFinish = '';
+    let respUsage = '';
+    // DeepSeek V4-Flash（2026-07-31 发布）默认开启深度思考：思考(reasoning_content)与正文(content)
+    // 共用同一个 max_tokens 池子，预算被思考耗尽后 content 为空（HTTP 200、不报错）。
+    // 官方 API 实测 reasoning_effort:"none" 与 thinking:{type:"disabled"} 均可彻底关闭思考
+    // （关闭后响应不再含 reasoning_content）。生产走本地代理网关(127.0.0.1:3300)，参数可能被剥离，
+    // 因此用大 max_tokens 兜底：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）。
+    const MAX_TOKENS_TRIES = [8000, 16000];
+    for (let tryIdx = 0; tryIdx < MAX_TOKENS_TRIES.length; tryIdx++) {
+        try {
+            const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
 
-        const resp = await sessionFetch(chatUrl, {
-            method: 'POST',
-            signal: AbortSignal.timeout(45000),  // 45秒超时，32B模型复杂分析需要更长时间
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.3,
-                max_tokens: 500,
-            }),
-        });
+            const resp = await sessionFetch(chatUrl, {
+                method: 'POST',
+                signal: AbortSignal.timeout(90000),  // 90秒超时：推理模型思考更久
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.3,
+                    // DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，max_tokens 会被
+                    // reasoning_content 耗尽导致 content 为空。双参数关闭思考：reasoning_effort="none"
+                    // （OpenAI o 系列风格）+ thinking:{type:"disabled"}（Anthropic 风格，V4 官方均兼容），
+                    // 任一个被网关透传即生效。仅对 deepseek 模型附加，避免影响其他模型。
+                    ...(model.toLowerCase().includes('deepseek')
+                        ? { reasoning_effort: 'none', thinking: { type: 'disabled' } }
+                        : {}),
+                    max_tokens: MAX_TOKENS_TRIES[tryIdx],
+                }),
+            });
+            respStatus = resp.status;
+            respRaw = '';
 
-        if (!resp.ok) {
-            const errBody = await resp.text().catch(() => '');
-            throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+            if (!resp.ok) {
+                const errBody = await resp.text().catch(() => '');
+                throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+            }
+
+            // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
+            respRaw = await resp.text();
+            const json = JSON.parse(respRaw) as AiChatResponse;
+            respFinish = String(json?.choices?.[0]?.finish_reason ?? '');
+            respUsage = json?.usage ? JSON.stringify(json.usage) : '';
+            let content = json?.choices?.[0]?.message?.content?.trim() || '';
+            if (content.startsWith('```')) {
+                content = content.split('```')[1];
+                if (content.startsWith('json')) content = content.slice(4);
+            }
+            if (!content) {
+                // 推理模型：思考未完成导致 content 为空 → 提高 max_tokens 重试
+                const reasoning = json?.choices?.[0]?.message?.reasoning_content;
+                if (reasoning && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                    console.log(`[HotSectorAnalyzer] AI 推理未完成（content 空、reasoning 有内容，finish=${respFinish} usage=${respUsage}），提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}`);
+                    continue;
+                }
+                throw new Error(`AI 返回空 content（finish=${respFinish} usage=${respUsage}，原始响应前300: ${respRaw.slice(0, 300)}）`);
+            }
+
+            const result = JSON.parse(content.trim()) as AiAnalysis;
+            // AI 输出健壮性：天数约束在 schema 范围内（长期0~180、短期0~30），防 LLM 越界值
+            result.long_term_days = Math.min(180, Math.max(0, Number(result.long_term_days) || 0));
+            result.short_term_days = Math.min(30, Math.max(0, Number(result.short_term_days) || 0));
+            aiApiAvailable = true;  // AI可用
+            return result;
+        } catch (err) {
+            const errMsg = (err as Error).message || '';
+            // content 有值但 JSON 被截断（如 "Unterminated string in JSON"）→ 提高 max_tokens 重试，避免直接降级
+            if (errMsg.includes('JSON') && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                console.log(`[HotSectorAnalyzer] AI JSON 截断/解析失败，提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}: ${errMsg.slice(0, 100)}`);
+                continue;
+            }
+            // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
+            // 超时只是暂时问题，不标记
+            if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
+                aiApiAvailable = false;
+            }
+            console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，finish=${respFinish} usage=${respUsage}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
+            return ruleBasedAnalysis(sectorName, sectorData, transmission);
         }
-
-        const json = await resp.json() as AiChatResponse;
-        let content = json?.choices?.[0]?.message?.content?.trim() || '';
-        if (content.startsWith('```')) {
-            content = content.split('```')[1];
-            if (content.startsWith('json')) content = content.slice(4);
-        }
-
-        const result = JSON.parse(content.trim()) as AiAnalysis;
-        aiApiAvailable = true;  // AI可用
-        return result;
-    } catch (err) {
-        const errMsg = (err as Error).message || '';
-        // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
-        // 超时只是暂时问题，不标记
-        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
-            aiApiAvailable = false;
-        }
-        console.error('[HotSectorAnalyzer] AI分析失败，使用规则引擎:', errMsg);
-        return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
+    return ruleBasedAnalysis(sectorName, sectorData, transmission);
 }
 
 /** 由 AI 长/短线持续天数与置信度/热度推导 cycle（阈值常量见本函数上方） */
@@ -2187,18 +2247,20 @@ export function deriveCycle(a: {
     long_confidence?: number;
     short_term_days?: number;
     short_heat?: number;
-}): 'both' | 'long' | 'short' {
+}): 'both' | 'long' | 'short' | 'none' {
     const isLong = (a.long_term_days ?? 0) >= LONG_DAYS_MIN && (a.long_confidence ?? 0) >= LONG_CONF_MIN;
     const isShort = (a.short_term_days ?? 0) >= SHORT_DAYS_MIN && (a.short_heat ?? 0) >= SHORT_HEAT_MIN;
     if (isLong && isShort) return 'both';
     if (isLong) return 'long';
-    return 'short';
+    if (isShort) return 'short';
+    return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重 ≤16 */
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重；
+ * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
-    cycle: 'short' | 'long' | 'both';
+    cycle: 'short' | 'long' | 'both' | 'none';
     long_term_days?: number;
     short_term_days?: number;
 }>(sectors: T[]): T[] {
@@ -2214,7 +2276,22 @@ export function applyDualRankings<T extends {
     for (const s of [...longBoard, ...shortBoard]) {
         if (!merged.has(s.name)) merged.set(s.name, s);
     }
+    for (const s of sectors) {
+        if (s.cycle === 'none' && !merged.has(s.name)) merged.set(s.name, s);
+    }
     return [...merged.values()];
+}
+
+/** 政策/规划类关键词（规则引擎降级时区分 logic_type） */
+const RULE_POLICY_KEYWORDS = ['政策', '规划', '改革', '补贴', '关税', '双碳', '新能源', '基建', '投资', '出口', '战略', '纲要', '环保', '地产', '军工'];
+/** 业绩/涨价类关键词（规则引擎降级时区分 logic_type） */
+const EARN_KEYWORDS = ['业绩', '预增', '扭亏', '盈利', '利润', '涨价', '提价', '景气', '高送转'];
+
+/** 规则引擎降级的 logic_type 推断：板块名含政策类关键词→政策；业绩类→业绩；否则沿用资金/无支撑 */
+function inferRuleLogicType(sectorName: string, fallback: string): string {
+    if (RULE_POLICY_KEYWORDS.some(k => sectorName.includes(k))) return '政策';
+    if (EARN_KEYWORDS.some(k => sectorName.includes(k))) return '业绩';
+    return fallback;
 }
 
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
@@ -2223,25 +2300,34 @@ function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmiss
     const amountTrend = sectorData.net_inflow; // amount_trend 已合并到 net_inflow
 
     // 规则引擎降级八字段（仅降级，不写入 prompt）
+    // 长线持续天数按月分档（1/2/3个月≈30/60/90天），不再固定45天；标签按板块名关键词+资金区分，避免全为"资金"
     let longTermDays = 0, longConfidence = 0, shortTermDays = 5, shortHeat = 0.4;
     let logicType = '无支撑', heatStage = '启动期';
     let longReason = '频次较低持续性存疑', shortReason = '热度低迷';
     let persistence = '短期(1-3天)', reason: string;
-    if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
-        longTermDays = 45; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
+    if (freq >= 8 && avgChange > 1.5) {
+        longTermDays = 90; longConfidence = 0.85; shortTermDays = 3; shortHeat = 0.6;
+        logicType = '资金'; heatStage = '发酵期';
+        longReason = '极高频霸榜+趋势延续，中线空间充足'; shortReason = '资金活跃但换手需警惕';
+        persistence = '长期(2-3个月)';
+        reason = '极高频上榜+持续放量，中线趋势强劲';
+    } else if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
+        longTermDays = 60; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
         logicType = '资金'; heatStage = '发酵期';
         longReason = '高频上榜+资金加速流入，趋势强劲'; shortReason = '资金活跃但换手需警惕';
-        persistence = '长期(1月+)';
+        persistence = '长期(1-2个月)';
         reason = '高频上榜+持续放量+资金加速流入，趋势强劲';
     } else if (freq >= 4 && avgChange > 1) {
-        longTermDays = 21; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
+        longTermDays = 30; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
         logicType = '无支撑'; heatStage = '启动期';
-        longReason = '中频上榜涨幅稳定，有一定持续性'; shortReason = '热度温和启动';
-        persistence = '中期(1-2周)';
-        reason = '中频上榜+涨幅稳定，有一定持续性';
+        longReason = '中频上榜涨幅稳定，月线级别趋势初步确立'; shortReason = '热度温和启动';
+        persistence = '中期(1个月)';
+        reason = '中频上榜+涨幅稳定，月线级别有持续性';
     } else {
         reason = '上榜频次较低或资金流出，持续性存疑';
     }
+    // 长线置信度依据标签：板块名含政策/业绩类关键词优先，否则沿用资金/无支撑（避免全为"资金"）
+    logicType = inferRuleLogicType(sectorName, logicType);
 
     const upFactors = transmission.upstream.map(u => u.factor);
     const downFactors = transmission.downstream.map(d => d.factor);
@@ -3131,7 +3217,7 @@ export class WindLeaderAnalyzerService {
         }
 
         const result: FullAnalysisResult = {
-            update_time: new Date().toLocaleString('zh-CN', { hour12: false }),
+            update_time: shanghaiDateTimeStr(),
             hot_sectors: [],
         };
 
@@ -3318,7 +3404,7 @@ export class WindLeaderAnalyzerService {
                 aiAnalysis.short_term_days = 0; aiAnalysis.short_heat = 0; aiAnalysis.heat_stage = '未知'; aiAnalysis.short_reason = '';
             }
             if (aiAnalysis.driver_type) concept.driver_type = aiAnalysis.driver_type; // AI 推断驱动类型回填
-            const cycle: 'short' | 'long' | 'both' = deriveCycle(aiAnalysis);
+            const cycle: 'short' | 'long' | 'both' | 'none' = deriveCycle(aiAnalysis);
             console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口 (long=${aiAnalysis.long_term_days}d/conf=${aiAnalysis.long_confidence}/${aiAnalysis.logic_type}, short=${aiAnalysis.short_term_days}d/heat=${aiAnalysis.short_heat}/${aiAnalysis.heat_stage})`);
 
             // 5. 选股 - 强关联行业（风口精选）

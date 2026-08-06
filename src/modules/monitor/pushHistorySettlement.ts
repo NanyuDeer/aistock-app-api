@@ -1,5 +1,6 @@
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { normalizeDateOnly } from './pushHistoryDates';
+import { shanghaiDateStr, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
 export type PushHistorySettlementRecord = {
     push_date?: unknown;
@@ -15,23 +16,13 @@ type ShanghaiDateTime = {
 };
 
 const CLOSE_SETTLEMENT_MINUTES = 15 * 60 + 30;
-const SHANGHAI_FORMATTER = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-});
 
+/** 上海时区的 { date: YYYY-MM-DD, minutes: 当日分钟数 }，统一走 shared/utils/shanghaiTime */
 function getShanghaiDateTime(now: Date): ShanghaiDateTime {
-    const parts = Object.fromEntries(
-        SHANGHAI_FORMATTER.formatToParts(now).map(part => [part.type, part.value]),
-    );
+    const { hour, minute } = shanghaiHourMinute(now);
     return {
-        date: `${parts.year}-${parts.month}-${parts.day}`,
-        minutes: Number(parts.hour) * 60 + Number(parts.minute),
+        date: shanghaiDateStr(now),
+        minutes: hour * 60 + minute,
     };
 }
 

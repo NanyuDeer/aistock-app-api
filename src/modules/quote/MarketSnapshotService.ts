@@ -26,6 +26,7 @@ import {
     type DailyCoverageReason,
 } from './TushareService';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
+import { shanghaiDateYyyymmdd, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
 // ============================================================================
 // 对外类型定义
@@ -282,37 +283,18 @@ const LIMIT_POOL_ARGS: readonly ['涨停池', '跌停池', '炸板池'] = ['涨�
 
 /**
  * 将 Date 转换为 Asia/Shanghai 时区的 YYYYMMDD 字符串。
- * 使用 Intl.DateTimeFormat 而非服务器本地时区，避免 UTC 日期漂移。
+ * 统一走 shared/utils/shanghaiTime 通用函数，避免各模块重复实现。
  */
 function toShanghaiDateYyyymmdd(now: Date): string {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    });
-    const parts = fmt.formatToParts(now);
-    const y = parts.find(p => p.type === 'year')?.value ?? '';
-    const m = parts.find(p => p.type === 'month')?.value ?? '';
-    const d = parts.find(p => p.type === 'day')?.value ?? '';
-    return `${y}${m}${d}`;
+    return shanghaiDateYyyymmdd(now);
 }
 
 /**
  * 取 Asia/Shanghai 时区的 { hour, minute }（用于 15:30 收盘时钟门禁）。
- * 使用 Intl.DateTimeFormat 取 hour/minute，避免服务器本地时区漂移。
+ * 统一走 shared/utils/shanghaiTime 通用函数。
  */
 function toShanghaiHourMinute(now: Date): { hour: number; minute: number } {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Shanghai',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    });
-    const parts = fmt.formatToParts(now);
-    const hour = Number(parts.find(p => p.type === 'hour')?.value ?? '0');
-    const minute = Number(parts.find(p => p.type === 'minute')?.value ?? '0');
-    return { hour, minute };
+    return shanghaiHourMinute(now);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { getStockIdentity } from '../../shared/utils/stock';
 import { createThrottler } from '../../shared/utils/throttle';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 const TUSHARE_MIN_INTERVAL_MS = 320;
 const tushareThrottler = createThrottler(TUSHARE_MIN_INTERVAL_MS);
@@ -323,7 +324,7 @@ export async function getIndustryRevenueGrowth(indexCode: string): Promise<{
 
     const twoYearsAgo = new Date();
     twoYearsAgo.setFullYear(twoYearsAgo.getFullYear() - 3);
-    const startDate = twoYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate = shanghaiDateYyyymmdd(twoYearsAgo);
 
     let totalRevenue = 0;
     let prevRevenue = 0;
@@ -421,7 +422,7 @@ export async function getStStatus(symbol: string, _tradeDate?: string): Promise<
 export async function getAvgAmount(symbol: string, days: number = 20): Promise<number | null> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days * 2); // 多取一些确保有足够交易日
-    const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateStr = shanghaiDateYyyymmdd(startDate);
     const rows = await tushareRequest(
         'daily',
         { ts_code: toTsCode(symbol), start_date: startDateStr },
@@ -470,7 +471,7 @@ export async function getHkHold(symbol: string, startDate?: string): Promise<HkH
             d.setDate(d.getDate() - i);
             // 跳过周末
             if (d.getDay() === 0 || d.getDay() === 6) continue;
-            const tradeDate = d.toISOString().slice(0, 10).replace(/-/g, '');
+            const tradeDate = shanghaiDateYyyymmdd(d);
             params.trade_date = tradeDate;
             const rows = await tushareRequest(
                 'hk_hold',
@@ -545,7 +546,7 @@ export async function getDailyBasicByDate(tradeDate: string): Promise<DailyBasic
 export async function getStockDailyRecent(symbol: string, days: number = 10): Promise<DailyPriceRow[]> {
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - days * 2);
-    const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDateStr = shanghaiDateYyyymmdd(startDate);
     const rows = await tushareRequest(
         'daily',
         { ts_code: toTsCode(symbol), start_date: startDateStr },

@@ -10,11 +10,15 @@ const TEST_ROLE = 'aistock_test';
 const TEST_USER_OPENID = 'trace_test_user_001';
 const TEST_SYMBOL = '600519';
 const ROOT_DIR = process.cwd();
+// 显式声明而非扫描 src/db/migrations/*.sql：010 依赖 pgvector 扩展等运行时上下文，
+// 测试库扫描全部迁移会引入额外执行。仅执行本测试场景所需的 stock_trace + insight 迁移。
 const MIGRATIONS = [
     '011_stock_trace_events.sql',
     '012_stock_trace_snapshots.sql',
     '013_stock_trace_results.sql',
     '014_stock_trace_artifacts.sql',
+    '015_stock_trace_jobs.sql',
+    '016_watchlist_insights.sql',
 ] as const;
 
 function buildTestUrl(sourceUrl: string, password: string): string {

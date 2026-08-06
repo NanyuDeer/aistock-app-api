@@ -28,6 +28,7 @@ import {
     type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
 
 // 6 大指数代码（腾讯格式）
 const INDEX_CODES = [
@@ -98,7 +99,7 @@ export class TencentSnapshotService {
     static async buildQuickSnapshot(nowOverride?: Date): Promise<QuickCloseMarketSnapshot> {
         const now = nowOverride ?? new Date()
 
-        const tradeDate = formatShanghaiDate(now)
+        const tradeDate = shanghaiDateStr(now)
         const tushareTradeDate = tradeDate.replace(/-/g, '')
 
         // 非交易日（周末/节假日）即使已过 15:30 也不得返回快照：腾讯返回最近收盘，
@@ -455,13 +456,4 @@ function selectQuickSectors(rows: MoneyflowCntThsRow[]): QuickCloseMarketSnapsho
         top_inflows: byNetDesc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
         top_outflows: byNetAsc.slice(0, TOP_SECTOR_COUNT).map(toQuickSectorFact),
     }
-}
-
-/** 格式化上海时区日期为 YYYY-MM-DD。 */
-function formatShanghaiDate(now: Date): string {
-    const shanghai = new Date(now.getTime() + 8 * 60 * 60 * 1000)
-    const y = shanghai.getUTCFullYear()
-    const m = String(shanghai.getUTCMonth() + 1).padStart(2, '0')
-    const d = String(shanghai.getUTCDate()).padStart(2, '0')
-    return `${y}-${m}-${d}`
 }

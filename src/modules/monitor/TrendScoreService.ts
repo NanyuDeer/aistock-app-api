@@ -11,6 +11,7 @@ import {
 } from './TenxScoreService';
 import { ClsStockNewsService } from './ClsStockNewsService';
 import { calcMa60Excluded } from './ma60Excluded';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 // ==================== 类型定义 ====================
 
@@ -685,7 +686,7 @@ export class TrendScoreService {
         // 获取近250日日线数据用于技术面计算
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
         const prices = await TushareService.getDailyPrices(symbol, startDateStr);
 
         // 先获取板块轮动数据 + 最佳概念板块（技术面评分需要最佳板块代码来判断龙头股加成）

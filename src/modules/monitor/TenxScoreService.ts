@@ -1,5 +1,6 @@
 import * as TushareService from '../quote/TushareService';
 import { TushareInfoService } from '../crawler/TushareInfoService';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 // ==================== THS增强数据全局缓存 ====================
 // 批量评分时，limit_list_ths/ths_hot/moneyflow_ths是全市场接口，
@@ -19,7 +20,7 @@ let _thsCacheDate = '';
 const _kplConceptCache = new Map<string, TushareService.KplConceptConsRow[]>();
 
 function getThsEnhanceCache(): ThsEnhanceCache {
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const today = shanghaiDateYyyymmdd();
     if (_thsCache && _thsCacheDate === today) return _thsCache;
 
     // 首次访问时初始化空缓存，异步加载
@@ -37,7 +38,7 @@ function getThsEnhanceCache(): ThsEnhanceCache {
 /** 异步预加载THS增强数据（批量评分开始前调用1次） */
 export async function preloadThsEnhanceCache(): Promise<void> {
     const today = new Date();
-    const tradeDateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const tradeDateStr = shanghaiDateYyyymmdd(today);
 
     if (_thsCache && _thsCacheDate === tradeDateStr && _thsCache.loadedAt === tradeDateStr) {
         console.log('[TenxScore] THS增强缓存已存在，跳过加载');
@@ -57,7 +58,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (limitRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            limitRows = await TushareService.getLimitListThs(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            limitRows = await TushareService.getLimitListThs(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of limitRows) {
             cache.limitListMap.set(row.ts_code, row);
@@ -71,7 +72,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (hotRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            hotRows = await TushareService.getThsHot(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            hotRows = await TushareService.getThsHot(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of hotRows) {
             cache.thsHotMap.set(row.ts_code, row);
@@ -85,7 +86,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (mfRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            mfRows = await TushareService.getMoneyflowThsByDate(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            mfRows = await TushareService.getMoneyflowThsByDate(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of mfRows) {
             cache.moneyflowThsMap.set(row.ts_code, row);
@@ -310,11 +311,11 @@ export interface PrefetchedData {
 
 export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
     const threeYearsAgo = new Date(); threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 4);
-    const startDate = threeYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate = shanghaiDateYyyymmdd(threeYearsAgo);
     const fiveYearsAgo = new Date(); fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
-    const startDate5y = fiveYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate5y = shanghaiDateYyyymmdd(fiveYearsAgo);
     const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const startDate1y = oneYearAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate1y = shanghaiDateYyyymmdd(oneYearAgo);
     const emptyArr: any[] = [];
     const catchEmpty = (label: string) => (e: any) => { console.warn(`[TenxScore] ${label} failed:`, e?.message); return emptyArr; };
 
@@ -365,9 +366,9 @@ export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
 
 async function prefetchDynamicData(symbol: string, cached: PrefetchedData): Promise<PrefetchedData> {
     const fiveYearsAgo = new Date(); fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
-    const startDate5y = fiveYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate5y = shanghaiDateYyyymmdd(fiveYearsAgo);
     const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const startDate1y = oneYearAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate1y = shanghaiDateYyyymmdd(oneYearAgo);
     const emptyArr: any[] = [];
     const catchEmpty = (label: string) => (e: any) => { console.warn(`[TenxScore] ${label} failed:`, e?.message); return emptyArr; };
     const [daily, prices, holderNumber, top10Holders, hkHold, survival, analystRating] = await Promise.all([
@@ -948,7 +949,7 @@ export function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
         // 统计最近1个月不同的调研机构数量
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-        const oneMonthAgoStr = oneMonthAgo.toISOString().slice(0, 10).replace(/-/g, '');
+        const oneMonthAgoStr = shanghaiDateYyyymmdd(oneMonthAgo);
         const recentVisits = survival.filter(r => r.surv_date && String(r.surv_date) >= oneMonthAgoStr);
         // 去重机构名称
         const uniqueInstitutions = new Set(recentVisits.map(r => r.rece_org).filter(Boolean));
@@ -1014,7 +1015,7 @@ export function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
     if (survival.length > 0) {
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 3);
-        const threeMonthAgoStr = oneMonthAgo.toISOString().slice(0, 10).replace(/-/g, '');
+        const threeMonthAgoStr = shanghaiDateYyyymmdd(oneMonthAgo);
         const recentVisits = survival.filter(r => r.surv_date && String(r.surv_date) >= threeMonthAgoStr);
         if (recentVisits.length >= 5) visitSignal = 1;
     }

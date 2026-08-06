@@ -2,6 +2,7 @@ import { TencentQuoteService } from './TencentQuoteService';
 import { ThsService } from '../monitor/ThsService';
 import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { formatToChinaTime } from '../../shared/utils/datetime';
+import { shanghaiDateStr, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 import { setAiIndicatorScores } from '../monitor/TenxScoreService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import pool from '../../core/db';
@@ -166,15 +167,10 @@ JSON 结构如下：
         return chars.slice(0, max).join('') + '...';
     }
 
-    private static getTodayInChina(): string { return formatToChinaTime(Date.now()).slice(0, 10); }
+    private static getTodayInChina(): string { return shanghaiDateStr(); }
 
     private static formatToChinaTimeWithMs(timestamp: number): string {
-        const date = new Date(timestamp);
-        const utc8Time = date.getTime() + (date.getTimezoneOffset() * 60000) + (8 * 3600000);
-        const d = new Date(utc8Time);
-        const pad2 = (n: number) => n.toString().padStart(2, '0');
-        const pad3 = (n: number) => n.toString().padStart(3, '0');
-        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}.${pad3(d.getMilliseconds())}`;
+        return shanghaiDateTimeMsStr(timestamp);
     }
 
     private static sanitizeModelJsonText(raw: string): string {

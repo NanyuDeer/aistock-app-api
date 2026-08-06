@@ -57,8 +57,8 @@ test('getRecentTradingDay fails closed after calendar coverage in Asia/Shanghai'
 
 test('getRecentTradingDay fails closed before calendar coverage', () => {
     assert.throws(
-        () => TradingCalendarService.getRecentTradingDay(new Date(2025, 0, 2, 16)),
-        /Trading calendar is not available for 2025/,
+        () => TradingCalendarService.getRecentTradingDay(new Date(2023, 0, 2, 16)),
+        /Trading calendar is not available for 2023/,
     )
 })
 

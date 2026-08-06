@@ -18,6 +18,7 @@ import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -28,21 +29,21 @@ function tsCodeToSymbol(tsCode: string): string {
 function getYesterdayStr(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    return shanghaiDateStr(d);
 }
 
 /** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
 function getYesterdayCompact(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 /** 获取N天前的日期 YYYYMMDD */
 function getDaysAgoCompact(days: number): string {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 export class PerformanceReportAutoUpdateService {
@@ -58,7 +59,7 @@ export class PerformanceReportAutoUpdateService {
         }
 
         // 检查今天是否已经执行过
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const lastRunDate = await CacheService.get<string>('performance_report:auto_update:date');
         if (lastRunDate === today) {
             console.log('[PerformanceReportAutoUpdate] 今天已执行过，跳过');

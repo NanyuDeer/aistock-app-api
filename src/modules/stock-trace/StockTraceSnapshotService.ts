@@ -4,6 +4,7 @@ import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
 import { getThsDaily, getThsIndex } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 import {
     type DataReadiness,
     type SnapshotStage,
@@ -257,13 +258,14 @@ export class StockTraceSnapshotService {
         if (mapping.rows.length === 0) return [];
         const indexRows = await getThsIndex('N', 'A');
         const indexByName = new Map(indexRows.map((row) => [row.name, row]));
-        const startDate = new Date(capturedAt.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10).replace(/-/g, '');
+        const startDate = new Date(capturedAt.getTime() - 10 * 24 * 60 * 60 * 1000);
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
         const records: StockSourceRecord[] = [];
         for (const board of mapping.rows) {
             const index = indexByName.get(board.sector_name);
             if (!index) continue;
             try {
-                const dailyRows = await getThsDaily(index.ts_code, startDate);
+                const dailyRows = await getThsDaily(index.ts_code, startDateStr);
                 const latest = dailyRows.sort((left, right) => String(right.trade_date).localeCompare(String(left.trade_date)))[0];
                 if (!latest) continue;
                 records.push(sourceRecord({ sourceId: `ths-board:${index.ts_code}:${latest.trade_date}`, kind: 'sector_fact', provider: 'ths', sourceLevel: 'B', title: board.sector_name, contentExcerpt: `Board latest daily change ${Number(latest.pct_change).toFixed(2)}% on ${latest.trade_date}.`, sourceRef: index.ts_code, symbol: event.symbol, occurredAt: asDate(`${latest.trade_date}T07:00:00Z`, capturedAt), capturedAt, payload: { board_code: index.ts_code, board_name: board.sector_name, board_type: index.type, trade_date: latest.trade_date, pct_change: Number(latest.pct_change), close: Number(latest.close), turnover_rate: Number(latest.turnover_rate) } }));
