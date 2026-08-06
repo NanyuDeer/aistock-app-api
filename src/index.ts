@@ -37,6 +37,7 @@ import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
 import { MessagePushService } from './modules/push/MessagePushService';
 import { UsageController } from './modules/chat/usageController';
+import { SessionUsageController } from './modules/chat/sessionUsageController';
 
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
@@ -187,6 +188,9 @@ app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPush
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
+// 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
+app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
+app.get('/api/chat/usage/sessions/:id', (req, res, next) => SessionUsageController.detailBySession(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
 
 // 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
