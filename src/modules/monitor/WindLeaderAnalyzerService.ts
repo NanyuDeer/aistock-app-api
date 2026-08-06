@@ -18,6 +18,7 @@ import { IndustryKGService } from './IndustryKGService';
 import { WindLeaderService } from './WindLeaderService';
 import { thsCrawler, thsApiCrawler } from '../../shared/utils/crawler';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd, shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 import {
     tushareRequest,
     getDailyBasicByDate,
@@ -335,7 +336,7 @@ export async function confirmMonthlyTrend(conceptName: string): Promise<boolean>
         // 拉取近 2 年板块日线（约 24 个月），覆盖同比所需 13 个月
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length === 0) return false;
 
@@ -367,7 +368,7 @@ export async function confirmLongTermMonthly(conceptName: string): Promise<'stro
         }
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length === 0) return 'none';
         const months = buildMonthlySeries(daily);
@@ -427,7 +428,7 @@ export async function fetchLongEvidence(conceptName: string): Promise<{ ma60_sta
         if (!tsCode) return fallback;
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 1);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length < 60) return fallback;
         const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
@@ -469,7 +470,7 @@ export async function fetchShortEvidence(
         if (!tsCode) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - 60);
-        const startStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startStr = shanghaiDateYyyymmdd(startDate);
         const daily = await getThsDaily(tsCode, startStr);
         if (!Array.isArray(daily) || daily.length < 10) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
         const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
@@ -757,7 +758,7 @@ async function getIndustryBoards(): Promise<IndustryBoard[]> {
 async function saveDailySnapshot(type: 'concept' | 'industry', data: readonly unknown[]): Promise<void> {
     try {
         await ensureCacheDir();
-        const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const today = shanghaiDateYyyymmdd();
         const fp = path.join(CACHE_DIR, `snapshot_${type}_${today}.json`);
         // 仅当快照不存在时写入（每日首条 wins）
         await fs.promises.access(fp).catch(async () => {
@@ -779,7 +780,7 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<Bo
     try {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days * 2);
-        const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
 
         const hist = await getThsDaily(tsCode, startDateStr);
         const result: BoardHistoryItem[] = hist
@@ -1033,7 +1034,7 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
 }
 
 function formatDate(d: Date): string {
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 // ==================== 风口概念板块识别 ====================
@@ -3131,7 +3132,7 @@ export class WindLeaderAnalyzerService {
         }
 
         const result: FullAnalysisResult = {
-            update_time: new Date().toLocaleString('zh-CN', { hour12: false }),
+            update_time: shanghaiDateTimeStr(),
             hot_sectors: [],
         };
 

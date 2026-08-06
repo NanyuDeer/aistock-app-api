@@ -1,3 +1,5 @@
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
+
 export const PRICE_TRIGGER_PERCENT = 7;
 export const PRICE_RULE_VERSION = 'price-v1';
 export const PRICE_REVISION_DELTA_PERCENT = 2;
@@ -175,14 +177,7 @@ export interface StockTraceArtifact {
 }
 
 export function formatChinaTradingDate(date: Date): string {
-    const parts = new Intl.DateTimeFormat('en-GB', {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    }).formatToParts(date);
-    const field = (name: Intl.DateTimeFormatPartTypes): string => parts.find((part) => part.type === name)?.value || '';
-    return `${field('year')}-${field('month')}-${field('day')}`;
+    return shanghaiDateStr(date);
 }
 
 export function createEventId(symbol: string, tradingDate: string, firstTriggeredAt: Date, direction: TraceDirection): string {

@@ -5,6 +5,8 @@
  * 收盘快照只信任已覆盖年度；新年度日历未更新时必须失败关闭。
  */
 
+import { shanghaiDateTimeParts, type ShanghaiDateTimeParts } from './shanghaiTime';
+
 /** A 股休市日历，按年度随官方休市安排更新。 */
 const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<string>>>> = {
     2024: new Set([
@@ -35,39 +37,12 @@ const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<stri
     ]),
 };
 
-const SHANGHAI_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-});
+/** 上海时区时间分量（类型复用 shanghaiTime 通用定义，避免重复声明） */
+type ShanghaiCalendarDate = ShanghaiDateTimeParts;
 
-interface ShanghaiCalendarDate {
-    year: number;
-    month: number;
-    day: number;
-    hour: number;
-    minute: number;
-    second: number;
-    millisecond: number;
-}
-
+/** 上海时区时间分量，统一走 shared/utils/shanghaiTime 通用函数 */
 function getShanghaiCalendarDate(date: Date): ShanghaiCalendarDate | null {
-    if (Number.isNaN(date.getTime())) return null;
-
-    const values = Object.fromEntries(
-        SHANGHAI_DATE_TIME_FORMATTER.formatToParts(date)
-            .filter(part => part.type !== 'literal')
-            .map(part => [part.type, Number(part.value)]),
-    );
-    const { year, month, day, hour, minute, second } = values;
-    if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null;
-
-    return { year, month, day, hour, minute, second, millisecond: date.getUTCMilliseconds() };
+    return shanghaiDateTimeParts(date);
 }
 
 function toYyyymmdd(date: ShanghaiCalendarDate): string {

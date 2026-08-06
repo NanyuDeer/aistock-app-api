@@ -3,6 +3,7 @@ import { TrendScoreService } from './TrendScoreService';
 import { ensureCacheBuilt, getBestBoardForStock, getCacheStatus } from './RotationBoardCache';
 import * as LeaderStockCache from './LeaderStockCache';
 import * as TushareService from '../quote/TushareService';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 export interface TrendBatchResult {
     total: number;
@@ -37,19 +38,9 @@ function getRecentCalendarDays(days: number): string[] {
     for (let i = 0; i <= days; i++) {
         const d = new Date();
         d.setDate(d.getDate() - i);
-        dates.push(d.toISOString().slice(0, 10).replace(/-/g, ''));
+        dates.push(shanghaiDateYyyymmdd(d));
     }
     return dates;
-}
-
-/**
- * 上海时区日期 YYYY-MM-DD。
- * 注意：不能用 new Date().toISOString()（UTC），凌晨 0-8 点会错位成前一天，
- * 导致 score_date 写入错误日期（2026-08-06 02:45 补跑写成 08-05 的线上事故）。
- * en-CA locale 默认输出 YYYY-MM-DD。
- */
-function shanghaiDateStr(): string {
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
 }
 
 export class TrendBatchService {
@@ -155,7 +146,7 @@ export class TrendBatchService {
         // 则向前回退查找最近一个有交易数据的日期，避免动量筛选因数据为空而完全失效
         const momentumDate = new Date();
         momentumDate.setDate(momentumDate.getDate() - 90); // 90 自然日 ≈ 60 交易日
-        const momentumDateStr = momentumDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const momentumDateStr = shanghaiDateYyyymmdd(momentumDate);
         const close60dAgoMap = new Map<string, number>();
         let actualMomentumDateStr = '';
         try {
@@ -163,7 +154,7 @@ export class TrendBatchService {
             for (let offset = 0; offset <= MAX_FALLBACK_DAYS; offset++) {
                 const tryDate = new Date(momentumDate);
                 tryDate.setDate(tryDate.getDate() - offset);
-                const tryDateStr = tryDate.toISOString().slice(0, 10).replace(/-/g, '');
+                const tryDateStr = shanghaiDateYyyymmdd(tryDate);
                 const daily = await TushareService.getDailyByDate(tryDateStr);
                 if (daily.length > 0) {
                     actualMomentumDateStr = tryDateStr;
