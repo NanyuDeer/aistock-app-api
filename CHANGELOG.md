@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-06 — 风口龙头双链修复：AI 截断降级 + 规则引擎月度分档 + 标签区分
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：`max_tokens` 500→1200（14 字段+80 字理由的中文 JSON 在 500 token 下被截断 → `JSON.parse` 报 `Unexpected end of JSON input` → 全部板块走规则引擎，长线全 45 天、标签全"资金"；服务器实测 DeepSeek API 正常，确认为截断问题）
+- `WindLeaderAnalyzerService.ruleBasedAnalysis`：长线持续天数由固定 45 天改为按月分档（30/60/90 天，对应 1/2/3 个月）；`logic_type` 按板块名关键词区分（政策/业绩/资金/无支撑），避免降级时全部为"资金"
+
+### 改进
+- `buildAiPrompt`：`long_term_days` 引导按月分档输出（1/2/3 个月→30/60/90 天）
+- `aiAnalyzeSector`：失败诊断增强——先读原始响应体再 JSON.parse，失败日志含 HTTP 状态与响应前 300 字符
+
+---
+
 ## [master] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
 
 **开发者**: Aria

@@ -2051,10 +2051,10 @@ export function buildAiPrompt(
         ? `- 频次变化率：${deltaDesc}（近5日 vs 前5日上榜天数）\n- 量能/换手率：${sectorData.vol_trend ?? '未知'}，换手${turnoverDesc}\n- 涨停家数：${sectorData.limit_up_count ?? 0}家；最高连板：${sectorData.max_boards ?? 0}板`
         : '';
     const longFields = chain !== 'short'
-        ? `1. long_term_days: 长线影响预计持续天数，整数0~90（0=无长期趋势）
+        ? `1. long_term_days: 长线影响预计持续月数，按月分档输出整数（1个月=30、2个月=60、3个月=90；0=无长期趋势），结合月线/趋势给出档位依据
 2. long_confidence: 长线置信度，0~1（双支撑[政策+业绩]→0.7+，单支撑→0.5）
 3. logic_type: 长线置信度依据标签，取"政策"/"业绩"/"资金"/"无支撑"之一
-4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间判断依据）
+4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间档位判断依据）
 5. driver_type: 驱动类型，取"政策"/"业绩"/"事件"/"技术"之一（从板块名/领涨股/连板推断）`
         : '';
     const shortFields = chain !== 'long'
@@ -2130,6 +2130,8 @@ async function aiAnalyzeSector(
         return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
 
+    let respStatus = 0;
+    let respRaw = '';
     try {
         const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, 60, chain);
 
@@ -2144,20 +2146,27 @@ async function aiAnalyzeSector(
                 model,
                 messages: [{ role: 'user', content: prompt }],
                 temperature: 0.3,
-                max_tokens: 500,
+                // 500 token 不够：14字段+80字理由的中文JSON易被截断 → JSON.parse 报 Unexpected end of JSON input
+                max_tokens: 1200,
             }),
         });
+        respStatus = resp.status;
 
         if (!resp.ok) {
             const errBody = await resp.text().catch(() => '');
             throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
         }
 
-        const json = await resp.json() as AiChatResponse;
+        // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
+        respRaw = await resp.text();
+        const json = JSON.parse(respRaw) as AiChatResponse;
         let content = json?.choices?.[0]?.message?.content?.trim() || '';
         if (content.startsWith('```')) {
             content = content.split('```')[1];
             if (content.startsWith('json')) content = content.slice(4);
+        }
+        if (!content) {
+            throw new Error(`AI 返回空 content（原始响应前300: ${respRaw.slice(0, 300)}）`);
         }
 
         const result = JSON.parse(content.trim()) as AiAnalysis;
@@ -2170,7 +2179,7 @@ async function aiAnalyzeSector(
         if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
             aiApiAvailable = false;
         }
-        console.error('[HotSectorAnalyzer] AI分析失败，使用规则引擎:', errMsg);
+        console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
         return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
 }
@@ -2218,31 +2227,52 @@ export function applyDualRankings<T extends {
     return [...merged.values()];
 }
 
+/** 政策/规划类关键词（规则引擎降级时区分 logic_type） */
+const RULE_POLICY_KEYWORDS = ['政策', '规划', '改革', '补贴', '关税', '双碳', '新能源', '基建', '投资', '出口', '战略', '纲要', '环保', '地产', '军工'];
+/** 业绩/涨价类关键词（规则引擎降级时区分 logic_type） */
+const EARN_KEYWORDS = ['业绩', '预增', '扭亏', '盈利', '利润', '涨价', '提价', '景气', '高送转'];
+
+/** 规则引擎降级的 logic_type 推断：板块名含政策类关键词→政策；业绩类→业绩；否则沿用资金/无支撑 */
+function inferRuleLogicType(sectorName: string, fallback: string): string {
+    if (RULE_POLICY_KEYWORDS.some(k => sectorName.includes(k))) return '政策';
+    if (EARN_KEYWORDS.some(k => sectorName.includes(k))) return '业绩';
+    return fallback;
+}
+
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
     const freq = sectorData.frequency;
     const avgChange = sectorData.avg_change;
     const amountTrend = sectorData.net_inflow; // amount_trend 已合并到 net_inflow
 
     // 规则引擎降级八字段（仅降级，不写入 prompt）
+    // 长线持续天数按月分档（1/2/3个月≈30/60/90天），不再固定45天；标签按板块名关键词+资金区分，避免全为"资金"
     let longTermDays = 0, longConfidence = 0, shortTermDays = 5, shortHeat = 0.4;
     let logicType = '无支撑', heatStage = '启动期';
     let longReason = '频次较低持续性存疑', shortReason = '热度低迷';
     let persistence = '短期(1-3天)', reason: string;
-    if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
-        longTermDays = 45; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
+    if (freq >= 8 && avgChange > 1.5) {
+        longTermDays = 90; longConfidence = 0.85; shortTermDays = 3; shortHeat = 0.6;
+        logicType = '资金'; heatStage = '发酵期';
+        longReason = '极高频霸榜+趋势延续，中线空间充足'; shortReason = '资金活跃但换手需警惕';
+        persistence = '长期(2-3个月)';
+        reason = '极高频上榜+持续放量，中线趋势强劲';
+    } else if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
+        longTermDays = 60; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
         logicType = '资金'; heatStage = '发酵期';
         longReason = '高频上榜+资金加速流入，趋势强劲'; shortReason = '资金活跃但换手需警惕';
-        persistence = '长期(1月+)';
+        persistence = '长期(1-2个月)';
         reason = '高频上榜+持续放量+资金加速流入，趋势强劲';
     } else if (freq >= 4 && avgChange > 1) {
-        longTermDays = 21; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
+        longTermDays = 30; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
         logicType = '无支撑'; heatStage = '启动期';
-        longReason = '中频上榜涨幅稳定，有一定持续性'; shortReason = '热度温和启动';
-        persistence = '中期(1-2周)';
-        reason = '中频上榜+涨幅稳定，有一定持续性';
+        longReason = '中频上榜涨幅稳定，月线级别趋势初步确立'; shortReason = '热度温和启动';
+        persistence = '中期(1个月)';
+        reason = '中频上榜+涨幅稳定，月线级别有持续性';
     } else {
         reason = '上榜频次较低或资金流出，持续性存疑';
     }
+    // 长线置信度依据标签：板块名含政策/业绩类关键词优先，否则沿用资金/无支撑（避免全为"资金"）
+    logicType = inferRuleLogicType(sectorName, logicType);
 
     const upFactors = transmission.upstream.map(u => u.factor);
     const downFactors = transmission.downstream.map(d => d.factor);
