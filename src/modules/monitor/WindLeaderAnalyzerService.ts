@@ -1041,14 +1041,16 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
     return result;
 }
 
-/** 板块名称归一化：去空格、去"概念/指数"后缀、去"及/与/和"连接词，用于跨板块体系名称匹配
- * 例："旅游及酒店" → "旅游酒店"；"CRO概念" → "cro"；"共封装光学(CPO)" → "共封装光学(cpo)" */
+/** 板块名称归一化：去空格、去"概念/指数"后缀、去"及/与/和"连接词、去行业分级后缀(Ⅱ/Ⅲ等)，
+ * 用于跨板块体系名称匹配。例："旅游及酒店" → "旅游酒店"；"CRO概念" → "cro"；
+ * "共封装光学(CPO)" → "共封装光学(cpo)"；"电子化学品Ⅲ" → "电子化学品"（对齐板块池名） */
 function normalizeBoardName(name: string): string {
     return String(name || '')
         .replace(/\s+/g, '')
         .replace(/[（(](?:概念|指数)[)）]/g, '')
         .replace(/(概念|指数)$/, '')
         .replace(/[及与和]/g, '')
+        .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/, '') // 去行业分级罗马数字后缀（Ⅱ/Ⅲ…）
         .toLowerCase();
 }
 
