@@ -154,7 +154,7 @@ test('Brief 与 Broadcast 公开路由只返回安全投影并拒绝不安全工
     let briefRow = makeBriefRow()
     let broadcastRow = makeBroadcastRow(briefRow)
     ;(pool as unknown as { query: typeof pool.query }).query = async (_sql: string, values?: unknown[]) => {
-        if (values?.[0] === 'brief_morning') return { rows: [briefRow] } as never
+        if (values?.[0] === 'brief_morning' || values?.[0] === 'brief_evening') return { rows: [briefRow] } as never
         if (values?.[0] === 'broadcast_morning') return { rows: [broadcastRow] } as never
         return { rows: [] } as never
     }
@@ -189,6 +189,23 @@ test('Brief 与 Broadcast 公开路由只返回安全投影并拒绝不安全工
 
             briefRow = makeBriefRow({ report_type: 'brief_evening' })
             assert.deepEqual((await request(port, `/api/agent/brief/morning/${DATE}`)).body, { code: 0, data: null })
+
+            // 变体后缀 missing_sources（如 review.sectors）属合法降级，不应整份拒绝（防复发）
+            const degradedEvening = makeBriefRow({
+                report_type: 'brief_evening',
+            })
+            const degradedContent = degradedEvening.content as Record<string, unknown>
+            degradedContent.brief_type = 'evening'
+            degradedContent.degraded = true
+            degradedContent.missing_sources = ['review.sectors']
+            ;(degradedContent.items as Array<Record<string, unknown>>) = [
+                (degradedContent.items as Array<Record<string, unknown>>)[0],
+                (degradedContent.items as Array<Record<string, unknown>>)[1],
+            ]
+            briefRow = degradedEvening
+            assert.deepEqual((await request(port, `/api/agent/brief/evening/${DATE}`)).body, {
+                code: 0, data: degradedContent,
+            })
 
             briefRow = makeBriefRow({ report_date: '2026-07-23' })
             assert.deepEqual((await request(port, `/api/agent/brief/morning/${DATE}`)).body, { code: 0, data: null })

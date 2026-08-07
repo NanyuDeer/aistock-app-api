@@ -2,6 +2,15 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-07 — 公开 Brief 校验支持变体后缀 missing_sources（防复发）
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`hasValidDegradation` 改用 `isKnownBriefSourceType`，`missing_sources` 支持纯 report_type（如 `review`）与变体后缀（如 `review.sectors`）两种形式
+  - 背景：briefing.py 晚报分支按 review 展示维度（attribution/sectors/summary）细分缺失来源，缺失时写入 `review.sectors` 这类带后缀值；原校验只认纯 report_type，导致 review 任一维度缺失时整份 Brief 被公开接口判为非法、返回 `data: null`，晚报页整页空白
+- `tests/briefContractRoutes.test.ts`：新增用例覆盖 `brief_evening` 带 `missing_sources=["review.sectors"]` 时应正常返回降级数据
+
 ## [master] 2026-08-06 — quick 快照 sectors/main_force 数据源改腾讯行情中心板块排行
 
 **开发者**: Aria

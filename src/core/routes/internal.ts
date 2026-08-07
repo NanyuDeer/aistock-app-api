@@ -1382,11 +1382,24 @@ function reportDateMatches(value: unknown, expectedDate: string): boolean {
         && value.toISOString().slice(0, 10) === expectedDate
 }
 
+/**
+ * 校验 missing_sources 元素是否合法。支持两种形式：
+ * 1. 纯 report_type：如 "review"（briefing.py morning 分支）
+ * 2. 变体后缀：如 "review.sectors"（briefing.py evening 分支按 review 展示维度
+ *    细分缺失来源）。校验时取 "." 前缀做白名单判断，避免整份 Brief 因某个
+ *    展示维度缺失而被公开接口拒绝（防复发缺陷）。
+ */
+function isKnownBriefSourceType(source: string): boolean {
+    if (BRIEF_SOURCE_REPORT_TYPES.has(source)) return true
+    const dotIndex = source.indexOf('.')
+    return dotIndex > 0 && BRIEF_SOURCE_REPORT_TYPES.has(source.slice(0, dotIndex))
+}
+
 function hasValidDegradation(content: Record<string, unknown>): boolean {
     if (typeof content.degraded !== 'boolean' || !Array.isArray(content.missing_sources)) return false
     const missingSources = content.missing_sources
     return missingSources.every(
-        (source) => isNonEmptyString(source) && BRIEF_SOURCE_REPORT_TYPES.has(source),
+        (source) => isNonEmptyString(source) && isKnownBriefSourceType(source),
     )
         && new Set(missingSources).size === missingSources.length
         && (content.degraded ? missingSources.length > 0 : missingSources.length === 0)
