@@ -254,9 +254,23 @@ export class PerformanceReportAutoUpdateService {
                         console.warn(`[PerformanceReportAutoUpdate] ${symbol} report_rc 获取失败: ${err.message}`);
                     }
 
-                    if (expressUpdated || formalUpdated) {
+                    // 是否有新插入的报告
+                    const hasNewReport = expressUpdated || formalUpdated;
+
+                    // 是否还有"利润数据已就绪但标签为空"的报告需要补算
+                    // （覆盖：插入时利润字段为空被跳过、或上次计算失败等情况）
+                    const pendingTagFix = await pool.query(
+                        `SELECT 1 FROM performance_reports
+                         WHERE symbol = $1 AND report_type IN ('formal', 'express')
+                           AND n_income_attr_p IS NOT NULL
+                           AND (ai_tag IS NULL OR ai_tag = '')
+                         LIMIT 1`,
+                        [symbol]
+                    );
+
+                    if (hasNewReport || pendingTagFix.rows.length > 0) {
                         updated++;
-                        // 为新插入的报告计算并更新 ai_tag
+                        // 为新插入的报告计算 ai_tag，并补偿历史空标签
                         await PerformanceReportAutoUpdateService.updateAiTags(symbol);
                     } else {
                         skipped++;
