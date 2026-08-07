@@ -2369,21 +2369,31 @@ export function deriveCycle(a: {
     return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重；
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按 short_term_days 降序，相同按 freq20 降序），按 name 去重；
  * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
     cycle: 'short' | 'long' | 'both' | 'none';
     long_term_days?: number;
     short_term_days?: number;
+    frequency?: number;
+    freq20?: number;
 }>(sectors: T[]): T[] {
     const longBoard = sectors
         .filter(s => s.cycle === 'long' || s.cycle === 'both')
-        .sort((a, b) => (b.long_term_days ?? 0) - (a.long_term_days ?? 0))
+        .sort((a, b) => {
+            const daysDiff = (b.long_term_days ?? 0) - (a.long_term_days ?? 0);
+            if (daysDiff !== 0) return daysDiff;
+            return (b.frequency ?? 0) - (a.frequency ?? 0);
+        })
         .slice(0, 8);
     const shortBoard = sectors
         .filter(s => s.cycle === 'short' || s.cycle === 'both')
-        .sort((a, b) => (b.short_term_days ?? 0) - (a.short_term_days ?? 0))
+        .sort((a, b) => {
+            const daysDiff = (b.short_term_days ?? 0) - (a.short_term_days ?? 0);
+            if (daysDiff !== 0) return daysDiff;
+            return (b.freq20 ?? 0) - (a.freq20 ?? 0);
+        })
         .slice(0, 8);
     const merged = new Map<string, T>();
     for (const s of [...longBoard, ...shortBoard]) {
