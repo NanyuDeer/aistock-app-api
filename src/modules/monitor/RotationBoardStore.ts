@@ -52,11 +52,28 @@ let poolCache: BoardPoolItem[] | null = null;
 let poolCacheAt = 0;
 
 /**
- * 获取板块池（Tushare ths_index：概念 N + 行业 I）
- * 失败时兜底从 hotCirclePlate 的 mrpm 每日榜收集（覆盖近期上榜板块）
+ * 获取板块池（网页同款口径）
+ *
+ * 主路径：hotCirclePlate 近 30 日上榜过的板块（约 106 个热门板块），
+ *         与同花顺网页"板块轮动表"口径一致。
+ * 兜底：Tushare ths_index 全量（概念 N + 行业 I），仅在 hotCirclePlate 失败时使用。
+ *
+ * 注意：Tushare 全量池（349 个）含大量细分板块（如"钨""种子生产""焦炭加工"），
+ *       网页不跟踪这些细分板块，会导致每日涨跌前10 与网页不一致（实测仅 2/10 重合）。
+ *       必须用 hotCirclePlate 子集才能对齐网页口径。
  */
 export async function getBoardPool(): Promise<BoardPoolItem[]> {
     if (poolCache && Date.now() - poolCacheAt < POOL_CACHE_TTL) return poolCache;
+    // 主路径：hotCirclePlate 网页同款板块池
+    const hotItems = await fetchPoolFromHotCirclePlate();
+    if (hotItems.length >= 50) {
+        poolCache = hotItems;
+        poolCacheAt = Date.now();
+        console.log(`[RotationBoardStore] 板块池(hotCirclePlate): ${hotItems.length} 个（概念 ${hotItems.filter(i => i.category === 'concept').length} + 行业 ${hotItems.filter(i => i.category === 'industry').length}）`);
+        return hotItems;
+    }
+    console.warn('[RotationBoardStore] hotCirclePlate 板块池不足，回退 Tushare 全量');
+    // 兜底：Tushare ths_index 全量
     try {
         const [concepts, industries] = await Promise.all([
             getThsIndex('N', 'A'),
@@ -79,17 +96,16 @@ export async function getBoardPool(): Promise<BoardPoolItem[]> {
         if (items.length >= 100) {
             poolCache = items;
             poolCacheAt = Date.now();
-            console.log(`[RotationBoardStore] 板块池: ${items.length} 个（概念 ${items.filter(i => i.category === 'concept').length} + 行业 ${items.filter(i => i.category === 'industry').length}）`);
+            console.log(`[RotationBoardStore] 板块池(Tushare兜底): ${items.length} 个`);
             return items;
         }
     } catch (err) {
         console.warn('[RotationBoardStore] getBoardPool(Tushare) 失败:', (err as Error).message);
     }
-    // 兜底：hotCirclePlate days=30 的 mrpm 每日榜板块
-    return fetchPoolFromHotCirclePlate();
+    return [];
 }
 
-/** 兜底板块池：从 hotCirclePlate 近 30 日 mrpm 收集上榜板块 */
+/** 网页同款板块池：从 hotCirclePlate 近 30 日 mrpm 收集上榜板块（与同花顺网页"板块轮动表"口径一致） */
 async function fetchPoolFromHotCirclePlate(): Promise<BoardPoolItem[]> {
     try {
         const url = 'https://apigate.10jqka.com.cn/d/charge/smallcharge/l2/v2/hotCirclePlate?days=30&filter=';
