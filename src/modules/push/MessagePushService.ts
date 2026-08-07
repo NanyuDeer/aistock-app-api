@@ -626,6 +626,23 @@ export class MessagePushService {
             return { sent: 0, failed: 0 };
         }
     }
+
+    // ==================== 自选股洞察飞书推送 ====================
+
+    /** 自选股洞察飞书推送：简化卡片（仅文案），复用 sendFeishuCard（eventId 仅用于日志定位） */
+    static async dispatchInsightToFeishu(openid: string, content: string, eventId: string): Promise<boolean> {
+        try {
+            const card = buildInsightFeishuCard(content);
+            const ok = await sendFeishuCard(openid, card);
+            if (!ok) {
+                console.error(`[MessagePush] 自选股洞察飞书推送失败: openid=${openid}, event_id=${eventId}`);
+            }
+            return ok;
+        } catch (err: unknown) {
+            console.error('[MessagePush] 自选股洞察飞书推送失败:', err instanceof Error ? err.message : String(err));
+            return false;
+        }
+    }
 }
 
 /** 构建市场事件飞书卡片 */
@@ -686,5 +703,21 @@ function buildMarketEventFeishuCard(payload: NonNullable<typeof MessagePushServi
             template: payload.direction === 'up' ? 'red' : payload.direction === 'down' ? 'green' : 'blue',
         },
         elements,
+    };
+}
+
+/** 构建自选股洞察飞书卡片（简化版：仅文案展示，复用现有卡片结构） */
+function buildInsightFeishuCard(content: string): Record<string, unknown> {
+    return {
+        config: { wide_screen_mode: true },
+        header: {
+            title: { tag: 'plain_text', content: '【自选股洞察】' },
+            template: 'blue',
+        },
+        elements: [
+            { tag: 'div', text: { tag: 'lark_md', content } },
+            { tag: 'hr' },
+            { tag: 'div', text: { tag: 'lark_md', content: '<font color="grey">点击查看完整分析</font>' } },
+        ],
     };
 }

@@ -1955,6 +1955,8 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                 eventId,
                 title: content['title'] || '',
                 source: content['source'] || '',
+                source_name: content['source_name'] || '',
+                event_type: content['event_type'] || '',
                 publishTime: content['publishTime'] || row['report_date'] || '',
                 summary: eu['summary'] || '',
                 conclusion: ei['conclusion'] || '',

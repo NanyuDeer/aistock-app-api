@@ -976,4 +976,50 @@ export class WechatPushService {
             ],
         );
     }
+
+    // ==================== 自选股洞察推送 ====================
+
+    /** 自选股洞察推送：复用 WECHAT_TEMPLATE_ID 模板发送自定义文案（eventId 仅用于日志定位） */
+    static async dispatchInsightPush(openid: string, content: string, eventId: string): Promise<boolean> {
+        try {
+            const wxResponse = await WechatPushService.sendInsightTemplateMessage(openid, content);
+            WechatPushService.log('insight', 'sent', { openid, event_id: eventId, msgid: wxResponse.msgid });
+            return true;
+        } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            WechatPushService.log('insight', 'template send failed', { openid, event_id: eventId, error: errorMsg });
+            return false;
+        }
+    }
+
+    private static async sendInsightTemplateMessage(openid: string, content: string): Promise<WechatSendResponse> {
+        const templateId = process.env.WECHAT_TEMPLATE_ID;
+        if (!templateId) throw new Error('WECHAT_TEMPLATE_ID is not configured');
+
+        const accessToken = await ScanLoginController.getServerAccessToken();
+        // 复用 stock 模板的既有字段结构（stock/event_type/level/summary/time），仅替换文案
+        const res = await fetch(
+            `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${accessToken}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    touser: openid,
+                    template_id: templateId,
+                    data: {
+                        stock: { value: '自选股洞察' },
+                        event_type: { value: 'AI 归因' },
+                        level: { value: '首次生成' },
+                        summary: { value: content },
+                        time: { value: WechatPushService.formatEventTime(new Date().toISOString()) },
+                    },
+                }),
+            },
+        );
+        const data = await res.json() as WechatSendResponse;
+        if (data.errcode && data.errcode !== 0) {
+            throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
+        }
+        return data;
+    }
 }

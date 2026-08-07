@@ -2,6 +2,121 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-06 — 风口龙头双轨选板：长短线池各取 top16 并集，修复短线档候选被挤掉
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.identifyHotConcepts`：原单池 topN=16 截断 + 评分公式 `freqScore(基于freq60)×4` 权重偏向长线，导致短线池成员（freq20≥3）被挤出 top16（用真实 API 数据复现：短线池实测 35 个成员，被截得只剩 3 个交集成员）。改为**双轨选板**——长线池与短线池各自按评分取 topN 再并集去重，长短线互不挤占
+- 代价：分析数量 16 → 约 27 个，刷新耗时约 1.5~2 倍
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI prompt 强化：长线天数分档差异化 + 短线池成员不再判 0 天
+
+**开发者**: Aria
+
+### 改进
+- `WindLeaderAnalyzerService.buildAiPrompt`：
+  - `long_term_days` 引导改为按趋势强度分档（月线多头+站上MA60+资金净流入→90~180天；趋势确立→45~75天；初期→30天；仅明确无趋势才0），明示"切勿因60日上榜频次锚定输出60天"
+  - `short_term_days`/`short_heat`：已进短线池的板块默认给 ≥1 天（0 仅用于明确无机会）；存在涨停/连板时 heat 不应低于 0.3
+  - 长线链指南：趋势确认按分档给天数；长线池成员（60日上榜≥8次）默认具备长线基础，除非月线走坏/频次骤降否则 ≥30 天
+  - 短线链指南：上榜频次高即热度基础默认 ≥1 天；催化剂按事件类型给天数区间（突发1~5天/技术突破5~15天）；数据缺失（涨停0/连板0/换手0）为口径问题不得据此判 0 天
+  - 顶部数据异常说明补充涨停家数/连板/换手率为 0 的场景
+
+### 背景
+- AI 空 content 修复后（服务器 `npm run build` 后生效），实测 AI 正常输出但存在质量问题：长线池 10+ 成员只给了 5 个 ≥30 天、长线天数全部锚定 60、短线池成员全部被判 short=0d/heat=0
+
+---
+
+## [master] 2026-08-06 — 风口龙头双链修复：deriveCycle 四态化 + AI 空 content 根因修复
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.deriveCycle`：新增 `'none'` 态（长短线均不成立时不再无条件归为 `short`），修复"长线池板块长线信号弱时被误判为短线、以 0 天塞入短线档"的缺陷
+- `WindLeaderAnalyzerService.applyDualRankings`：`'none'` 板块保留在合并结果末尾，供前端取全量后按天数过滤
+- `HotSectorAnalysis` / `WindLeaderService.WindLeaderSector`：`cycle` 类型增加 `'none'`
+- AI 空 content 根因修复（DeepSeek V4-Flash 于 2026-07-31 发布，默认开启深度思考：思考 `reasoning_content` 与正文 `content` 共用同一个 `max_tokens` 池，预算被思考耗尽后 content 为空且 HTTP 200 不报错）：
+  - 请求体双参数关闭思考 `reasoning_effort:"none"` + `thinking:{type:"disabled"}`（官方 API 实测均生效，防本地代理网关 127.0.0.1:3300 剥离任一参数）
+  - `max_tokens` 提档 [2000,6000] → [8000,16000]：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）
+  - 失败日志补充 `finish_reason` + `usage`，定位思考耗尽/截断的最终证据
+
+### 部署注意
+- app-api 以 `node dist/index.js` 运行：服务器必须 `npm run build` 后再 `pm2 restart`，否则跑的是旧 dist。今日服务器日志行为与 e569d97 时代代码一致（无重试分支、无 reasoning_effort），说明 git HEAD 虽为 26b8cf4，但运行的是旧编译产物
+
+---
+
+## [junliang] 2026-08-06 — 自选股洞察：事件归属锚定标题主体股票 + 归因回写修复
+
+**开发者**: Aria
+
+---
+
+## [master] 2026-08-06 — 风口龙头长线天数支持半月与更长周期
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.buildAiPrompt`：`long_term_days` 引导由"整数月分档（30/60/90）"改为"按月估算允许任意半月粒度（45=1.5 个月、75=2.5 个月、105=3.5 个月），整数 0~180，不要局限于固定档位"，支持 1.5/2.5/3.5 个月等非整数
+- `aiAnalyzeSector` clamp：长期天数上限 90→180（配合前端长线榜显示更长预测）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 v4-flash 思考关闭不可靠的兜底：JSON 截断重试 + 数据异常提示
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/insight/InsightService.ts`：自选股事件匹配锚定标题主体股票（"XX触及涨停"），详情页推荐/相关股票链接不再创建事件（修复事件挂错标的，如汇金通被挂到中国电建）；单篇详情抓取失败仅记日志跳过不中断整轮
+- `src/modules/insight/LimitUpRadarCrawler.ts`：新增 `parseTitleStockName`（提取标题主体股票并去除括号代码）；详情页为 UTF-8，fetchDetail 显式指定编码；列表分页按 articleId 去重（CDN 缓存抖动）
+- `src/db/migrations/016_watchlist_insights.sql`：`watchlist_insight_results.confidence` 由 VARCHAR(8) 扩为 VARCHAR(16)（'unconfirmed' 11 字符超长导致结果回写 500）
+- `src/shared/utils/crawler.ts`：`fetchHtml` 支持 `encoding` 参数（'gbk'|'utf-8'，默认 gbk），修复详情页乱码
+
+### 测试
+- `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts`：新增 5 个 `parseTitleStockName` 用例（含涨停复盘类标题返回 null）
+
+---
+
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：v4-flash 深度思考无法 100% 关闭——长 prompt + 异常数据（领涨股涨幅0/涨跌家数0）时模型仍会思考，耗尽 max_tokens 导致 content 为空或 JSON 截断（`Unterminated string in JSON`）→ ① max_tokens 提档 [2000,6000] ② JSON 截断/解析失败也触发提高 max_tokens 重试（原仅 content 空才重试）③ 请求超时 60s→90s
+- `buildAiPrompt`：提示词增加"输入数据可能存在异常，请忽略并直接基于现有数据判断，不要质疑数据"（模型曾因异常数据陷入深度思考）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI 关闭深度思考：deepseek-v4-flash 直接输出 JSON
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，`max_tokens` 被 `reasoning_content` 耗尽导致 `content` 为空（服务器实测）→ 对 deepseek 模型请求体附加 `reasoning_effort:"none"` 显式关闭思考，模型直接输出 JSON（服务器实测有效，不换模型）
+- AI 输出健壮性：`long_term_days`/`short_term_days` clamp 到 schema 范围（0~90 / 0~30），防 LLM 越界值（实测模型输出过 120 天）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI 推理模型兜底：content 空自动提高 max_tokens 重试
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：服务器日志定位到 `content=""` 但 `reasoning_content` 有内容——`AI_MODEL` 配置的是推理模型（deepseek-reasoner/v4 推理版），token 消耗在思考过程、最终答案为空 → 新增重试：content 空且存在 reasoning_content 时提高 max_tokens（1200→4000）重试一次；请求超时 45s→60s。仍失败则降级规则引擎（已按月分档+标签区分）
+- 更优解：服务器 `AI_MODEL` 直接改用非推理模型 `deepseek-chat`（curl 实测直接输出 content）
+
+---
+
+## [master] 2026-08-06 — 风口龙头双链修复：AI 截断降级 + 规则引擎月度分档 + 标签区分
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：`max_tokens` 500→1200（14 字段+80 字理由的中文 JSON 在 500 token 下被截断 → `JSON.parse` 报 `Unexpected end of JSON input` → 全部板块走规则引擎，长线全 45 天、标签全"资金"；服务器实测 DeepSeek API 正常，确认为截断问题）
+- `WindLeaderAnalyzerService.ruleBasedAnalysis`：长线持续天数由固定 45 天改为按月分档（30/60/90 天，对应 1/2/3 个月）；`logic_type` 按板块名关键词区分（政策/业绩/资金/无支撑），避免降级时全部为"资金"
+
+### 改进
+- `buildAiPrompt`：`long_term_days` 引导按月分档输出（1/2/3 个月→30/60/90 天）
+- `aiAnalyzeSector`：失败诊断增强——先读原始响应体再 JSON.parse，失败日志含 HTTP 状态与响应前 300 字符
+
+---
+
 ## [master] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
 
 **开发者**: Aria

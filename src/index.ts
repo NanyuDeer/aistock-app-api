@@ -61,6 +61,7 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
@@ -71,6 +72,11 @@ import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
 import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector';
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
+
+// insight 自选股洞察模块
+import { runCycle as runInsightCycle } from './modules/insight/InsightService';
+import insightInternalRouter from './modules/insight/internalRouter';
+import { InsightController } from './modules/insight/controller';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -212,6 +218,10 @@ app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => Sto
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
 app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
+
+// 自选股洞察 - 前端查询接口（登录用户自选股过滤，数据来自涨停雷达采集 + Python 归因）
+app.get('/api/cn/favorites/insights', (req, res, next) => InsightController.list(req, res, next));
+app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightController.get(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
@@ -540,6 +550,9 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 app.use('/internal', internalRouter);
 
 app.use('/internal/stock-trace', stockTraceInternalRouter);
+
+app.use('/internal/insight', insightInternalRouter);
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -692,6 +705,23 @@ cron.schedule('30 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
+cron.schedule('35 15 * * *', async () => {
+    console.log('[RotationBoardCron] 开始同步板块轮动榜');
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
+            return;
+        }
+        const count = await RotationBoardStore.syncRotationHistory();
+        console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
+    } catch (err: unknown) {
+        console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 业绩预测自动更新：每天凌晨 00:00 执行
 cron.schedule('0 0 * * *', async () => {
     console.log('[ProfitForecastAutoUpdateCron] 开始执行业绩预测自动更新');
@@ -767,6 +797,16 @@ cron.schedule('*/10 * * * *', () => {
         `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
     );
 }, { timezone: 'Asia/Shanghai' });
+
+// 自选股洞察：交易时段（周一至周五 9:00-15:59）每 10 分钟轮询采集
+cron.schedule('*/10 9-15 * * 1-5', async () => {
+    try {
+        const { collected, events } = await runInsightCycle();
+        console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
+    } catch (err: unknown) {
+        console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 }
 
 async function start() {
@@ -804,6 +844,14 @@ async function start() {
         console.log('[DB] stock_concept_mapping table ready');
     } catch (err: unknown) {
         console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 板块轮动榜表（网页同款口径：每日涨幅/跌幅前10），风口龙头与趋势股评分共用
+        await RotationBoardStore.ensureRotationSchema();
+        console.log('[DB] board_rotation_daily table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -1049,6 +1097,14 @@ async function start() {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
+    try {
+        await pool.query('SELECT 1 FROM watchlist_insight_sources LIMIT 1');
+        console.log('[DB] watchlist_insight_sources table ready');
+    } catch (err: unknown) {
+        console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
+    }
+
     // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
     try {
         await pool.query(`
@@ -1101,7 +1157,11 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        PriceTriggerDetector.start();
+        // 旧 stock_trace 事件发现/价格触发：默认停用，仅 STOCK_TRACE_TRIGGER_ENABLED === 'true' 时启动
+        // （保留代码路径便于回滚；新自选股洞察已由 insight 模块替代旧 stock_trace 写入）
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
+            PriceTriggerDetector.start();
+        }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
         });
@@ -1154,6 +1214,12 @@ async function start() {
         // Compensate a missed post-close settlement after restarts or deployments.
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
             console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
+        });
+        // 启动时同步板块轮动榜（首次回填近140个交易日，之后每日增量；不阻塞启动）
+        RotationBoardStore.syncRotationHistory().then(count => {
+            console.log(`[Startup] 板块轮动榜同步完成: ${count} 条`);
+        }).catch(err => {
+            console.warn('[Startup] 板块轮动榜同步失败:', err instanceof Error ? err.message : String(err));
         });
     });
 

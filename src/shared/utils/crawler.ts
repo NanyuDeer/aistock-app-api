@@ -162,8 +162,8 @@ export class DistributedCrawler {
         return sessionFetch(url, { headers });
     }
 
-    /** 带重试的GBK HTML请求 */
-    async fetchHtml(url: string, extraHeaders?: Record<string, string>): Promise<string> {
+    /** 带重试的 HTML 请求（默认 GBK 解码，可指定 utf-8） */
+    async fetchHtml(url: string, extraHeaders?: Record<string, string>, encoding: 'gbk' | 'utf-8' = 'gbk'): Promise<string> {
         let lastError: Error | null = null;
 
         for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
@@ -198,7 +198,7 @@ export class DistributedCrawler {
                 }
 
                 const arrayBuffer = await response.arrayBuffer();
-                return new TextDecoder('gbk').decode(Buffer.from(arrayBuffer));
+                return new TextDecoder(encoding).decode(Buffer.from(arrayBuffer));
             } catch (err) {
                 lastError = err as Error;
                 this.failCount++;
