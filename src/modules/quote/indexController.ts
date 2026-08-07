@@ -11,7 +11,7 @@ import {
 } from '../../shared/types/cache';
 import { getAShareIndexCacheTtlSeconds } from '../../shared/utils/tradingTime';
 
-const MAX_SYMBOLS = 20;
+export const MAX_SYMBOLS = 20;
 
 const CN_INDEX_NAMES: Record<string, string> = {
     '000001': '上证指数',
@@ -57,6 +57,21 @@ const GB_INDEX_NAMES: Record<string, string> = {
     'FTSE': '富时100',
     'GDAXI': '德国DAX',
     'FCHI': '法国CAC40',
+    'GOLD': '纽约黄金',
+    'CRUDE': '纽约原油',
+    'USDCNY': '美元人民币',
+    'USDCNH': '美元离岸人民币',
+};
+
+// 大宗/汇率类腾讯代码（hf_ 期货逗号格式 / wh_ 外汇短格式，与指数 ~ 长格式不同）
+// 说明：腾讯不支持 usSPX / jpN225 / ukFTSE 等全球指数代码（实测无返回），
+// 标普500 用 CME E-mini 期货（hf_ES）替代；日经/欧股无腾讯对应，仅保留指数名。
+const GB_COMMODITY_TENCENT_CODE: Record<string, string> = {
+    'SPX': 'hf_ES',
+    'GOLD': 'hf_GC',
+    'CRUDE': 'hf_CL',
+    'USDCNY': 'whUSDCNY',
+    'USDCNH': 'whUSDCNH',
 };
 
 const GB_INDEX_TENCENT_CODE: Record<string, string> = {
@@ -109,6 +124,43 @@ function parseTencentIndexLine(line: string): ParsedTencentIndex | null {
     };
 }
 
+/** 外汇短格式（wh_ 前缀，~ 分隔，~21 字段）：
+ *  310~美元人民币~USDCNY~6.7486~0~20260805174456~昨收~...~涨跌额~涨跌幅%~...
+ *  现价=parts[3]，涨跌额=parts[12]，涨跌幅%=parts[13]。 */
+function parseTencentFxLine(valuePart: string): ParsedTencentIndex | null {
+    const parts = valuePart.split('~');
+    if (parts.length < 14) return null;
+    const value = parseFloat(parts[3]);
+    const changeAmount = parseFloat(parts[12]);
+    const change = parseFloat(parts[13]);
+    if (!Number.isFinite(value)) return null;
+    return {
+        code: '',
+        value,
+        change: Number.isFinite(change) ? change : 0,
+        changeAmount: Number.isFinite(changeAmount) ? changeAmount : 0,
+    };
+}
+
+/** 期货/大宗逗号格式（hf_ 前缀）：
+ *  4218.70,1.59,4216.50,4216.80,4238.50,4121.60,时间,...,2026-08-05,纽约黄金
+ *  现价=parts[0]，涨跌幅%=parts[1]，昨收=parts[2]（涨跌额=现价-昨收）。 */
+function parseTencentFuturesLine(valuePart: string): ParsedTencentIndex | null {
+    const parts = valuePart.split(',');
+    if (parts.length < 3) return null;
+    const value = parseFloat(parts[0]);
+    const change = parseFloat(parts[1]);
+    const previousClose = parseFloat(parts[2]);
+    if (!Number.isFinite(value)) return null;
+    const changeAmount = Number.isFinite(previousClose) ? value - previousClose : 0;
+    return {
+        code: '',
+        value,
+        change: Number.isFinite(change) ? change : 0,
+        changeAmount: Number.isFinite(changeAmount) ? changeAmount : 0,
+    };
+}
+
 async function fetchTencentIndexQuotes(tencentCodes: string[]): Promise<Map<string, ParsedTencentIndex>> {
     const result = new Map<string, ParsedTencentIndex>();
     if (tencentCodes.length === 0) return result;
@@ -126,9 +178,26 @@ async function fetchTencentIndexQuotes(tencentCodes: string[]): Promise<Map<stri
         const lines = text.split(';').filter(l => l.trim());
 
         for (const line of lines) {
-            const parsed = parseTencentIndexLine(line);
-            if (parsed) {
-                result.set(parsed.code, parsed);
+            // 腾讯响应为 "v_code=\"...\";\nv_code2=\"...\""（分号 + 换行），
+            // split(';') 后行首可能残留换行，先 trim 再匹配。
+            const codeMatch = line.trim().match(/^v_([^=]+)="([^"]*)"/);
+            if (!codeMatch) continue;
+            const requestCode = codeMatch[1];
+            const valuePart = codeMatch[2];
+            if (!valuePart) continue;
+
+            if (valuePart.includes(',')) {
+                // 期货/大宗（hf_）：行内无代码字段，key 直接用请求代码（如 hf_GC）
+                const parsed = parseTencentFuturesLine(valuePart);
+                if (parsed) result.set(requestCode, parsed);
+            } else if (requestCode.startsWith('wh_')) {
+                // 外汇（wh_）：短 ~ 格式，key 用请求代码（如 whUSDCNY）
+                const parsed = parseTencentFxLine(valuePart);
+                if (parsed) result.set(requestCode, parsed);
+            } else {
+                // 指数（~ 长格式）：行内含代码（如 .DJI / HSTECH / 000001），key 用内嵌代码
+                const parsed = parseTencentIndexLine(line);
+                if (parsed) result.set(parsed.code, parsed);
             }
         }
     } catch (err: any) {
@@ -136,6 +205,20 @@ async function fetchTencentIndexQuotes(tencentCodes: string[]): Promise<Map<stri
     }
     return result;
 }
+
+// ============================================================================
+// 依赖注入（便于单测替换腾讯行情拉取；tsx 为 ESM live binding，named import 不可 monkey-patch，
+// 与 ClsStockNewsService.__clsNewsDependencies / MarketSnapshotService.__marketSnapshotDependencies 同一约定）
+// ============================================================================
+
+export interface IndexQuoteDeps {
+    /** 腾讯指数行情拉取（qt.gtimg.cn，GBK 编码解析，内部吞错返回部分结果） */
+    fetchTencentIndexQuotes: typeof fetchTencentIndexQuotes;
+}
+
+export const __indexQuoteDependencies: IndexQuoteDeps = {
+    fetchTencentIndexQuotes,
+};
 
 export interface CnIndexQuoteFact {
     symbol: string;
@@ -192,6 +275,69 @@ export class IndexQuoteController {
         return GB_TENCENT_RETURN_CODE_TO_SYMBOL[tencentReturnCode];
     }
 
+    /** 大宗/汇率反查：hf_GC→GOLD、whUSDCNY→USDCNY 等（腾讯返回 key 即请求代码）。 */
+    private static resolveGbCommoditySymbol(tencentReturnCode: string): string | undefined {
+        for (const [symbol, tencentCode] of Object.entries(GB_COMMODITY_TENCENT_CODE)) {
+            if (tencentCode === tencentReturnCode) return symbol;
+        }
+        return undefined;
+    }
+
+    /**
+     * A 股指数快照数据（缓存优先 + 腾讯源兜底），返回驼峰结构供 public / internal 复用。
+     *
+     * - 缓存命中：直接复用缓存中的中文键 quote；未命中则拉取腾讯源并写回缓存
+     * - 降级语义：腾讯源单指数缺失 → 该指数 price/changePercent/changeAmount = null，保留 name，不整体失败
+     */
+    static async fetchCnIndexQuotesData(symbols: string[]): Promise<Array<Record<string, any>>> {
+        const cachedQuotes: Record<string, any> = {};
+        const uncachedSymbols: string[] = [];
+
+        for (const symbol of symbols) {
+            const cached = await this.readCachedQuote('cn', symbol);
+            if (cached) { cachedQuotes[symbol] = cached; }
+            else { uncachedSymbols.push(symbol); }
+        }
+
+        if (uncachedSymbols.length > 0) {
+            const tencentCodes = uncachedSymbols.map(s => {
+                const prefix = CN_INDEX_TENCENT_PREFIX[s] || 'sh';
+                return `${prefix}${s}`;
+            });
+
+            const tencentData = await __indexQuoteDependencies.fetchTencentIndexQuotes(tencentCodes);
+
+            for (const symbol of uncachedSymbols) {
+                const td = tencentData.get(symbol);
+                const name = CN_INDEX_NAMES[symbol] || symbol;
+
+                const quote: Record<string, any> = {
+                    '指数代码': symbol,
+                    '指数简称': name,
+                    '最新价': td ? td.value : null,
+                    '涨跌幅': td ? td.change : null,
+                    '涨跌额': td ? td.changeAmount : null,
+                };
+
+                if (td) {
+                    await this.writeCachedQuote('cn', symbol, quote);
+                }
+                cachedQuotes[symbol] = quote;
+            }
+        }
+
+        return symbols
+            .map(s => cachedQuotes[s])
+            .filter(Boolean)
+            .map(q => ({
+                index: q['指数代码'],
+                name: q['指数简称'],
+                price: q['最新价'],
+                changePercent: q['涨跌幅'],
+                changeAmount: q['涨跌额'],
+            }));
+    }
+
     static async getIndexQuotes(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const symbolsParam = req.query.symbols as string;
         if (!symbolsParam) {
@@ -205,44 +351,17 @@ export class IndexQuoteController {
         if (invalidSymbols.length > 0) { createResponse(res, 400, `指数代码必须是6位数字: ${invalidSymbols.join(', ')}`); return; }
 
         try {
-            const cachedQuotes: Record<string, any> = {};
-            const uncachedSymbols: string[] = [];
-
-            for (const symbol of symbols) {
-                const cached = await this.readCachedQuote('cn', symbol);
-                if (cached) { cachedQuotes[symbol] = cached; }
-                else { uncachedSymbols.push(symbol); }
-            }
-
-            if (uncachedSymbols.length > 0) {
-                const tencentCodes = uncachedSymbols.map(s => {
-                    const prefix = CN_INDEX_TENCENT_PREFIX[s] || 'sh';
-                    return `${prefix}${s}`;
-                });
-
-                const tencentData = await fetchTencentIndexQuotes(tencentCodes);
-
-                for (const symbol of uncachedSymbols) {
-                    const td = tencentData.get(symbol);
-                    const name = CN_INDEX_NAMES[symbol] || symbol;
-
-                    const quote: Record<string, any> = {
-                        '指数代码': symbol,
-                        '指数简称': name,
-                        '最新价': td ? td.value : null,
-                        '涨跌幅': td ? td.change : null,
-                        '涨跌额': td ? td.changeAmount : null,
-                    };
-
-                    if (td) {
-                        await this.writeCachedQuote('cn', symbol, quote);
-                    }
-                    cachedQuotes[symbol] = quote;
-                }
-            }
-
-            const quotes = symbols.map(s => cachedQuotes[s]).filter(Boolean);
-            createResponse(res, 200, 'success', { '来源': 'Tencent', '指数数量': quotes.length, '行情': quotes });
+            // 复用 fetchCnIndexQuotesData（内部缓存 + 腾讯源），再映射回中文键，
+            // 保证 public 端点 /api/cn/index/quotes 响应体与重构前逐字节一致
+            const quotes = await this.fetchCnIndexQuotesData(symbols);
+            const cn = quotes.map(q => ({
+                '指数代码': q.index,
+                '指数简称': q.name,
+                '最新价': q.price,
+                '涨跌幅': q.changePercent,
+                '涨跌额': q.changeAmount,
+            }));
+            createResponse(res, 200, 'success', { '来源': 'Tencent', '指数数量': cn.length, '行情': cn });
         } catch (err: any) {
             createResponse(res, 500, err instanceof Error ? err.message : 'Internal Server Error');
         }
@@ -271,19 +390,21 @@ export class IndexQuoteController {
             }
 
             if (uncachedSymbols.length > 0) {
-                const tencentCodes = uncachedSymbols.map(s => GB_INDEX_TENCENT_CODE[s] || `us${s}`);
+                const tencentCodes = uncachedSymbols.map(s => GB_COMMODITY_TENCENT_CODE[s] || GB_INDEX_TENCENT_CODE[s] || `us${s}`);
 
                 const tencentData = await fetchTencentIndexQuotes(tencentCodes);
 
                 const tencentCodeToSymbol = new Map<string, string>();
                 for (const symbol of uncachedSymbols) {
-                    const tc = GB_INDEX_TENCENT_CODE[symbol] || `us${symbol}`;
+                    const tc = GB_COMMODITY_TENCENT_CODE[symbol] || GB_INDEX_TENCENT_CODE[symbol] || `us${symbol}`;
                     tencentCodeToSymbol.set(tc, symbol);
                 }
 
                 const resolvedData = new Map<string, ParsedTencentIndex>();
                 for (const [returnCode, data] of tencentData.entries()) {
-                    const symbol = this.resolveGbSymbolFromTencentCode(returnCode);
+                    const symbol = this.resolveGbSymbolFromTencentCode(returnCode)
+                        ?? this.resolveGbCommoditySymbol(returnCode)
+                        ?? tencentCodeToSymbol.get(returnCode);
                     if (symbol) {
                         resolvedData.set(symbol, data);
                     }

@@ -2,6 +2,320 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-07 — 公开 Brief 校验支持变体后缀 missing_sources（防复发）
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`hasValidDegradation` 改用 `isKnownBriefSourceType`，`missing_sources` 支持纯 report_type（如 `review`）与变体后缀（如 `review.sectors`）两种形式
+  - 背景：briefing.py 晚报分支按 review 展示维度（attribution/sectors/summary）细分缺失来源，缺失时写入 `review.sectors` 这类带后缀值；原校验只认纯 report_type，导致 review 任一维度缺失时整份 Brief 被公开接口判为非法、返回 `data: null`，晚报页整页空白
+- `tests/briefContractRoutes.test.ts`：新增用例覆盖 `brief_evening` 带 `missing_sources=["review.sectors"]` 时应正常返回降级数据
+
+## [master] 2026-08-06 — quick 快照 sectors/main_force 数据源改腾讯行情中心板块排行
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/quote/TencentSnapshotService.ts`：quick 快照 sectors/main_force 改走腾讯行情中心 `rank/pt/getRank`（实时数据，15:30 收盘后立即可用），不再依赖 Tushare 收盘后分批发布的资金流接口
+  - 新增 `fetchTencentBoardRank`：腾讯板块排行拉取（board_type=gn/hy、direct=down/up）
+  - 新增 `fetchTencentSectors`：概念板块（gn）领涨/领跌 Top5（zdf→pct_change，含领涨股 lzg）
+  - 新增 `fetchTencentMainForce`：行业一级（hy）主力净流入 zljlr 求和近似全市场主力净额（万元→元）
+  - `buildQuickSnapshot`/`assembleSnapshot` 改用新数据源；移除 `fetchConceptFlow`/`selectQuickSectors` 与 Tushare moneyflow 依赖
+- `src/modules/quote/MarketSnapshotService.ts`：`QuickCloseMarketSnapshot.main_force.source` 类型增加 `tencent:board_main_flow`
+
+### 修复
+- 修复 15:30 quick 快照下 Tushare 资金流未就绪导致大盘溯源 `a_share.main_force.large_and_extra_large_net_yuan` 与 `a_share.sectors` 联动缺失的问题
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：mock 改为 fetchTencentSectors/fetchTencentMainForce，新增「腾讯板块源」与 `toSectorFact` 用例；quote 模块 43 passed
+
+### 文档
+- `AGENTS.md`：quick-snapshot 数据源标注 腾讯+Tushare → 腾讯
+
+---
+
+## [master] 2026-08-06 — 风口龙头双轨选板：长短线池各取 top16 并集，修复短线档候选被挤掉
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.identifyHotConcepts`：原单池 topN=16 截断 + 评分公式 `freqScore(基于freq60)×4` 权重偏向长线，导致短线池成员（freq20≥3）被挤出 top16（用真实 API 数据复现：短线池实测 35 个成员，被截得只剩 3 个交集成员）。改为**双轨选板**——长线池与短线池各自按评分取 topN 再并集去重，长短线互不挤占
+- 代价：分析数量 16 → 约 27 个，刷新耗时约 1.5~2 倍
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI prompt 强化：长线天数分档差异化 + 短线池成员不再判 0 天
+
+**开发者**: Aria
+
+### 改进
+- `WindLeaderAnalyzerService.buildAiPrompt`：
+  - `long_term_days` 引导改为按趋势强度分档（月线多头+站上MA60+资金净流入→90~180天；趋势确立→45~75天；初期→30天；仅明确无趋势才0），明示"切勿因60日上榜频次锚定输出60天"
+  - `short_term_days`/`short_heat`：已进短线池的板块默认给 ≥1 天（0 仅用于明确无机会）；存在涨停/连板时 heat 不应低于 0.3
+  - 长线链指南：趋势确认按分档给天数；长线池成员（60日上榜≥8次）默认具备长线基础，除非月线走坏/频次骤降否则 ≥30 天
+  - 短线链指南：上榜频次高即热度基础默认 ≥1 天；催化剂按事件类型给天数区间（突发1~5天/技术突破5~15天）；数据缺失（涨停0/连板0/换手0）为口径问题不得据此判 0 天
+  - 顶部数据异常说明补充涨停家数/连板/换手率为 0 的场景
+
+### 背景
+- AI 空 content 修复后（服务器 `npm run build` 后生效），实测 AI 正常输出但存在质量问题：长线池 10+ 成员只给了 5 个 ≥30 天、长线天数全部锚定 60、短线池成员全部被判 short=0d/heat=0
+
+---
+
+## [master] 2026-08-06 — 风口龙头双链修复：deriveCycle 四态化 + AI 空 content 根因修复
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.deriveCycle`：新增 `'none'` 态（长短线均不成立时不再无条件归为 `short`），修复"长线池板块长线信号弱时被误判为短线、以 0 天塞入短线档"的缺陷
+- `WindLeaderAnalyzerService.applyDualRankings`：`'none'` 板块保留在合并结果末尾，供前端取全量后按天数过滤
+- `HotSectorAnalysis` / `WindLeaderService.WindLeaderSector`：`cycle` 类型增加 `'none'`
+- AI 空 content 根因修复（DeepSeek V4-Flash 于 2026-07-31 发布，默认开启深度思考：思考 `reasoning_content` 与正文 `content` 共用同一个 `max_tokens` 池，预算被思考耗尽后 content 为空且 HTTP 200 不报错）：
+  - 请求体双参数关闭思考 `reasoning_effort:"none"` + `thinking:{type:"disabled"}`（官方 API 实测均生效，防本地代理网关 127.0.0.1:3300 剥离任一参数）
+  - `max_tokens` 提档 [2000,6000] → [8000,16000]：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）
+  - 失败日志补充 `finish_reason` + `usage`，定位思考耗尽/截断的最终证据
+
+### 部署注意
+- app-api 以 `node dist/index.js` 运行：服务器必须 `npm run build` 后再 `pm2 restart`，否则跑的是旧 dist。今日服务器日志行为与 e569d97 时代代码一致（无重试分支、无 reasoning_effort），说明 git HEAD 虽为 26b8cf4，但运行的是旧编译产物
+
+---
+
+## [junliang] 2026-08-06 — 自选股洞察：事件归属锚定标题主体股票 + 归因回写修复
+
+**开发者**: Aria
+
+---
+
+## [master] 2026-08-06 — 风口龙头长线天数支持半月与更长周期
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.buildAiPrompt`：`long_term_days` 引导由"整数月分档（30/60/90）"改为"按月估算允许任意半月粒度（45=1.5 个月、75=2.5 个月、105=3.5 个月），整数 0~180，不要局限于固定档位"，支持 1.5/2.5/3.5 个月等非整数
+- `aiAnalyzeSector` clamp：长期天数上限 90→180（配合前端长线榜显示更长预测）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 v4-flash 思考关闭不可靠的兜底：JSON 截断重试 + 数据异常提示
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/insight/InsightService.ts`：自选股事件匹配锚定标题主体股票（"XX触及涨停"），详情页推荐/相关股票链接不再创建事件（修复事件挂错标的，如汇金通被挂到中国电建）；单篇详情抓取失败仅记日志跳过不中断整轮
+- `src/modules/insight/LimitUpRadarCrawler.ts`：新增 `parseTitleStockName`（提取标题主体股票并去除括号代码）；详情页为 UTF-8，fetchDetail 显式指定编码；列表分页按 articleId 去重（CDN 缓存抖动）
+- `src/db/migrations/016_watchlist_insights.sql`：`watchlist_insight_results.confidence` 由 VARCHAR(8) 扩为 VARCHAR(16)（'unconfirmed' 11 字符超长导致结果回写 500）
+- `src/shared/utils/crawler.ts`：`fetchHtml` 支持 `encoding` 参数（'gbk'|'utf-8'，默认 gbk），修复详情页乱码
+
+### 测试
+- `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts`：新增 5 个 `parseTitleStockName` 用例（含涨停复盘类标题返回 null）
+
+---
+
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：v4-flash 深度思考无法 100% 关闭——长 prompt + 异常数据（领涨股涨幅0/涨跌家数0）时模型仍会思考，耗尽 max_tokens 导致 content 为空或 JSON 截断（`Unterminated string in JSON`）→ ① max_tokens 提档 [2000,6000] ② JSON 截断/解析失败也触发提高 max_tokens 重试（原仅 content 空才重试）③ 请求超时 60s→90s
+- `buildAiPrompt`：提示词增加"输入数据可能存在异常，请忽略并直接基于现有数据判断，不要质疑数据"（模型曾因异常数据陷入深度思考）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI 关闭深度思考：deepseek-v4-flash 直接输出 JSON
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，`max_tokens` 被 `reasoning_content` 耗尽导致 `content` 为空（服务器实测）→ 对 deepseek 模型请求体附加 `reasoning_effort:"none"` 显式关闭思考，模型直接输出 JSON（服务器实测有效，不换模型）
+- AI 输出健壮性：`long_term_days`/`short_term_days` clamp 到 schema 范围（0~90 / 0~30），防 LLM 越界值（实测模型输出过 120 天）
+
+---
+
+## [master] 2026-08-06 — 风口龙头 AI 推理模型兜底：content 空自动提高 max_tokens 重试
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：服务器日志定位到 `content=""` 但 `reasoning_content` 有内容——`AI_MODEL` 配置的是推理模型（deepseek-reasoner/v4 推理版），token 消耗在思考过程、最终答案为空 → 新增重试：content 空且存在 reasoning_content 时提高 max_tokens（1200→4000）重试一次；请求超时 45s→60s。仍失败则降级规则引擎（已按月分档+标签区分）
+- 更优解：服务器 `AI_MODEL` 直接改用非推理模型 `deepseek-chat`（curl 实测直接输出 content）
+
+---
+
+## [master] 2026-08-06 — 风口龙头双链修复：AI 截断降级 + 规则引擎月度分档 + 标签区分
+
+**开发者**: Aria
+
+### 修复
+- `WindLeaderAnalyzerService.aiAnalyzeSector`：`max_tokens` 500→1200（14 字段+80 字理由的中文 JSON 在 500 token 下被截断 → `JSON.parse` 报 `Unexpected end of JSON input` → 全部板块走规则引擎，长线全 45 天、标签全"资金"；服务器实测 DeepSeek API 正常，确认为截断问题）
+- `WindLeaderAnalyzerService.ruleBasedAnalysis`：长线持续天数由固定 45 天改为按月分档（30/60/90 天，对应 1/2/3 个月）；`logic_type` 按板块名关键词区分（政策/业绩/资金/无支撑），避免降级时全部为"资金"
+
+### 改进
+- `buildAiPrompt`：`long_term_days` 引导按月分档输出（1/2/3 个月→30/60/90 天）
+- `aiAnalyzeSector`：失败诊断增强——先读原始响应体再 JSON.parse，失败日志含 HTTP 状态与响应前 300 字符
+
+---
+
+## [master] 2026-08-05 — ChatAgent P10 会话维度（线 4）后端
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p10-session-dimension.md`（T1）
+
+### 新增
+- `src/core/routes/internal.ts`：`GET /internal/usage/sessions?user_id=`（X-Internal-Token）按 session_id 聚合 chat_token_usage（turn_count/total_tokens/prompt_tokens/completion_tokens/last_used_at，pg SUM/COUNT 统一 `Number()` 数值化；user_id 缺失/空→400；无记录 items 空数组）
+- `src/modules/chat/sessionUsageController.ts`（新增）：`GET /api/chat/usage/sessions`（聚合 + LEFT JOIN chat_sessions 补标题，JOIN 不到为空串，按 last_used_at DESC）+ `GET /api/chat/usage/sessions/:id`（单会话最近 20 条明细，`WHERE user_id=$1 AND session_id=$2` 归属校验防越权）；鉴权 = JWT openid（Authorization Bearer + Cookie 兜底）
+- `src/index.ts`：注册 2 条公开路由（静态 `/sessions` 先于参数化 `/sessions/:id`）
+
+### 测试
+- `src/core/routes/__tests__/internal_session_usage.spec.ts`（新增，4 用例）+ `src/modules/chat/__tests__/sessionUsage.spec.ts`（新增，5 用例）；定向 `npx tsx --test` 9/9 通过，`npx tsc --noEmit` 0 错误
+
+> 遗留：前端会话列表用量展示（线 6）未做（2026-08-05 用户指示本次只做线 4）；6 项 Minor 收尾清单见 `docs/superpowers/plans/chat-agent-roadmap.md` §6.6；app-api `AGENTS.md` §7.1/§7.5 API 表补 3 端点待做。
+
+---
+
+## [master] 2026-08-06 — moneyflow 资金流合并 + Tushare 请求字段对齐 + 无效接口改替代数据源
+
+**开发者**: Aria
+
+### 重构
+- `TushareService.ts`：合并资金流数据源，删除 `getMoneyflowByDate`/`getMoneyflow`/`MoneyflowRow`；`getMoneyflowThsByDate` 请求字段升级为原版 `moneyflow` 完整分项（buy/sell × sm/md/lg/elg + net_mf_amount/net_mf_vol），`WindLeaderAnalyzerService.fetchTushareEnhancement` 只保留单一 `moneyflowThsMap`
+- 资金流 `mf_5day`（5日主力净额）：原版接口无此字段，新增 `getMoneyflowThs5dMap`（moneyflow_ths 接口 `net_d5_amount`，需 6000 积分），在风口与 TenxScore 预加载处回填；moneyflow_ths 输出仅含 net_amount/net_d5_amount/buy_lg|md|sm_amount(+_rate)，无 buy_elg/sell_* 分项，仅作补充
+
+### 修复
+- 对照 Tushare 官方文档核对全部接口请求字段，修复 5 处不一致：`limit_step`（改用 nums，`MarketSnapshotService.computeHighestBoard` 同步）、`stk_surv`（surv_date/rece_org，TenxScore 调研统计同步）、`broker_recommend`（无评级字段移除）、`limit_cpt_list`（days/cons_nums/up_nums）、`hk_hold`（删不存在的 amount）
+- `daily_basic` 无 `is_st` 字段 → `getStStatus` 改用 `stock_basic` 的 name 判断 ST（ST/*ST/S*ST/SST 前缀）
+- `stk_holdertype` 接口不存在 → 删除 getInstitutionalHold；机构持股比例改用 `top10_holders` 实测 `holder_type` 字段（机构类白名单/非机构黑名单：一般企业/自然人/国资局），TenxScore 市场认可度评分权重恢复（机构 25% + 北向 15%）
+- `stk_analyst`/`major_news` 不可用 → `getAnalystRating` 仅走 `report_rc`（rating/org_name 均有评级字段）
+- `net_mf_ratio` 两个接口均不存在（此前风口因子5恒为常数5分、TenxScore 1g 净占比恒为0）→ 新增 `calcMainForceNetRatio` 用金额分项推导主力（大单+特大单）净流入占比，替换两处消费点
+
+---
+
+## [master] 2026-08-05 — cls_news 缺失修复：telegraph 分页上限不足
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/ClsStockNewsService.ts`：`fetchTelegraphByDate` 的 `MAX_PAGES` 由 10 提高到 50（约 500 条）。财联社电报约 3 分钟/条，晚间触发（20:30 review_full / 手动 review_quick）时最新电报晚于 dateEnd(16:00) 被跳过，需翻页跨越数小时才能到 08:30-16:00 窗口；原 MAX_PAGES=10（100 条）翻不到 → items 空 → total=0 → cls_news 缺失
+
+---
+
+## [master] 2026-08-05 — moneyflow 接口字段错配修复 + main_force NaN 防护
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/quote/TushareService.ts`：`getMoneyflowThs`/`getMoneyflowThsByDate` 由 `moneyflow_ths` 接口改为原版 `moneyflow` 接口。原实现请求的字段（`buy_elg_amount`/`sell_lg_amount`/`sell_elg_amount`/`net_mf_amount`）是原版 `moneyflow` 的字段名，但 `moneyflow_ths` 实际只有 `buy_lg_amount`（大单净流入）/`net_amount`/`net_d5_amount` 等，导致除 `buy_lg_amount` 外全部 undefined → `computeMainForceNetYuan` 得 NaN 被 JSON 序列化为 null（quick 快照 `main_force=available+null` 根因）
+- `src/modules/quote/MarketSnapshotService.ts`：`computeMainForceNetYuan` 加 `Number(x)||0` 防护避免 NaN；新增 `hasCompleteMainForceFields` 字段完整性检查
+- `src/modules/quote/TencentSnapshotService.ts`：`hasMainForce` 与 `assembleSnapshot` 的 main_force 分支改为「有数据且字段完整」才用 Tushare 精确值，否则降级概念板块近似（partial+approximate）或 unavailable，不再返回 available+null
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：新增 2 个回归用例（字段不完整降级 conceptFlow、`hasCompleteMainForceFields` 判定）
+
+---
+
+## [master] 2026-08-05 — internal/trend/top 回退 parseJsonb + StockInfoService 测试修正
+
+**开发者**: Aria
+
+### 修复
+- `src/core/routes/internal.ts`：`/internal/trend/top` 的 `dimScores` 从 `parseJsonb(r.dim_scores)` 回退为 `JSON.parse(r.dim_scores as string || '[]')`，移除 parseJsonb import
+- `tests/StockInfoService.test.ts`：修正 import 路径（`src/core/db` → `src/db`、`src/modules/crawler/StockInfoService` → `src/services/StockInfoService`）；删除重复的推送过滤边界断言（中性/利空/重大利空/窗口外用例，已由专门测试覆盖）
+
+---
+
+## [changer] 2026-08-05 — ChatAgent P9 会话管理 + P10 线 2 计费（用户维度）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p9-session-management.md`、`D:\ai_stock_app\docs\superpowers\plans\2026-08-05-chat-agent-p10-user-billing-backend.md`
+
+### 新增
+- `src/index.ts`：启动时自动建表 `chat_sessions`（P9 会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at，索引 idx_chat_sessions_user(user_id, last_message_at DESC)）与 `chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、prompt/completion/total_tokens、question、created_at，索引 idx_chat_token_usage_user + idx_chat_token_usage_session）
+- `src/modules/chat/sessionController.ts`（新增）：`POST /api/chat/sessions`（幂等 upsert，title=question 前 30 字；同 id 重复上报仅刷新 last_message_at，id 已归属他人→409）、`GET /api/chat/sessions`（当前用户最近 50 会话）、`DELETE /api/chat/sessions/:id`（id+归属双条件防越权）；鉴权 = JWT openid（Authorization Bearer + Cookie 兜底）
+- `src/modules/chat/usageController.ts`（新增）：`GET /api/chat/usage/summary` 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0）
+- `src/core/routes/internal.ts`：`POST /internal/usage/records`（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数，成功 `{code:200,data:{id}}`）+ `GET /internal/usage/summary?user_id=`（SUM/COUNT 聚合，无记录全 0）
+
+### 测试
+- `src/modules/chat/__tests__/session.spec.ts`（新增）+ `usageSummary.spec.ts`（新增）+ `src/core/routes/__tests__/internal_token_usage.spec.ts`（新增）
+
+### 文档
+- `README.md`：API 路由表 + Internal API 表补 chat 会话/用量端点，补充两张新表说明
+- `AGENTS.md`：§2 业务模块表 + §3 目录结构 + §7.1 Internal API 表 + 新增 §7.5 Chat 会话与用量公开接口
+
+---
+
+## [changer] 2026-08-04 — ChatAgent P6 退役清理（market-trace-qa 代理契约）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p6-retirement.md`
+
+### 测试
+- `src/modules/agent/__tests__/agent.proxy.spec.ts`：删除 3 条 market-trace-qa 代理契约测试（118 行，Python `POST /market-trace-qa/message` 端点已退役）；其余 `/chat/*`、`/ws` 代理契约测试与 `createAgentProxy` 保留
+- `tests/marketTraceQaInternalRoutes.test.ts`：保留（`GET /internal/analysis-reports/:type/:date` 读取契约，`load_validated_trace`/`trace_loader` 消费），文件头注释同步更新
+
+### 测试
+- `npx tsc --noEmit` 0 errors；定向测试（agent.proxy.spec + marketTraceQaInternalRoutes）29/29 通过
+
+---
+
+## [changer] 2026-08-04 — ChatAgent P5 两个 internal 端点（kline + index/quotes）
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-04-chat-agent-p5-capability.md`
+
+### 新增
+- `src/core/routes/internal.ts`：`GET /internal/quote/:symbol/kline`（Tushare 日 K 线，days≤120/klt=101/fqt∈{0,1,2}，复用 TushareKlineService，双键兼容映射——服务实际返回中文键）
+- `src/core/routes/internal.ts`：`GET /internal/index/quotes`（A 股指数快照，6 位纯数字代码/逗号分隔/上限 MAX_SYMBOLS，复用 IndexQuoteController，驼峰输出，腾讯源失败单指数 → null 不整体 500）
+- `src/modules/quote/indexController.ts`：抽取 `fetchCnIndexQuotesData(symbols)` 供 public + internal 复用（public `/api/cn/index/quotes` 响应体字节不变）
+
+### 测试
+- 新建 `src/core/routes/internal.kline.test.ts`（5 用例）+ `internal.index-quotes.test.ts`（6 用例），共 11/11 通过
+- 既有 internal 路由测试 42/42 无回归；`npx tsc --noEmit` 0 errors
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表补 2 端点
+
+---
+
+## [feat/market-trace-improvement] 2026-08-03 — 播报功能优化（文本存库 + 音频缓存 + 限长1分钟）
+
+**开发者**: Aria
+
+### 改进
+- `src/core/routes/internal.ts`：POST /api/agent/brief/generate-podcast 文本限长 2000→250 字（约1分钟）；请求先按 cache_key upsert 进 podcast_cache 表（ON CONFLICT 更新 text），音频生成成功回填 audio_path，失败标记 status='failed' 返回降级文本；音频命中缓存直接复用 audio_url，不重复调用火山 TTS
+
+### 新增
+- `src/index.ts` + `docs/sql/podcast_cache.sql`：podcast_cache 表（cache_key UNIQUE、text、audio_path、status、error_message、expires_at 7天），03:00 清理任务扩展为删除过期行 + 对应 podcast-{key}.mp3
+
+### 测试
+- `tests/internalRoutes.test.ts`：新增 3 个 generate-podcast 校验测试（空文本 / 超250字 / 空 key 均返回 400），42/42 PASS
+
+---
+
+## [changer] 2026-08-03 — P3-fix-3 大盘数据正确性最小补丁 + P2 遗留
+
+**开发者**: Aria
+
+计划：`D:\ai_stock_app\docs\superpowers\plans\2026-08-03-p3-fix-3-market-data-correctness.md`
+
+### 新增
+- `src/shared/utils/TradingCalendarService.ts`：新增 `getPreviousTradingDay(date)` — 严格早于指定日期的最近交易日（与时刻无关；返回点归一化 08:00 上海=UTC 午夜），last-close 回退用
+- `src/modules/quote/MarketSnapshotService.ts`：`getLastCloseSnapshot` 目标日改 `getPreviousTradingDay(now)`（消除 15:00–15:30 空窗 409；目标日数据缺失仍诚实 409）
+- `src/modules/quote/TencentSnapshotService.ts`：`buildQuickSnapshot` 先算 tradeDate → `isTradingDayYyyymmdd` 校验（非交易日抛 market_not_closed，映射 409，消除"伪当日"）→ 15:30 时钟门禁
+- `src/core/routes/internal.ts`：`VALID_REPORT_TYPES` 增加 `chat_analysis`（P2 遗留，与 P3-fix-3 一并提交）
+
+### 测试
+- `tests/TradingCalendarService.test.ts` 新建 5 用例（周一 15:10 / 周末白天 / 凌晨 03:00 / 长假回溯 / 覆盖外失败关闭）
+- `tests/MarketSnapshotService.test.ts` +2（三墙钟场景回退、目标日日线不完整 409）
+- `tests/TencentSnapshotService.test.ts` +1（非交易日 15:30 后拒绝，红线）
+- `src/core/routes/__tests__/internal_chat_analysis.spec.ts` 新增（P2 遗留）
+
+### 文档
+- `AGENTS.md`：§7.1 Internal API 表 +3 行 market 端点（quick 非交易日 409 / close 15:30 门禁 / last-close 严格早于今天）
+
+### 验证
+- `npx tsc --noEmit` 0 错误；定向 3 文件 44/45（唯一失败为既有陈旧断言，归基线）
+- 全量 182 tests：172 pass / 10 fail，失败集 ⊆ 基线（7002295 worktree 对比），新增失败清零
+- SDD 审查：T1-T3 逐 Task Approved + 最终整分支审查 Ready to merge Yes
+
+---
+
 ## [master] 2026-08-02 — M4 名称解析端点 GET /internal/stock/resolve
 
 **开发者**: Aria
@@ -93,6 +407,18 @@
 
 ### 修改
 - `src/core/routes/internal.ts`：`synthesizeBroadcast` 改用账号池获取凭证，替代单账号固定读取
+
+---
+
+## [changer] 2026-07-30 — 新增 TencentSnapshotService + /market/quick-snapshot 路由
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/MarketSnapshotService.ts`：扩展 `CloseMarketSnapshot` schema，新增 `MarketBreadth`、`QuickSnapshotCoverage` 接口和 `snapshot_kind` / `coverage_info` / `market_breadth` 可选字段；导出 `isAtOrAfterClose`
+- `src/modules/quote/TencentSnapshotService.ts`：新增 `TencentSnapshotService`，15:30 收盘后基于腾讯实时行情构建简版收盘快照（6 大指数 + 全市场宽度 + 概念板块资金流），分级失败策略（指数严格、非核心宽松）
+- `src/core/routes/internal.ts`：新增 `GET /internal/market/quick-snapshot` 路由，200/409/502 三种响应
+- `tests/TencentSnapshotService.test.ts`：4 个单元测试覆盖正常构建、未收盘拒绝、降级策略、涨跌停计数
+- `tests/internalRoutes.test.ts`：3 个路由测试覆盖 200/409/502
 
 ---
 

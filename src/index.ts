@@ -10,6 +10,8 @@ process.env.TZ = 'Asia/Shanghai';
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
 
 import pool from './core/db';
 import redis from './core/redis';
@@ -34,11 +36,15 @@ import { createAgentProxy } from './modules/agent/agent.proxy';
 import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
 import { MessagePushService } from './modules/push/MessagePushService';
+import { UsageController } from './modules/chat/usageController';
+import { SessionUsageController } from './modules/chat/sessionUsageController';
 
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+// chat 会话元数据（P9 会话管理）
+import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
 import { FeishuAuthController } from './modules/auth/feishuAuthController';
 
@@ -55,6 +61,7 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
@@ -65,6 +72,11 @@ import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
 import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector';
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
+
+// insight 自选股洞察模块
+import { runCycle as runInsightCycle } from './modules/insight/InsightService';
+import insightInternalRouter from './modules/insight/internalRouter';
+import { InsightController } from './modules/insight/controller';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -181,7 +193,16 @@ app.get('/api/users/me/push-history', (req, res, next) => UserController.getPush
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
+// 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
+app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
+app.get('/api/chat/usage/sessions/:id', (req, res, next) => SessionUsageController.detailBySession(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
+
+// 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
+app.post('/api/chat/sessions', (req, res, next) => SessionController.upsert(req, res, next));
+app.get('/api/chat/sessions', (req, res, next) => SessionController.list(req, res, next));
+app.delete('/api/chat/sessions/:id', (req, res, next) => SessionController.remove(req, res, next));
 
 app.get('/api/internal/stock-info/targets', (req, res, next) => StockInfoJudgementController.getTargets(req, res, next));
 app.post('/api/internal/stock-info/existing', (req, res, next) => StockInfoJudgementController.getExisting(req, res, next));
@@ -197,6 +218,10 @@ app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => Sto
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
 app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
+
+// 自选股洞察 - 前端查询接口（登录用户自选股过滤，数据来自涨停雷达采集 + Python 归因）
+app.get('/api/cn/favorites/insights', (req, res, next) => InsightController.list(req, res, next));
+app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightController.get(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
@@ -525,6 +550,9 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 app.use('/internal', internalRouter);
 
 app.use('/internal/stock-trace', stockTraceInternalRouter);
+
+app.use('/internal/insight', insightInternalRouter);
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -677,6 +705,23 @@ cron.schedule('30 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
+cron.schedule('35 15 * * *', async () => {
+    console.log('[RotationBoardCron] 开始同步板块轮动榜');
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
+            return;
+        }
+        const count = await RotationBoardStore.syncRotationHistory();
+        console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
+    } catch (err: unknown) {
+        console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 业绩预测自动更新：每天凌晨 00:00 执行
 cron.schedule('0 0 * * *', async () => {
     console.log('[ProfitForecastAutoUpdateCron] 开始执行业绩预测自动更新');
@@ -722,6 +767,26 @@ cron.schedule('0 3 * * *', async () => {
     } catch (err: unknown) {
         console.error('[ReportCleanupCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
+
+    // 播报缓存清理：删除过期 podcast_cache 行及对应音频文件，避免孤儿文件堆积
+    try {
+        const expired = await pool.query(
+            `SELECT cache_key, audio_path FROM podcast_cache WHERE expires_at < NOW()`
+        );
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        for (const row of expired.rows as { cache_key: string; audio_path: string }[]) {
+            // audio_path 形如 /api/agent/audio/podcast-{key}.mp3，仅清理本模块生成的播报文件
+            const match = /\/podcast-[a-zA-Z0-9_-]+\.mp3$/.exec(row.audio_path)
+            if (match) {
+                const filePath = path.join(audioDir, match[0].replace(/^\//, ''))
+                fs.promises.unlink(filePath).catch(() => undefined)
+            }
+        }
+        await pool.query(`DELETE FROM podcast_cache WHERE expires_at < NOW()`)
+        console.log(`[ReportCleanupCron] 播报缓存清理: 删除 ${expired.rows.length} 条过期缓存`);
+    } catch (err: unknown) {
+        console.error('[ReportCleanupCron] 播报缓存清理失败:', err instanceof Error ? err.message : String(err));
+    }
 }, { timezone: 'Asia/Shanghai' });
 
 // 进程心跳：每10分钟输出一次进程状态，便于排查定时任务停止时间点
@@ -731,6 +796,16 @@ cron.schedule('*/10 * * * *', () => {
     console.log(
         `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
     );
+}, { timezone: 'Asia/Shanghai' });
+
+// 自选股洞察：交易时段（周一至周五 9:00-15:59）每 10 分钟轮询采集
+cron.schedule('*/10 9-15 * * 1-5', async () => {
+    try {
+        const { collected, events } = await runInsightCycle();
+        console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
+    } catch (err: unknown) {
+        console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
 }, { timezone: 'Asia/Shanghai' });
 }
 
@@ -769,6 +844,14 @@ async function start() {
         console.log('[DB] stock_concept_mapping table ready');
     } catch (err: unknown) {
         console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 板块轮动榜表（网页同款口径：每日涨幅/跌幅前10），风口龙头与趋势股评分共用
+        await RotationBoardStore.ensureRotationSchema();
+        console.log('[DB] board_rotation_daily table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -814,6 +897,32 @@ async function start() {
         console.log('[DB] institution_research_history table ready');
     } catch (err: unknown) {
         console.warn('[DB] institution_research_history table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // P10 线 2：chat_token_usage 计费表（user_id 维度；session_id 预留外键，
+    // 线 4 补会话维度不返工表结构）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_token_usage (
+                id BIGSERIAL PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                session_id VARCHAR(64),
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                question TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_user ON chat_token_usage(user_id, created_at DESC)'
+        );
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_session ON chat_token_usage(user_id, session_id, created_at DESC)'
+        );
+        console.log('[DB] chat_token_usage table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_token_usage table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -988,6 +1097,51 @@ async function start() {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
+    try {
+        await pool.query('SELECT 1 FROM watchlist_insight_sources LIMIT 1');
+        console.log('[DB] watchlist_insight_sources table ready');
+    } catch (err: unknown) {
+        console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
+    }
+
+    // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS podcast_cache (
+                id SERIAL PRIMARY KEY,
+                cache_key VARCHAR(100) NOT NULL UNIQUE,
+                text TEXT NOT NULL,
+                audio_path VARCHAR(255) NOT NULL DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_podcast_cache_expires_at ON podcast_cache(expires_at)');
+        console.log('[DB] podcast_cache table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 会话元数据表（P9 会话管理）：消息仍前端本地存储，服务端只存会话标题/时间
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id VARCHAR(64) PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                title VARCHAR(200) NOT NULL DEFAULT '新会话',
+                last_message_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, last_message_at DESC)');
+        console.log('[DB] chat_sessions table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_sessions table check:', err instanceof Error ? err.message : String(err));
+    }
+
     try {
         await redis.ping();
         console.log('[Redis] Connected successfully');
@@ -1003,7 +1157,11 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        PriceTriggerDetector.start();
+        // 旧 stock_trace 事件发现/价格触发：默认停用，仅 STOCK_TRACE_TRIGGER_ENABLED === 'true' 时启动
+        // （保留代码路径便于回滚；新自选股洞察已由 insight 模块替代旧 stock_trace 写入）
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
+            PriceTriggerDetector.start();
+        }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
         });
@@ -1056,6 +1214,12 @@ async function start() {
         // Compensate a missed post-close settlement after restarts or deployments.
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
             console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
+        });
+        // 启动时同步板块轮动榜（首次回填近140个交易日，之后每日增量；不阻塞启动）
+        RotationBoardStore.syncRotationHistory().then(count => {
+            console.log(`[Startup] 板块轮动榜同步完成: ${count} 条`);
+        }).catch(err => {
+            console.warn('[Startup] 板块轮动榜同步失败:', err instanceof Error ? err.message : String(err));
         });
     });
 

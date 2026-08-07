@@ -1,5 +1,6 @@
 import * as TushareService from '../quote/TushareService';
 import { TushareInfoService } from '../crawler/TushareInfoService';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 // ==================== THS增强数据全局缓存 ====================
 // 批量评分时，limit_list_ths/ths_hot/moneyflow_ths是全市场接口，
@@ -19,7 +20,7 @@ let _thsCacheDate = '';
 const _kplConceptCache = new Map<string, TushareService.KplConceptConsRow[]>();
 
 function getThsEnhanceCache(): ThsEnhanceCache {
-    const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const today = shanghaiDateYyyymmdd();
     if (_thsCache && _thsCacheDate === today) return _thsCache;
 
     // 首次访问时初始化空缓存，异步加载
@@ -37,7 +38,7 @@ function getThsEnhanceCache(): ThsEnhanceCache {
 /** 异步预加载THS增强数据（批量评分开始前调用1次） */
 export async function preloadThsEnhanceCache(): Promise<void> {
     const today = new Date();
-    const tradeDateStr = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const tradeDateStr = shanghaiDateYyyymmdd(today);
 
     if (_thsCache && _thsCacheDate === tradeDateStr && _thsCache.loadedAt === tradeDateStr) {
         console.log('[TenxScore] THS增强缓存已存在，跳过加载');
@@ -57,7 +58,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (limitRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            limitRows = await TushareService.getLimitListThs(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            limitRows = await TushareService.getLimitListThs(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of limitRows) {
             cache.limitListMap.set(row.ts_code, row);
@@ -71,7 +72,7 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (hotRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            hotRows = await TushareService.getThsHot(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            hotRows = await TushareService.getThsHot(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of hotRows) {
             cache.thsHotMap.set(row.ts_code, row);
@@ -85,11 +86,19 @@ export async function preloadThsEnhanceCache(): Promise<void> {
         if (mfRows.length === 0) {
             const yesterday = new Date(today);
             yesterday.setDate(yesterday.getDate() - 1);
-            mfRows = await TushareService.getMoneyflowThsByDate(yesterday.toISOString().slice(0, 10).replace(/-/g, ''));
+            mfRows = await TushareService.getMoneyflowThsByDate(shanghaiDateYyyymmdd(yesterday));
         }
         for (const row of mfRows) {
             cache.moneyflowThsMap.set(row.ts_code, row);
         }
+        // 补充 mf_5day（5日主力净额）：moneyflow 原版接口无此字段，用 moneyflow_ths 接口的 net_d5_amount 回填
+        try {
+            const mf5dMap = await TushareService.getMoneyflowThs5dMap(tradeDateStr);
+            for (const [tsCode, v] of mf5dMap) {
+                const row = cache.moneyflowThsMap.get(tsCode);
+                if (row) row.mf_5day = v;
+            }
+        } catch (e) { console.warn('[TenxScore] moneyflow_ths 5日净额补充失败:', (e as Error).message); }
         console.log(`[TenxScore] THS缓存: moneyflow_ths=${cache.moneyflowThsMap.size}只`);
     } catch (e) { console.warn('[TenxScore] moneyflow_ths缓存失败:', (e as Error).message); }
 
@@ -288,7 +297,7 @@ export interface PrefetchedData {
     prices: TushareService.DailyPriceRow[];
     forecast: TushareService.ForecastRow[];
     holderNumber: TushareService.HolderNumberRow[];
-    institutionalHold: TushareService.InstitutionalHoldRow[];
+    top10Holders: TushareService.Top10HolderRow[];
     hkHold: TushareService.HkHoldRow[];
     survival: TushareService.StkSurvivalRow[];
     analystRating: TushareService.AnalystRatingRow[];
@@ -302,15 +311,15 @@ export interface PrefetchedData {
 
 export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
     const threeYearsAgo = new Date(); threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 4);
-    const startDate = threeYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate = shanghaiDateYyyymmdd(threeYearsAgo);
     const fiveYearsAgo = new Date(); fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
-    const startDate5y = fiveYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate5y = shanghaiDateYyyymmdd(fiveYearsAgo);
     const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const startDate1y = oneYearAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate1y = shanghaiDateYyyymmdd(oneYearAgo);
     const emptyArr: any[] = [];
     const catchEmpty = (label: string) => (e: any) => { console.warn(`[TenxScore] ${label} failed:`, e?.message); return emptyArr; };
 
-    const [income, fina, cashflow, balance, daily, prices, forecast, holderNumber, institutionalHold, hkHold, survival, analystRating] = await Promise.all([
+    const [income, fina, cashflow, balance, daily, prices, forecast, holderNumber, top10Holders, hkHold, survival, analystRating] = await Promise.all([
         TushareService.getIncome(symbol, startDate).catch(catchEmpty('getIncome')),
         TushareService.getFinaIndicator(symbol, startDate).catch(catchEmpty('getFinaIndicator')),
         TushareService.getCashflow(symbol, startDate).catch(catchEmpty('getCashflow')),
@@ -319,7 +328,7 @@ export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
         TushareService.getDailyPrices(symbol, startDate5y).catch(catchEmpty('getDailyPrices')),
         TushareService.getForecast(symbol, startDate1y).catch(catchEmpty('getForecast')),
         TushareService.getHolderNumber(symbol, startDate1y).catch(catchEmpty('getHolderNumber')),
-        TushareService.getInstitutionalHold(symbol, startDate1y).catch(catchEmpty('getInstitutionalHold')),
+        TushareService.getTop10Holders(symbol).catch(catchEmpty('getTop10Holders')),
         TushareService.getHkHold(symbol, startDate1y).catch(catchEmpty('getHkHold')),
         TushareService.getStkSurvival(symbol, startDate1y).catch(catchEmpty('getStkSurvival')),
         TushareService.getAnalystRating(symbol, startDate1y).catch(catchEmpty('getAnalystRating')),
@@ -350,23 +359,23 @@ export async function prefetchAllData(symbol: string): Promise<PrefetchedData> {
         }
     }
 
-    console.log(`[TenxScore] ${symbol} 数据获取: income=${income.length}, fina=${fina.length}, cashflow=${cashflow.length}, balance=${balance.length}, daily=${daily.length}, prices=${prices.length}, forecast=${forecast.length}, holderNumber=${holderNumber.length}, instHold=${institutionalHold.length}, hkHold=${hkHold.length}, survival=${survival.length}, analyst=${analystRating.length}, industry=${industry ? industry.industry_name : 'null'}, limitList=${limitListThs ? 'Y' : 'N'}, thsHot=${thsHot ? 'Y' : 'N'}, mfThs=${moneyflowThs ? 'Y' : 'N'}, kplCons=${kplConceptCons.length}`);
+    console.log(`[TenxScore] ${symbol} 数据获取: income=${income.length}, fina=${fina.length}, cashflow=${cashflow.length}, balance=${balance.length}, daily=${daily.length}, prices=${prices.length}, forecast=${forecast.length}, holderNumber=${holderNumber.length}, top10=${top10Holders.length}, hkHold=${hkHold.length}, survival=${survival.length}, analyst=${analystRating.length}, industry=${industry ? industry.industry_name : 'null'}, limitList=${limitListThs ? 'Y' : 'N'}, thsHot=${thsHot ? 'Y' : 'N'}, mfThs=${moneyflowThs ? 'Y' : 'N'}, kplCons=${kplConceptCons.length}`);
 
-    return { income: income as any[], fina: fina as any[], cashflow: cashflow as any[], balance: balance as any[], daily: daily as any[], prices: prices as any[], forecast: forecast as any[], holderNumber: holderNumber as any[], institutionalHold: institutionalHold as any[], hkHold: hkHold as any[], survival: survival as any[], analystRating: analystRating as any[], industry, limitListThs, thsHot, moneyflowThs, kplConceptCons };
+    return { income: income as any[], fina: fina as any[], cashflow: cashflow as any[], balance: balance as any[], daily: daily as any[], prices: prices as any[], forecast: forecast as any[], holderNumber: holderNumber as any[], top10Holders: top10Holders as any[], hkHold: hkHold as any[], survival: survival as any[], analystRating: analystRating as any[], industry, limitListThs, thsHot, moneyflowThs, kplConceptCons };
 }
 
 async function prefetchDynamicData(symbol: string, cached: PrefetchedData): Promise<PrefetchedData> {
     const fiveYearsAgo = new Date(); fiveYearsAgo.setFullYear(fiveYearsAgo.getFullYear() - 5);
-    const startDate5y = fiveYearsAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate5y = shanghaiDateYyyymmdd(fiveYearsAgo);
     const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-    const startDate1y = oneYearAgo.toISOString().slice(0, 10).replace(/-/g, '');
+    const startDate1y = shanghaiDateYyyymmdd(oneYearAgo);
     const emptyArr: any[] = [];
     const catchEmpty = (label: string) => (e: any) => { console.warn(`[TenxScore] ${label} failed:`, e?.message); return emptyArr; };
-    const [daily, prices, holderNumber, institutionalHold, hkHold, survival, analystRating] = await Promise.all([
+    const [daily, prices, holderNumber, top10Holders, hkHold, survival, analystRating] = await Promise.all([
         TushareService.getDailyBasic(symbol, startDate5y).catch(catchEmpty('getDailyBasic(quick)')),
         TushareService.getDailyPrices(symbol, startDate5y).catch(catchEmpty('getDailyPrices(quick)')),
         TushareService.getHolderNumber(symbol, startDate1y).catch(catchEmpty('getHolderNumber(quick)')),
-        TushareService.getInstitutionalHold(symbol, startDate1y).catch(catchEmpty('getInstitutionalHold(quick)')),
+        TushareService.getTop10Holders(symbol).catch(catchEmpty('getTop10Holders(quick)')),
         TushareService.getHkHold(symbol, startDate1y).catch(catchEmpty('getHkHold(quick)')),
         TushareService.getStkSurvival(symbol, startDate1y).catch(catchEmpty('getStkSurvival(quick)')),
         TushareService.getAnalystRating(symbol, startDate1y).catch(catchEmpty('getAnalystRating(quick)')),
@@ -374,8 +383,8 @@ async function prefetchDynamicData(symbol: string, cached: PrefetchedData): Prom
     return {
         income: cached.income, fina: cached.fina, cashflow: cached.cashflow, balance: cached.balance,
         daily: daily as any[], prices: prices as any[], forecast: cached.forecast,
-        holderNumber: holderNumber as any[], industry: cached.industry,
-        institutionalHold: institutionalHold as any[], hkHold: hkHold as any[],
+        holderNumber: holderNumber as any[], top10Holders: top10Holders as any[], industry: cached.industry,
+        hkHold: hkHold as any[],
         survival: survival as any[], analystRating: analystRating as any[],
         limitListThs: cached.limitListThs, thsHot: cached.thsHot, moneyflowThs: cached.moneyflowThs,
         kplConceptCons: cached.kplConceptCons,
@@ -466,6 +475,13 @@ export function calcEarningsExplosion(data: PrefetchedData): RawIndicators {
 }
 
 /**
+ * top10_holders holder_type 黑名单：非机构投资者类型（实测取值 一般企业/自然人/国资局；
+ * 机构类型如 保险投资组合/金融机构—保险公司/金融机构—证券公司/资产管理公司/投资公司/
+ * 开放式投资基金/风险投资公司 等均视为机构）。替代不存在的 stk_holdertype 接口。
+ */
+const NON_INSTITUTION_TYPES = new Set(['一般企业', '自然人', '国资局']);
+
+/**
  * 维度2：赛道景气度 (25%)
  * 指标：市场认可度、行业渗透率位置、政策/产业趋势强度
  */
@@ -476,12 +492,15 @@ export async function calcIndustryTrack(symbol: string, data: PrefetchedData, in
     // ① 市场认可度 - 综合机构持股 + 北向资金 + 分析师覆盖 + 交易活跃度
     let market_recognition: number | null = null;
 
-    // 1a. 机构持股比例
-    const instHold = data.institutionalHold;
+    // 1a. 机构持股比例（top10_holders 前十大股东中机构类股东持股合计；stk_holdertype 接口不存在，以此替代）
+    const top10 = data.top10Holders;
     let instHoldRatio: number | null = null;
-    if (instHold.length > 0) {
-        const latest = instHold.sort((a, b) => b.end_date.localeCompare(a.end_date))[0];
-        instHoldRatio = latest.hold_ratio;
+    if (top10.length > 0) {
+        const latestEnd = top10.map(r => r.end_date).sort().reverse()[0];
+        const instRatio = top10
+            .filter(r => r.end_date === latestEnd && r.holder_type && !NON_INSTITUTION_TYPES.has(r.holder_type))
+            .reduce((s, r) => s + (r.hold_ratio || 0), 0);
+        if (instRatio > 0) instHoldRatio = instRatio;
     }
 
     // 1b. 北向资金持股比例
@@ -546,10 +565,11 @@ export async function calcIndustryTrack(symbol: string, data: PrefetchedData, in
         if (hotVal > 0) thsHotScore = Math.min(100, (thsHotScore || 0) + Math.min(hotVal / 10, 10));
     }
 
-    // 1g. THS资金流向热度（来自moneyflow_ths，新增增强维度）
+    // 1g. 资金流向热度（主数据源为原版 moneyflow，mf_5day 由 moneyflow_ths 补充）
     let mfThsScore: number | null = null;
     if (data.moneyflowThs) {
-        const netRatio = data.moneyflowThs.net_mf_ratio || 0;  // 净流入占比
+        // 净流入占比：net_mf_ratio 字段两个接口均无，用金额分项推导主力(大单+特大单)净流入占比
+        const netRatio = TushareService.calcMainForceNetRatio(data.moneyflowThs);
         const mf5day = data.moneyflowThs.mf_5day || 0;  // 5日主力净额（万元）
         // 净流入占比评分
         const ratioScore = Math.min(Math.abs(netRatio) / 5, 1) * 50;
@@ -929,10 +949,10 @@ export function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
         // 统计最近1个月不同的调研机构数量
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
-        const oneMonthAgoStr = oneMonthAgo.toISOString().slice(0, 10).replace(/-/g, '');
-        const recentVisits = survival.filter(r => r.visit_date && String(r.visit_date) >= oneMonthAgoStr);
+        const oneMonthAgoStr = shanghaiDateYyyymmdd(oneMonthAgo);
+        const recentVisits = survival.filter(r => r.surv_date && String(r.surv_date) >= oneMonthAgoStr);
         // 去重机构名称
-        const uniqueInstitutions = new Set(recentVisits.map(r => r.institution_name).filter(Boolean));
+        const uniqueInstitutions = new Set(recentVisits.map(r => r.rece_org).filter(Boolean));
         research_visit_count = uniqueInstitutions.size;
     }
 
@@ -995,8 +1015,8 @@ export function calcNewsCatalyst(data: PrefetchedData): RawIndicators {
     if (survival.length > 0) {
         const oneMonthAgo = new Date();
         oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 3);
-        const threeMonthAgoStr = oneMonthAgo.toISOString().slice(0, 10).replace(/-/g, '');
-        const recentVisits = survival.filter(r => r.visit_date && String(r.visit_date) >= threeMonthAgoStr);
+        const threeMonthAgoStr = shanghaiDateYyyymmdd(oneMonthAgo);
+        const recentVisits = survival.filter(r => r.surv_date && String(r.surv_date) >= threeMonthAgoStr);
         if (recentVisits.length >= 5) visitSignal = 1;
     }
 

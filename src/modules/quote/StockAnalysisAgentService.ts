@@ -7,7 +7,7 @@ import type {
   AgentProgressEvent,
   AgentAnalysisResult,
 } from './analysis-agent/types';
-import { formatToChinaTime } from '../../shared/utils/datetime';
+import { shanghaiDateStr, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 import pool from '../../core/db';
 import { setAiIndicatorScores } from '../monitor/TenxScoreService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
@@ -148,7 +148,7 @@ export class StockAnalysisAgentService {
   ): Promise<AgentAnalysisResult> {
     const maxRounds = Number(process.env.AGENT_MAX_ROUNDS) || DEFAULT_CONFIG.maxRounds;
     const config: AgentConfig = { ...DEFAULT_CONFIG, model: this.getModel(), maxRounds };
-    const today = formatToChinaTime(Date.now()).slice(0, 10);
+    const today = shanghaiDateStr();
 
     const context: AgentContext = {
       symbol,
@@ -282,7 +282,7 @@ export class StockAnalysisAgentService {
     const agentResult = await this.runAgent(symbol, stockName, onProgress);
 
     // 写入数据库
-    const analysisTime = formatToChinaTime(Date.now()) + '.' + String(Date.now() % 1000).padStart(3, '0');
+    const analysisTime = shanghaiDateTimeMsStr(Date.now());
     await pool.query(
       `INSERT INTO stock_analysis (symbol, analysis_time, conclusion, core_logic, risk_warning, ai_indicator_scores) VALUES ($1, $2, $3, $4, $5, $6)`,
       [symbol, analysisTime, agentResult['结论'], agentResult['核心逻辑'], agentResult['风险提示'], agentResult['十倍股指标打分'] ? JSON.stringify(agentResult['十倍股指标打分']) : null],

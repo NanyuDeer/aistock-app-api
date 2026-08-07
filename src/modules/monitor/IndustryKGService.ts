@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { getThsIndex, getThsMember, getDailyByDate, getDailyBasicByDate, getFinaIndicator, getIncome, ThsIndexRow } from '../quote/TushareService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 // ==================== 类型定义 ====================
 
@@ -1023,7 +1024,7 @@ export class IndustryKGService {
             for (let offset = 0; offset < 5; offset++) {
                 const d = new Date();
                 d.setDate(d.getDate() - offset);
-                const dateStr = d.toISOString().slice(0, 10).replace(/-/g, '');
+                const dateStr = shanghaiDateYyyymmdd(d);
                 try {
                     const rows = await withRetry(() => getDailyBasicByDate(dateStr), 3, 3000);
                     if (rows.length > 0) {

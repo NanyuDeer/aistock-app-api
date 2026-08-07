@@ -18,6 +18,7 @@ import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -28,21 +29,21 @@ function tsCodeToSymbol(tsCode: string): string {
 function getYesterdayStr(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    return shanghaiDateStr(d);
 }
 
 /** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
 function getYesterdayCompact(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 /** 获取N天前的日期 YYYYMMDD */
 function getDaysAgoCompact(days: number): string {
     const d = new Date();
     d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 export class PerformanceReportAutoUpdateService {
@@ -58,7 +59,7 @@ export class PerformanceReportAutoUpdateService {
         }
 
         // 检查今天是否已经执行过
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const lastRunDate = await CacheService.get<string>('performance_report:auto_update:date');
         if (lastRunDate === today) {
             console.log('[PerformanceReportAutoUpdate] 今天已执行过，跳过');
@@ -253,9 +254,23 @@ export class PerformanceReportAutoUpdateService {
                         console.warn(`[PerformanceReportAutoUpdate] ${symbol} report_rc 获取失败: ${err.message}`);
                     }
 
-                    if (expressUpdated || formalUpdated) {
+                    // 是否有新插入的报告
+                    const hasNewReport = expressUpdated || formalUpdated;
+
+                    // 是否还有"利润数据已就绪但标签为空"的报告需要补算
+                    // （覆盖：插入时利润字段为空被跳过、或上次计算失败等情况）
+                    const pendingTagFix = await pool.query(
+                        `SELECT 1 FROM performance_reports
+                         WHERE symbol = $1 AND report_type IN ('formal', 'express')
+                           AND n_income_attr_p IS NOT NULL
+                           AND (ai_tag IS NULL OR ai_tag = '')
+                         LIMIT 1`,
+                        [symbol]
+                    );
+
+                    if (hasNewReport || pendingTagFix.rows.length > 0) {
                         updated++;
-                        // 为新插入的报告计算并更新 ai_tag
+                        // 为新插入的报告计算 ai_tag，并补偿历史空标签
                         await PerformanceReportAutoUpdateService.updateAiTags(symbol);
                     } else {
                         skipped++;

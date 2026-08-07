@@ -33,6 +33,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 监控 | `modules/monitor` | 风口龙头、异动监控、趋势股评分、知识图谱、机构调研、业绩预测、新闻 | [monitor/AGENTS.md](./src/modules/monitor/AGENTS.md) |
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
+| Chat | `modules/chat` | 会话元数据（P9）、token 用量统计（P10 线 2） | — |
 
 > 新增模块时，必须创建对应的 `src/modules/<模块名>/AGENTS.md`。
 
@@ -71,6 +72,7 @@ src/
 │   ├── quote/              # 行情
 │   ├── push/               # 推送
 │   ├── auth/               # 认证
+│   ├── chat/               # 会话元数据（P9）+ token 用量（P10 线 2）
 │   ├── monitor/            # 监控（异动/风口/趋势股评分/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫
 │   └── agent/              # Agent 反代（SSE 透传 + 502 降级）
@@ -177,6 +179,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/flow/:symbol` | 新浪+Tushare | 资金流向 |
 | `GET /internal/leader/:tagCode` | Tushare | 板块龙头 |
 | `GET /internal/news/search/:symbol` | 财联社 | 个股新闻 |
+| `GET /internal/news/telegraph?date=YYYY-MM-DD&limit=200` | 财联社 | 当日全量电报流（溯源用） |
 | `GET /internal/news/latest` | 财联社 | 最新快讯 |
 | `GET /internal/news/fulltext/:id` | 财联社 | 新闻全文 |
 | `GET /internal/forecast/:symbol` | 同花顺 | 盈利预测 |
@@ -189,7 +192,14 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/graph/concepts` | 知识图谱 | 产业链概念列表 |
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
+| `GET /internal/market/quick-snapshot` | 腾讯 | 15:30 后简版收盘快照（snapshot_kind=quick，指数/宽度/概念板块/主力资金均腾讯源）；**非交易日 409**（不返回"伪当日"） |
+| `GET /internal/market/close-snapshot` | Tushare | 当日完整收盘快照（15:30 门禁 + 交易日/数据完整性校验） |
+| `GET /internal/market/last-close-snapshot` | Tushare | **严格早于今天的最近交易日**收盘快照（盘中/空窗/非交易日回退用；目标日数据缺失则 409） |
+| `GET /internal/quote/:symbol/kline` | Tushare | 个股日 K 线（P5 D41：days≤120、klt=101、fqt∈{0,1,2}；复用 TushareKlineService，返回英文键行 trade_date/open/high/low/close/pct_chg） |
+| `GET /internal/index/quotes` | 腾讯行情 | A 股指数快照（P5 工作线 B：6 位纯数字代码、逗号分隔去重、上限 MAX_SYMBOLS；复用 IndexQuoteController 缓存+腾讯源，驼峰输出 index/name/price/changePercent/changeAmount；腾讯源失败单指数 → null 不整体 500） |
 | `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
+| `POST /internal/usage/records` | chat_token_usage | 记录一次对话 token 用量（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数；成功 `{code:200,data:{id}}`） |
+| `GET /internal/usage/summary?user_id=` | chat_token_usage | 按 user_id 累计用量（SUM/COUNT 聚合，无记录全 0，返回 prompt/completion/total_tokens + turn_count） |
 
 ### 7.2 Agent 分析报告持久化接口
 
@@ -223,6 +233,18 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 > 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）。
 
+### 7.5 Chat 会话与用量接口（前端直接调用，JWT openid 鉴权）
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `/api/chat/sessions` | POST | 幂等 upsert 会话元数据（`{session_id, question}`；title=question 前 30 字或'新会话'；同 id 重复上报仅刷新 last_message_at，不改 title/归属；id 已归属他人→409；401 未登录；400 session_id 非法） |
+| `/api/chat/sessions` | GET | 当前用户最近 50 个会话（last_message_at DESC，camelCase：session_id/title/last_message_at/created_at） |
+| `/api/chat/sessions/:id` | DELETE | 删除会话（id + user_id 双条件，防越权删他人会话） |
+| `/api/chat/usage/summary` | GET | 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0） |
+
+> 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。
+> 数据库表：`chat_sessions`（P9 会话元数据：id PK、user_id、title、last_message_at、created_at，索引 idx_chat_sessions_user）、`chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、三个 token 字段、question、created_at），均在启动时自动建表（`src/index.ts`）。
+
 ## 8. 定时任务速查
 
 | 时间 | 任务 | 说明 |
@@ -237,6 +259,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |
 | 15:00 | 数据归档 | — |
+| 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 19:05 | 收盘后任务 | — |
 
 > 所有 cron 任务必须指定 `{ timezone: 'Asia/Shanghai' }`。

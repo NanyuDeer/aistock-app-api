@@ -16,6 +16,7 @@ import {
     isPushHistoryRecordSettled,
     needsCloseSettlement,
 } from './pushHistorySettlement';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 
 // ==================== 类型定义 ====================
 
@@ -27,19 +28,26 @@ interface WindLeaderData {
 
 interface WindLeaderSector {
     code?: string;
+    cycle?: 'short' | 'long' | 'both' | 'none';
     name?: string;
     type?: string;
     frequency?: number;
+    freq20?: number;
+    freq_delta?: number;
     avg_change?: number;
     today_change?: number;
-    amount_trend?: number;
     net_inflow?: number;
+    driver_type?: string;
+    ma60_status?: string;
+    vol_trend?: string;
+    turnover?: number;
+    limit_up_count?: number;
+    max_boards?: number;
     score?: number;
     leading_stock?: string;
     leading_change?: number;
     up_count?: number;
     down_count?: number;
-    driver?: string;
     related_industries?: unknown[];
     industry_data?: unknown[];
     ai_analysis?: unknown;
@@ -191,11 +199,11 @@ function cleanTextList(value: unknown): string[] {
 }
 
 function normalizeDateText(value: unknown): string {
-    if (!value) return new Date().toISOString().slice(0, 10);
+    if (!value) return shanghaiDateStr();
 
     const text = cleanText(value, 40);
     const match = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})/);
-    if (!match) return new Date().toISOString().slice(0, 10);
+    if (!match) return shanghaiDateStr();
 
     const [, year, month, day] = match;
     return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
@@ -304,7 +312,7 @@ function collectPushRecordsFromData(data: WindLeaderData): PushHistoryRecord[] {
             stock_code: stockCode,
             stock_name: cleanText(stock.name, 80),
             theme: sectorName,
-            reason: cleanText(stock.reason || sector?.driver, 1000),
+            reason: cleanText(stock.reason || '', 1000),
             strategy_name: 'wind_leader_home_recommendation',
             score: toFiniteNumber(stock.score),
             chain_position: chainPosition,
@@ -526,19 +534,26 @@ export class WindLeaderService {
 
         const sectors = (data.hot_sectors || []).slice(0, limit).map((sector: WindLeaderSector) => ({
             code: sector.code || '',
+            cycle: sector.cycle ?? 'short',
             name: sector.name,
             type: sector.type,
             frequency: sector.frequency,
+            freq20: sector.freq20,
+            freq_delta: sector.freq_delta,
             avg_change: sector.avg_change,
             today_change: sector.today_change,
-            amount_trend: sector.amount_trend,
             net_inflow: sector.net_inflow || 0,
+            driver_type: sector.driver_type,
+            ma60_status: sector.ma60_status,
+            vol_trend: sector.vol_trend,
+            turnover: sector.turnover,
+            limit_up_count: sector.limit_up_count,
+            max_boards: sector.max_boards,
             score: sector.score ?? 0,
             leading_stock: sector.leading_stock,
             leading_change: sector.leading_change || 0,
             up_count: sector.up_count || 0,
             down_count: sector.down_count || 0,
-            driver: sector.driver,
             related_industries: sector.related_industries || [],
             industry_data: sector.industry_data || [],
             ai_analysis: sector.ai_analysis || null,
