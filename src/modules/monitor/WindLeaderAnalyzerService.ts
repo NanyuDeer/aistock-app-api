@@ -1618,8 +1618,10 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
 
     // 从Tushare moneyflow_cnt_ths获取资金流向数据
     try {
-        const today = formatDate(new Date());
-        const moneyflowData = await getMoneyflowCntThs(today);
+        // 用最近交易日（而非当前日期），避免当天数据未收盘导致 moneyflow_cnt_ths 返回空
+        const { date: latestTradeDate } = await getLatestDailyMap();
+        const moneyflowDate = latestTradeDate || formatDate(new Date());
+        const moneyflowData = await getMoneyflowCntThs(moneyflowDate);
         // 同时用ts_code和去掉后缀的code建立索引，兼容不同code格式
         const mfMap = new Map(moneyflowData.map(r => [r.ts_code, r]));
         const mfMapByShortCode = new Map(moneyflowData.map(r => [r.ts_code.replace(/\.(TI|SI)$/, ''), r]));
