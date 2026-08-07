@@ -172,8 +172,8 @@ export interface QuickCloseMarketSnapshot extends Omit<
     };
     main_force: {
         large_and_extra_large_net_yuan: number | null;
-        source: 'tushare:moneyflow_ths' | 'tushare:moneyflow_cnt_ths';
-        /** quick 版主力净额为概念板块净流入合计近似（moneyflow_cnt_ths），非个股大单/特大单精确口径。 */
+        source: 'tushare:moneyflow_ths' | 'tushare:moneyflow_cnt_ths' | 'tencent:board_main_flow';
+        /** quick 版主力净额为腾讯行业板块主力净流入合计近似（board_main_flow），非个股大单/特大单精确口径。 */
         approximate?: boolean;
     };
     coverage_info: QuickSnapshotCoverage;

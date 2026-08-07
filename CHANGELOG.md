@@ -2,6 +2,29 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-06 — quick 快照 sectors/main_force 数据源改腾讯行情中心板块排行
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/quote/TencentSnapshotService.ts`：quick 快照 sectors/main_force 改走腾讯行情中心 `rank/pt/getRank`（实时数据，15:30 收盘后立即可用），不再依赖 Tushare 收盘后分批发布的资金流接口
+  - 新增 `fetchTencentBoardRank`：腾讯板块排行拉取（board_type=gn/hy、direct=down/up）
+  - 新增 `fetchTencentSectors`：概念板块（gn）领涨/领跌 Top5（zdf→pct_change，含领涨股 lzg）
+  - 新增 `fetchTencentMainForce`：行业一级（hy）主力净流入 zljlr 求和近似全市场主力净额（万元→元）
+  - `buildQuickSnapshot`/`assembleSnapshot` 改用新数据源；移除 `fetchConceptFlow`/`selectQuickSectors` 与 Tushare moneyflow 依赖
+- `src/modules/quote/MarketSnapshotService.ts`：`QuickCloseMarketSnapshot.main_force.source` 类型增加 `tencent:board_main_flow`
+
+### 修复
+- 修复 15:30 quick 快照下 Tushare 资金流未就绪导致大盘溯源 `a_share.main_force.large_and_extra_large_net_yuan` 与 `a_share.sectors` 联动缺失的问题
+
+### 测试
+- `tests/TencentSnapshotService.test.ts`：mock 改为 fetchTencentSectors/fetchTencentMainForce，新增「腾讯板块源」与 `toSectorFact` 用例；quote 模块 43 passed
+
+### 文档
+- `AGENTS.md`：quick-snapshot 数据源标注 腾讯+Tushare → 腾讯
+
+---
+
 ## [master] 2026-08-06 — 风口龙头双轨选板：长短线池各取 top16 并集，修复短线档候选被挤掉
 
 **开发者**: Aria
