@@ -811,6 +811,37 @@ export async function getMoneyflowCntThs(tradeDate: string): Promise<MoneyflowCn
     return rows as unknown as MoneyflowCntThsRow[];
 }
 
+/** 行业板块资金流向（BK系列，东财同花顺行业口径）
+ * moneyflow_cnt_ths 只含概念板块(885/886xxx)，不含行业板块(881xxx/BKxxxx)。
+ * 本接口按 content_type=行业 提供 BKxxxx.DC 板块，net_amount 单位：元。
+ * 参考文档：https://tushare.pro/document/2?doc_id=371 接口族（moneyflow_ind_dc）
+ */
+export interface MoneyflowIndDcRow {
+    trade_date: string;
+    content_type: string;     // 行业/概念/地域
+    ts_code: string;          // BKxxxx.DC
+    name: string;
+    pct_change: number;
+    close: number;
+    net_amount: number;       // 净流入（元）
+    net_amount_rate: number;
+    buy_elg_amount: number;
+    buy_lg_amount: number;
+    buy_md_amount: number;
+    buy_sm_amount: number;
+    buy_sm_amount_stock: string;  // 领涨股
+    rank: number;
+}
+
+export async function getMoneyflowIndDc(tradeDate: string): Promise<MoneyflowIndDcRow[]> {
+    const rows = await tushareRequest(
+        'moneyflow_ind_dc',
+        { trade_date: tradeDate },
+        'trade_date,content_type,ts_code,name,pct_change,close,net_amount,net_amount_rate,buy_elg_amount,buy_lg_amount,buy_md_amount,buy_sm_amount,buy_sm_amount_stock,rank',
+    );
+    return rows as unknown as MoneyflowIndDcRow[];
+}
+
 /** 同花顺个股资金流向（增强版） */
 export interface MoneyflowThsRow {
     ts_code: string;          // 股票代码

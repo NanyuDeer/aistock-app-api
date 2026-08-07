@@ -33,6 +33,7 @@ import {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     getMoneyflowThs5dMap,
     calcMainForceNetRatio,
@@ -47,6 +48,7 @@ import {
     type LimitStepRow,
     type MoneyflowCntThsRow,
     type MoneyflowThsRow,
+    type MoneyflowIndDcRow,
     getStockCompany,
     type StockCompanyRow,
 } from '../quote/TushareService';
@@ -1039,6 +1041,17 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
     return result;
 }
 
+/** 板块名称归一化：去空格、去"概念/指数"后缀、去"及/与/和"连接词，用于跨板块体系名称匹配
+ * 例："旅游及酒店" → "旅游酒店"；"CRO概念" → "cro"；"共封装光学(CPO)" → "共封装光学(cpo)" */
+function normalizeBoardName(name: string): string {
+    return String(name || '')
+        .replace(/\s+/g, '')
+        .replace(/[（(](?:概念|指数)[)）]/g, '')
+        .replace(/(概念|指数)$/, '')
+        .replace(/[及与和]/g, '')
+        .toLowerCase();
+}
+
 function formatDate(d: Date): string {
     return shanghaiDateYyyymmdd(d);
 }
@@ -1645,6 +1658,49 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             const has881 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('881'));
             const has885 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('885'));
             console.log(`[HotSectorAnalyzer] moneyflow_cnt_ths 样本: ${samples.join(', ')} | 含881xxx行业: ${has881} | 含885xxx概念: ${has885}`);
+        }
+
+        // moneyflow_cnt_ths 只含概念板块(885/886xxx)，不含行业板块(881xxx/BKxxxx)。
+        // 用 moneyflow_ind_dc 按名称补充行业板块净流入（net_amount 单位：元 → 万元 /10000）
+        const missingInflow = result.filter(c => c.net_inflow === 0);
+        if (missingInflow.length > 0) {
+            try {
+                const indRows = await getMoneyflowIndDc(moneyflowDate);
+                if (indRows.length > 0) {
+                    const indByNormName = new Map<string, MoneyflowIndDcRow[]>();
+                    for (const r of indRows) {
+                        const norm = normalizeBoardName(r.name);
+                        if (!norm) continue;
+                        const arr = indByNormName.get(norm) || [];
+                        arr.push(r);
+                        indByNormName.set(norm, arr);
+                    }
+                    let matchedInd = 0;
+                    for (const concept of missingInflow) {
+                        const norm = normalizeBoardName(concept.name);
+                        const candidates = norm ? indByNormName.get(norm) : undefined;
+                        if (!candidates || candidates.length === 0) continue;
+                        // 同名多个时取 content_type=行业 的；仍多个取净额绝对值最大者
+                        let pick = candidates.find(c => c.content_type === '行业') || candidates[0];
+                        if (candidates.length > 1) {
+                            pick = candidates.reduce((best, c) =>
+                                Math.abs(c.net_amount || 0) > Math.abs(best.net_amount || 0) ? c : best, pick);
+                        }
+                        if (pick.net_amount !== undefined && pick.net_amount !== null) {
+                            concept.net_inflow = pick.net_amount / 10000; // 元 → 万元
+                            if (concept.leading_stock === '--' && pick.buy_sm_amount_stock) {
+                                concept.leading_stock = pick.buy_sm_amount_stock;
+                            }
+                            matchedInd++;
+                        }
+                    }
+                    console.log(`[HotSectorAnalyzer] moneyflow_ind_dc 补充行业板块净流入: ${matchedInd}/${missingInflow.length} 个`);
+                } else {
+                    console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 返回空，行业板块净流入保持0');
+                }
+            } catch (err) {
+                console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 获取失败（行业板块净流入保持0）:', err instanceof Error ? err.message : String(err));
+            }
         }
 
         // 对 moneyflow_cnt_ths 匹配不到的板块（行业板块881xxx不在概念资金流向里），用成分股按涨幅排序补充领涨股
