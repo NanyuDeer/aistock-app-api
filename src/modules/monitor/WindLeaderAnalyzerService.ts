@@ -1050,7 +1050,7 @@ interface HotConcept {
     name: string;
     type: string;
     frequency: number;
-    freq20?: number;        // 近20日上榜次数（短线活跃度）
+    freq20?: number;        // 近10日上榜次数（短线活跃度，字段名保留freq20兼容前端）
     freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
     avg_change: number;     // 120日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
@@ -1086,7 +1086,7 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
                     name: block.name,
                     code: block.code,
                     frequency: 1,
-                    freq20: i < 20 ? 1 : 0,
+                    freq20: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf,
                     latestZf5: zf, // first（i 最小=最近一次上榜日）的涨幅
@@ -1094,7 +1094,7 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
-                if (i < 20) stat.freq20 += 1;
+                if (i < 10) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf) / stat.frequency;
                 // latestZf5 保持 first 的涨幅（最近一次上榜日）
             }
@@ -1253,7 +1253,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
     const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
 
     // dataLists 契约：降序（最新在前，首日=最新交易日；已由数据探查验证：首日 2026-08-05 / 末日 2026-05-13）。
-    // freq20 统计数组前 20 位（最新 20 天）。
+    // freq20 统计数组前 10 位（最新 10 天，短线活跃度口径）。
     for (let i = 0; i < dataLists.length; i++) {
         const blockList = dataLists[i].block_list || [];
         for (const block of blockList) {
@@ -1265,7 +1265,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
                     name: block.name,
                     code: block.code,
                     frequency: 1,
-                    freq20: i < 20 ? 1 : 0,
+                    freq20: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf5,
                     latestZf5: zf5,
@@ -1273,7 +1273,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
-                if (i < 20) stat.freq20 += 1;
+                if (i < 10) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf5) / stat.frequency;
                 stat.latestZf5 = zf5; // 保留最新一天的涨幅
             }
@@ -1640,6 +1640,28 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             }
         }
         console.log(`[HotSectorAnalyzer] 资金流向数据获取成功: ${moneyflowData.length}条`);
+        if (moneyflowData.length > 0) {
+            const samples = moneyflowData.slice(0, 3).map(r => `${r.ts_code}(${r.name})`);
+            const has881 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('881'));
+            const has885 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('885'));
+            console.log(`[HotSectorAnalyzer] moneyflow_cnt_ths 样本: ${samples.join(', ')} | 含881xxx行业: ${has881} | 含885xxx概念: ${has885}`);
+        }
+
+        // 对 moneyflow_cnt_ths 匹配不到的板块（行业板块881xxx不在概念资金流向里），用成分股按涨幅排序补充领涨股
+        const missingLeader = result.filter(c => c.leading_stock === '--');
+        if (missingLeader.length > 0) {
+            console.log(`[HotSectorAnalyzer] ${missingLeader.length}个板块领涨股缺失，用成分股涨幅排序补充: ${missingLeader.map(c => `${c.name}(${c.code})`).join(', ')}`);
+            await Promise.all(missingLeader.map(async (concept) => {
+                try {
+                    const topStocks = await getBoardTopStocks(concept.code, 1, 'concept');
+                    if (topStocks.length > 0) {
+                        concept.leading_stock = topStocks[0].name;
+                        concept.leading_change = topStocks[0].change_pct || 0;
+                        console.log(`[HotSectorAnalyzer] ${concept.name} 领涨股补充: ${concept.leading_stock}(${concept.leading_change}%)`);
+                    }
+                } catch { /* 忽略 */ }
+            }));
+        }
 
         // 补充资金数据后重新计算评分
         // 收集所有板块的net_inflow用于归一化
@@ -2210,7 +2232,7 @@ export function buildAiPrompt(
 - 概念名称：${sectorName}
 - 板块评分：${sectorData.score}分
 - ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
-- 近20日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
+- 近10日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
 - 今日涨幅：${sectorData.today_change}%
 - 板块净流入：${sectorData.net_inflow}万元
 - 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
