@@ -197,17 +197,11 @@ function calculateResonanceScore(
     const newsScore = Math.min(100, Math.min(newsCount, 10) * 10 + Math.min(newsSurgeRatio, 5) * 10);
 
     // 信号源共振加成（0-100）
-/* // 二重=40, 三重=70, 四重=100, 单源=0
+    // 二重=40, 三重=70, 四重=100, 单源=0
     let resonanceBonus = 0;
     if (resonanceCount >= 4) resonanceBonus = 100;
     else if (resonanceCount >= 3) resonanceBonus = 70;
     else if (resonanceCount >= 2) resonanceBonus = 40;
- */
-
-    // 二重=70, 三重=100, 单源=0
-    let resonanceBonus = 0;
-    if (resonanceCount >= 3) resonanceBonus = 100;
-    else if (resonanceCount >= 2) resonanceBonus = 70;
 
     // 板块热度得分（0-100）
     let thsScore = 0;
@@ -218,7 +212,7 @@ function calculateResonanceScore(
         else if (thsRank <= 10) thsScore = 40;
     }
     
-    /*
+    
      // 研报加成得分（0-100）
     const reportScore = reportVerified ? 80 : 0;
 
@@ -228,14 +222,6 @@ function calculateResonanceScore(
         thsScore * 0.20 +
         reportScore * 0.15
     );
-    */
-
-    
-    const score = Math.round(
-        newsScore * 0.25 +
-        resonanceBonus * 0.55 +
-        thsScore * 0.20
-    );
 
     let level: 'critical' | 'high' | 'medium' | 'low';
     if (score >= 80) level = 'critical';
@@ -244,6 +230,11 @@ function calculateResonanceScore(
     else level = 'low';
 
     return { score, level };
+}
+
+/** 计算 CLS、格隆汇、同花顺和研报（含 QQ 研报）四类独立信号的共振数量。 */
+export function countResonanceSources(...signals: boolean[]): number {
+    return signals.filter(Boolean).length;
 }
 
 // ==================== 飞书消息查询 ====================
@@ -408,12 +399,13 @@ export class HotBurstService {
         }
 
         // ===== Step 2.5: 预加载研报数据（批量，避免逐个查询） =====
+        // QQ 已接替原飞书研报群：QQ 群内带股票代码的消息均作为研报信号。
         const reportStockSet = new Map<string, { count: number; latestTime: string }>();
         try {
             const reportMessages = await pool.query(
                 `SELECT stock_codes, received_at FROM feishu_messages
                  WHERE received_at > NOW() - INTERVAL '24 hours'
-                   AND chat_name LIKE '%研报%'
+                   AND (source = 'qq' OR chat_name LIKE '%研报%')
                    AND array_length(stock_codes, 1) IS NOT NULL`
             );
             for (const row of reportMessages.rows) {
@@ -482,7 +474,7 @@ export class HotBurstService {
             const { score, level } = calculateResonanceScore(
                 stock.currentCount, stock.surgeRatio,
                 thsSectorRank, thsVerified,
-                false,  // 暂停研报评分，保留参数位置以便后续恢复
+                false,
                 thsVerified ? 2 : 1,  // 有同花顺至少算二重
             );
 
@@ -566,14 +558,19 @@ export class HotBurstService {
                 };
             }
 
-            // 计算共振数量（三个信号源）
-            signal.resonanceCount = [signal.clsVerified, signal.glhVerified, signal.thsVerified].filter(Boolean).length;
+            // 计算共振数量（四个信号源）：CLS、格隆汇、同花顺、研报/QQ 
+            signal.resonanceCount = countResonanceSources(
+                signal.clsVerified,
+                signal.glhVerified,
+                signal.thsVerified,
+                signal.reportVerified,
+            );
 
             // 重新计算评分（使用新算法）
             const { score, level } = calculateResonanceScore(
                 signal.newsCount, signal.newsSurgeRatio,
                 signal.thsSectorRank, signal.thsVerified,
-                signal.reportVerified,  // 当前评分未使用，后续恢复研报权重时可直接启用
+                signal.reportVerified,
                 signal.resonanceCount,
             );
             signal.resonanceScore = score;
