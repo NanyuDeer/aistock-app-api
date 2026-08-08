@@ -35,6 +35,8 @@ export async function ensureFeishuMessageSchema(): Promise<void> {
             ai_status TEXT NOT NULL DEFAULT 'skipped',
             ai_analysis JSONB,
             ai_error TEXT,
+            ai_attempts INTEGER NOT NULL DEFAULT 0,
+            ai_next_retry_at TIMESTAMPTZ,
             ai_processed_at TIMESTAMPTZ,
             received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -47,6 +49,8 @@ export async function ensureFeishuMessageSchema(): Promise<void> {
         ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_status TEXT NOT NULL DEFAULT 'skipped';
         ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
         ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_error TEXT;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_next_retry_at TIMESTAMPTZ;
         ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ;
         CREATE INDEX IF NOT EXISTS idx_fm_ai_status ON feishu_messages(ai_status);
     `);
@@ -160,7 +164,8 @@ export class FeishuMessageController {
             const result = await pool.query(
                 `SELECT id, source, chat_id, chat_name, message_id, message_type,
                         text, ocr_text, stock_codes, keywords,
-                        ai_status, ai_analysis, ai_error, ai_processed_at, received_at
+                        ai_status, ai_analysis, ai_error, ai_attempts, ai_next_retry_at,
+                        ai_processed_at, received_at
                  FROM feishu_messages
                  WHERE received_at > NOW() - INTERVAL '${hours} hours'
                  ORDER BY received_at DESC
