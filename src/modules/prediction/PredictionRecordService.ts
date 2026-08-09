@@ -37,6 +37,10 @@ export class PredictionRecordService {
     const result = await pool.query<PredictionRecordRow>(
       `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates)
        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+       ON CONFLICT (source_type, source_id)
+       DO UPDATE SET schema_version = EXCLUDED.schema_version,
+                     prediction = EXCLUDED.prediction,
+                     due_dates = EXCLUDED.due_dates
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
       [
         input.source_type,

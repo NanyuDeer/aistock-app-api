@@ -948,6 +948,9 @@ async function start() {
         await pool.query(
             'CREATE INDEX IF NOT EXISTS idx_prediction_records_status ON prediction_records(status)'
         );
+        await pool.query(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_records_source ON prediction_records(source_type, source_id)'
+        );
         console.log('[DB] prediction_records table ready');
     } catch (err: unknown) {
         console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
