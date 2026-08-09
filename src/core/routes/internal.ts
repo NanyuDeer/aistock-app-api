@@ -615,7 +615,7 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const rawMinResonance = queryStr(req, 'min_resonance')
         const minResonance = rawMinResonance === undefined
             ? undefined
-            : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 3)
+            : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 4)
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
@@ -641,7 +641,7 @@ router.get('/institution-research', async (req: Request, res: Response) => {
             hours: queryInt(req, 'hours', 6),
             minResonanceCount: rawMinResonanceCount === 0
                 ? 0
-                : Math.min(Math.max(rawMinResonanceCount, 2), 3),
+                : Math.min(Math.max(rawMinResonanceCount, 2), 4),
             limit: queryInt(req, 'limit', 20),
         })
         res.json({ code: 200, data })
@@ -1382,11 +1382,24 @@ function reportDateMatches(value: unknown, expectedDate: string): boolean {
         && value.toISOString().slice(0, 10) === expectedDate
 }
 
+/**
+ * 校验 missing_sources 元素是否合法。支持两种形式：
+ * 1. 纯 report_type：如 "review"（briefing.py morning 分支）
+ * 2. 变体后缀：如 "review.sectors"（briefing.py evening 分支按 review 展示维度
+ *    细分缺失来源）。校验时取 "." 前缀做白名单判断，避免整份 Brief 因某个
+ *    展示维度缺失而被公开接口拒绝（防复发缺陷）。
+ */
+function isKnownBriefSourceType(source: string): boolean {
+    if (BRIEF_SOURCE_REPORT_TYPES.has(source)) return true
+    const dotIndex = source.indexOf('.')
+    return dotIndex > 0 && BRIEF_SOURCE_REPORT_TYPES.has(source.slice(0, dotIndex))
+}
+
 function hasValidDegradation(content: Record<string, unknown>): boolean {
     if (typeof content.degraded !== 'boolean' || !Array.isArray(content.missing_sources)) return false
     const missingSources = content.missing_sources
     return missingSources.every(
-        (source) => isNonEmptyString(source) && BRIEF_SOURCE_REPORT_TYPES.has(source),
+        (source) => isNonEmptyString(source) && isKnownBriefSourceType(source),
     )
         && new Set(missingSources).size === missingSources.length
         && (content.degraded ? missingSources.length > 0 : missingSources.length === 0)

@@ -114,13 +114,15 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
 
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
     const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => AVAILABLE_BREADTH_RESULT)
-    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
-    const moneyflowDates: string[] = []
-    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
-    __tencentSnapshotDeps.getMoneyflowThsByDate = async (tradeDate) => {
-        moneyflowDates.push(tradeDate)
-        throw new Error('moneyflow unavailable')
-    }
+    const fetchSectorsMock = mock.method(TencentSnapshotService, 'fetchTencentSectors', async () => ({
+        gainers: [],
+        losers: [],
+        availability: { state: 'unavailable' as const, reason: 'Tencent board rank returned no sector rows' },
+    }))
+    const fetchMainForceMock = mock.method(TencentSnapshotService, 'fetchTencentMainForce', async () => ({
+        large_and_extra_large_net_yuan: null,
+        availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
+    }))
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -152,6 +154,7 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.equal(snapshot.turnover.approximate, true)
         assert.equal(snapshot.limits.broken_count, null)
         assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, null)
+        assert.equal(snapshot.main_force.source, 'tencent:board_main_flow')
         assert.ok(snapshot.market_breadth, 'market_breadth should be present')
         assert.equal(snapshot.market_breadth!.advance_count, 8)
         assert.equal(snapshot.market_breadth!.limit_up_count, 1)
@@ -162,14 +165,17 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.equal(snapshot.coverage_info!.has_concept_flow, false)
         assert.deepEqual(snapshot.quick_data_availability.sectors, {
             state: 'unavailable',
-            reason: 'Concept-flow fetch returned no sector rows',
+            reason: 'Tencent board rank returned no sector rows',
         })
-        assert.deepEqual(moneyflowDates, ['20260730'])
+        assert.deepEqual(snapshot.quick_data_availability.main_force, {
+            state: 'unavailable',
+            reason: 'Tencent industry board rank returned no rows',
+        })
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
-        fetchConceptFlowMock.mock.restore()
-        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+        fetchSectorsMock.mock.restore()
+        fetchMainForceMock.mock.restore()
     }
 })
 
@@ -185,9 +191,15 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
     const afterClose = new Date('2026-07-30T07:30:00.000Z')
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
     const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => { throw new Error('breadth failed') })
-    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
-    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
-    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
+    const fetchSectorsMock = mock.method(TencentSnapshotService, 'fetchTencentSectors', async () => ({
+        gainers: [],
+        losers: [],
+        availability: { state: 'unavailable' as const, reason: 'Tencent board rank returned no sector rows' },
+    }))
+    const fetchMainForceMock = mock.method(TencentSnapshotService, 'fetchTencentMainForce', async () => ({
+        large_and_extra_large_net_yuan: null,
+        availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
+    }))
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -198,8 +210,8 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
-        fetchConceptFlowMock.mock.restore()
-        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+        fetchSectorsMock.mock.restore()
+        fetchMainForceMock.mock.restore()
     }
 })
 
@@ -213,9 +225,15 @@ test('buildQuickSnapshot keeps a malformed breadth partial and null', async () =
             reason: 'Tencent activity rows contain missing or non-numeric 涨跌幅',
         },
     }))
-    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [])
-    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
-    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => { throw new Error('moneyflow unavailable') }
+    const fetchSectorsMock = mock.method(TencentSnapshotService, 'fetchTencentSectors', async () => ({
+        gainers: [],
+        losers: [],
+        availability: { state: 'unavailable' as const, reason: 'Tencent board rank returned no sector rows' },
+    }))
+    const fetchMainForceMock = mock.method(TencentSnapshotService, 'fetchTencentMainForce', async () => ({
+        large_and_extra_large_net_yuan: null,
+        availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
+    }))
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -230,8 +248,8 @@ test('buildQuickSnapshot keeps a malformed breadth partial and null', async () =
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
-        fetchConceptFlowMock.mock.restore()
-        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+        fetchSectorsMock.mock.restore()
+        fetchMainForceMock.mock.restore()
     }
 })
 
@@ -473,42 +491,61 @@ test('buildQuickSnapshot rejects on non-trading days after 15:30 (no fake "today
     )
 })
 
-test('main_force falls back to concept-flow approximation when moneyflow_ths fields are incomplete', async () => {
-    // 回归用例：Tushare moneyflow_ths 收盘后分批发回，buy_lg_amount 已有值，
-    // 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 为 undefined 时，
-    // 不得返回 available+null 的矛盾状态（NaN 被 JSON 序列化为 null 的根因），
-    // 应降级为概念板块近似（partial + approximate）。
+test('sectors and main_force come from Tencent board rank API', async () => {
+    // quick 快照的 sectors/main_force 改自腾讯行情中心板块排行接口：
+    // 概念板块领涨/领跌 + 行业板块主力净流入合计近似，15:30 收盘后立即可用。
     const afterClose = new Date('2026-07-30T07:30:00.000Z')
     const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
     const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => AVAILABLE_BREADTH_RESULT)
-    const fetchConceptFlowMock = mock.method(TencentSnapshotService, 'fetchConceptFlow', async () => [
-        { ts_code: '885338.TI', name: '融资融券', pct_change: 1.5, net_amount: 100, lead_stock: 'A', company_num: 10, trade_date: '20260730' },
-        { ts_code: '885520.TI', name: '沪股通', pct_change: 1.0, net_amount: 50, lead_stock: 'B', company_num: 20, trade_date: '20260730' },
-    ])
-    const originalGetMoneyflowThsByDate = __tencentSnapshotDeps.getMoneyflowThsByDate
-    // 模拟 Tushare 部分数据：buy_lg_amount 有值，其余三个字段缺失（undefined）
-    __tencentSnapshotDeps.getMoneyflowThsByDate = async () => [
-        { ts_code: '600000.SH', trade_date: '20260730', buy_lg_amount: -4233.99 } as never,
-    ]
+    const fetchSectorsMock = mock.method(TencentSnapshotService, 'fetchTencentSectors', async () => ({
+        gainers: [
+            { ts_code: 'gn1', name: 'CRO', pct_change: 10.63, net_amount: 2665165200, lead_stock: '博腾股份', company_num: 0, trade_date: '' },
+        ],
+        losers: [
+            { ts_code: 'gn2', name: '稳定币概念', pct_change: -3.04, net_amount: -100000000, lead_stock: '某股', company_num: 0, trade_date: '' },
+        ],
+        availability: { state: 'available' as const },
+    }))
+    const fetchMainForceMock = mock.method(TencentSnapshotService, 'fetchTencentMainForce', async () => ({
+        large_and_extra_large_net_yuan: 37585796000, // 3758579.6 万 × 1e4
+        availability: { state: 'available' as const },
+    }))
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
-        // 字段不完整 → hasMainForce=false → availability 为 partial（conceptFlow 近似）
-        assert.equal(snapshot.quick_data_availability.main_force.state, 'partial')
-        assert.deepEqual(snapshot.quick_data_availability.main_force.available_fields, ['large_and_extra_large_net_yuan'])
-        assert.equal(snapshot.quick_data_availability.main_force.approximate, true)
-        // main_force 值为 conceptFlow 合计（(100+50)亿 → 元），且不是 null/NaN
-        assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, 150 * 1e8)
-        assert.equal(snapshot.main_force.source, 'tushare:moneyflow_cnt_ths')
+        assert.equal(snapshot.coverage_info!.has_concept_flow, true)
+        assert.equal(snapshot.coverage_info!.has_moneyflow, true)
+        assert.deepEqual(snapshot.quick_data_availability.sectors, { state: 'available' })
+        assert.deepEqual(snapshot.quick_data_availability.main_force, { state: 'available' })
+        assert.equal(snapshot.sectors.top_gainers[0].name, 'CRO')
+        assert.equal(snapshot.sectors.top_gainers[0].pct_change, 10.63)
+        assert.equal(snapshot.sectors.top_losers[0].name, '稳定币概念')
+        // 方案确认：不提供资金流排行，top_inflows/top_outflows 恒为空数组
+        assert.equal(snapshot.sectors.top_inflows.length, 0)
+        assert.equal(snapshot.sectors.top_outflows.length, 0)
+        assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, 37585796000)
+        assert.equal(snapshot.main_force.source, 'tencent:board_main_flow')
         assert.equal(snapshot.main_force.approximate, true)
-        assert.equal(snapshot.coverage_info.has_moneyflow, false)
-        assert.equal(snapshot.coverage_info.has_concept_flow, true)
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
-        fetchConceptFlowMock.mock.restore()
-        __tencentSnapshotDeps.getMoneyflowThsByDate = originalGetMoneyflowThsByDate
+        fetchSectorsMock.mock.restore()
+        fetchMainForceMock.mock.restore()
     }
+})
+
+test('toSectorFact maps Tencent board fields to SectorFact (zdf→pct_change, zljlr 万→元)', () => {
+    const fact = TencentSnapshotService.toSectorFact({
+        code: 'pt01801156',
+        name: '医疗服务',
+        zdf: '8.40',
+        zljlr: '257786.62',
+        lzg: { name: '博腾股份', zdf: '20.02' },
+    })
+    assert.equal(fact.name, '医疗服务')
+    assert.equal(fact.pct_change, 8.4)
+    assert.equal(fact.net_amount, 2577866200) // 257786.62 万 × 1e4
+    assert.equal(fact.lead_stock, '博腾股份')
 })
 
 test('hasCompleteMainForceFields rejects rows with missing big/extra-large fields', () => {

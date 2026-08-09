@@ -19,6 +19,7 @@ interface PendingFeishuMessage {
     text: string;
     ocr_text: string;
     stock_codes: string[];
+    ai_attempts: number;
 }
 
 interface CandidateStock {
@@ -33,7 +34,7 @@ const SYSTEM_PROMPT = `你是A股机构资讯分析助手。请根据飞书正�
 1. 只能返回候选股票列表中提供的股票代码，不得新增或猜测股票代码。
 2. 证券公司、研究机构如果只是观点来源，不属于相关个股，不要返回。
 3. 正文中只是顺带提及、没有业务或投资逻辑关联的股票，不要返回。
-4. 每只股票返回1到6个中文短关键词，可包含涨价原因、机构看好原因、催化和风险，
+4. 每只股票返回1到4个中文短关键词，可包含涨价原因、机构看好原因、催化和风险，
 5. 不得补充原文没有的信息。OCR存在错字时仅结合上下文理解，不要臆造事实。
 6. 没有真正相关股票时返回空数组。
 7. 只输出合法JSON，不要输出Markdown或解释。
@@ -103,6 +104,17 @@ export function getAiKeywordsForStock(
     } catch {
         return [];
     }
+}
+
+export function isRetryableQwenError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /abort|timeout|timed out|ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENOTFOUND|socket hang up|fetch failed|HTTP (429|5\d\d)/i
+        .test(message);
+}
+
+export function qwenRetryDelayMs(attempt: number): number {
+    const baseDelay = Math.max(1_000, Number(process.env.QWEN_RETRY_BASE_MS || 60_000));
+    return Math.min(baseDelay * (2 ** Math.max(0, attempt - 1)), 15 * 60_000);
 }
 
 export class FeishuMessageAiService {
@@ -230,6 +242,7 @@ export class FeishuMessageAiService {
                 SELECT id
                 FROM feishu_messages
                 WHERE ai_status = 'pending'
+                  AND (ai_next_retry_at IS NULL OR ai_next_retry_at <= NOW())
                 ORDER BY received_at ASC
                 LIMIT $1
                 FOR UPDATE SKIP LOCKED
@@ -237,11 +250,13 @@ export class FeishuMessageAiService {
              UPDATE feishu_messages AS message
              SET ai_status = 'processing',
                  ai_error = NULL,
+                 ai_attempts = message.ai_attempts + 1,
+                 ai_next_retry_at = NULL,
                  ai_processed_at = NOW()
              FROM pending
              WHERE message.id = pending.id
              RETURNING message.id, message.message_id, message.text,
-                       message.ocr_text, message.stock_codes`,
+                       message.ocr_text, message.stock_codes, message.ai_attempts`,
             [safeLimit],
         );
         return result.rows.map((row: any) => ({
@@ -252,6 +267,7 @@ export class FeishuMessageAiService {
             stock_codes: Array.isArray(row.stock_codes)
                 ? row.stock_codes.map(String)
                 : [],
+            ai_attempts: Number(row.ai_attempts || 0),
         }));
     }
 
@@ -289,7 +305,7 @@ export class FeishuMessageAiService {
                     const candidateStocks = await this.loadCandidateStocks(
                         message.stock_codes,
                     );
-                    const analysis = await this.analyzeMessageWithOneRetry({
+                    const analysis = await this.analyzeMessage({
                         text: message.text,
                         ocrText: message.ocr_text,
                         candidateStocks,
@@ -306,6 +322,30 @@ export class FeishuMessageAiService {
                     const messageText = error instanceof Error
                         ? error.message
                         : String(error);
+                    const maxAttempts = Math.min(
+                        Math.max(1, Number(process.env.QWEN_MAX_ATTEMPTS || 4)),
+                        10,
+                    );
+                    if (isRetryableQwenError(error) && message.ai_attempts < maxAttempts) {
+                        const delayMs = qwenRetryDelayMs(message.ai_attempts);
+                        const nextRetryAt = new Date(Date.now() + delayMs);
+                        await pool.query(
+                            `UPDATE feishu_messages
+                             SET ai_status = 'pending',
+                                 ai_analysis = NULL,
+                                 ai_error = $2,
+                                 ai_next_retry_at = $3,
+                                 ai_processed_at = NOW()
+                             WHERE id = $1`,
+                            [message.id, messageText.slice(0, 1000), nextRetryAt],
+                        );
+                        console.warn(
+                            `[FeishuAI] message_id=${message.message_id} retry in ` +
+                            `${Math.ceil(delayMs / 1000)}s ` +
+                            `(attempt ${message.ai_attempts}/${maxAttempts}): ${messageText}`,
+                        );
+                        continue;
+                    }
                     await pool.query(
                         `UPDATE feishu_messages
                          SET ai_status = 'failed',

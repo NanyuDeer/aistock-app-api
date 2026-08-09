@@ -33,6 +33,7 @@ import {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     getMoneyflowThs5dMap,
     calcMainForceNetRatio,
@@ -47,6 +48,7 @@ import {
     type LimitStepRow,
     type MoneyflowCntThsRow,
     type MoneyflowThsRow,
+    type MoneyflowIndDcRow,
     getStockCompany,
     type StockCompanyRow,
 } from '../quote/TushareService';
@@ -1039,6 +1041,19 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
     return result;
 }
 
+/** 板块名称归一化：去空格、去"概念/指数"后缀、去"及/与/和"连接词、去行业分级后缀(Ⅱ/Ⅲ等)，
+ * 用于跨板块体系名称匹配。例："旅游及酒店" → "旅游酒店"；"CRO概念" → "cro"；
+ * "共封装光学(CPO)" → "共封装光学(cpo)"；"电子化学品Ⅲ" → "电子化学品"（对齐板块池名） */
+function normalizeBoardName(name: string): string {
+    return String(name || '')
+        .replace(/\s+/g, '')
+        .replace(/[（(](?:概念|指数)[)）]/g, '')
+        .replace(/(概念|指数)$/, '')
+        .replace(/[及与和]/g, '')
+        .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/, '') // 去行业分级罗马数字后缀（Ⅱ/Ⅲ…）
+        .toLowerCase();
+}
+
 function formatDate(d: Date): string {
     return shanghaiDateYyyymmdd(d);
 }
@@ -1050,7 +1065,7 @@ interface HotConcept {
     name: string;
     type: string;
     frequency: number;
-    freq20?: number;        // 近20日上榜次数（短线活跃度）
+    freq20?: number;        // 近10日上榜次数（短线活跃度，字段名保留freq20兼容前端）
     freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
     avg_change: number;     // 120日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
@@ -1086,7 +1101,7 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
                     name: block.name,
                     code: block.code,
                     frequency: 1,
-                    freq20: i < 20 ? 1 : 0,
+                    freq20: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf,
                     latestZf5: zf, // first（i 最小=最近一次上榜日）的涨幅
@@ -1094,7 +1109,7 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
-                if (i < 20) stat.freq20 += 1;
+                if (i < 10) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf) / stat.frequency;
                 // latestZf5 保持 first 的涨幅（最近一次上榜日）
             }
@@ -1253,7 +1268,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
     const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
 
     // dataLists 契约：降序（最新在前，首日=最新交易日；已由数据探查验证：首日 2026-08-05 / 末日 2026-05-13）。
-    // freq20 统计数组前 20 位（最新 20 天）。
+    // freq20 统计数组前 10 位（最新 10 天，短线活跃度口径）。
     for (let i = 0; i < dataLists.length; i++) {
         const blockList = dataLists[i].block_list || [];
         for (const block of blockList) {
@@ -1265,7 +1280,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
                     name: block.name,
                     code: block.code,
                     frequency: 1,
-                    freq20: i < 20 ? 1 : 0,
+                    freq20: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf5,
                     latestZf5: zf5,
@@ -1273,7 +1288,7 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
-                if (i < 20) stat.freq20 += 1;
+                if (i < 10) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf5) / stat.frequency;
                 stat.latestZf5 = zf5; // 保留最新一天的涨幅
             }
@@ -1618,8 +1633,10 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
 
     // 从Tushare moneyflow_cnt_ths获取资金流向数据
     try {
-        const today = formatDate(new Date());
-        const moneyflowData = await getMoneyflowCntThs(today);
+        // 用最近交易日（而非当前日期），避免当天数据未收盘导致 moneyflow_cnt_ths 返回空
+        const { date: latestTradeDate } = await getLatestDailyMap();
+        const moneyflowDate = latestTradeDate || formatDate(new Date());
+        const moneyflowData = await getMoneyflowCntThs(moneyflowDate);
         // 同时用ts_code和去掉后缀的code建立索引，兼容不同code格式
         const mfMap = new Map(moneyflowData.map(r => [r.ts_code, r]));
         const mfMapByShortCode = new Map(moneyflowData.map(r => [r.ts_code.replace(/\.(TI|SI)$/, ''), r]));
@@ -1638,6 +1655,71 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             }
         }
         console.log(`[HotSectorAnalyzer] 资金流向数据获取成功: ${moneyflowData.length}条`);
+        if (moneyflowData.length > 0) {
+            const samples = moneyflowData.slice(0, 3).map(r => `${r.ts_code}(${r.name})`);
+            const has881 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('881'));
+            const has885 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('885'));
+            console.log(`[HotSectorAnalyzer] moneyflow_cnt_ths 样本: ${samples.join(', ')} | 含881xxx行业: ${has881} | 含885xxx概念: ${has885}`);
+        }
+
+        // moneyflow_cnt_ths 只含概念板块(885/886xxx)，不含行业板块(881xxx/BKxxxx)。
+        // 用 moneyflow_ind_dc 按名称补充行业板块净流入（net_amount 单位：元 → 万元 /10000）
+        const missingInflow = result.filter(c => c.net_inflow === 0);
+        if (missingInflow.length > 0) {
+            try {
+                const indRows = await getMoneyflowIndDc(moneyflowDate);
+                if (indRows.length > 0) {
+                    const indByNormName = new Map<string, MoneyflowIndDcRow[]>();
+                    for (const r of indRows) {
+                        const norm = normalizeBoardName(r.name);
+                        if (!norm) continue;
+                        const arr = indByNormName.get(norm) || [];
+                        arr.push(r);
+                        indByNormName.set(norm, arr);
+                    }
+                    let matchedInd = 0;
+                    for (const concept of missingInflow) {
+                        const norm = normalizeBoardName(concept.name);
+                        const candidates = norm ? indByNormName.get(norm) : undefined;
+                        if (!candidates || candidates.length === 0) continue;
+                        // 同名多个时取 content_type=行业 的；仍多个取净额绝对值最大者
+                        let pick = candidates.find(c => c.content_type === '行业') || candidates[0];
+                        if (candidates.length > 1) {
+                            pick = candidates.reduce((best, c) =>
+                                Math.abs(c.net_amount || 0) > Math.abs(best.net_amount || 0) ? c : best, pick);
+                        }
+                        if (pick.net_amount !== undefined && pick.net_amount !== null) {
+                            concept.net_inflow = pick.net_amount / 10000; // 元 → 万元
+                            if (concept.leading_stock === '--' && pick.buy_sm_amount_stock) {
+                                concept.leading_stock = pick.buy_sm_amount_stock;
+                            }
+                            matchedInd++;
+                        }
+                    }
+                    console.log(`[HotSectorAnalyzer] moneyflow_ind_dc 补充行业板块净流入: ${matchedInd}/${missingInflow.length} 个`);
+                } else {
+                    console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 返回空，行业板块净流入保持0');
+                }
+            } catch (err) {
+                console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 获取失败（行业板块净流入保持0）:', err instanceof Error ? err.message : String(err));
+            }
+        }
+
+        // 对 moneyflow_cnt_ths 匹配不到的板块（行业板块881xxx不在概念资金流向里），用成分股按涨幅排序补充领涨股
+        const missingLeader = result.filter(c => c.leading_stock === '--');
+        if (missingLeader.length > 0) {
+            console.log(`[HotSectorAnalyzer] ${missingLeader.length}个板块领涨股缺失，用成分股涨幅排序补充: ${missingLeader.map(c => `${c.name}(${c.code})`).join(', ')}`);
+            await Promise.all(missingLeader.map(async (concept) => {
+                try {
+                    const topStocks = await getBoardTopStocks(concept.code, 1, 'concept');
+                    if (topStocks.length > 0) {
+                        concept.leading_stock = topStocks[0].name;
+                        concept.leading_change = topStocks[0].change_pct || 0;
+                        console.log(`[HotSectorAnalyzer] ${concept.name} 领涨股补充: ${concept.leading_stock}(${concept.leading_change}%)`);
+                    }
+                } catch { /* 忽略 */ }
+            }));
+        }
 
         // 补充资金数据后重新计算评分
         // 收集所有板块的net_inflow用于归一化
@@ -2208,7 +2290,7 @@ export function buildAiPrompt(
 - 概念名称：${sectorName}
 - 板块评分：${sectorData.score}分
 - ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
-- 近20日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
+- 近10日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
 - 今日涨幅：${sectorData.today_change}%
 - 板块净流入：${sectorData.net_inflow}万元
 - 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
@@ -2367,21 +2449,31 @@ export function deriveCycle(a: {
     return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序）+ 短线榜 top8（short+both，按 short_term_days 降序），按 name 去重；
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按 short_term_days 降序，相同按 freq20 降序），按 name 去重；
  * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
     cycle: 'short' | 'long' | 'both' | 'none';
     long_term_days?: number;
     short_term_days?: number;
+    frequency?: number;
+    freq20?: number;
 }>(sectors: T[]): T[] {
     const longBoard = sectors
         .filter(s => s.cycle === 'long' || s.cycle === 'both')
-        .sort((a, b) => (b.long_term_days ?? 0) - (a.long_term_days ?? 0))
+        .sort((a, b) => {
+            const daysDiff = (b.long_term_days ?? 0) - (a.long_term_days ?? 0);
+            if (daysDiff !== 0) return daysDiff;
+            return (b.frequency ?? 0) - (a.frequency ?? 0);
+        })
         .slice(0, 8);
     const shortBoard = sectors
         .filter(s => s.cycle === 'short' || s.cycle === 'both')
-        .sort((a, b) => (b.short_term_days ?? 0) - (a.short_term_days ?? 0))
+        .sort((a, b) => {
+            const daysDiff = (b.short_term_days ?? 0) - (a.short_term_days ?? 0);
+            if (daysDiff !== 0) return daysDiff;
+            return (b.freq20 ?? 0) - (a.freq20 ?? 0);
+        })
         .slice(0, 8);
     const merged = new Map<string, T>();
     for (const s of [...longBoard, ...shortBoard]) {

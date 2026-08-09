@@ -169,7 +169,7 @@ export class WindLeaderController {
             const hours = Math.min(Math.max(parseInt(String(req.query.hours || '6'), 10), 1), 72);
             const minResonance = Math.min(
                 Math.max(parseInt(String(req.query.min_resonance || '2'), 10) || 2, 2),
-                3,
+                4,
             );
             const result = await HotBurstService.getRecentBursts(hours, minResonance);
             if (!result) {
@@ -219,7 +219,7 @@ export class WindLeaderController {
             const rawMinResonance = req.query.min_resonance;
             const minResonance = rawMinResonance === undefined
                 ? undefined
-                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 2, 2), 3);
+                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 2, 2), 4);
             const result = await HotBurstService.getHistory(
                 limit,
                 offset,

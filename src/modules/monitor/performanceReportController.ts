@@ -29,6 +29,8 @@ interface ReportRow {
     created_at: string;
     ai_tag: string | null;
     ai_score: number | null;
+    revenue_yoy: number | null;
+    profit_yoy: number | null;
 }
 
 type ReportSortBy = 'symbol' | 'ann_date' | 'total_revenue' | 'n_income_attr_p' | 'forecast_eps' | 'ai_score';
@@ -41,12 +43,42 @@ interface CommonListParams {
     sortOrder: ReportSortOrder;
 }
 
+/**
+ * 根据当前日期计算最近已结束的报告期（YYYYMMDD 格式）
+ * 报告期结束日：03-31（一季报）、06-30（半年报）、09-30（三季报）、12-31（年报）
+ * 例：2026-08-07（Q3）→ 20260630（2026半年报）；2026-02-01 → 20251231（2025年报）
+ */
+function currentReportPeriod(now: Date = new Date()): string {
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1; // 1-12
+    const d = now.getDate();
+    const quarters: Array<[number, number]> = [[3, 31], [6, 30], [9, 30], [12, 31]];
+    // 从当年最后一个季度末往前找第一个不晚于当前日期的报告期
+    for (let i = quarters.length - 1; i >= 0; i--) {
+        const [qm, qd] = quarters[i];
+        if (m > qm || (m === qm && d >= qd)) {
+            return `${y}${String(qm).padStart(2, '0')}${qd}`;
+        }
+    }
+    // 一季度末尚未到来（1/1-3/30）→ 上一年的年报
+    return `${y - 1}1231`;
+}
+
 const LATEST_REPORT_CTE = `
     WITH latest AS (
         SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
                p.forecast_eps, p.rating, p.org_name, p.summary,
                p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at, p.ai_tag,
-               s.total_score AS ai_score
+               s.total_score AS ai_score,
+               -- 同比：相对上一期（end_date 更早的最近一份报告）
+               CASE WHEN p.total_revenue IS NOT NULL
+                         AND prev.total_revenue IS NOT NULL AND prev.total_revenue <> 0
+                    THEN ((p.total_revenue - prev.total_revenue) / ABS(prev.total_revenue) * 100)::float8
+                    ELSE NULL END AS revenue_yoy,
+               CASE WHEN p.n_income_attr_p IS NOT NULL
+                         AND prev.n_income_attr_p IS NOT NULL AND prev.n_income_attr_p <> 0
+                    THEN ((p.n_income_attr_p - prev.n_income_attr_p) / ABS(prev.n_income_attr_p) * 100)::float8
+                    ELSE NULL END AS profit_yoy
         FROM performance_reports p
         LEFT JOIN stock_ai_scores s ON p.symbol = s.symbol
         INNER JOIN (
@@ -54,6 +86,16 @@ const LATEST_REPORT_CTE = `
             FROM performance_reports
             GROUP BY symbol, report_type
         ) m ON p.symbol = m.symbol AND p.report_type = m.report_type AND p.ann_date = m.latest_ann_date
+        LEFT JOIN LATERAL (
+            SELECT total_revenue, n_income_attr_p
+            FROM performance_reports
+            WHERE symbol = p.symbol
+              AND report_type IN ('formal', 'express')
+              AND end_date IS NOT NULL AND end_date != ''
+              AND end_date < p.end_date
+            ORDER BY end_date DESC, report_type DESC
+            LIMIT 1
+        ) prev ON true
     )
 `;
 
@@ -106,6 +148,27 @@ export class PerformanceReportController {
         return `l.n_income_attr_p IS NULL ASC, l.n_income_attr_p ${order}, l.symbol ASC`;
     }
 
+    /**
+     * 构建报告类型筛选条件
+     * - formal：仅当前报告期（如 2026半年报）的正式报告
+     * - express：仅当前报告期的快报，且排除同报告期已出正式报告的股票
+     */
+    private static buildReportTypeFilter(reportType: string): string {
+        if (reportType === 'formal') {
+            const period = currentReportPeriod();
+            return ` AND l.report_type = 'formal' AND l.end_date = '${period}'`;
+        }
+        if (reportType === 'express') {
+            const period = currentReportPeriod();
+            return ` AND l.report_type = 'express' AND l.end_date = '${period}'
+                AND NOT EXISTS (
+                    SELECT 1 FROM performance_reports f
+                    WHERE f.symbol = l.symbol AND f.report_type = 'formal' AND f.end_date = l.end_date
+                )`;
+        }
+        return ` AND l.report_type IN ('formal', 'express')`;
+    }
+
     private static mapReportRow(row: ReportRow) {
         return {
             '股票代码': row.symbol,
@@ -123,6 +186,8 @@ export class PerformanceReportController {
             '基本每股收益': row.basic_eps,
             'AI研判': row.ai_tag || '',
             'AI评分': row.ai_score,
+            '营收同比(%)': row.revenue_yoy != null ? Math.round(Number(row.revenue_yoy) * 100) / 100 : null,
+            '净利同比(%)': row.profit_yoy != null ? Math.round(Number(row.profit_yoy) * 100) / 100 : null,
             '更新时间': row.created_at,
         };
     }
@@ -145,9 +210,7 @@ export class PerformanceReportController {
 
         // 筛选条件
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = reportType
-            ? ` AND l.report_type = '${reportType}'`
-            : ` AND l.report_type IN ('formal', 'express')`;
+        const reportTypeFilter = this.buildReportTypeFilter(reportType);
         const endYear = url.searchParams.get('endYear') || '';
         const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
@@ -209,9 +272,7 @@ export class PerformanceReportController {
         const keywordPattern = `%${keyword}%`;
 
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = reportType
-            ? ` AND l.report_type = '${reportType}'`
-            : ` AND l.report_type IN ('formal', 'express')`;
+        const reportTypeFilter = this.buildReportTypeFilter(reportType);
         const endYear = url.searchParams.get('endYear') || '';
         const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
