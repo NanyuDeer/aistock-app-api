@@ -78,6 +78,9 @@ import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
 import { InsightController } from './modules/insight/controller';
 
+// prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
+import predictionInternalRouter from './modules/prediction/internalRouter';
+
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
 import { StockInfoJudgementController } from './modules/crawler/judgementController';
@@ -553,6 +556,8 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 
 app.use('/internal/insight', insightInternalRouter);
 
+app.use('/internal/predictions', predictionInternalRouter);
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -923,6 +928,29 @@ async function start() {
         console.log('[DB] chat_token_usage table ready');
     } catch (err: unknown) {
         console.warn('[DB] chat_token_usage table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 预测能力：prediction_records 表（大盘溯源预测 + 到期验证历史）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS prediction_records (
+                id BIGSERIAL PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                schema_version TEXT NOT NULL DEFAULT '1.0',
+                prediction JSONB NOT NULL,
+                verification JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'pending',
+                due_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_prediction_records_status ON prediction_records(status)'
+        );
+        console.log('[DB] prediction_records table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
