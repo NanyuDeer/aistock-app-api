@@ -2,6 +2,22 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-10 — B2 预测能力落库接口（prediction_records）
+
+**开发者**: 37588
+
+### 新增
+- `src/modules/prediction/PredictionRecordService.ts`：`prediction_records` 表读写（`create` ON CONFLICT upsert 幂等、`listPending`、`appendVerification` 全档位覆盖自动置 verified，status 仅 {pending, verified}）
+- `src/modules/prediction/internalRouter.ts`：`POST /internal/predictions`（落库）、`GET /internal/predictions?status=pending`（扫描）、`PUT /internal/predictions/:id/verification`（回写）；X-Internal-Token 鉴权
+- `src/modules/prediction/internalRouter.test.ts`：路由层 4 用例（node:http 模式，无 supertest）
+- `src/index.ts`：`prediction_records` 启动建表块 + `(source_type, source_id)` 唯一索引 + 路由挂载
+
+### 测试
+- `internalRouter.test.ts` 4/4；`npx tsc --noEmit` 0 错误
+
+---
+
+
 ## [master] 2026-08-07 — 公开 Brief 校验支持变体后缀 missing_sources（防复发）
 
 **开发者**: Aria
