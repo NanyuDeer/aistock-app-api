@@ -52,13 +52,18 @@ export class WindLeaderController {
      */
     static async getBoardKline(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
-            const code = String(req.query.code || '').trim();
+            const raw = String(req.query.code || '').trim();
+            // 归一化：去掉 Tushare ts_code 后缀（881121.TI → 881121），同花顺 cid 6 位数字直接通过
+            const code = raw.split('.')[0].trim();
             if (!/^\d{6}$/.test(code)) {
-                createResponse(res, 400, 'code 必须为 6 位数字（如 881121）');
+                createResponse(res, 400, 'code 必须为 6 位同花顺板块代码（如 881121）');
                 return;
             }
             const days = Math.min(Math.max(parseInt(String(req.query.days || '120'), 10) || 120, 1), 120);
             const data = await fetchBoardKline(code, days);
+            if (!data) {
+                console.warn(`[WindLeaderController] board-kline 抓取失败/无数据: raw=${raw} code=${code}`);
+            }
             createResponse(res, 200, 'success', data); // data 为 null 时前端展示空态
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
