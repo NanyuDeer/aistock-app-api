@@ -125,6 +125,8 @@ src/
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports） | eventId |
+| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页） | status=all\|pending\|verified, page, pageSize |
+| `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
 | `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
 | `/api/chat/usage/summary` | **用户累计 token 用量**（GET，JWT openid 鉴权） | — |
