@@ -80,6 +80,7 @@ import { InsightController } from './modules/insight/controller';
 
 // prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
 import predictionInternalRouter from './modules/prediction/internalRouter';
+import predictionPublicRouter from './modules/prediction/publicRouter';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -558,6 +559,8 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use('/internal/insight', insightInternalRouter);
 
 app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });

@@ -65,6 +65,53 @@ export class PredictionRecordService {
     return result.rows;
   }
 
+  /** 列表（public 路由）：status 可选过滤，created_at DESC 分页 */
+  static async list(params: {
+    status?: 'pending' | 'verified';
+    page: number;
+    pageSize: number;
+  }): Promise<{ rows: PredictionRecordRow[]; total: number }> {
+    const where = params.status ? 'WHERE status = $1' : '';
+    const filterValues: unknown[] = params.status ? [params.status] : [];
+    const countResult = await pool.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM prediction_records ${where}`,
+      filterValues,
+    );
+    const limit = Math.min(Math.max(params.pageSize, 1), 50);
+    const offset = (Math.max(params.page, 1) - 1) * limit;
+    const values: unknown[] = [...filterValues, limit, offset];
+    const result = await pool.query<PredictionRecordRow>(
+      `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+       FROM prediction_records ${where}
+       ORDER BY created_at DESC
+       LIMIT $${values.length - 1} OFFSET $${values.length}`,
+      values,
+    );
+    return { rows: result.rows, total: Number(countResult.rows[0]?.count ?? 0) };
+  }
+
+  /** 全量读取（public 路由统计用；数据量小 ≈1 条/交易日） */
+  static async listAllForStats(status?: 'pending' | 'verified'): Promise<PredictionRecordRow[]> {
+    const where = status ? 'WHERE status = $1' : '';
+    const result = await pool.query<PredictionRecordRow>(
+      `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+       FROM prediction_records ${where}
+       ORDER BY created_at DESC`,
+      status ? [status] : [],
+    );
+    return result.rows;
+  }
+
+  /** 单条详情（public 路由） */
+  static async getById(id: number): Promise<PredictionRecordRow | null> {
+    const result = await pool.query<PredictionRecordRow>(
+      `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+       FROM prediction_records WHERE id = $1`,
+      [id],
+    );
+    return result.rows[0] ?? null;
+  }
+
   static async appendVerification(
     id: number,
     horizon: string,

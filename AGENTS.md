@@ -230,6 +230,15 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 > publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
 
+### 7.6 预测公开接口（前端直接调用，无需 X-Internal-Token）
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `GET /api/predictions` | GET | 历史预测列表（B2.1）：`status=all\|pending\|verified`（默认 all）+ `page`（默认1）+ `pageSize`（默认20，上限50），按 created_at DESC；响应含 `items`（每项附 `report_date`，从 source_id `review:YYYY-MM-DD` 解析，失败回退 created_at 上海日期）+ `stats`（total/pendingCount/verifiedCount/hitRate/verifiedHorizonCount/hitCount/missCount；命中率 = hit/(hit+miss)，insufficient 不计）+ `pagination`；`id` 已归一为数字（pg BIGSERIAL 返回 string） |
+| `GET /api/predictions/:id` | GET | 历史预测详情；`:id` 非正整数 → 400，不存在 → 404 |
+
+> `modules/prediction/publicRouter.ts`（含 `__predictionPublicDependencies` 测试注入点，测试见 `publicRouter.test.ts`，6 用例 mock Service 层不触达 PG）。
+
 ### 7.4 Agent 反代接口
 
 | 接口 | 方法 | 说明 |
