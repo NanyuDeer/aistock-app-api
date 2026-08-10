@@ -232,6 +232,7 @@ app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementC
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
 app.get('/api/cn/wind-leaders', (req, res, next) => WindLeaderController.getWindLeaders(req, res, next));
+app.get('/api/cn/wind-leaders/board-kline', (req, res, next) => WindLeaderController.getBoardKline(req, res, next));
 app.post('/api/internal/wind-leaders', (req, res, next) => WindLeaderController.pushWindLeaders(req, res, next));
 app.post('/api/cn/hot-keywords/detect', (req, res, next) => WindLeaderController.detectHotKeywords(req, res, next));
 app.get('/api/cn/hot-keywords', (req, res, next) => WindLeaderController.getHotKeywords(req, res, next));

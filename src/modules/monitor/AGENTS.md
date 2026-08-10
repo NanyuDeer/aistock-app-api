@@ -8,6 +8,7 @@
 - `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
 - `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
+- `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
@@ -25,7 +26,7 @@
 - `FeishuMessageAiService.ts` — 领取待处理飞书消息、调用千问并生成按股票关联的关键词
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
-- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线法，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取）
+- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线法，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
 - 对应 Service 文件
 
 ## 依赖的 shared 类型
