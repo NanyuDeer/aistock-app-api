@@ -24,6 +24,7 @@ import http from 'http';
 import https from 'https';
 import { URL } from 'url';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 
 export interface AgentProxyOptions {
   /** Python FastAPI 基地址，例如 `http://localhost:8000` */
@@ -243,7 +244,7 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
     req.on('end', () => cb(Buffer.concat(chunks)));
   };
 
-  router.use((req: Request, res: Response) => {
+  router.use(async (req: Request, res: Response) => {
     // P0：chat 路径鉴权。无 token 放行（user_id=None，保持"登录非必须"）；
     // 有 token 必须验签通过，否则 401（绝不透传非法 token 到上游）。
     const normalized = normalizePath(req.path);
@@ -255,6 +256,11 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
       const payload = verifyJwt(bearer, options.jwtSecret);
       if (!payload) {
         res.status(401).json({ code: 401, message: 'unauthorized' });
+        return;
+      }
+      // token-revocation Step 2：已撤销凭证 → 401，绝不透传到上游
+      if (await isTokenRevoked(payload.jti)) {
+        res.status(401).json({ code: 401, message: REVOKED_MESSAGE });
         return;
       }
       openid = payload.openid;

@@ -11,13 +11,15 @@
  * 不引入 jest/vitest —— 用 Node 内置 node:test + node:assert，零新增依赖（tsx 已是 devDep）。
  * 测试不导入 src/index（会触发 start() 连 DB/Redis），仅用最小 Express app 挂载反代。
  */
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import { createAgentProxy, type AgentProxyOptions } from '../agent.proxy';
-import { signJwt } from '../../../shared/utils/jwt';
+import { signJwt, verifyJwt } from '../../../shared/utils/jwt';
+import { revokeToken } from '../../../shared/utils/tokenBlacklist';
+import redis from '../../../core/redis';
 
 const INTERNAL_TOKEN = 'test-internal-token-xyz';
 const TEST_SECRET = 'test-jwt-secret';
@@ -54,6 +56,12 @@ const trackedServers: http.Server[] = [];
 
 afterEach(async () => {
   await Promise.all(trackedServers.splice(0).map(closeServer));
+});
+
+after(() => {
+  // token-revocation：tokenBlacklist→CacheService 导入链在模块加载时 redis.ping() 建连，
+  // 连接会保活事件循环导致 tsx --test 进程挂起（仓库惯例，见 tokenBlacklist.spec.ts after hook）
+  redis.disconnect();
 });
 
 function closeServer(server: http.Server): Promise<void> {
@@ -700,6 +708,27 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(res.status, 200);
     const sent = JSON.parse((JSON.parse(res.text) as { receivedBody: string }).receivedBody) as Record<string, unknown>;
     assert.strictEqual(sent.user_id, 'whatever'); // 非 chat 路径不受影响
+  });
+
+  it('P0: chat 路径已撤销 token → 401，上游零调用（token-revocation）', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const now = Math.floor(Date.now() / 1000);
+    const token = signJwt({ openid: 'o_revoked', iat: now, exp: now + 3600 }, TEST_SECRET);
+    const payload = verifyJwt(token, TEST_SECRET)!;
+    await revokeToken(payload);
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0, '上游不得收到已撤销凭证请求');
   });
 
 });

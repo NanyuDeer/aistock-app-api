@@ -8,13 +8,15 @@
  * 5. 上游不可达 → 客户端收 {type:'error'} 后关闭
  * 运行：node --import tsx --test src/core/ws/__tests__/chat-bridge.spec.ts
  */
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { initChatBridge } from '../chat-bridge';
-import { signJwt } from '../../../shared/utils/jwt';
+import { signJwt, verifyJwt } from '../../../shared/utils/jwt';
+import { revokeToken } from '../../../shared/utils/tokenBlacklist';
+import redis from '../../../core/redis';
 
 const JWT_SECRET = 'test-jwt-secret';
 const INTERNAL_TOKEN = 'test-internal-token-xyz';
@@ -28,6 +30,12 @@ function signOpenid(openid: string): string {
 const tracked: Array<{ close: () => Promise<void> }> = [];
 afterEach(async () => {
   await Promise.all(tracked.splice(0).map((t) => t.close()));
+});
+
+after(() => {
+  // token-revocation：tokenBlacklist→CacheService 导入链在模块加载时 redis.ping() 建连，
+  // 连接会保活事件循环导致 tsx --test 进程挂起（仓库惯例，见 tokenBlacklist.spec.ts after hook）
+  redis.disconnect();
 });
 
 /** 启动被测 app-api 侧 http server（挂载 chat 桥接） */
@@ -218,5 +226,19 @@ describe('chat bridge', () => {
     const parsed = JSON.parse(errorMsg.data as string) as { type?: string };
     assert.strictEqual(parsed.type, 'error');
     assert.ok(events.some((e) => e.kind === 'close'), 'expected client close after upstream error');
+  });
+
+  it('已撤销 token 握手 → 连接被拒，close code 4401（token-revocation）', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const token = signJwt({ openid: 'o_revoked', iat: now, exp: now + 3600 }, JWT_SECRET);
+    const payload = verifyJwt(token, JWT_SECRET)!;
+    await revokeToken(payload);
+
+    // agentPyTarget 用不可达地址即可：黑名单命中时根本不会建上游连接
+    const { server, port } = await startBridge('ws://127.0.0.1:1');
+    const ws = await connectWs(`ws://127.0.0.1:${port}/api/agent/ws/chat?token=${token}`);
+    const closed = await waitForClose(ws);
+    assert.strictEqual(closed.code, 4401);
+    server.close();
   });
 });
