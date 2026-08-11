@@ -2,7 +2,8 @@
  * WebSocket 处理器
  * 管理连接生命周期，将消息分发到对应频道
  */
-import type { Server } from 'http'
+import type { IncomingMessage, Server } from 'http'
+import type { Duplex } from 'stream'
 import { WebSocketServer, WebSocket } from 'ws'
 import {
   registerClient,
@@ -16,7 +17,19 @@ import { pushAlert as _pushAlert, pushAlertToUser as _pushAlertToUser } from './
  * 初始化 WebSocket 服务
  */
 export function initWebSocket(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: '/ws' })
+  // 与 Chat 桥接（/api/agent/ws/chat，P0）共用同一 HTTP server 的 upgrade 事件。
+  // 必须按 path 精确分发：只处理本频道的 /ws，其余路径忽略（不 abort）——
+  // ws 库 path 模式（{ server, path }）对不匹配路径会 abortHandshake(400)，
+  // 把 Chat 桥接的 upgrade 请求全部打成 400（P0 联调定位到的根因）。
+  const wss = new WebSocketServer({ noServer: true })
+
+  server.on('upgrade', (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+    const pathname = new URL(req.url ?? '', 'http://localhost').pathname
+    if (pathname !== '/ws') return
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit('connection', ws, req)
+    })
+  })
 
   wss.on('connection', (ws: WebSocket, req: any) => {
     console.log('[WS] 新连接')
