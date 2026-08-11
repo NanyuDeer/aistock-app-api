@@ -227,6 +227,10 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
+| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
+| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
+
+> **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
 > publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
 

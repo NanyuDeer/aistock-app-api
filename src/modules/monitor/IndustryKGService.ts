@@ -71,6 +71,13 @@ export interface KGSubGraph {
 
 // ==================== 缓存与文件 ====================
 
+/**
+ * 行业知识图谱版本号（稳定常量）。
+ * 图谱重建/数据结构变更时递增；供 Agent 侧缓存边界校验（_has_verifiable_cached_graph_boundary）
+ * 与审计使用——graphVersion 必须为非空字符串，否则 Agent 事件缓存永远无法复用。
+ */
+export const INDUSTRY_GRAPH_VERSION = '1.0.0'
+
 const CACHE_DIR = path.resolve(__dirname, '../../data/kg-cache');
 const DATA_DIR = path.resolve(__dirname, '../../data');
 const FIFTEEN_DAYS = 15 * 24 * 3600 * 1000;
