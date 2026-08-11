@@ -17,8 +17,16 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import { createAgentProxy, type AgentProxyOptions } from '../agent.proxy';
+import { signJwt } from '../../../shared/utils/jwt';
 
 const INTERNAL_TOKEN = 'test-internal-token-xyz';
+const TEST_SECRET = 'test-jwt-secret';
+
+/** 用测试密钥签发一个含 openid 的合法 JWT（iat=now，exp=now+1h） */
+function signOpenid(openid: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({ openid, iat: now, exp: now + 3600 }, TEST_SECRET);
+}
 
 interface UpstreamRequest {
   method: string;
@@ -83,7 +91,7 @@ function startUpstream(
 // ---------- 被测 Express app（仅挂载反代） ----------
 function buildApp(target: string, onError?: AgentProxyOptions['onError']): Express {
   const app = express();
-  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN, onError }));
+  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN, jwtSecret: TEST_SECRET, onError }));
   return app;
 }
 
@@ -163,7 +171,7 @@ describe('Agent reverse proxy', () => {
     const app = buildApp(upstream.url);
     const res = await call(app, {
       method: 'POST',
-      path: '/api/agent/chat/message?session=1',
+      path: '/api/agent/skills?lang=zh',
       headers: {
         'content-type': 'application/json',
         authorization: 'Bearer user-token',
@@ -179,13 +187,13 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(header(res.headers, 'x-request-id'), 'rid-from-python');
     const body = JSON.parse(res.text) as { ok: boolean; receivedPath: string; receivedBody: string };
     assert.strictEqual(body.ok, true);
-    assert.strictEqual(body.receivedBody, JSON.stringify({ message: 'hello' }));
+    assert.strictEqual(body.receivedBody, JSON.stringify({ message: 'hello' })); // 非 chat 路径 body 原样
 
     // 上游收到的请求：路径保留 /api/agent 前缀 + query（未做路径重写）
     assert.strictEqual(upstream.requests.length, 1);
     const captured = upstream.requests[0];
     assert.strictEqual(captured.method, 'POST');
-    assert.strictEqual(captured.url, '/api/agent/chat/message?session=1');
+    assert.strictEqual(captured.url, '/api/agent/skills?lang=zh');
     // X-Internal-Token 被注入
     assert.strictEqual(header(captured.headers, 'x-internal-token'), INTERNAL_TOKEN);
     // Authorization / X-Request-ID / Content-Type 透传
@@ -319,12 +327,13 @@ describe('Agent reverse proxy', () => {
     });
 
     const app = buildApp(upstream.url);
+    const validJwt = signOpenid('o_py_9');
     const res = await call(app, {
       method: 'POST',
       path: '/api/agent/chat/message',
       headers: {
         'content-type': 'application/json',
-        authorization: 'Bearer user-9',
+        authorization: `Bearer ${validJwt}`,
         'x-request-id': 'client-rid-9',
       },
       body: JSON.stringify({ message: '分析 600519', session_id: 'e2e-stock-9' }),
@@ -341,7 +350,7 @@ describe('Agent reverse proxy', () => {
     // 上游收到完整的 /api/agent 前缀路径 + 注入的内网 token + 透传的客户端头
     assert.strictEqual(upstream.requests[0].url, '/api/agent/chat/message');
     assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
-    assert.strictEqual(header(upstream.requests[0].headers, 'authorization'), 'Bearer user-9');
+    assert.strictEqual(header(upstream.requests[0].headers, 'authorization'), `Bearer ${validJwt}`);
     assert.strictEqual(header(upstream.requests[0].headers, 'x-request-id'), 'client-rid-9');
   });
 
@@ -587,6 +596,110 @@ describe('Agent reverse proxy', () => {
 
     assert.strictEqual(res.status, 200);
     assert.strictEqual(upstream.requests.length, 1);
+  });
+
+  // ---------- P0：chat 路径 JWT 校验 + body user_id 覆写 ----------
+  const CHAT_JSON = { message: '600519 今天怎么样', session_id: 's1', user_id: 'forged_user' };
+
+  it('P0: chat 路径合法 token → body user_id 覆写为 openid（伪造值失效）', async () => {
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ receivedBody: captured.body }));
+    });
+
+    const app = buildApp(upstream.url);
+    const token = signOpenid('o_p0_http');
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(CHAT_JSON),
+    });
+
+    assert.strictEqual(res.status, 200);
+    const body = JSON.parse(res.text) as { receivedBody: string };
+    const sent = JSON.parse(body.receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.message, '600519 今天怎么样');
+    assert.strictEqual(sent.session_id, 's1');
+    assert.strictEqual(sent.user_id, 'o_p0_http'); // 客户端伪造值被覆写
+  });
+
+  it('P0: chat 路径无 token → body user_id 覆写为 null（伪造值被擦除，放行不 401）', async () => {
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ receivedBody: captured.body }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/stream/messages',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(CHAT_JSON),
+    });
+
+    assert.strictEqual(res.status, 200);
+    const sent = JSON.parse((JSON.parse(res.text) as { receivedBody: string }).receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.user_id, null);
+  });
+
+  it('P0: chat 路径非法 token → 401，上游零调用', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer not-a-real-jwt' },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0, '上游不得收到未鉴权请求');
+  });
+
+  it('P0: chat 路径过期 token → 401', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const expired = signJwt(
+      { openid: 'o_exp', iat: Math.floor(Date.now() / 1000) - 7200, exp: Math.floor(Date.now() / 1000) - 3600 },
+      TEST_SECRET,
+    );
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${expired}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0);
+  });
+
+  it('P0: 非 chat 路径带伪造 user_id → body 原样透传（不覆写）', async () => {
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ receivedBody: captured.body }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/skills',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi', user_id: 'whatever' }),
+    });
+
+    assert.strictEqual(res.status, 200);
+    const sent = JSON.parse((JSON.parse(res.text) as { receivedBody: string }).receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.user_id, 'whatever'); // 非 chat 路径不受影响
   });
 
 });

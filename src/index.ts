@@ -95,6 +95,7 @@ import { closeAllAgents } from './shared/utils/httpAgent';
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { initWebSocket } from './core/ws/handler';
+import { initChatBridge } from './core/ws/chat-bridge';
 import { shouldRunBackgroundJobs } from './core/qa_mode';
 
 import { Application } from 'express';
@@ -133,6 +134,7 @@ app.use('/api/agent', publicRouter);
 app.use('/api/agent', createAgentProxy({
     target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
     internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+    jwtSecret: process.env.JWT_SECRET || '',
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -1260,6 +1262,13 @@ async function start() {
 
     // 初始化 WebSocket 服务（用于实时行情推送、异动提醒、对话流式输出）
     initWebSocket(server);
+
+    // P0 身份鉴权：接管 /api/agent/ws/chat（前端 WS 直连 agent-py 改为经 app-api 桥接，验签 + 覆写 user_id）
+    initChatBridge(server, {
+        agentPyTarget: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
+        internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+        jwtSecret: process.env.JWT_SECRET || '',
+    });
 }
 
 start();

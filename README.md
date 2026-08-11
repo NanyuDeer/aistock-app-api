@@ -75,7 +75,8 @@ src/
 │   │   ├── internal.ts     # Internal API（Python Agent 服务专用）
 │   │   └── configController.ts # 配置接口
 │   └── ws/                 # WebSocket 服务
-│       ├── handler.ts      # 连接管理 + 事件分发
+│       ├── handler.ts      # 连接管理 + 事件分发（noServer + 按 path 精确分发：/ws 行情频道）
+│       ├── chat-bridge.ts  # Chat WS 桥接（P0：/api/agent/ws/chat 验签 JWT + 覆写 user_id + 反代 agent-py）
 │       └── channels/       # 频道（alert/quote）
 ├── modules/                # 业务模块层（每人负责一个模块）
 │   ├── quote/              # 行情模块
@@ -122,7 +123,8 @@ src/
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/stock-monitors/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
-| `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
+| `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8080`）。**P0 身份鉴权（chat 三路径 `/chat/message`、`/chat/stream/messages`、`/chat/stream/updates`）**：校验 `Authorization: Bearer` JWT（非法/过期 401），覆写 body `user_id` 为服务端 openid（无 token 则 null）——客户端自报 user_id 失效；非 chat 路径行为不变 |
+| `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
 | `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页） | status=all\|pending\|verified, page, pageSize |

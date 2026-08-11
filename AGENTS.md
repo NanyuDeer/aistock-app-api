@@ -66,7 +66,8 @@ src/
 │   │   ├── internal.ts     # Internal API（Python Agent 专用 + Agent 报告持久化）
 │   │   └── configController.ts
 │   └── ws/
-│       ├── handler.ts      # WebSocket 连接管理 + 事件分发
+│       ├── handler.ts      # WebSocket 连接管理 + 事件分发（noServer + 按 path 精确分发：/ws 行情频道）
+│       ├── chat-bridge.ts  # Chat WS 桥接（P0：/api/agent/ws/chat 验签 JWT → 覆写 user_id → 反代 agent-py）
 │       └── channels/       # 频道（alert / quote）
 ├── modules/                # 业务模块层（每人负责一个）
 │   ├── quote/              # 行情
@@ -247,9 +248,11 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/agent/*` | GET/POST | 反代到 Python FastAPI（SSE 流式透传，自动注入 `X-Internal-Token`） |
+| `/api/agent/*` | GET/POST | 反代到 Python FastAPI（SSE 流式透传，自动注入 `X-Internal-Token`）。**P0 身份鉴权（chat 三路径）**：`/chat/message`、`/chat/stream/messages`、`/chat/stream/updates` 校验 `Authorization: Bearer` JWT（非法/过期 401，上游零调用）+ 覆写 body `user_id` 为 openid（无 token 置 null）；非 chat 路径行为不变（原始 pipe 透传） |
+| `/api/agent/ws/chat` | WS | **P0 Chat WS 桥接**（`core/ws/chat-bridge.ts`）：upgrade 验签 query `token`——无 token 放行（user_id=None）、非法/过期 `close(4401)`；作为 WS 客户端连 agent-py（带 `X-Internal-Token`），双向转发并覆写消息体 `user_id`（前端→上游），上游→前端字节原样透传 |
 
-> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）。
+> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）、`JWT_SECRET`（chat 路径验签）。
+> **Caddy 部署顺序**：WS 面收口依赖 Caddy 删 `gupiao-api.yaozhineng.com` 块内 `@agentWs` 命名路由（使 `/api/agent/ws/*` 落 app-api 56790）；切换前 WS 仍直连 agent-py。
 
 ### 7.5 Chat 会话与用量接口（前端直接调用，JWT openid 鉴权）
 
@@ -260,7 +263,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/chat/sessions/:id` | DELETE | 删除会话（id + user_id 双条件，防越权删他人会话） |
 | `/api/chat/usage/summary` | GET | 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0） |
 
-> 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。
+> 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。**P0（2026-08-11）**：chat agent 路径（HTTP chat 三路径 + WS 桥接）的 `user_id` 由 app-api 验签后服务端注入，客户端自报一律失效（无 token 为 null）。
 > 数据库表：`chat_sessions`（P9 会话元数据：id PK、user_id、title、last_message_at、created_at，索引 idx_chat_sessions_user）、`chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、三个 token 字段、question、created_at），均在启动时自动建表（`src/index.ts`）。
 
 ## 8. 定时任务速查
