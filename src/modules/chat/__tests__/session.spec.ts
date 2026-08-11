@@ -5,7 +5,7 @@
  * list 排序与归属过滤 / delete 归属校验 / 401 无 token / 400 缺 session_id。
  *
  * Mock 策略：monkey-patch pool.query（SessionController 持有同一 pool 对象引用，无 DB 连接）。
- * 注意：SessionController 依赖链不加载 redis（core/db.ts 纯净），无需 redis.disconnect()。
+ * 注意：requireAuth 走 tokenBlacklist → CacheService（加载 core/redis），after() 需 redis.disconnect() 防挂起。
  */
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +13,7 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import pool from '../../../core/db';
+import redis from '../../../core/redis';
 import { SessionController } from '../sessionController';
 import { signJwt } from '../../../shared/utils/jwt';
 
@@ -109,6 +110,7 @@ describe('Chat Session API', () => {
         /* eslint-disable @typescript-eslint/no-explicit-any */
         (pool as any).query = originalQuery;
         /* eslint-enable @typescript-eslint/no-explicit-any */
+        redis.disconnect();
     });
 
     it('upsert 首次创建：title 取 question 前 30 字，user_id 为 JWT openid', async () => {

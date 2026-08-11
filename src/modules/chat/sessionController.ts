@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { createResponse } from '../../shared/utils/response';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import pool from '../../core/db';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
@@ -28,6 +29,8 @@ export class SessionController {
         if (!token) return { ok: false, code: 401, message: '未登录' };
         const payload = verifyJwt(token, process.env.JWT_SECRET!);
         if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
+        // token-revocation Step 2：验签通过后查黑名单（读侧 fail-open，命中即拒绝）
+        if (await isTokenRevoked(payload.jti)) return { ok: false, code: 401, message: REVOKED_MESSAGE };
         return { ok: true, openid: payload.openid };
     }
 
