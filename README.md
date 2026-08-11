@@ -123,8 +123,8 @@ src/
 | `/api/cn/stock-monitors/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
-| `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |
-| `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports） | eventId |
+| `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
+| `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
 | `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页） | status=all\|pending\|verified, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
@@ -165,6 +165,8 @@ src/
 > 新增接口（2026-07-15）：`POST /internal/push/market-event` — 晨报后重磅市场事件推送。Python morning_agent 生成晨报后解析 MARKET_EVENT_PUSHES 标记，阈值过滤（对称 ±1.5%）后调用此接口，触发微信模板消息 + 飞书卡片推送
 >
 > 更新（2026-08-03）：公开播报接口 `POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读）改为「文本先生成存库 + 音频缓存」：文本限长 250 字（约1分钟播报），首次请求文本+音频双写 `podcast_cache` 表（cache_key 唯一，7天过期），命中缓存直接返回音频路径，生成失败标记 failed；03:00 清理任务同步删除过期记录及对应 `podcast-{key}.mp3` 文件。建表脚本见 `docs/sql/podcast_cache.sql`
+>
+> 更新（2026-08-10）：`GET /api/agent/event/list` 与 `GET /api/agent/event/:eventId` 响应新增 `chain_summary` 字段（从 `content.analysis_reports.event_transmission.chain` 提取，按 impactStrength 降序 Top5，过滤空行业，旧数据返回 []）。前端列表页直接消费，消除 N+1 详情补数。`extractChainSummary` 函数位于 `src/core/routes/internal.ts`。
 >
 > 新增（2026-08-05）：ChatAgent P9 会话管理 + P10 线 2 计费 — 新表 `chat_sessions`（会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at）与 `chat_token_usage`（用户维度 token 计费：prompt/completion/total_tokens、question、created_at），均启动时自动建表（`src/index.ts`）；新增公开接口 `/api/chat/sessions`（POST 幂等 upsert / GET 最近50个 / DELETE，JWT openid 鉴权）与 `/api/chat/usage/summary`，内部接口 `/internal/usage/records` 与 `/internal/usage/summary`（供 Python ws.py 计费回调）
 
