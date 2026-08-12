@@ -630,6 +630,19 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
+// 自选股洞察午盘/尾盘价格打点：11:30 午盘、15:05 尾盘（与六时段定时任务对齐）
+const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.run(snapshotType);
+        console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
+    } catch (err) {
+        console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+
 // 飞书消息千问分析：每分钟串行处理少量待分析记录。
 cron.schedule('* * * * *', async () => {
     if (!FeishuMessageAiService.isConfigured()) return;
