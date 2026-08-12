@@ -113,4 +113,28 @@ export class PriceMoveService {
             direction: moveBps >= THRESHOLD_BPS ? 'up' : 'down', priceSource: 'kline_backfill',
         };
     }
+
+    /** 午盘触发后 20 分钟补抓：对当日午盘已触发事件重新冻结证据包（frozen_seq++）并重新入队 */
+    static async refetchMiddayEvidence(): Promise<{ events: number }> {
+        const tradeDate = shanghaiDate();
+        const { rows } = await pool.query<{ event_id: string; symbol: string; trade_date: string; direction: string }>(
+            `SELECT event_id, symbol, trade_date, direction FROM watchlist_insight_events
+             WHERE trade_date=$1 AND event_type='midday_price_move' AND status='active'`,
+            [tradeDate]);
+        for (const r of rows) {
+            try {
+                const { freezeEvidencePackage } = await import('./EvidencePackageService');
+                const { enqueue } = await import('./InsightJobService');
+                const direction: 'up' | 'down' = r.direction === 'down' ? 'down' : 'up';
+                await freezeEvidencePackage(r.event_id, {
+                    symbol: r.symbol, tradeDate: r.trade_date, direction,
+                });
+                await enqueue(r.event_id);
+            } catch (e) {
+                console.warn('[PriceMove] refetch failed', r.event_id,
+                    e instanceof Error ? e.message : String(e));
+            }
+        }
+        return { events: rows.length };
+    }
 }
