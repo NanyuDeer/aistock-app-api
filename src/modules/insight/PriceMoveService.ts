@@ -88,7 +88,6 @@ export class PriceMoveService {
 
     /** 触发事件：午盘创建（或尾盘反方向创建）/ 尾盘同方向更新 → 冻结证据包 → enqueue */
     static async triggerEvent(s: PriceSnapshotRow): Promise<void> {
-        // @ts-expect-error - PriceEventService 由 Task 4 创建，动态导入保证运行时可用
         const { createOrUpdatePriceEvent } = await import('./PriceEventService');
         const eventId = await createOrUpdatePriceEvent(s);
         if (!eventId) return;

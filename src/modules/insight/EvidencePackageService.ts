@@ -5,6 +5,7 @@ import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
+import { SectorMarketEvidenceService } from './SectorMarketEvidenceService';
 
 export type EvidenceSourceType = 'announcement' | 'news' | 'earnings' | 'rating' | 'radar_article' | 'quant';
 export type TimeBucket = 'T0' | 'T1' | 'T2' | 'earnings';
@@ -146,6 +147,8 @@ export async function freezeEvidencePackage(
     snapshot: { symbol: string; tradeDate: string; direction: 'up' | 'down' },
 ): Promise<void> {
     const evidence = await collectEvidence(snapshot.symbol, '', snapshot.tradeDate, snapshot.direction);
+    const quant = await SectorMarketEvidenceService.collect(snapshot.symbol, snapshot.tradeDate, snapshot.direction);
+    const allEvidence = [...evidence, ...quant];
     const { rows } = await pool.query(
         `SELECT COALESCE(MAX(frozen_seq), 0) + 1 AS next_seq FROM watchlist_evidence_packages WHERE event_id=$1`,
         [eventId]);
@@ -153,7 +156,7 @@ export async function freezeEvidencePackage(
     await pool.query(
         `INSERT INTO watchlist_evidence_packages (event_id, frozen_seq, trigger_at, evidence, coverage)
          VALUES ($1,$2,NOW(),$3,$4)`,
-        [eventId, seq, JSON.stringify(evidence), JSON.stringify({ source_count: evidence.length })],
+        [eventId, seq, JSON.stringify(allEvidence), JSON.stringify({ source_count: allEvidence.length })],
     );
-    console.log(`[evidence] frozen event=${eventId} seq=${seq} sources=${evidence.length}`);
+    console.log(`[evidence] frozen event=${eventId} seq=${seq} sources=${allEvidence.length} (quant=${quant.length})`);
 }
