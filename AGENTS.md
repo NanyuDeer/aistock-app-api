@@ -34,6 +34,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
 | Chat | `modules/chat` | 会话元数据（P9）、token 用量统计（P10 线 2） | — |
+| User | `modules/user` | 用户画像 profile（Phase 4-3 改进 15）：`GET/PUT /api/user/profile`（JWT，openid 即 user_id；部分更新，investment_preferences 数组整体替换） | [user/AGENTS.md](./src/modules/user/AGENTS.md) |
 
 > 新增模块时，必须创建对应的 `src/modules/<模块名>/AGENTS.md`。
 
@@ -202,6 +203,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
 | `POST /internal/usage/records` | chat_token_usage | 记录一次对话 token 用量（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数；成功 `{code:200,data:{id}}`） |
 | `GET /internal/usage/summary?user_id=` | chat_token_usage | 按 user_id 累计用量（SUM/COUNT 聚合，无记录全 0，返回 prompt/completion/total_tokens + turn_count） |
+| `GET /internal/user-profile/:userId` | user_profiles | 用户画像检索（Phase 4-3；agent-py 对话入口按 user_id 拉取注入，Redis 5min 缓存；无记录返回 200 + 空对象，不 404） |
 | `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates） |
 | `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
 | `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
