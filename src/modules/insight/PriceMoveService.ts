@@ -129,7 +129,9 @@ export class PriceMoveService {
                 await freezeEvidencePackage(r.event_id, {
                     symbol: r.symbol, tradeDate: r.trade_date, direction,
                 });
-                await enqueue(r.event_id);
+                // force：同 (event_id, version) 的 job 已存在（午盘已入队），必须强制重入队
+                // 产生新 stream 消息，Python 才会重新归因并 UPSERT 覆盖旧结果
+                await enqueue(r.event_id, { force: true });
             } catch (e) {
                 console.warn('[PriceMove] refetch failed', r.event_id,
                     e instanceof Error ? e.message : String(e));
