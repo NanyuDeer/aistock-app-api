@@ -103,6 +103,8 @@ interface EventStoreEvent {
     url?: string;
     impact_score?: number;
     direction?: string;
+    involved_keywords?: string[];
+    symbol?: string;
     source?: string;
     source_level?: string;
     content_hash?: string;
@@ -125,6 +127,13 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
         ev.source_level === 'A' || ev.source_level === 'B' || ev.source_level === 'C' || ev.source_level === 'D'
             ? ev.source_level
             : 'C';
+    // 精简 payload（评审 Minor 3）：不复用 ev.payload 整包（normalize_event 的完整 raw dict，
+    // 含大段 content，JSONB 会膨胀）。只保留与归因相关的四字段；symbol 在 EventRecord 中
+    // 位于 payload 内（顶层无 symbol），故顶层缺失时回退 ev.payload.symbol。
+    const payloadSymbol =
+        typeof ev.symbol === 'string' && ev.symbol
+            ? ev.symbol
+            : (typeof ev.payload?.symbol === 'string' ? ev.payload.symbol : undefined);
     return sourceRecord({
         sourceId: ev.event_id,
         kind: ev.source === 'announcement' ? 'announcement' : 'news',
@@ -138,7 +147,12 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
         occurredAt,
         capturedAt,
         freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - occurredAt.getTime()) / 1000)),
-        payload: ev.payload || {},
+        payload: {
+            symbol: payloadSymbol,
+            involved_keywords: Array.isArray(ev.involved_keywords) ? ev.involved_keywords : [],
+            direction: typeof ev.direction === 'string' ? ev.direction : undefined,
+            impact_score: typeof ev.impact_score === 'number' ? ev.impact_score : undefined,
+        },
     });
 }
 
@@ -154,7 +168,8 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
  * 由调用方降级到原采集路径——绝不抛异常（P0 功能保护）。
  */
 export async function loadEventStoreEvidence(symbol: string, capturedAt: Date): Promise<StockSourceRecord[]> {
-    const baseUrl = process.env.PYTHON_AGENT_URL || process.env.AGENT_PY_URL || '';
+    // 与 app-api 反代一致（index.ts:135 AGENT_PY_URL 优先，PYTHON_AGENT_URL 兼容旧命名）
+    const baseUrl = process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '';
     const token = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || '';
     if (!baseUrl || !token) {
         console.warn('[StockTraceSnapshot] event_store_read_failed, fallback to original collect', {
