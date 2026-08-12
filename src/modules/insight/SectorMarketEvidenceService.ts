@@ -41,25 +41,27 @@ export class SectorMarketEvidenceService {
         // 2. 同行同步：同板块成分股中当日同向且 ≥5% 数量 ≥3
         try {
             const industryCode = await SectorMarketEvidenceService.firstIndustryCode(symbol);
-            if (!industryCode) return out; // 无板块映射不产同行证据，避免空 ts_code 请求
-            const members = await getThsMember(industryCode);
-            if (members.length > 0) {
-                const codes = members.slice(0, 30).map(m => m.con_code);
-                const dailies = await getDailyByDate(dateCompact);
-                const byCode = new Map(dailies.map(d => [d.ts_code, d]));
-                const peers = codes.filter(c => {
-                    const d = byCode.get(c);
-                    if (!d || d.pct_chg === null || d.pct_chg === undefined) return false;
-                    return direction === 'up' ? d.pct_chg >= 5 : d.pct_chg <= -5;
-                });
-                if (peers.length >= 3) {
-                    out.push({
-                        source_id: `quant:peer:${symbol}:${dateCompact}`, source_type: 'quant',
-                        provider: 'tushare', title: `同行同步 ${peers.length} 只`,
-                        excerpt: `同板块成分股中同向涨跌 ≥5% 共 ${peers.length} 只`,
-                        published_at: `${tradeDate}T00:00:00+08:00`, symbol,
-                        strength: 0.65, days_offset: 0, time_bucket: 'T0',
+            // 无板块映射不产同行证据（避免空 ts_code 请求）；用 if 包裹而非 return，避免跳过市场冲击环节
+            if (industryCode) {
+                const members = await getThsMember(industryCode);
+                if (members.length > 0) {
+                    const codes = members.slice(0, 30).map(m => m.con_code);
+                    const dailies = await getDailyByDate(dateCompact);
+                    const byCode = new Map(dailies.map(d => [d.ts_code, d]));
+                    const peers = codes.filter(c => {
+                        const d = byCode.get(c);
+                        if (!d || d.pct_chg === null || d.pct_chg === undefined) return false;
+                        return direction === 'up' ? d.pct_chg >= 5 : d.pct_chg <= -5;
                     });
+                    if (peers.length >= 3) {
+                        out.push({
+                            source_id: `quant:peer:${symbol}:${dateCompact}`, source_type: 'quant',
+                            provider: 'tushare', title: `同行同步 ${peers.length} 只`,
+                            excerpt: `同板块成分股中同向涨跌 ≥5% 共 ${peers.length} 只`,
+                            published_at: `${tradeDate}T00:00:00+08:00`, symbol,
+                            strength: 0.65, days_offset: 0, time_bucket: 'T0',
+                        });
+                    }
                 }
             }
         } catch (e) { console.warn('[quant] peer failed', e instanceof Error ? e.message : String(e)); }
