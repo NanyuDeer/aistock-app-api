@@ -146,7 +146,16 @@ export class ProfileController {
                     risk_tolerance = COALESCE(EXCLUDED.risk_tolerance, user_profiles.risk_tolerance),
                     updated_at = CURRENT_TIMESTAMP
                  RETURNING user_id, nickname, investment_preferences, risk_tolerance, updated_at`,
-                [auth.openid, input.nickname ?? null, input.investment_preferences ?? null, input.risk_tolerance ?? null],
+                [
+                    auth.openid,
+                    input.nickname ?? null,
+                    // JSONB 参数必须传 JSON 文本（node-postgres 不自动序列化 JS 数组；
+                    // undefined → null 保留旧值，[] → "[]" 合法"清空"）
+                    input.investment_preferences === undefined
+                        ? null
+                        : JSON.stringify(input.investment_preferences),
+                    input.risk_tolerance ?? null,
+                ],
             );
             const row = result.rows[0];
             ProfileController.log('put', 'profile upserted', { user_id: auth.openid });

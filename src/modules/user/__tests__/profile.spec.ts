@@ -184,8 +184,9 @@ describe('PUT /api/user/profile', () => {
         assert.strictEqual(res.status, 200);
         const insert = mockCalls.find((c) => c.sql.includes('INSERT INTO user_profiles'));
         assert.ok(insert, 'expected INSERT/upsert');
-        // 整体替换：参数就是传入的 1 项数组（无 COALESCE/|| 拼接痕迹）
-        assert.deepStrictEqual(insert!.params, ['o_1', null, ['低波动'], null]);
+        // 整体替换：参数为传入 1 项的 JSON 文本（JSONB 参数须 JSON 字符串，集成冒烟实证
+        // 数组直传会 500 "类型json的输入语法无效"）；无 COALESCE/|| 拼接痕迹
+        assert.deepStrictEqual(insert!.params, ['o_1', null, '["低波动"]', null]);
     });
 
     it('全部字段更新 → 参数完整', async () => {
@@ -202,7 +203,8 @@ describe('PUT /api/user/profile', () => {
         assert.strictEqual(res.status, 200);
         const insert = mockCalls.find((c) => c.sql.includes('INSERT INTO user_profiles'));
         assert.ok(insert, 'expected INSERT/upsert');
-        assert.deepStrictEqual(insert!.params, ['o_1', '小王', ['白酒', '新能源'], 'aggressive']);
+        // investment_preferences 序列化为 JSON 文本（JSONB 参数契约）
+        assert.deepStrictEqual(insert!.params, ['o_1', '小王', '["白酒","新能源"]', 'aggressive']);
     });
 
     it('校验：investment_preferences 超过 10 项 → 400', async () => {
