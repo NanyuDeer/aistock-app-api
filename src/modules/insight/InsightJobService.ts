@@ -23,7 +23,8 @@ interface PendingOutboxRow {
  * @param eventId watchlist_insight_events.event_id
  * @param opts.force 强制重入队：同 (event_id, analysis_version) 已存在时重置 job 为 queued 并
  *   追加新 outbox（新 stream 消息），供补抓场景让 Python 重新归因（UPSERT 覆盖旧结果）。
- *   默认 false 保持幂等（已存在则 ROLLBACK 不重复入队）。
+ *   副作用：attempt_count 清零，会把已达 MAX_ATTEMPTS 的 job 从 dead_letter 复活重试（补抓场景
+ *   符合预期——新证据包值得重试）。默认 false 保持幂等（已存在则 ROLLBACK 不重复入队）。
  */
 export async function enqueue(eventId: string, opts: { force?: boolean } = {}): Promise<void> {
     const client = await pool.connect();

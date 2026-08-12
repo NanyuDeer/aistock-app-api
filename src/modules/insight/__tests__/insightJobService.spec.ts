@@ -93,7 +93,10 @@ describe('enqueue', () => {
             if (text.includes('INSERT INTO watchlist_insight_jobs')) {
                 jobInsertCalls++;
                 capturedSql = text;
-                // force 路径 ON CONFLICT DO UPDATE 同样 RETURNING job_id
+                // 真实 DB 冲突语义：DO NOTHING 冲突返回 0 行（ROLLBACK），DO UPDATE 恒返回行
+                if (text.includes('DO NOTHING') && jobInsertCalls >= 2) {
+                    return { rows: [] };
+                }
                 return { rows: [{ job_id: '11111111-1111-4111-8111-111111111111' }] };
             }
             if (text.includes('INSERT INTO watchlist_insight_outbox')) {
