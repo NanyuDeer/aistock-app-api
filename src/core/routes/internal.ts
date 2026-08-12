@@ -1157,6 +1157,37 @@ router.get('/usage/sessions', async (req: Request, res: Response) => {
     }
 });
 
+// ==================== 用户画像（Phase 4-3 全局用户记忆） ====================
+
+/**
+ * GET /internal/user-profile/:user_id
+ * 按 user_id 拉取用户画像（agent-py 对话入口注入用）
+ *
+ * - 200：{ code: 200, data: profile }（user_id/nickname/investment_preferences/risk_tolerance/updated_at）
+ * - 200 + {}：无记录（空画像，不 404——agent-py 无 profile 时零行为变化）
+ * - 400：user_id 缺失
+ * - 502：服务异常
+ */
+router.get('/user-profile/:userId', async (req: Request, res: Response) => {
+    const user_id = param(req, 'userId')
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+    try {
+        const result = await pool.query(
+            `SELECT user_id, nickname, investment_preferences, risk_tolerance, updated_at
+             FROM user_profiles
+             WHERE user_id = $1`,
+            [user_id]
+        )
+        const row = result.rows[0]
+        res.json({ code: 200, data: row ?? {} })
+    } catch (err: unknown) {
+        console.error('[Internal] user-profile GET error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**

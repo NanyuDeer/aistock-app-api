@@ -43,6 +43,8 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+// user 用户画像（Phase 4-3 全局用户记忆）
+import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -193,6 +195,11 @@ app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res,
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
+// 用户画像（Phase 4-3：JWT 鉴权，openid 即 user_id；GET 无记录返回空对象，PUT 部分更新 + G7 数组整体替换；
+// DELETE：PIPL 删除权，删除后同步失效 agent-py 侧 db=1 缓存，Phase 4 验收修复 B8）
+app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
+app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
+app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
@@ -960,6 +967,22 @@ async function start() {
         console.log('[DB] prediction_records table ready');
     } catch (err: unknown) {
         console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                nickname TEXT,
+                investment_preferences JSONB,
+                risk_tolerance TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('[DB] user_profiles table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
