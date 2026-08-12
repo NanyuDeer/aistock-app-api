@@ -110,6 +110,17 @@ router.post('/results/external', async (req: Request, res: Response) => {
             [result.event_id, result.analysis_version]);
         const isNew = prior.rows.length === 0;
 
+        // UPSERT 前计算实质变化：INSERT 后旧值已被覆盖，此时判定将恒为 false（读到的 old 即新值）
+        let changed = false;
+        if (!isNew) {
+            const { isSubstantiveChange } = await import('./InsightPushService');
+            changed = await isSubstantiveChange(result.event_id, {
+                attribution_status: result.attribution_status ?? 'unconfirmed',
+                confidence: result.confidence ?? 'low',
+                primary_driver: result.primary_driver || {},
+            });
+        }
+
         await pool.query(
             `INSERT INTO watchlist_insight_results
                (event_id, analysis_version, attribution_status, confidence, primary_driver,
@@ -133,17 +144,9 @@ router.post('/results/external', async (req: Request, res: Response) => {
         if (isNew) {
             void import('./InsightPushService').then(m => m.pushCreated(result.event_id)).catch(e =>
                 console.error('[insight] push created failed', e));
-        } else {
-            const { isSubstantiveChange } = await import('./InsightPushService');
-            const changed = await isSubstantiveChange(result.event_id, {
-                attribution_status: result.attribution_status ?? 'unconfirmed',
-                confidence: result.confidence ?? 'low',
-                primary_driver: result.primary_driver || {},
-            });
-            if (changed) {
-                void import('./InsightPushService').then(m => m.pushUpdated(result.event_id)).catch(e =>
-                    console.error('[insight] push updated failed', e));
-            }
+        } else if (changed) {
+            void import('./InsightPushService').then(m => m.pushUpdated(result.event_id)).catch(e =>
+                console.error('[insight] push updated failed', e));
         }
         res.status(201).json({ code: 201, data: {} });
     } catch (error: unknown) {
