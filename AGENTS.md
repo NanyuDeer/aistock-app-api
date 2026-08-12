@@ -136,6 +136,7 @@ src/
 | 禁用 emoji | 禁止使用 emoji 图标，统一用 SvgIcon 组件加载 SVG |
 | 接口兼容 | aistock-app-api 必须与 aistock-api 端点完全兼容，支持无缝替换 |
 | 内部接口鉴权 | `/internal/*` 接口必须校验 `X-Internal-Token` |
+| JWT 撤销 | `token_blacklist:{jti}` 黑名单（TTL=token 剩余寿命）；logout 按 jti 撤销，`degraded: true`（仅内存）/ `legacy: true`（无 jti 旧 token）；各鉴权入口验签后查黑名单，命中 401 / WS 4401；读侧 fail-open + 写侧 never-silent（2026-08-11 token-revocation） |
 
 ## 6. 降级策略
 
@@ -264,6 +265,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/chat/usage/summary` | GET | 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0） |
 
 > 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。**P0（2026-08-11）**：chat agent 路径（HTTP chat 三路径 + WS 桥接）的 `user_id` 由 app-api 验签后服务端注入，客户端自报一律失效（无 token 为 null）。
+> **token-revocation（2026-08-11）**：signJwt 自动生成 `jti`；`POST /api/auth/logout` 按 jti 写 `token_blacklist:{jti}`（TTL=剩余寿命）；鉴权入口（chat/auth/monitor/insight/stock-trace + agent.proxy chat 三路径 + chat-bridge WS）验签后查黑名单，命中 401 / close(4401)；`degraded`/`legacy` 为显式降级字段，前端可选用作提示（不改 token 存储方式）。
 > 数据库表：`chat_sessions`（P9 会话元数据：id PK、user_id、title、last_message_at、created_at，索引 idx_chat_sessions_user）、`chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、三个 token 字段、question、created_at），均在启动时自动建表（`src/index.ts`）。
 
 ## 8. 定时任务速查

@@ -1,16 +1,21 @@
 import type { NextFunction, Request, Response } from 'express';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked } from '../../shared/utils/tokenBlacklist';
 import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 
-function openidFromRequest(req: Request): string | null {
+async function openidFromRequest(req: Request): Promise<string | null> {
     const bearer = req.headers.authorization;
     const token = typeof bearer === 'string' && bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
     if (!token || !process.env.JWT_SECRET) return null;
-    return verifyJwt(token, process.env.JWT_SECRET)?.openid || null;
+    const payload = verifyJwt(token, process.env.JWT_SECRET);
+    if (!payload) return null;
+    // token-revocation Step 2：命中黑名单按未登录处理（读侧 fail-open）
+    if (await isTokenRevoked(payload.jti)) return null;
+    return payload.openid || null;
 }
 
 function limitFromRequest(req: Request): number {
@@ -43,7 +48,7 @@ async function presentEventAnalysis(eventId: string, event: Record<string, unkno
 export class StockTraceController {
     static async list(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
@@ -59,7 +64,7 @@ export class StockTraceController {
 
     static async get(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             const eventId = eventIdFromRequest(req);
             // 未登录降级：返回全局事件详情（与 list 接口一致，符合"登录非必须"约束）
             const result = openid
@@ -86,7 +91,7 @@ export class StockTraceController {
 
     static async analysis(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             const eventId = eventIdFromRequest(req);
             // 未登录降级：返回全局事件分析（与 list/get 接口一致）
             const event = openid
@@ -114,7 +119,7 @@ export class StockTraceController {
 
     static async evidence(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             const eventId = eventIdFromRequest(req);
             const sourceId = Array.isArray(req.params.sourceId) ? req.params.sourceId[0] || '' : req.params.sourceId || '';
             // 未登录降级：查全局事件
@@ -142,7 +147,7 @@ export class StockTraceController {
 
     static async markRead(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             // 未登录降级：直接返回成功（未登录无法持久化已读状态，不影响查看）
             if (!openid) {
                 res.json({ code: 200, data: { event_id: eventIdFromRequest(req), read: true } });

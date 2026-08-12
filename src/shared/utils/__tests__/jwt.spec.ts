@@ -70,3 +70,30 @@ describe('verifyJwt', () => {
     assert.strictEqual(verifyJwt(token, JWT_SECRET), null);
   });
 });
+
+describe('jti 锚点（token-revocation Step 1）', () => {
+    it('signJwt 自动生成 jti（UUID 格式）', () => {
+        const now = Math.floor(Date.now() / 1000);
+        const token = signJwt({ openid: 'o_jti', nickname: 't', iat: now, exp: now + 3600 }, JWT_SECRET);
+        const payload = verifyJwt(token, JWT_SECRET);
+        assert.ok(payload);
+        assert.match(payload!.jti ?? '', /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    });
+
+    it('无 jti 的手工构造旧 token：验签通过且 payload.jti 为 undefined（零拒绝）', () => {
+        const now = Math.floor(Date.now() / 1000);
+        // 手工构造不含 jti 的 payload（模拟在途旧 token，signJwt 新版不会产出）
+        const payload = { openid: 'o_legacy', nickname: 't', iat: now, exp: now + 3600 };
+        const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64')
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const headerB64 = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64')
+            .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const signingInput = `${headerB64}.${payloadB64}`;
+        const sig = crypto.createHmac('sha256', JWT_SECRET).update(signingInput).digest()
+            .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+        const legacy = `${signingInput}.${sig}`;
+        const verified = verifyJwt(legacy, JWT_SECRET);
+        assert.ok(verified);
+        assert.strictEqual(verified!.jti, undefined);
+    });
+});

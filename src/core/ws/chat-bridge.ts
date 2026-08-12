@@ -17,6 +17,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server, IncomingMessage } from 'http';
 import type { Duplex } from 'stream';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked } from '../../shared/utils/tokenBlacklist';
 
 export interface ChatBridgeOptions {
   /** 上游 agent-py HTTP 基地址，如 http://localhost:8080 */
@@ -75,7 +76,7 @@ export function initChatBridge(server: Server, options: ChatBridgeOptions): WebS
     });
   });
 
-  wss.on('connection', (clientWs: WebSocket, req: IncomingMessage) => {
+  wss.on('connection', async (clientWs: WebSocket, req: IncomingMessage) => {
     // 1. 解析 query token
     const url = new URL(req.url ?? '', 'http://localhost');
     const token = url.searchParams.get('token');
@@ -86,6 +87,11 @@ export function initChatBridge(server: Server, options: ChatBridgeOptions): WebS
       if (!payload) {
         // token 非法/过期 → 显式拒绝（写侧告知，绝无声失效——沿用 token-revocation 硬约束）
         clientWs.close(4401, 'unauthorized');
+        return;
+      }
+      // token-revocation Step 2：已撤销凭证 → close 4401（写侧显式告知，不建上游连接）
+      if (await isTokenRevoked(payload.jti)) {
+        clientWs.close(4401, 'revoked');
         return;
       }
       openid = payload.openid;
