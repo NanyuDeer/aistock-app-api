@@ -76,6 +76,7 @@ export interface StockInfoQueryParams {
     impact?: StockInfoImpact;
     limit?: number;
     offset?: number;
+    dateFrom?: string;
 }
 
 export interface StockInfoPushWindow {
@@ -473,6 +474,13 @@ export class StockInfoService {
         if (params.impact && VALID_IMPACTS.has(params.impact)) {
             values.push(params.impact);
             conditions.push(`ai_impact = $${values.length}`);
+        }
+        // P0-2：Node /internal/monitor/alerts 原忽略 days 参数只取最新 20 行；
+        // 支持 dateFrom 后按 published_at 窗口过滤（timestamptz 显式类型转换，
+        // 允许传入含时区偏移的 ISO 字符串，如 2026-08-12T00:00:00+08:00）
+        if (params.dateFrom) {
+            values.push(params.dateFrom);
+            conditions.push(`published_at >= $${values.length}::timestamptz`);
         }
 
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';

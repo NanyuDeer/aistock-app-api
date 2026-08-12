@@ -430,6 +430,7 @@ router.get('/monitor/alerts', async (req: Request, res: Response) => {
             change_type: queryStr(req, 'change_type'),
             limit: queryInt(req, 'limit', 20),
             offset: queryInt(req, 'offset', 0),
+            dateFrom: queryStr(req, 'dateFrom') || undefined,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
