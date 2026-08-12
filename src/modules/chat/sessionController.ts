@@ -3,10 +3,17 @@ import { createResponse } from '../../shared/utils/response';
 import { verifyJwt } from '../../shared/utils/jwt';
 import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import pool from '../../core/db';
+import { deleteChatThread } from './agentThreadClient';
 
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export class SessionController {
+    /**
+     * 测试注入点（tsx ESM live binding 无法 patch 模块私有函数，沿用仓库 __xxxDependencies 模式）：
+     * 删会话成功后联动删除 agent-py checkpointer thread 的依赖，默认真实实现。
+     */
+    static __threadClientDependencies: { deleteChatThread: (sessionId: string) => Promise<void> } = { deleteChatThread };
+
     private static log(stage: string, message: string, data?: any): void {
         const ts = new Date().toISOString();
         const detail = data !== undefined ? ` | ${JSON.stringify(data)}` : '';
@@ -130,6 +137,19 @@ export class SessionController {
             'DELETE FROM chat_sessions WHERE id = $1 AND user_id = $2',
             [sessionId, openid],
         );
+
+        // Phase 5 Task 2：PG 删除成功后联动删除 agent-py checkpointer thread，
+        // 避免 sqlite .langgraph.db 中 thread 成为孤儿、session_id 复用串历史。
+        // 失败仅 warning 不阻断响应（"永不 500"：helper 3s 超时有界）。
+        try {
+            await SessionController.__threadClientDependencies.deleteChatThread(sessionId);
+        } catch (err) {
+            SessionController.log('remove', '⚠️ 联动删除 agent thread 失败', {
+                openid,
+                session_id: sessionId,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
 
         SessionController.log('remove', '✅ 完成', { openid, session_id: sessionId });
         createResponse(res, 200, 'success');
