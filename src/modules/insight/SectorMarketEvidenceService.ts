@@ -24,8 +24,10 @@ export class SectorMarketEvidenceService {
                 const dailies = await getThsDaily(board.ts_code, dateCompact, dateCompact);
                 const d = dailies[0];
                 if (!d || d.pct_change === null || d.pct_change === undefined) continue;
-                const aligned = (Number(d.pct_change) >= 3) === (direction === 'up');
-                if (!aligned) continue; // 板块方向与个股方向一致才纳入
+                // 板块方向与个股方向一致才纳入：上涨方向需板块 ≥3%，下跌方向需板块 ≤-3%
+                const pct = Number(d.pct_change);
+                const aligned = (pct >= 3 && direction === 'up') || (pct <= -3 && direction === 'down');
+                if (!aligned) continue;
                 out.push({
                     source_id: `quant:sector:${board.ts_code}:${dateCompact}`, source_type: 'quant',
                     provider: 'tushare', title: `板块强度 ${board.name} ${d.pct_change}%`,
@@ -38,7 +40,9 @@ export class SectorMarketEvidenceService {
 
         // 2. 同行同步：同板块成分股中当日同向且 ≥5% 数量 ≥3
         try {
-            const members = await getThsMember(await SectorMarketEvidenceService.firstIndustryCode(symbol));
+            const industryCode = await SectorMarketEvidenceService.firstIndustryCode(symbol);
+            if (!industryCode) return out; // 无板块映射不产同行证据，避免空 ts_code 请求
+            const members = await getThsMember(industryCode);
             if (members.length > 0) {
                 const codes = members.slice(0, 30).map(m => m.con_code);
                 const dailies = await getDailyByDate(dateCompact);
@@ -65,7 +69,7 @@ export class SectorMarketEvidenceService {
             const quotes = await TencentQuoteService.getBatchQuotes(INDEX_CODES, 'activity');
             const sh = quotes.find(q => q['股票代码'] === 'sh000001');
             if (sh) {
-                const prev = Number(sh['昨收'] ?? NaN);
+                const prev = Number(sh['昨收价'] ?? NaN);
                 const latest = Number(sh['最新价'] ?? NaN);
                 if (Number.isFinite(prev) && Number.isFinite(latest) && prev > 0) {
                     const pct = ((latest - prev) / prev) * 100;
