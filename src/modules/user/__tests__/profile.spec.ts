@@ -5,7 +5,7 @@
  * （记录 SQL 调用并返回 mock rows）；合法 token 用 signJwt 真实签发；
  * after() 恢复 pool.query + redis.disconnect() 防进程挂起。
  */
-import { describe, it, before, after, beforeEach } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
@@ -14,7 +14,7 @@ import Redis from 'ioredis';
 import pool from '../../../core/db';
 import redis from '../../../core/redis';
 import { signJwt } from '../../../shared/utils/jwt';
-import { ProfileController, _agentCacheRedisFactory } from '../profileController';
+import { ProfileController, _agentCacheRedisFactory, resolveAgentCacheRedisUrl } from '../profileController';
 
 interface MockCall {
     sql: string;
@@ -335,5 +335,46 @@ describe('DELETE /api/user/profile', () => {
         assert.strictEqual(res.status, 401);
         assert.strictEqual(mockCalls.length, 0, '鉴权失败不应触达 SQL');
         assert.strictEqual(cacheDelCalls.length, 0, '鉴权失败不应触碰缓存');
+    });
+});
+
+// ── resolveAgentCacheRedisUrl（问题 19 修复：缓存失效连接对齐 agent-py 真实 Redis）──
+describe('resolveAgentCacheRedisUrl', () => {
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+        savedEnv.REDIS_URL = process.env.REDIS_URL;
+        savedEnv.AGENT_PROFILE_CACHE_REDIS_URL = process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+    });
+
+    afterEach(() => {
+        if (savedEnv.REDIS_URL === undefined) delete process.env.REDIS_URL;
+        else process.env.REDIS_URL = savedEnv.REDIS_URL;
+        if (savedEnv.AGENT_PROFILE_CACHE_REDIS_URL === undefined) delete process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+        else process.env.AGENT_PROFILE_CACHE_REDIS_URL = savedEnv.AGENT_PROFILE_CACHE_REDIS_URL;
+    });
+
+    it('显式 AGENT_PROFILE_CACHE_REDIS_URL 优先（原样返回）', () => {
+        process.env.AGENT_PROFILE_CACHE_REDIS_URL = 'redis://custom:9999/3';
+        process.env.REDIS_URL = 'redis://:p@h:6379/9';
+        assert.strictEqual(resolveAgentCacheRedisUrl(), 'redis://custom:9999/3');
+    });
+
+    it('未显式配置时从 REDIS_URL 派生（保留 auth/host/port，db 替换为 agent-py 缓存 db 15）', () => {
+        delete process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+        process.env.REDIS_URL = 'redis://:8EscLKUF@127.0.0.1:6379/9';
+        assert.strictEqual(resolveAgentCacheRedisUrl(), 'redis://:8EscLKUF@127.0.0.1:6379/15');
+    });
+
+    it('REDIS_URL 无 db 段时追加 db 15', () => {
+        delete process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+        process.env.REDIS_URL = 'redis://:p@127.0.0.1:6379';
+        assert.strictEqual(resolveAgentCacheRedisUrl(), 'redis://:p@127.0.0.1:6379/15');
+    });
+
+    it('无任何配置时兜底 redis://127.0.0.1:6379/15', () => {
+        delete process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+        delete process.env.REDIS_URL;
+        assert.strictEqual(resolveAgentCacheRedisUrl(), 'redis://127.0.0.1:6379/15');
     });
 });
