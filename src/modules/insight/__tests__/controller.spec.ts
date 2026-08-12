@@ -177,6 +177,9 @@ describe('InsightController.get', () => {
             '详情 SQL 应按登录用户自选股过滤',
         );
         assert.match(sql.text, /WHERE e\.event_id = \$2/, '详情 SQL 应以 eventId 为第二参数');
+        assert.match(sql.text, /LEFT JOIN LATERAL/, '详情 SQL 应包含 LATERAL join 取价格快照');
+        assert.match(sql.text, /watchlist_price_snapshots ps/, 'LATERAL join 目标为 watchlist_price_snapshots');
+        assert.match(sql.text, /ORDER BY ps\.snapshot_time DESC LIMIT 1/, 'LATERAL join 取最新一条快照');
         assert.equal(sql.params[0], TEST_OPENID, '第一个参数应为 openid');
         assert.equal(sql.params[1], EVENT_ID, '第二个参数应为 eventId');
         assert.deepEqual(resState.body, { code: 200, data: fakeRow }, '响应格式应为 { code, data }');
