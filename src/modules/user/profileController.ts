@@ -1,11 +1,13 @@
 /**
- * 用户画像 controller（Phase 4-3 全局用户记忆）
+ * 用户画像 controller（Phase 4-3 全局用户记忆 + Phase 4 验收修复 B8）
  *
- * GET/PUT /api/user/profile（JWT 鉴权；openid 即 user_id，P0 已固化）。
+ * GET/PUT/DELETE /api/user/profile（JWT 鉴权；openid 即 user_id，P0 已固化）。
  * - GET：无记录 → 空对象 {}（不 404）
  * - PUT：部分更新（仅更新传入字段）；investment_preferences 数组整体替换（G7 修订，
  *   非追加/拼接）；risk_tolerance 限定 conservative | balanced | aggressive；超限 400。
- * "永不 500"：DB 异常返回 500 兜底（错误信息不外泄细节），不抛异常。
+ * - DELETE：删除 user_profiles 行 + 失效 agent-py 侧画像缓存（db=1，PIPL 删除权）。
+ * "永不 500"：DB 异常返回 500 兜底（错误信息不外泄细节）；缓存失效失败仅 warning
+ * （TTL 300s 自然过期兜底），不阻断响应。
  */
 import { Request, Response, NextFunction } from 'express';
 import Redis from 'ioredis';
