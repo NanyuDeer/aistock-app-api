@@ -4,10 +4,11 @@ import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
 import { getThsDaily, getThsIndex } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
-import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 import {
     type DataReadiness,
     type SnapshotStage,
+    type SourceLevel,
     type StockSourceRecord,
     type StockTraceSnapshot,
     type TriggerEvent,
@@ -16,6 +17,8 @@ import {
 const SNAPSHOT_TTL_DAYS = 30;
 const EXCERPT_LIMIT = 600;
 const ENRICHED_COLLECTION_TIMEOUT_MS = 25_000;
+// 事件库（Python 侧）读取超时：远小于 enriched 采集预算 25s，失败即降级直采
+const EVENT_STORE_TIMEOUT_MS = 5_000;
 const COLLECTOR_VERSIONS = {
     snapshot: 'stock-trace-snapshot-v1',
     company: 'cls-and-stock-info-v1',
@@ -88,6 +91,104 @@ interface SnapshotRow {
     collector_versions: Record<string, string>;
     captured_at: Date;
     supersedes_snapshot_id: string | null;
+}
+
+// ─── 统一事件抓取中台：事件库读取（读库优先、缺库降级，2026-08-12） ───
+
+/** Python 事件库事件（EventRecord，Task 1/6 契约）。 */
+interface EventStoreEvent {
+    event_id: string;
+    title?: string;
+    summary?: string;
+    url?: string;
+    impact_score?: number;
+    direction?: string;
+    source?: string;
+    source_level?: string;
+    content_hash?: string;
+    scrape_at?: string;
+    score_date?: string;
+    payload?: Record<string, unknown>;
+}
+
+function isEventStoreEvent(value: unknown): value is EventStoreEvent {
+    return typeof value === 'object' && value !== null
+        && typeof (value as Record<string, unknown>).event_id === 'string';
+}
+
+/** 事件库事件 → StockSourceRecord（字段映射按简报 Step 4；contentHash 由 sourceRecord() 自动计算）。 */
+function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedAt: Date): StockSourceRecord {
+    const occurredAt = asDate(ev.scrape_at, capturedAt);
+    const summary = typeof ev.summary === 'string' ? ev.summary : '';
+    const title = typeof ev.title === 'string' && ev.title ? ev.title : '无标题';
+    const sourceLevel: SourceLevel =
+        ev.source_level === 'A' || ev.source_level === 'B' || ev.source_level === 'C' || ev.source_level === 'D'
+            ? ev.source_level
+            : 'C';
+    return sourceRecord({
+        sourceId: ev.event_id,
+        kind: ev.source === 'announcement' ? 'announcement' : 'news',
+        provider: typeof ev.source === 'string' && ev.source ? ev.source : 'event_store',
+        sourceLevel,
+        title,
+        contentExcerpt: excerpt(summary.slice(0, 500) || title),
+        canonicalUrl: typeof ev.url === 'string' && ev.url ? ev.url : undefined,
+        sourceRef: ev.event_id,
+        symbol,
+        occurredAt,
+        capturedAt,
+        freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - occurredAt.getTime()) / 1000)),
+        payload: ev.payload || {},
+    });
+}
+
+/**
+ * 读取当日事件库证据（stock_trace 证据源优先读事件库）。
+ *
+ * 调用 Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`
+ * （app-api 反代 `/api/agent/*` → Python 等价路径；沿
+ * StockTraceTriggerService 的 fetch + X-Internal-Token 先例）。
+ * date 用上海时区当日（shanghaiDateStr），与 Node 侧交易日约定一致。
+ *
+ * 任何失败（未配置 / 网络错 / HTTP 错 / 解析错）或空结果都返回 []，
+ * 由调用方降级到原采集路径——绝不抛异常（P0 功能保护）。
+ */
+export async function loadEventStoreEvidence(symbol: string, capturedAt: Date): Promise<StockSourceRecord[]> {
+    const baseUrl = process.env.PYTHON_AGENT_URL || process.env.AGENT_PY_URL || '';
+    const token = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || '';
+    if (!baseUrl || !token) {
+        console.warn('[StockTraceSnapshot] event_store_read_failed, fallback to original collect', {
+            symbol,
+            reason: 'python url or internal token not configured',
+        });
+        return [];
+    }
+    const url = `${baseUrl.replace(/\/+$/, '')}/api/agent/event/scrape-by-symbol/${encodeURIComponent(symbol)}?date=${shanghaiDateStr()}`;
+    try {
+        const response = await fetch(url, {
+            method: 'GET',
+            headers: { 'X-Internal-Token': token },
+            signal: AbortSignal.timeout(EVENT_STORE_TIMEOUT_MS),
+        });
+        if (!response.ok) {
+            console.warn('[StockTraceSnapshot] event_store_read_failed, fallback to original collect', {
+                symbol,
+                status: response.status,
+            });
+            return [];
+        }
+        const data = (await response.json()) as { events?: unknown };
+        const events = Array.isArray(data?.events) ? data.events : [];
+        return events
+            .filter(isEventStoreEvent)
+            .map((ev) => toEventStoreSourceRecord(ev, symbol, capturedAt));
+    } catch (err: unknown) {
+        console.warn('[StockTraceSnapshot] event_store_read_failed, fallback to original collect', {
+            symbol,
+            error: err instanceof Error ? err.message : String(err),
+        });
+        return [];
+    }
 }
 
 export class StockTraceSnapshotService {
@@ -233,6 +334,23 @@ export class StockTraceSnapshotService {
     }
 
     private static async collectCompanySources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
+        // 统一事件抓取中台：事件证据优先读事件库，缺库降级到原采集（2026-08-12）
+        try {
+            const eventStoreRecords = await loadEventStoreEvidence(event.symbol, capturedAt);
+            if (eventStoreRecords.length > 0) {
+                console.log('[StockTraceSnapshot] event_store_used', {
+                    symbol: event.symbol,
+                    count: eventStoreRecords.length,
+                });
+                return eventStoreRecords;
+            }
+        } catch (error: unknown) {
+            console.warn('[StockTraceSnapshot] event_store_read_failed, fallback to original collect', {
+                symbol: event.symbol,
+                error: String(error),
+            });
+        }
+        // 原采集逻辑保持不变（ClsStockNewsService 个股新闻 + StockInfoService 公告）
         const records: StockSourceRecord[] = [];
         const [newsResult, announcementResult] = await Promise.allSettled([
             ClsStockNewsService.getStockNews(event.symbol, { limit: 5, lastTime: 0 }),
