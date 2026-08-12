@@ -92,7 +92,6 @@ export class PriceMoveService {
         const { createOrUpdatePriceEvent } = await import('./PriceEventService');
         const eventId = await createOrUpdatePriceEvent(s);
         if (!eventId) return;
-        // @ts-expect-error - EvidencePackageService 由 Task 3 创建，动态导入保证运行时可用
         const { freezeEvidencePackage } = await import('./EvidencePackageService');
         const { enqueue } = await import('./InsightJobService');
         await freezeEvidencePackage(eventId, s);
