@@ -64,6 +64,14 @@ function makeRes(): FakeRes {
 
 const next: NextFunction = () => {};
 
+/** 等待 fire-and-forget 推送链（void ...catch）执行到出现推送查询；条件等待 + 超时，避免固定 sleep 抖动 */
+async function waitForPushQuery(calls: string[], timeoutMs = 2000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!calls.some(c => c.includes('event_id = $1 AND (s.enabled')) && Date.now() < deadline) {
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+}
+
 afterEach(() => {
     mock.restoreAll();
 });
@@ -109,8 +117,8 @@ describe('POST /results/external 推送时序', () => {
         const resState = makeRes();
         await handler(req, resState as unknown as Response, next);
 
-        // 等 fire-and-forget 推送链（void ...catch）执行完
-        await new Promise<void>(resolve => setImmediate(() => setImmediate(() => resolve())));
+        // 等 fire-and-forget 推送链（void ...catch）执行到推送查询
+        await waitForPushQuery(calls);
 
         const v1Idx = calls.findIndex(c => c.includes(SUBSTANTIVE_SQL));
         const insertIdx = calls.findIndex(c => c.includes('INSERT INTO watchlist_insight_results'));
@@ -139,7 +147,7 @@ describe('POST /results/external 推送时序', () => {
         } as unknown as Request;
         const resState = makeRes();
         await handler(req, resState as unknown as Response, next);
-        await new Promise<void>(resolve => setImmediate(() => setImmediate(() => resolve())));
+        await waitForPushQuery(calls);
 
         const v1Idx = calls.findIndex(c => c.includes(SUBSTANTIVE_SQL));
         assert.equal(v1Idx, -1, '首次落库不应计算 isSubstantiveChange（v1 查询不应发生）');
