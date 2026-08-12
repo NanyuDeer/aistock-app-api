@@ -124,4 +124,25 @@ router.post('/results/external', async (req: Request, res: Response) => {
     }
 });
 
+/** 统一事件抓取中台：按日期读取同花顺原创/涨停雷达源（watchlist_insight_sources） */
+router.get('/sources', async (req: Request, res: Response) => {
+    try {
+        const day = String(req.query.date || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+            res.status(400).json({ code: 400, message: 'Invalid date format' });
+            return;
+        }
+        const { rows } = await pool.query(
+            `SELECT source_id, title, content, keywords, published_at, source_id AS id
+             FROM watchlist_insight_sources
+             WHERE published_at::date = $1::date
+             ORDER BY published_at DESC`,
+            [day],
+        );
+        res.json({ code: 200, data: { items: rows } });
+    } catch (error: unknown) {
+        res.status(502).json({ code: 502, message: errMsg(error) });
+    }
+});
+
 export default router;
