@@ -134,4 +134,4 @@ psql "$DATABASE_URL" -f scripts/cleanup-stock-trace.sql
 
 - 回滚（一期）：可将 `INSIGHT_CONSUMER_ENABLED=false`，并停用 app-api 采集 cron；数据表保留不删，后续可随时恢复。
 - 回滚（二期）：从 app-api `src/index.ts` 中移除午盘/尾盘/补抓 cron 注册项后重新部署；agent-py 侧无需变更；数据表保留不删。
-- 全部步骤执行完成后，在发布记录中勾选本清单，并确认第 7、8 节联调核对项全部通过。
+- 全部步骤执行完成后，在发布记录中勾选本清单，并确认第 7 节及第 8 节中二期联调核对项全部通过。
