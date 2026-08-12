@@ -9,7 +9,8 @@ const INSIGHT_GROUP = 'price_move';
  * 午盘首次达阈值 → 创建（event_type=midday_price_move）；
  * 尾盘同方向仍达阈值 → 更新既有事件（event_type=close_price_move）并返回原 eventId；
  * 尾盘方向与午盘相反 → 创建独立事件（event_type=close_price_move, direction 相反）。
- * 返回 null 表示事件已存在且无更新（尾盘同方向但无既有事件时亦创建）。
+ * 返回值：插入成功或事件已存在（含无更新）时返回 eventId 以触发证据包补抓；
+ * 仅并发竞争下 INSERT 冲突（DO NOTHING）时返回 null。
  */
 export async function createOrUpdatePriceEvent(s: PriceSnapshotRow): Promise<string | null> {
     const eventId = buildEventId(s.symbol, s.tradeDate, 'pm', s.direction);
