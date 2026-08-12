@@ -148,6 +148,9 @@ src/
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
 | `/internal/push/market-event` | **市场事件重磅推送**（POST，Python Agent 调用） | market/direction/indices/cause/evidence_url/title 等，需 X-Internal-Token |
+| `/internal/insight/events/:eventId/context` | **洞察归因上下文**（事件 + LEFT JOIN 来源文章 + 最新证据包，Python 归因 Agent 专用） | eventId，需 X-Internal-Token |
+| `/internal/insight/jobs/:jobId` | **洞察任务状态回报**（PATCH，Python 消费端） | jobId + status，需 X-Internal-Token |
+| `/internal/insight/results/external` | **洞察归因结果回写**（POST upsert + 更新推送分支） | result: {event_id, analysis_version, attribution_status, ...}，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
