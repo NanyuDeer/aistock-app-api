@@ -172,6 +172,25 @@ describe('loadEventStoreEvidence（读库优先、缺库降级）', () => {
         assert.deepStrictEqual(records, []);
     });
 
+    it('同时设置 AGENT_PY_URL 与 PYTHON_AGENT_URL → AGENT_PY_URL 胜出（请求 URL 以其为前缀）', async () => {
+        process.env.AGENT_PY_URL = 'http://agent-py-primary:9000';
+        process.env.PYTHON_AGENT_URL = 'http://python-agent:8000';
+        process.env.INTERNAL_API_TOKEN = 'test-token-abc';
+
+        let capturedUrl = '';
+        mockFetch(async (url) => {
+            capturedUrl = url;
+            return { status: 200, body: JSON.stringify({ events: [EVENT_A] }) };
+        });
+
+        const records = await loadEventStoreEvidence('600519', new Date());
+        assert.strictEqual(records.length, 1);
+        assert.ok(
+            capturedUrl.startsWith('http://agent-py-primary:9000/api/agent/event/scrape-by-symbol/600519?date='),
+            `AGENT_PY_URL 应优先于 PYTHON_AGENT_URL，实际 URL: ${capturedUrl}`,
+        );
+    });
+
     it('未配置 PYTHON_AGENT_URL / token → []（静默降级，不尝试请求）', async () => {
         delete process.env.PYTHON_AGENT_URL;
         delete process.env.AGENT_PY_URL;
