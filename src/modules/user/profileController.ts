@@ -8,6 +8,7 @@
  * "永不 500"：DB 异常返回 500 兜底（错误信息不外泄细节），不抛异常。
  */
 import { Request, Response, NextFunction } from 'express';
+import Redis from 'ioredis';
 import pool from '../../core/db';
 import { createResponse } from '../../shared/utils/response';
 import { verifyJwt } from '../../shared/utils/jwt';
@@ -43,8 +44,40 @@ function toProfile(row: ProfileRow): Record<string, unknown> {
     };
 }
 
+// ── 跨库缓存失效（Phase 4 验收修复 B8）──
+// agent-py 侧画像缓存在 `redis://...:6379/1` 的 `user_profile:{userId}`（TTL 300s）；
+// app-api 主 redis 连接在 db=2（core/redis.ts），不能 SELECT 污染，故用专用 db=1 短生命周期连接。
+const AGENT_CACHE_REDIS_URL = process.env.AGENT_PROFILE_CACHE_REDIS_URL || 'redis://127.0.0.1:6379/1';
+
+/** 可替换的 db=1 连接工厂（单测注入 stub 断言 del 调用；生产默认短生命周期连接）。
+ *  注：以对象属性承载而非 `export let` 函数绑定——本仓库 tsx 按 ESM 加载，模块命名空间
+ *  只读（tsc TS2632 + 运行时 getter-only），外部对命名导出的赋值均不可行；对象属性在
+ *  CJS/ESM 下皆可变，满足 M-4 可注入要求。 */
+export const _agentCacheRedisFactory: { current: () => Redis } = {
+    current: (): Redis => new Redis(AGENT_CACHE_REDIS_URL, {
+        lazyConnect: true, maxRetriesPerRequest: 1,
+        connectTimeout: 1500, commandTimeout: 1500,
+    }),
+};
+
+/** 失效 agent-py 侧 user_profile 缓存（db=1，与 agent-py 生产 REDIS_URL 对齐）。
+ *  "永不 500"：失败仅 warning——缓存 TTL 300s 自然过期兜底。 */
+export async function delAgentProfileCache(userId: string): Promise<void> {
+    const c = _agentCacheRedisFactory.current();
+    try {
+        await c.connect();
+        await c.del(`user_profile:${userId}`);
+        ProfileController.log('delCache', 'invalidated', { userId });
+    } catch (err) {
+        ProfileController.log('delCache', 'failed (TTL 300s 兜底)', err instanceof Error ? err.message : String(err));
+    } finally {
+        c.disconnect();
+    }
+}
+
 export class ProfileController {
-    private static log(stage: string, message: string, data?: unknown): void {
+    // 非 private：delAgentProfileCache（模块级函数）跨库失效日志复用
+    static log(stage: string, message: string, data?: unknown): void {
         const ts = new Date().toISOString();
         const detail = data !== undefined ? ` | ${JSON.stringify(data)}` : '';
         console.log(`[Profile][${stage}] ${ts} ${message}${detail}`);
@@ -159,10 +192,29 @@ export class ProfileController {
             );
             const row = result.rows[0];
             ProfileController.log('put', 'profile upserted', { user_id: auth.openid });
+            // 更新即失效：消除 agent-py 侧 300s 旧画像缓存窗口（B8；失败仅 warning 不阻断 200）
+            await delAgentProfileCache(auth.openid);
             createResponse(res, 200, 'success', row ? toProfile(row) : { user_id: auth.openid });
         } catch (err) {
             ProfileController.log('put', 'DB error', err instanceof Error ? err.message : String(err));
             createResponse(res, 500, '保存用户画像失败');
+        }
+    }
+
+    static async del(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await ProfileController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        try {
+            await pool.query('DELETE FROM user_profiles WHERE user_id = $1', [auth.openid]);
+            await delAgentProfileCache(auth.openid);
+            ProfileController.log('del', 'profile deleted', { user_id: auth.openid });
+            createResponse(res, 200, 'success', { deleted: true });
+        } catch (err) {
+            ProfileController.log('del', 'DB error', err instanceof Error ? err.message : String(err));
+            createResponse(res, 500, '删除用户画像失败');
         }
     }
 }

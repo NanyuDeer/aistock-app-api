@@ -5,15 +5,16 @@
  * （记录 SQL 调用并返回 mock rows）；合法 token 用 signJwt 真实签发；
  * after() 恢复 pool.query + redis.disconnect() 防进程挂起。
  */
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
+import Redis from 'ioredis';
 import pool from '../../../core/db';
 import redis from '../../../core/redis';
 import { signJwt } from '../../../shared/utils/jwt';
-import { ProfileController } from '../profileController';
+import { ProfileController, _agentCacheRedisFactory } from '../profileController';
 
 interface MockCall {
     sql: string;
@@ -40,8 +41,19 @@ function buildApp(): Express {
     app.use(express.json());
     app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
     app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
+    app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
     return app;
 }
+
+// ── agent-py 侧缓存跨库失效 stub（M-4：工厂可注入，DELETE/PUT 用例不产生真实 TCP 连接，
+//    断言 DEL 以 user_profile:{userId} 被调用）──
+let cacheDelCalls: string[] = [];
+const cacheClientMock = {
+    connect: async (): Promise<void> => undefined,
+    del: async (key: string): Promise<number> => { cacheDelCalls.push(key); return 1; },
+    disconnect: (): void => undefined,
+};
+const originalCacheFactory = _agentCacheRedisFactory.current;
 
 function authHeader(openid: string): http.OutgoingHttpHeaders {
     const now = Math.floor(Date.now() / 1000);
@@ -91,9 +103,17 @@ function call(
 
 before(() => { process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret'; });
 
+beforeEach(() => {
+    cacheDelCalls = [];
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    _agentCacheRedisFactory.current = () => cacheClientMock as unknown as Redis;
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+});
+
 after(() => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     (pool as any).query = originalQuery;
+    _agentCacheRedisFactory.current = originalCacheFactory;
     /* eslint-enable @typescript-eslint/no-explicit-any */
     redis.disconnect();
 });
@@ -272,5 +292,48 @@ describe('PUT /api/user/profile', () => {
 
         assert.strictEqual(res.status, 401);
         assert.strictEqual(mockCalls.length, 0);
+    });
+
+    it('成功后失效 agent-py 缓存（DEL 以 user_profile:{userId} 被调用）', async () => {
+        mockCalls = [];
+        mockResponder = () => ({ rows: [] });
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'PUT',
+            path: '/api/user/profile',
+            headers: { ...authHeader('o_1'), 'content-type': 'application/json' },
+            body: { nickname: '老张' },
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(cacheDelCalls, ['user_profile:o_1'], 'PUT 成功后应 DEL agent-py 缓存（消除 300s 旧画像窗口）');
+    });
+});
+
+describe('DELETE /api/user/profile', () => {
+    it('删除成功 → 200 + deleted:true + DEL db=1 缓存 key', async () => {
+        mockCalls = [];
+        mockResponder = () => ({ rows: [] });
+        const app = buildApp();
+        const res = await call(app, { method: 'DELETE', path: '/api/user/profile', headers: authHeader('o_del') });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { code: number; data: { deleted: boolean } };
+        assert.strictEqual(body.code, 200);
+        assert.deepStrictEqual(body.data, { deleted: true });
+        const delCalls = mockCalls.filter((c) => c.sql.includes('DELETE FROM user_profiles'));
+        assert.strictEqual(delCalls.length, 1);
+        assert.deepStrictEqual(delCalls[0].params, ['o_del']);
+        assert.deepStrictEqual(cacheDelCalls, ['user_profile:o_del'], '删除后应 DEL agent-py 缓存 key');
+    });
+
+    it('无 token → 401 不触达 SQL、不触碰缓存', async () => {
+        mockCalls = [];
+        const app = buildApp();
+        const res = await call(app, { method: 'DELETE', path: '/api/user/profile', headers: {} });
+
+        assert.strictEqual(res.status, 401);
+        assert.strictEqual(mockCalls.length, 0, '鉴权失败不应触达 SQL');
+        assert.strictEqual(cacheDelCalls.length, 0, '鉴权失败不应触碰缓存');
     });
 });

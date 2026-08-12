@@ -195,9 +195,11 @@ app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res,
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
-// 用户画像（Phase 4-3：JWT 鉴权，openid 即 user_id；GET 无记录返回空对象，PUT 部分更新 + G7 数组整体替换）
+// 用户画像（Phase 4-3：JWT 鉴权，openid 即 user_id；GET 无记录返回空对象，PUT 部分更新 + G7 数组整体替换；
+// DELETE：PIPL 删除权，删除后同步失效 agent-py 侧 db=1 缓存，Phase 4 验收修复 B8）
 app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
 app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
+app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
