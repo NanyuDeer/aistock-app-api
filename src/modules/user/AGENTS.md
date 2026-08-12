@@ -27,7 +27,7 @@
 - **JSONB 参数必须 JSON 序列化**（`JSON.stringify`）：node-postgres 对 JS 数组直传会报"类型json的输入语法无效"（500）——集成冒烟实证，测试断言参数为 JSON 文本
 - "永不 500"：DB 异常返回 500 兜底文案，错误细节不外泄
 - 无 token / 无效 token / 已撤销 token → 401（不触达 SQL）
-- **跨库缓存失效**：agent-py 侧画像缓存 `user_profile:{userId}` 在 **db=1**（TTL 300s）；app-api 主 redis 连接在 **db=2**（`core/redis.ts`），**禁止 SELECT 污染**——用专用 db=1 短生命周期连接（`lazyConnect` + 1.5s 超时），`AGENT_PROFILE_CACHE_REDIS_URL`（默认 `redis://127.0.0.1:6379/1`）与 agent-py 生产 `REDIS_URL` 对齐（同一实例同一 db）；缓存失效失败仅 warning，不阻断 DELETE/PUT 200 响应
+- **跨库缓存失效**：agent-py 侧画像缓存 `user_profile:{userId}` 在 **db=15**（agent-py `REDIS_URL` 所在 Redis，TTL 300s）；app-api 主 redis 连接在 **db=9**（`core/redis.ts`），**禁止 SELECT 污染**——用专用短生命周期连接（`lazyConnect` + 1.5s 超时）。连接 URL 解析（`resolveAgentCacheRedisUrl`，问题 19 修复 2026-08-12）：`AGENT_PROFILE_CACHE_REDIS_URL` 显式覆盖优先；未配置则从本服务 `REDIS_URL` 派生（保留 auth/host/port，仅把 db 段替换为 `AGENT_PROFILE_CACHE_DB`=15，与 agent-py 缓存真实位置对齐）；无 `REDIS_URL` 兜底 `redis://127.0.0.1:6379/15`。缓存失效失败仅 warning，不阻断 DELETE/PUT 200 响应
 
 ## 依赖
 

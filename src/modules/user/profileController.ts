@@ -47,22 +47,39 @@ function toProfile(row: ProfileRow): Record<string, unknown> {
 }
 
 // ── 跨库缓存失效（Phase 4 验收修复 B8）──
-// agent-py 侧画像缓存在 `redis://...:6379/1` 的 `user_profile:{userId}`（TTL 300s）；
-// app-api 主 redis 连接在 db=2（core/redis.ts），不能 SELECT 污染，故用专用 db=1 短生命周期连接。
-const AGENT_CACHE_REDIS_URL = process.env.AGENT_PROFILE_CACHE_REDIS_URL || 'redis://127.0.0.1:6379/1';
+// agent-py 侧画像缓存在 `user_profile:{userId}`（TTL 300s），所在 Redis 即 agent-py 的
+// `REDIS_URL`（生产 `redis://:8EscLKUF@127.0.0.1:6379/15`，db=15）。
+// app-api 主 redis 连接在 db=9（core/redis.ts），不能 SELECT 污染，故用专用短生命周期连接。
+// 修复（问题 19，2026-08-12）：默认 URL 曾写死 `redis://127.0.0.1:6379/1`（无密码）→ 生产
+// Redis requirepass 时报 NOAUTH，失效从未执行（DELETE 后 300s 内旧画像仍生效）。现改为从
+// 本服务 `REDIS_URL` 派生（保留 auth/host/port），仅替换 db 段为 agent-py 缓存 db（15），
+// 使失效连接与 agent-py 缓存真实位置对齐；仍可用 `AGENT_PROFILE_CACHE_REDIS_URL` 显式覆盖。
+const AGENT_PROFILE_CACHE_DB = '15'; // 与 agent-py `REDIS_URL` 的 db 对齐（缓存实际所在）
 
-/** 可替换的 db=1 连接工厂（单测注入 stub 断言 del 调用；生产默认短生命周期连接）。
+export function resolveAgentCacheRedisUrl(): string {
+    const explicit = process.env.AGENT_PROFILE_CACHE_REDIS_URL;
+    if (explicit) return explicit;
+    const base = process.env.REDIS_URL;
+    if (base) {
+        // 保留 auth/host/port，仅把 db 段替换为 agent-py 缓存 db（无 db 段则追加）
+        return base.replace(/(?:\/\d+)?$/, `/${AGENT_PROFILE_CACHE_DB}`);
+    }
+    // 兜底：与 agent-py 生产默认对齐（本服务 REDIS_URL 缺失的极端场景）
+    return `redis://127.0.0.1:6379/${AGENT_PROFILE_CACHE_DB}`;
+}
+
+/** 可替换的缓存连接工厂（单测注入 stub 断言 del 调用；生产默认短生命周期连接）。
  *  注：以对象属性承载而非 `export let` 函数绑定——本仓库 tsx 按 ESM 加载，模块命名空间
  *  只读（tsc TS2632 + 运行时 getter-only），外部对命名导出的赋值均不可行；对象属性在
  *  CJS/ESM 下皆可变，满足 M-4 可注入要求。 */
 export const _agentCacheRedisFactory: { current: () => Redis } = {
-    current: (): Redis => new Redis(AGENT_CACHE_REDIS_URL, {
+    current: (): Redis => new Redis(resolveAgentCacheRedisUrl(), {
         lazyConnect: true, maxRetriesPerRequest: 1,
         connectTimeout: 1500, commandTimeout: 1500,
     }),
 };
 
-/** 失效 agent-py 侧 user_profile 缓存（db=1，与 agent-py 生产 REDIS_URL 对齐）。
+/** 失效 agent-py 侧 user_profile 缓存（db=15，与 agent-py 生产 REDIS_URL 对齐）。
  *  "永不 500"：失败仅 warning——缓存 TTL 300s 自然过期兜底。 */
 export async function delAgentProfileCache(userId: string): Promise<void> {
     const c = _agentCacheRedisFactory.current();
