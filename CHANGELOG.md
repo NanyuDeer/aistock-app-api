@@ -2,6 +2,22 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-12 — Phase 5 删会话联动删 checkpointer thread
+**开发者**: 37588
+
+### 新增
+- `src/modules/chat/agentThreadClient.ts`：`deleteChatThread(sessionId)`——调用 agent-py `DELETE /api/agent/internal/chat/threads/:session_id`（X-Internal-Token；AbortController 3s 超时；非 2xx 抛错；env：`AGENT_PY_URL || PYTHON_AGENT_URL || http://localhost:8080`）
+
+### 改进
+- `src/modules/chat/sessionController.ts` `remove`：PG 删除 `chat_sessions` 成功后 `await deleteChatThread(sessionId)`（`__threadClientDependencies` 注入点供测试 stub）；失败仅 warning 不阻断，仍返回 200（"永不 500"）
+
+### 测试
+- `src/modules/chat/__tests__/session.spec.ts` +2（联动调用触发 / 联动失败仍 200）
+
+> 验证：tsc --noEmit 0 错误；chat 定向 18/18。配套 agent-py Phase 5（窗口+零 LLM 摘要 / 删 thread / busy_timeout）。代码验收通过（待生产验证），待组长 merge 后部署验证。
+
+---
+
 ## [changer] 2026-08-12 — 问题 19 修复：user_profile 缓存失效连接对齐 agent-py 真实 Redis
 **开发者**: 37588
 
