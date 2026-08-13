@@ -42,6 +42,14 @@ interface CommonListParams {
     pageSize: number;
     sortBy: ForecastSortBy;
     sortOrder: ForecastSortOrder;
+    symbols: string[] | null;
+}
+
+
+export function parseForecastSymbols(raw: string | null): string[] | null {
+    if (!raw) return null;
+    const symbols = [...new Set(raw.split(',').map(s => s.trim()).filter(Boolean))].slice(0, 200);
+    return symbols.length ? symbols : null;
 }
 
 const LATEST_FORECAST_CTE = `
@@ -135,7 +143,7 @@ export class ProfitForecastController {
         const finalSortOrder = (sortOrderRaw || defaultOrder) as ForecastSortOrder;
         if (!ProfitForecastController.ALLOWED_SORT_ORDER.has(finalSortOrder)) return { error: 'Invalid sortOrder - 仅支持 asc 或 desc' };
 
-        return { page, pageSize, sortBy, sortOrder: finalSortOrder };
+        return { page, pageSize, sortBy, sortOrder: finalSortOrder, symbols: parseForecastSymbols(url.searchParams.get('symbols')) };
     }
 
     private static buildOrderBy(sortBy: ForecastSortBy, sortOrder: ForecastSortOrder): string {
@@ -283,13 +291,18 @@ export class ProfitForecastController {
             return;
         }
 
-        const { page, pageSize, sortBy, sortOrder } = parsed;
+        const { page, pageSize, sortBy, sortOrder, symbols } = parsed;
         const offset = (page - 1) * pageSize;
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
 
+        // 自选股筛选：symbols 存在时按代码集合过滤
+        const hasSymbols = !!symbols && symbols.length > 0;
+        const symbolFilter = hasSymbols ? ' AND l.symbol = ANY($1::text[])' : '';
+        const symbolParams = hasSymbols ? [symbols] : [];
+
         try {
-            const countQuery = `${LATEST_FORECAST_CTE} SELECT COUNT(*) AS total FROM latest l WHERE l.forecast_netprofit_yoy IS NOT NULL`;
-            const countResult = await pool.query(countQuery);
+            const countQuery = `${LATEST_FORECAST_CTE} SELECT COUNT(*) AS total FROM latest l WHERE l.forecast_netprofit_yoy IS NOT NULL${symbolFilter}`;
+            const countResult = await pool.query(countQuery, symbolParams);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
 
@@ -298,10 +311,11 @@ export class ProfitForecastController {
                        l.forecast_netprofit, l.forecast_eps, l.forecast_eps_yoy
                 FROM latest l
                 LEFT JOIN stocks s ON s.symbol = l.symbol
-                WHERE l.forecast_netprofit_yoy IS NOT NULL
+                WHERE l.forecast_netprofit_yoy IS NOT NULL${symbolFilter}
                 ORDER BY ${orderBy}
-                LIMIT $1 OFFSET $2`;
-            const dataResult = await pool.query(dataQuery, [pageSize, offset]);
+                LIMIT $${hasSymbols ? 2 : 1} OFFSET $${hasSymbols ? 3 : 2}`;
+            const dataParams: unknown[] = hasSymbols ? [symbols, pageSize, offset] : [pageSize, offset];
+            const dataResult = await pool.query(dataQuery, dataParams);
 
             const list = dataResult.rows.map(item => this.mapForecastRow(item as ForecastListRow));
             createResponse(res, 200, 'success', {
@@ -337,10 +351,16 @@ export class ProfitForecastController {
             return;
         }
 
-        const { page, pageSize, sortBy, sortOrder } = parsed;
+        const { page, pageSize, sortBy, sortOrder, symbols } = parsed;
         const offset = (page - 1) * pageSize;
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
         const keywordPattern = `%${keyword}%`;
+
+        // 自选股筛选
+        const hasSymbols = !!symbols && symbols.length > 0;
+        const symbolFilter = hasSymbols ? ' AND l.symbol = ANY($2::text[])' : '';
+        const countParams: unknown[] = hasSymbols ? [keywordPattern, symbols] : [keywordPattern];
+        const dataParams: unknown[] = hasSymbols ? [keywordPattern, symbols, pageSize, offset] : [keywordPattern, pageSize, offset];
 
         try {
             const countQuery = `${LATEST_FORECAST_CTE}
@@ -348,8 +368,8 @@ export class ProfitForecastController {
                 FROM latest l
                 LEFT JOIN stocks s ON s.symbol = l.symbol
                 WHERE l.forecast_netprofit_yoy IS NOT NULL
-                  AND (l.symbol LIKE $1 OR COALESCE(s.name, '') LIKE $1 OR COALESCE(s.pinyin, '') LIKE $1)`;
-            const countResult = await pool.query(countQuery, [keywordPattern]);
+                  AND (l.symbol LIKE $1 OR COALESCE(s.name, '') LIKE $1 OR COALESCE(s.pinyin, '') LIKE $1)${symbolFilter}`;
+            const countResult = await pool.query(countQuery, countParams);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
 
@@ -359,10 +379,10 @@ export class ProfitForecastController {
                 FROM latest l
                 LEFT JOIN stocks s ON s.symbol = l.symbol
                 WHERE l.forecast_netprofit_yoy IS NOT NULL
-                  AND (l.symbol LIKE $1 OR COALESCE(s.name, '') LIKE $1 OR COALESCE(s.pinyin, '') LIKE $1)
+                  AND (l.symbol LIKE $1 OR COALESCE(s.name, '') LIKE $1 OR COALESCE(s.pinyin, '') LIKE $1)${symbolFilter}
                 ORDER BY ${orderBy}
-                LIMIT $2 OFFSET $3`;
-            const dataResult = await pool.query(dataQuery, [keywordPattern, pageSize, offset]);
+                LIMIT $${hasSymbols ? 3 : 2} OFFSET $${hasSymbols ? 4 : 3}`;
+            const dataResult = await pool.query(dataQuery, dataParams);
 
             const list = dataResult.rows.map(item => this.mapForecastRow(item as ForecastListRow));
             createResponse(res, 200, 'success', {
