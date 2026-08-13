@@ -28,7 +28,7 @@ interface WindLeaderData {
 
 interface WindLeaderSector {
     code?: string;
-    cycle?: 'short' | 'long' | 'both';
+    cycle?: 'short' | 'long' | 'both' | 'none';
     name?: string;
     type?: string;
     frequency?: number;

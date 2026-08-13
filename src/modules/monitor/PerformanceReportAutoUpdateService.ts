@@ -16,6 +16,7 @@
 
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
 import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
@@ -184,6 +185,20 @@ export class PerformanceReportAutoUpdateService {
                                 row.net_profit_max ?? null,
                             ]
                         );
+                        try {
+                            await NotificationService.createForWatchers({
+                                category: 'performance_report',
+                                sourceKey: `performance-report:${symbol}:express:${annDate}`,
+                                symbol,
+                                stockName: stockName || symbol,
+                                title: `${stockName || symbol}：业绩快报/预告更新`,
+                                summary: row.summary || `公告日期 ${annDate}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                payload: { reportType: 'express', annDate },
+                            });
+                        } catch (error) {
+                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                        }
                         expressUpdated = true;
                     }
 
@@ -213,6 +228,20 @@ export class PerformanceReportAutoUpdateService {
                                 row.basic_eps ?? null,
                             ]
                         );
+                        try {
+                            await NotificationService.createForWatchers({
+                                category: 'performance_report',
+                                sourceKey: `performance-report:${symbol}:formal:${annDate}`,
+                                symbol,
+                                stockName: stockName || symbol,
+                                title: `${stockName || symbol}：财报披露`,
+                                summary: `公告日期 ${annDate}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                payload: { reportType: 'formal', annDate },
+                            });
+                        } catch (error) {
+                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                        }
                         formalUpdated = true;
                     }
 
@@ -254,9 +283,23 @@ export class PerformanceReportAutoUpdateService {
                         console.warn(`[PerformanceReportAutoUpdate] ${symbol} report_rc 获取失败: ${err.message}`);
                     }
 
-                    if (expressUpdated || formalUpdated) {
+                    // 是否有新插入的报告
+                    const hasNewReport = expressUpdated || formalUpdated;
+
+                    // 是否还有"利润数据已就绪但标签为空"的报告需要补算
+                    // （覆盖：插入时利润字段为空被跳过、或上次计算失败等情况）
+                    const pendingTagFix = await pool.query(
+                        `SELECT 1 FROM performance_reports
+                         WHERE symbol = $1 AND report_type IN ('formal', 'express')
+                           AND n_income_attr_p IS NOT NULL
+                           AND (ai_tag IS NULL OR ai_tag = '')
+                         LIMIT 1`,
+                        [symbol]
+                    );
+
+                    if (hasNewReport || pendingTagFix.rows.length > 0) {
                         updated++;
-                        // 为新插入的报告计算并更新 ai_tag
+                        // 为新插入的报告计算 ai_tag，并补偿历史空标签
                         await PerformanceReportAutoUpdateService.updateAiTags(symbol);
                     } else {
                         skipped++;

@@ -3,6 +3,7 @@ import { WechatPushService } from '../push/WechatPushService';
 import { MessagePushService } from '../push/MessagePushService';
 import { CacheService } from '../../shared/utils/CacheService';
 import { StockTraceTriggerService } from './services/StockTraceTriggerService';
+import { NotificationService } from '../../core/notification/NotificationService';
 
 export interface StockInfoPushRequest {
     window?: string;
@@ -138,6 +139,21 @@ export class StockInfoPushService {
                     ai_summary: event.ai_summary,
                     published_at: event.published_at instanceof Date ? event.published_at.toISOString() : String(event.published_at),
                 });
+
+                try {
+                    await NotificationService.createForWatchers({
+                        category: 'stock_info',
+                        sourceKey: `stock-info:${event.id}`,
+                        symbol: event.symbol,
+                        stockName: event.stock_name || undefined,
+                        title: `${event.stock_name || event.symbol}：资讯异动`,
+                        summary: event.ai_summary || event.title || '自选股资讯出现新动态',
+                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                        payload: { judgementId: event.id, infoType: event.info_type, url: event.url || '' },
+                    });
+                } catch (error) {
+                    console.warn('[StockInfoPush] App notification failed:', error instanceof Error ? error.message : String(error));
+                }
 
                 summary.results.push({ id: judgement.id, symbol: judgement.symbol, ...result });
                 allCandidates.push({ id: judgement.id, symbol: judgement.symbol });

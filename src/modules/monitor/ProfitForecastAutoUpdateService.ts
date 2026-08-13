@@ -10,9 +10,11 @@
  *    - 重新爬取并对比新旧数据，仅当有变化时更新
  */
 
+import { createHash } from 'node:crypto';
 import pool from '../../core/db';
 import { getReportRc, type ReportRcRow } from '../quote/TushareService';
 import { CacheService } from '../../shared/utils/CacheService';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { shanghaiDateStr, shanghaiDateYyyymmdd, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 
@@ -202,6 +204,24 @@ export class ProfitForecastAutoUpdateService {
                             forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
                         [symbol, updateTime, summary, JSON.stringify(detail), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                     );
+                    try {
+                        const nameResult = await pool.query<{ name: string | null }>('SELECT name FROM stocks WHERE symbol = $1 LIMIT 1', [symbol]);
+                        const stockName = nameResult.rows[0]?.name || symbol;
+                        // 去重键取内容指纹而非抓取时刻：同一份预测无论重跑还是补投多少次都只产生一条通知
+                        const contentKey = ProfitForecastAutoUpdateService.buildContentKey(summary, detail);
+                        await NotificationService.createForWatchers({
+                            category: 'forecast',
+                            sourceKey: `forecast:${symbol}:${contentKey}`,
+                            symbol,
+                            stockName,
+                            title: `${stockName}：业绩预测更新`,
+                            summary: summary || '机构业绩预测数据已更新',
+                            targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                            payload: { updateTime },
+                        });
+                    } catch (error) {
+                        console.warn('[ProfitForecastAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                    }
                     updated++;
                 } catch (err: any) {
                     errors++;
@@ -218,6 +238,14 @@ export class ProfitForecastAutoUpdateService {
         await Promise.all(workers);
 
         return { updated, skipped, errors };
+    }
+
+    /** 业绩预测内容指纹：摘要 + 明细，用作通知去重键 */
+    private static buildContentKey(summary: string, detail: unknown): string {
+        return createHash('sha256')
+            .update(`${summary}\u0000${JSON.stringify(detail ?? [])}`)
+            .digest('hex')
+            .slice(0, 16);
     }
 
     /** 爬取个股业绩预测 */

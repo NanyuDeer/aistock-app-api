@@ -17,7 +17,8 @@ import express, { type Express } from 'express';
 import pool from '../../../core/db';
 import redis from '../../../core/redis';
 import { UsageController } from '../usageController';
-import { signJwt } from '../../../shared/utils/jwt';
+import { signJwt, verifyJwt } from '../../../shared/utils/jwt';
+import { revokeToken } from '../../../shared/utils/tokenBlacklist';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const originalQuery = pool.query.bind(pool) as any;
@@ -139,5 +140,52 @@ describe('UsageController /api/chat/usage/summary', () => {
         });
         assert.strictEqual(mockCalls.length, 1);
         assert.deepStrictEqual(mockCalls[0].params, ['u_42'], '按 openid（JWT 身份）聚合');
+    });
+});
+
+describe('token-revocation：黑名单凭证拒绝（sessionUsage requireAuth）', () => {
+    // 既有 describe 的 after() 会删除 JWT_SECRET 并还原 pool.query（describe 作用域），
+    // 本 describe 需自带 before/after 重建 harness（沿用同款 mock，真实 CacheService 双写）。
+    before(() => {
+        process.env.JWT_SECRET = 'test-secret';
+        mockCalls = [];
+        /* eslint-disable @typescript-eslint/no-explicit-any */
+        (pool as any).query = function (sql: string, ...rest: unknown[]): Promise<{ rows: unknown[] }> {
+            const params = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
+            mockCalls.push({ sql, params });
+            return Promise.resolve({
+                rows: [
+                    { prompt_tokens: '10', completion_tokens: '20', total_tokens: '30', turn_count: '2' },
+                ],
+            });
+        };
+        /* eslint-enable @typescript-eslint/no-explicit-any */
+    });
+
+    after(() => {
+        /* eslint-disable @typescript-eslint/no-explicit-any */
+        (pool as any).query = originalQuery;
+        /* eslint-enable @typescript-eslint/no-explicit-any */
+        delete process.env.JWT_SECRET;
+        redis.disconnect();
+    });
+
+    it('已撤销 token 请求 /api/chat/usage/summary → 401', async () => {
+        const now = Math.floor(Date.now() / 1000);
+        const token = signJwt({ openid: 'o_revoked', nickname: 't', iat: now, exp: now + 3600 }, process.env.JWT_SECRET!);
+        // 真实撤销：写入黑名单（真实 CacheService 双写——本进程内 Redis 或本地 Map 均可命中）
+        const payload = verifyJwt(token, process.env.JWT_SECRET!)!;
+        await revokeToken(payload);
+        const app = buildApp();
+        const r = await call(app, { path: '/api/chat/usage/summary', headers: { authorization: `Bearer ${token}` } });
+        assert.strictEqual(r.status, 401);
+    });
+
+    it('未撤销 token → 200（fail-open 不影响合法用户）', async () => {
+        const now = Math.floor(Date.now() / 1000);
+        const token = signJwt({ openid: 'o_ok', nickname: 't', iat: now, exp: now + 3600 }, process.env.JWT_SECRET!);
+        const app = buildApp();
+        const r = await call(app, { path: '/api/chat/usage/summary', headers: { authorization: `Bearer ${token}` } });
+        assert.strictEqual(r.status, 200);
     });
 });

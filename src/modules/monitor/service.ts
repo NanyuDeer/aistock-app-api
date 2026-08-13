@@ -139,6 +139,7 @@ export class StockMonitorService {
         stock_code?: string;
         limit?: number;
         offset?: number;
+        dateFrom?: string;
     }): Promise<{ total: number; events: MonitorEventItem[] }> {
         const cycle = normalizeCycle(params.cycle);
         const result = await StockInfoService.queryJudgements({
@@ -147,6 +148,7 @@ export class StockMonitorService {
             impact: normalizeImpact(params.change_type),
             limit: params.limit || 20,
             offset: params.offset || 0,
+            dateFrom: params.dateFrom,
         });
 
         const events = result.items.map(mapJudgementToEvent);
@@ -291,6 +293,7 @@ export class StockMonitorService {
         change_type?: string;
         limit?: number;
         offset?: number;
+        dateFrom?: string;
     }): Promise<{ total: number; events: MonitorEventItem[] }> {
         return this.getEvents(query);
     }

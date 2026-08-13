@@ -31,7 +31,7 @@ export async function findResearchReportMessagesForStock(
 
   // 查询1：通过 stock_codes 数组匹配（bot 已提取代码的消息）
   const resultByCode = await pool.query(
-    `SELECT id, chat_name, message_id, text, stock_codes, received_at
+    `SELECT id, source, chat_name, message_id, text, ocr_text, stock_codes, received_at
      FROM feishu_messages
      WHERE received_at > NOW() - INTERVAL '${hours} hours'
        AND $1 = ANY(stock_codes)
@@ -44,7 +44,7 @@ export async function findResearchReportMessagesForStock(
   // 飞书消息文本中通常只有描述性文字（如"这家公司"），不直接包含股票名称，
   // 但 bot 入库时可能未填充 stock_codes，需要从文本中重新提取
   const resultByText = await pool.query(
-    `SELECT id, chat_name, message_id, text, stock_codes, received_at
+    `SELECT id, source, chat_name, message_id, text, ocr_text, stock_codes, received_at
      FROM feishu_messages
      WHERE received_at > NOW() - INTERVAL '${hours} hours'
        AND array_length(stock_codes, 1) IS NULL
@@ -74,11 +74,17 @@ export async function findResearchReportMessagesForStock(
 
   for (const row of allRows) {
     const text = String(row.text || '');
+    const ocrText = String(row.ocr_text || '');
     const chatName = String(row.chat_name || '');
-    if (!isResearchReportMessage(text, chatName)) continue;
+    const isQqResearch = String(row.source || '') === 'qq';
+    if (!isQqResearch && !isResearchReportMessage(`${text} ${ocrText}`, chatName)) continue;
 
-    const stocks = extractReportRecommendedStocks(text);
-    const stock = stocks.find(s => s.symbol === symbol);
+    const stocks = extractReportRecommendedStocks(`${text}\n${ocrText}`);
+    const stock = stocks.find(s => s.symbol === symbol)
+      // QQ PDF/图片的股票代码已由机器人写入 stock_codes，正文可能只是文件名。
+      || (isQqResearch && (row.stock_codes || []).includes(symbol)
+        ? { symbol, stockName: '' }
+        : undefined);
     if (!stock) continue;
 
     matched.push({

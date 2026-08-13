@@ -9,7 +9,7 @@
  * 5. GET /api/chat/usage/sessions/:id 无记录 → items 空数组
  *
  * Mock 策略：monkey-patch pool.query（SessionUsageController 持有同一 pool 对象引用）。
- * 注意：SessionUsageController 依赖链不加载 redis（core/db.ts 纯净），无需 redis.disconnect()。
+ * 注意：requireAuth 走 tokenBlacklist → CacheService（加载 core/redis），after() 需 redis.disconnect() 防挂起。
  * 与 index.ts 注册完全一致：静态路由先于参数化。
  */
 import { describe, it, before, after } from 'node:test';
@@ -18,6 +18,7 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import pool from '../../../core/db';
+import redis from '../../../core/redis';
 import { SessionUsageController } from '../sessionUsageController';
 import { signJwt } from '../../../shared/utils/jwt';
 
@@ -110,6 +111,7 @@ describe('SessionUsageController', () => {
         /* eslint-disable @typescript-eslint/no-explicit-any */
         (pool as any).query = originalQuery;
         /* eslint-enable @typescript-eslint/no-explicit-any */
+        redis.disconnect();
     });
 
     it('401：无 token 时 list 与 detail 均返回 401', async () => {

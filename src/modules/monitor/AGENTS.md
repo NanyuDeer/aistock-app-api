@@ -8,6 +8,7 @@
 - `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
 - `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
+- `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
@@ -25,6 +26,7 @@
 - `FeishuMessageAiService.ts` — 领取待处理飞书消息、调用千问并生成按股票关联的关键词
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
+- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线法，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
 - 对应 Service 文件
 
 ## 依赖的 shared 类型
@@ -43,7 +45,7 @@
 - `modules/crawler/StockInfoService` — 股票信息（研判）
 
 ## 开发注意事项
-- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 60 天，板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）
+- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10，网页同款口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
 - 飞书消息 AI 任务每分钟执行一次；仅处理正文/OCR非空且已有候选股票代码的消息，失败不自动重试

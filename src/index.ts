@@ -43,6 +43,8 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+// user 用户画像（Phase 4-3 全局用户记忆）
+import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -61,6 +63,7 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
@@ -76,6 +79,12 @@ import { StockSyncService } from './modules/monitor/StockSyncService';
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
 import { InsightController } from './modules/insight/controller';
+import { NotificationService } from './core/notification/NotificationService';
+import { NotificationRetryService } from './core/notification/NotificationRetryService';
+
+// prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
+import predictionInternalRouter from './modules/prediction/internalRouter';
+import predictionPublicRouter from './modules/prediction/publicRouter';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -90,6 +99,7 @@ import { closeAllAgents } from './shared/utils/httpAgent';
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { initWebSocket } from './core/ws/handler';
+import { initChatBridge } from './core/ws/chat-bridge';
 import { shouldRunBackgroundJobs } from './core/qa_mode';
 
 import { Application } from 'express';
@@ -128,6 +138,7 @@ app.use('/api/agent', publicRouter);
 app.use('/api/agent', createAgentProxy({
     target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
     internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+    jwtSecret: process.env.JWT_SECRET || '',
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -186,12 +197,19 @@ app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res,
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
+// 用户画像（Phase 4-3：JWT 鉴权，openid 即 user_id；GET 无记录返回空对象，PUT 部分更新 + G7 数组整体替换；
+// DELETE：PIPL 删除权，删除后同步失效 agent-py 侧 db=1 缓存，Phase 4 验收修复 B8）
+app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
+app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
+app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
+app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -228,6 +246,7 @@ app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementC
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
 app.get('/api/cn/wind-leaders', (req, res, next) => WindLeaderController.getWindLeaders(req, res, next));
+app.get('/api/cn/wind-leaders/board-kline', (req, res, next) => WindLeaderController.getBoardKline(req, res, next));
 app.post('/api/internal/wind-leaders', (req, res, next) => WindLeaderController.pushWindLeaders(req, res, next));
 app.post('/api/cn/hot-keywords/detect', (req, res, next) => WindLeaderController.detectHotKeywords(req, res, next));
 app.get('/api/cn/hot-keywords', (req, res, next) => WindLeaderController.getHotKeywords(req, res, next));
@@ -552,6 +571,10 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 
 app.use('/internal/insight', insightInternalRouter);
 
+app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -728,6 +751,35 @@ cron.schedule('30 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
+cron.schedule('35 15 * * *', async () => {
+    console.log('[RotationBoardCron] 开始同步板块轮动榜');
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
+            return;
+        }
+        const count = await RotationBoardStore.syncRotationHistory();
+        console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
+    } catch (err: unknown) {
+        console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        const result = await NotificationRetryService.run();
+        if (result.flushed || result.delivered || result.retrying || result.dropped) {
+            console.log(`[NotificationRetry] flushed=${result.flushed}, delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+        }
+    } catch (err: unknown) {
+        console.error('[NotificationRetry] 执行失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 业绩预测自动更新：每天凌晨 00:00 执行
 cron.schedule('0 0 * * *', async () => {
     console.log('[ProfitForecastAutoUpdateCron] 开始执行业绩预测自动更新');
@@ -824,6 +876,21 @@ async function start() {
     }
 
     try {
+        await NotificationService.ensureSchemaAtStartup();
+        console.log('[DB] user_notifications table ready');
+        // 启动补投：进程上次退出时 outbox 里可能还有没投递成功的通知
+        NotificationRetryService.run()
+            .then(result => {
+                if (result.delivered || result.retrying || result.dropped) {
+                    console.log(`[NotificationRetry] 启动补投: delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+                }
+            })
+            .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
+    } catch (err: unknown) {
+        console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
         await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS industry TEXT DEFAULT ''`);
         console.log('[DB] stocks.industry column ready');
     } catch (err: unknown) {
@@ -850,6 +917,14 @@ async function start() {
         console.log('[DB] stock_concept_mapping table ready');
     } catch (err: unknown) {
         console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 板块轮动榜表（网页同款口径：每日涨幅/跌幅前10），风口龙头与趋势股评分共用
+        await RotationBoardStore.ensureRotationSchema();
+        console.log('[DB] board_rotation_daily table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -921,6 +996,48 @@ async function start() {
         console.log('[DB] chat_token_usage table ready');
     } catch (err: unknown) {
         console.warn('[DB] chat_token_usage table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 预测能力：prediction_records 表（大盘溯源预测 + 到期验证历史）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS prediction_records (
+                id BIGSERIAL PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                schema_version TEXT NOT NULL DEFAULT '1.0',
+                prediction JSONB NOT NULL,
+                verification JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'pending',
+                due_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_prediction_records_status ON prediction_records(status)'
+        );
+        await pool.query(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_records_source ON prediction_records(source_type, source_id)'
+        );
+        console.log('[DB] prediction_records table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                nickname TEXT,
+                investment_preferences JSONB,
+                risk_tolerance TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('[DB] user_profiles table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -1139,7 +1256,6 @@ async function start() {
     } catch (err: unknown) {
         console.warn('[DB] chat_sessions table check:', err instanceof Error ? err.message : String(err));
     }
-    }
 
     try {
         await redis.ping();
@@ -1214,10 +1330,23 @@ async function start() {
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
             console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
         });
+        // 启动时同步板块轮动榜（首次回填近140个交易日，之后每日增量；不阻塞启动）
+        RotationBoardStore.syncRotationHistory().then(count => {
+            console.log(`[Startup] 板块轮动榜同步完成: ${count} 条`);
+        }).catch(err => {
+            console.warn('[Startup] 板块轮动榜同步失败:', err instanceof Error ? err.message : String(err));
+        });
     });
 
     // 初始化 WebSocket 服务（用于实时行情推送、异动提醒、对话流式输出）
     initWebSocket(server);
+
+    // P0 身份鉴权：接管 /api/agent/ws/chat（前端 WS 直连 agent-py 改为经 app-api 桥接，验签 + 覆写 user_id）
+    initChatBridge(server, {
+        agentPyTarget: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
+        internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+        jwtSecret: process.env.JWT_SECRET || '',
+    });
 }
 
 start();

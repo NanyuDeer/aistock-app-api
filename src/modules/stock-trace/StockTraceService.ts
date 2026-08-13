@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { StockTraceSnapshotService } from './StockTraceSnapshotService';
 import { StockTraceJobService } from './StockTraceJobService';
 import {
@@ -68,6 +69,30 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
         severity: revision.severity,
         ruleVersion: PRICE_RULE_VERSION,
     };
+}
+
+/** 统一事件抓取中台：异动事件创建/修订后触发 event_triggered 采集（P0-3）。
+ * fire-and-forget；失败仅告警，不阻断 stock_trace 主流程。baseUrl 与鉴权
+ * 头对齐 StockTraceSnapshotService 读库调用（同款 env 变量与 token）。 */
+export async function triggerEventScrape(event: EventRow): Promise<void> {
+    const baseUrl = (process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '').replace(/\/+$/, '');
+    if (!baseUrl) return;
+    await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Internal-Token': process.env.INTERNAL_API_TOKEN || '',
+        },
+        body: JSON.stringify({
+            scrape_mode: 'event_triggered',
+            event: {
+                symbol: event.symbol,
+                score_date: event.trading_date,
+                windowStartAt: event.window_start_at,
+                windowEndAt: event.window_end_at,
+            },
+        }),
+    });
 }
 
 export class StockTraceService {
@@ -251,6 +276,9 @@ export class StockTraceService {
                     triggerRevision: revision,
                 });
                 await client.query('COMMIT');
+                void triggerEventScrape(eventRow).catch((error: unknown) => {
+                    console.error('[StockTrace] event scrape trigger (revision) failed:', error instanceof Error ? error.message : error);
+                });
                 const event = buildTriggerEvent(eventRow, {
                     trigger_revision: revision,
                     actual_value: fact.changePct,
@@ -306,6 +334,9 @@ export class StockTraceService {
             const recipients = await this.createUserEvents(client, eventId, security.symbol);
             await StockTraceJobService.enqueue(client, { eventId, triggerRevision: 1 });
             await client.query('COMMIT');
+            void triggerEventScrape(eventRow).catch((error: unknown) => {
+                console.error('[StockTrace] event scrape trigger (create) failed:', error instanceof Error ? error.message : error);
+            });
 
             const event = buildTriggerEvent(eventRow, {
                 trigger_revision: 1,
@@ -386,6 +417,20 @@ export class StockTraceService {
                 ON CONFLICT (event_id, openid, push_kind) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
+            try {
+                await NotificationService.createForUser(openid, {
+                    category: 'price_movement',
+                    sourceKey: `movement:${event.eventId}`,
+                    symbol: event.symbol,
+                    stockName: event.stockName,
+                    title: `${event.stockName}：价格异动`,
+                    summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
+                    targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                    payload,
+                });
+            } catch (error) {
+                console.warn('[StockTrace] App notification failed:', error instanceof Error ? error.message : String(error));
+            }
         }));
     }
 
