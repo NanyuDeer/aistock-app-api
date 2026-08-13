@@ -9,10 +9,11 @@
  * 仓库惯例：Node 内建 test runner（node:test）+ .spec.ts + __tests__ 目录。
  * 运行：`node --import tsx --test src/modules/insight/__tests__/controller.spec.ts`
  */
-import { describe, it, afterEach, mock } from 'node:test';
+import { describe, it, afterEach, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NextFunction, Request, Response } from 'express';
 import pool from '../../../core/db';
+import redis from '../../../core/redis';
 import { signJwt } from '../../../shared/utils/jwt';
 import { InsightController } from '../controller';
 
@@ -52,6 +53,11 @@ afterEach(() => {
     mock.restoreAll();
     if (ORIGINAL_SECRET === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = ORIGINAL_SECRET;
+});
+
+// openidFromRequest 走 tokenBlacklist → CacheService（加载 core/redis），after() 需断开防进程挂起。
+after(() => {
+    redis.disconnect();
 });
 
 describe('InsightController.list', () => {

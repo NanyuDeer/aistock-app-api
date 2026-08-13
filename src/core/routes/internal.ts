@@ -19,7 +19,7 @@ import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
 import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKeywordDetectorService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
-import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
+import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
@@ -36,6 +36,61 @@ const VALID_REPORT_TYPES = [
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
     'chat_analysis',
 ]
+
+interface ChainSummaryItem {
+    industry: string
+    direction: string
+    impactStrength: number
+    reason: string
+}
+
+/**
+ * 从事件报告 content 中提取前端展示专用 chain_summary。
+ *
+ * 来源：content.analysis_reports.event_transmission.chain
+ * 规则：
+ *  - chain 缺失 / 非数组 → 返回 []
+ *  - 过滤 industry 为空的节点
+ *  - 按 impactStrength 降序
+ *  - 最多返回 5 条
+ *  - 不修改原 chain 结构
+ *
+ * 示例输出：
+ *  [ { industry: '石油石化', direction: 'bullish', impactStrength: 0.92, reason: '...' } ]
+ */
+function extractChainSummary(content: unknown): ChainSummaryItem[] {
+    if (!content || typeof content !== 'object') return []
+
+    const contentObj = content as Record<string, unknown>
+    const analysisReports = contentObj['analysis_reports']
+    if (!analysisReports || typeof analysisReports !== 'object') return []
+
+    const transmission = (analysisReports as Record<string, unknown>)['event_transmission']
+    if (!transmission || typeof transmission !== 'object') return []
+
+    const chain = (transmission as Record<string, unknown>)['chain']
+    if (!Array.isArray(chain)) return []
+
+    const items: ChainSummaryItem[] = []
+    for (const node of chain) {
+        if (!node || typeof node !== 'object') continue
+        const item = node as Record<string, unknown>
+        const industry = typeof item['industry'] === 'string' ? item['industry'].trim() : ''
+        // 过滤无效行业（industry 为空不返回）
+        if (!industry) continue
+        items.push({
+            industry,
+            direction: typeof item['direction'] === 'string' ? item['direction'] : 'neutral',
+            impactStrength: typeof item['impactStrength'] === 'number' ? item['impactStrength'] : 0,
+            reason: typeof item['reason'] === 'string' ? item['reason'] : '',
+        })
+    }
+
+    // 按 impactStrength 降序，最多 5 条
+    return items
+        .sort((a, b) => b.impactStrength - a.impactStrength)
+        .slice(0, 5)
+}
 
 const router: Router = Router()
 
@@ -525,7 +580,7 @@ router.get('/graph/:concept', async (req: Request, res: Response) => {
  * - industry: { id, name } 中心行业信息
  * - upstream: 上游行业列表（含 id, name, leadingStocks）
  * - downstream: 下游行业列表（含 id, name, leadingStocks）
- * - graphVersion: 图谱版本（当前系统无版本字段，返回 null）
+ * - graphVersion: 图谱版本（稳定常量，供 Agent 侧缓存边界校验）
  * - updatedAt: 图谱更新时间
  *
  * 注意：
@@ -594,7 +649,7 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
                 source: 'IndustryKGService',
                 upstream,
                 downstream,
-                graphVersion: null,  // 当前系统无版本字段
+                graphVersion: INDUSTRY_GRAPH_VERSION,  // 稳定图谱版本，Agent 缓存边界校验依赖非空字符串
                 updatedAt: graph.updateTime,
             },
         })
@@ -1101,6 +1156,37 @@ router.get('/usage/sessions', async (req: Request, res: Response) => {
         res.status(500).json({ code: 500, message: errMsg(err) });
     }
 });
+
+// ==================== 用户画像（Phase 4-3 全局用户记忆） ====================
+
+/**
+ * GET /internal/user-profile/:user_id
+ * 按 user_id 拉取用户画像（agent-py 对话入口注入用）
+ *
+ * - 200：{ code: 200, data: profile }（user_id/nickname/investment_preferences/risk_tolerance/updated_at）
+ * - 200 + {}：无记录（空画像，不 404——agent-py 无 profile 时零行为变化）
+ * - 400：user_id 缺失
+ * - 502：服务异常
+ */
+router.get('/user-profile/:userId', async (req: Request, res: Response) => {
+    const user_id = param(req, 'userId')
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+    try {
+        const result = await pool.query(
+            `SELECT user_id, nickname, investment_preferences, risk_tolerance, updated_at
+             FROM user_profiles
+             WHERE user_id = $1`,
+            [user_id]
+        )
+        const row = result.rows[0]
+        res.json({ code: 200, data: row ?? {} })
+    } catch (err: unknown) {
+        console.error('[Internal] user-profile GET error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
 
 // ==================== 行业向量搜索（pgvector） ====================
 
@@ -1977,6 +2063,8 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                 globalImportanceRank: giRankMap.get(eventId) || null,
                 globalImportanceDirection: giDirectionMap.get(eventId) || null,
                 globalImportanceLevel: giLevelMap.get(eventId) || null,
+                // 前端展示专用：行业影响摘要（降序 Top5，旧数据无 chain 返回 []）
+                chain_summary: extractChainSummary(content),
             }
         })
 
@@ -2028,7 +2116,17 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
             return
         }
 
-        res.json({ code: 0, data: result.rows[0] })
+        const row = result.rows[0] as Record<string, unknown>
+        const content = (row['content'] as Record<string, unknown>) || {}
+
+        res.json({
+            code: 0,
+            data: {
+                ...row,
+                // 顶层补充前端展示专用行业摘要（旧数据无 chain 返回 []，禁止 undefined）
+                chain_summary: extractChainSummary(content),
+            },
+        })
     } catch (err: unknown) {
         console.error('[Public] agent/event/:eventId error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })

@@ -8,6 +8,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import pool from '../../core/db';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked } from '../../shared/utils/tokenBlacklist';
 
 interface InsightListRow {
     event_id: string;
@@ -47,11 +48,15 @@ interface InsightDetailRow {
     published_at: Date | null;
 }
 
-function openidFromRequest(req: Request): string | null {
+async function openidFromRequest(req: Request): Promise<string | null> {
     const bearer = req.headers.authorization;
     const token = typeof bearer === 'string' && bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
     if (!token || !process.env.JWT_SECRET) return null;
-    return verifyJwt(token, process.env.JWT_SECRET)?.openid || null;
+    const payload = verifyJwt(token, process.env.JWT_SECRET);
+    if (!payload) return null;
+    // token-revocation Step 2：命中黑名单按未登录处理（读侧 fail-open）
+    if (await isTokenRevoked(payload.jti)) return null;
+    return payload.openid || null;
 }
 
 function eventIdFromRequest(req: Request): string {
@@ -63,7 +68,7 @@ export class InsightController {
     /** 列表：登录用户自选股的洞察事件（LEFT JOIN 归因结果，未出结果时归因字段为 null） */
     static async list(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             if (!openid) {
                 res.status(401).json({ code: 401, message: 'unauthorized' });
                 return;
@@ -87,7 +92,7 @@ export class InsightController {
     static async get(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             // 与列表接口同款鉴权：先解析登录用户，未登录直接 401（不触库）
-            const openid = openidFromRequest(req);
+            const openid = await openidFromRequest(req);
             if (!openid) {
                 res.status(401).json({ code: 401, message: 'unauthorized' });
                 return;
