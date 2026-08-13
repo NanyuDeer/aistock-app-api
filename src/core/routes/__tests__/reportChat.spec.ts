@@ -11,6 +11,7 @@
  * 5. 不存在 → 200 { code:0, data: null }
  * 6. 过期（7 天 TTL）→ data: null（SQL 含 expires_at 过滤断言）
  * 7. /report/chat/:id 不被通用 /report/:intent/:date 端点抢占（先于通用端点注册）
+ * 8. DB 查询 reject → 500 JSON 错误体，不抛（服务端降级而非崩溃）
  *
  * Mock strategy: monkey-patch pool.query on the same object reference that
  * internal.ts captured at import time. No DB connection is made.
@@ -41,11 +42,15 @@ interface MockCall {
 const originalQuery = pool.query.bind(pool) as any;
 let mockCalls: MockCall[] = [];
 let mockResponder: ((sql: string, params: unknown[]) => { rows: unknown[] }) | null = null;
+let mockError: Error | null = null;
 
 // Replace pool.query — works because internal.ts holds the same pool object reference
 (pool as any).query = function (sql: string, ...rest: unknown[]): Promise<{ rows: unknown[] }> {
     const params = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
     mockCalls.push({ sql, params });
+    if (mockError) {
+        return Promise.reject(mockError);
+    }
     if (mockResponder) {
         return Promise.resolve(mockResponder(sql, params));
     }
@@ -149,6 +154,7 @@ describe('Chat Analysis Report Detail API', () => {
         process.env.JWT_SECRET = JWT_SECRET;
         mockCalls = [];
         mockResponder = null;
+        mockError = null;
     });
 
     after(() => {
@@ -304,5 +310,29 @@ describe('Chat Analysis Report Detail API', () => {
         const selectCalls = mockCalls.filter((c) => c.sql.includes('FROM agent_analysis_reports'));
         assert.ok(selectCalls.length >= 1 && selectCalls[0].sql.includes("report_type = 'chat_analysis'"),
             'SQL must be the chat_analysis detail query');
+    });
+
+    // ── 8. DB 异常 → 500 JSON，不抛 ──
+
+    it('returns 500 JSON error and does not throw when pool.query rejects', async () => {
+        mockCalls = [];
+        mockResponder = null;
+        mockError = new Error('db connection lost');
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: '/api/agent/report/chat/5',
+            headers: authHeader(signTestToken('o_owner')),
+        });
+
+        // call() 正常 resolve：服务端走 catch 降级，未让未捕获异常冒泡
+        assert.strictEqual(res.status, 500);
+        assert.strictEqual(typeof res.text, 'string');
+        const body = res.json as { code: number; message: string } | null;
+        assert.ok(body, '500 响应必须是 JSON 错误体');
+        assert.strictEqual(body.code, -1);
+        // 鉴权通过后确实触达 DB（query 被 reject）
+        assert.strictEqual(mockCalls.length, 1, 'expected 1 query call before failure');
     });
 });
