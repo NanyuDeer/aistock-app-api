@@ -39,9 +39,8 @@ export function verifyJwt(token: string, secret: string): JwtPayload | null {
     const [headerB64, payloadB64, signatureB64] = parts;
     const signingInput = `${headerB64}.${payloadB64}`;
     const expectedSig = crypto.createHmac('sha256', secret).update(signingInput).digest();
-    // 畸形签名段解码后长度可能 ≠ expectedSig：crypto.timingSafeEqual 长度不等会抛
-    // ERR_CRYPTO_TIMING_SAFE_EQUAL_LENGTH，导致非法 token 返回 500 / 不 close(4401)，
-    // 违反契约 401/4401。fail-closed：解码异常或长度不等一律返回 null。
+    // 畸形签名段解码后长度可能与 expectedSig 不一致；timingSafeEqual 会因此抛异常。
+    // 解码异常或长度不等时按无效 token 处理，避免非法 token 导致接口返回 500。
     let actualSig: Buffer;
     try {
         actualSig = base64UrlDecode(signatureB64);

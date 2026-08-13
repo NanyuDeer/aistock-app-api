@@ -7,6 +7,7 @@
 //   默认开启（未配置或 enabled != 0），与旧推送模块 isPushEnabled 语义一致。
 import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
+import { NotificationService } from '../../core/notification/NotificationService';
 
 /** 命中用户的归因结果行（列名与 016 迁移 watchlist_insight_events/results 对齐） */
 interface InsightPushRow {
@@ -45,6 +46,20 @@ export async function pushCreated(eventId: string): Promise<number> {
         const content = `【自选股洞察】${r.stock_name}(${r.symbol}) ${label} · 置信度 ${r.confidence}`;
         // WS 定向推送（WebSocket 无持久化去重，连接关闭时自然收不到）
         pushAlertToUser(r.openid, { type: 'insight.created', eventId, content, symbol: r.symbol });
+        try {
+            await NotificationService.createForUser(r.openid, {
+                category: 'insight',
+                sourceKey: `insight:${eventId}`,
+                symbol: r.symbol,
+                stockName: r.stock_name,
+                title: `${r.stock_name}：自选股洞察`,
+                summary: content,
+                targetPath: `/modules/favorites/pages/insight-detail?event_id=${encodeURIComponent(eventId)}`,
+                payload: { eventId, confidence: r.confidence, attributionStatus: r.attribution_status },
+            });
+        } catch (error) {
+            console.warn('[Insight] App notification failed:', error instanceof Error ? error.message : String(error));
+        }
         // 微信 + 飞书（复用现有推送基础设施，幂等去重走 push_records）
         const wx = await sendWechat(r.openid, content, eventId);
         // 飞书通道：仅已绑定飞书（feishu_open_id 非空）的用户下发；未绑定者跳过，微信/WS 不受影响
