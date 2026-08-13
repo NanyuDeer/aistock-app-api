@@ -72,7 +72,6 @@ src/
 │   ├── push/               # 推送
 │   ├── auth/               # 认证
 │   ├── monitor/            # 监控（异动/风口/趋势股评分/知识图谱/机构调研）
-│   ├── insight/            # 洞察（涨停雷达 + 价格异动 + 证据包 + 归因链路）
 │   ├── crawler/            # 爬虫
 │   └── agent/              # Agent 反代（SSE 透传 + 502 降级）
 └── data/kg-cache/          # 知识图谱缓存（运行时生成，勿手动编辑）
@@ -237,6 +236,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 03:00 | 风口龙头分析 | WindLeaderAnalyzerService（空结果不覆盖旧数据） |
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |
+| 11:30 | 午盘价格打点 | PriceMoveService.run('midday')，自选股按 abs(move_bps)>=700 触发价格异动洞察 |
+| 11:50 | 午盘补抓 | refetchMiddayEvidence：对当日午盘已触发事件重新冻结证据包（frozen_seq++）+ force 重入队，Python 重新归因 |
+| 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件 |
 | 15:00 | 数据归档 | — |
 | 19:05 | 收盘后任务 | — |
 
