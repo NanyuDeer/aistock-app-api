@@ -100,16 +100,25 @@ const authHeader = (openid?: string) => ({ authorization: `Bearer ${makeToken(op
 
 // ── Tests ──
 describe('Chat Session API', () => {
+    // Phase 5 Task 2：联动删除依赖默认置 no-op，防既有用例触发真实 HTTP 请求；
+    // 专门用例内 stub 后断言调用/失败。
+    let originalThreadClient: unknown;
+
     before(() => {
         process.env.JWT_SECRET = JWT_SECRET;
         mockCalls = [];
         mockResponder = null;
+        originalThreadClient = SessionController.__threadClientDependencies;
+        SessionController.__threadClientDependencies = {
+            deleteChatThread: async () => {},
+        };
     });
 
     after(() => {
         /* eslint-disable @typescript-eslint/no-explicit-any */
         (pool as any).query = originalQuery;
         /* eslint-enable @typescript-eslint/no-explicit-any */
+        SessionController.__threadClientDependencies = originalThreadClient as typeof SessionController.__threadClientDependencies;
         redis.disconnect();
     });
 
@@ -235,6 +244,49 @@ describe('Chat Session API', () => {
         assert.ok(deleteCall, 'expected 1 DELETE FROM chat_sessions');
         assert.ok(deleteCall.sql.includes('WHERE id = $1 AND user_id = $2'));
         assert.deepStrictEqual(deleteCall.params, ['app_1785892249', 'openid_42']);
+    });
+
+    it('delete 成功：PG 删除后联动调用 deleteChatThread(session_id)', async () => {
+        mockCalls = [];
+        mockResponder = () => ({ rows: [] });
+        const threadCalls: string[] = [];
+        SessionController.__threadClientDependencies = {
+            deleteChatThread: async (sessionId: string) => { threadCalls.push(sessionId); },
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'DELETE',
+            path: '/api/chat/sessions/app_1785892249',
+            headers: authHeader(),
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(threadCalls, ['app_1785892249'], '联动删除应传入 session_id');
+
+        // 归属校验沿用既有双条件删除（Phase 2 后不变）
+        const deleteCall = mockCalls.find((c) => c.sql.includes('DELETE FROM chat_sessions'));
+        assert.ok(deleteCall, 'expected 1 DELETE FROM chat_sessions');
+        assert.ok(deleteCall.sql.includes('WHERE id = $1 AND user_id = $2'));
+        assert.deepStrictEqual(deleteCall.params, ['app_1785892249', 'openid_42']);
+    });
+
+    it('deleteChatThread 失败：响应仍 200（warning 不阻断，"永不 500"）', async () => {
+        mockCalls = [];
+        mockResponder = () => ({ rows: [] });
+        SessionController.__threadClientDependencies = {
+            deleteChatThread: async () => { throw new Error('agent service down'); },
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'DELETE',
+            path: '/api/chat/sessions/app_1',
+            headers: authHeader(),
+        });
+
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual((res.json as { code: number }).code, 200);
     });
 
     it('401：无 token 时 POST/GET/DELETE 均返回 401', async () => {
