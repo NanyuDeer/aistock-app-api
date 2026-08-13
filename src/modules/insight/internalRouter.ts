@@ -133,7 +133,8 @@ router.get('/sources', async (req: Request, res: Response) => {
             return;
         }
         const { rows } = await pool.query(
-            `SELECT source_id, title, content, keywords, published_at, source_id AS id
+            `SELECT source_id, title, content, keywords, published_at,
+                    source_url AS url, source_id AS id
              FROM watchlist_insight_sources
              WHERE trade_date = $1::date
              ORDER BY published_at DESC`,
