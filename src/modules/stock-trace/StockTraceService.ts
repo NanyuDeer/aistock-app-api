@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { StockTraceSnapshotService } from './StockTraceSnapshotService';
 import { StockTraceJobService } from './StockTraceJobService';
 import {
@@ -386,6 +387,20 @@ export class StockTraceService {
                 ON CONFLICT (event_id, openid, push_kind) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
+            try {
+                await NotificationService.createForUser(openid, {
+                    category: 'price_movement',
+                    sourceKey: `movement:${event.eventId}`,
+                    symbol: event.symbol,
+                    stockName: event.stockName,
+                    title: `${event.stockName}：价格异动`,
+                    summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
+                    targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                    payload,
+                });
+            } catch (error) {
+                console.warn('[StockTrace] App notification failed:', error instanceof Error ? error.message : String(error));
+            }
         }));
     }
 

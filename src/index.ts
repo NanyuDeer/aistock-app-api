@@ -77,6 +77,8 @@ import { StockSyncService } from './modules/monitor/StockSyncService';
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
 import { InsightController } from './modules/insight/controller';
+import { NotificationService } from './core/notification/NotificationService';
+import { NotificationRetryService } from './core/notification/NotificationRetryService';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -193,6 +195,8 @@ app.get('/api/users/me/push-history', (req, res, next) => UserController.getPush
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
+app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -722,6 +726,18 @@ cron.schedule('35 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        const result = await NotificationRetryService.run();
+        if (result.flushed || result.delivered || result.retrying || result.dropped) {
+            console.log(`[NotificationRetry] flushed=${result.flushed}, delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+        }
+    } catch (err: unknown) {
+        console.error('[NotificationRetry] 执行失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 业绩预测自动更新：每天凌晨 00:00 执行
 cron.schedule('0 0 * * *', async () => {
     console.log('[ProfitForecastAutoUpdateCron] 开始执行业绩预测自动更新');
@@ -815,6 +831,21 @@ async function start() {
         console.log('[PG] Connected successfully');
     } catch (err: unknown) {
         console.error('[PG] Connection failed:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await NotificationService.ensureSchemaAtStartup();
+        console.log('[DB] user_notifications table ready');
+        // 启动补投：进程上次退出时 outbox 里可能还有没投递成功的通知
+        NotificationRetryService.run()
+            .then(result => {
+                if (result.delivered || result.retrying || result.dropped) {
+                    console.log(`[NotificationRetry] 启动补投: delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+                }
+            })
+            .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
+    } catch (err: unknown) {
+        console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {

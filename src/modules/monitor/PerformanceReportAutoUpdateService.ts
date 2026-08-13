@@ -16,6 +16,7 @@
 
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
 import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
@@ -184,6 +185,20 @@ export class PerformanceReportAutoUpdateService {
                                 row.net_profit_max ?? null,
                             ]
                         );
+                        try {
+                            await NotificationService.createForWatchers({
+                                category: 'performance_report',
+                                sourceKey: `performance-report:${symbol}:express:${annDate}`,
+                                symbol,
+                                stockName: stockName || symbol,
+                                title: `${stockName || symbol}：业绩快报/预告更新`,
+                                summary: row.summary || `公告日期 ${annDate}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                payload: { reportType: 'express', annDate },
+                            });
+                        } catch (error) {
+                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                        }
                         expressUpdated = true;
                     }
 
@@ -213,6 +228,20 @@ export class PerformanceReportAutoUpdateService {
                                 row.basic_eps ?? null,
                             ]
                         );
+                        try {
+                            await NotificationService.createForWatchers({
+                                category: 'performance_report',
+                                sourceKey: `performance-report:${symbol}:formal:${annDate}`,
+                                symbol,
+                                stockName: stockName || symbol,
+                                title: `${stockName || symbol}：财报披露`,
+                                summary: `公告日期 ${annDate}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                payload: { reportType: 'formal', annDate },
+                            });
+                        } catch (error) {
+                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                        }
                         formalUpdated = true;
                     }
 

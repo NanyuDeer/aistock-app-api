@@ -36,6 +36,7 @@ export function verifyJwt(token: string, secret: string): JwtPayload | null {
     const expectedSig = crypto.createHmac('sha256', secret).update(signingInput).digest();
     const actualSig = base64UrlDecode(signatureB64);
 
+    if (expectedSig.length !== actualSig.length) return null;
     if (!crypto.timingSafeEqual(expectedSig, actualSig)) return null;
 
     try {
