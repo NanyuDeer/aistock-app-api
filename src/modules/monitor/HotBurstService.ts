@@ -197,11 +197,17 @@ function calculateResonanceScore(
     const newsScore = Math.min(100, Math.min(newsCount, 10) * 10 + Math.min(newsSurgeRatio, 5) * 10);
 
     // 信号源共振加成（0-100）
-    // 二重=40, 三重=70, 四重=100, 单源=0
+/* // 二重=40, 三重=70, 四重=100, 单源=0
     let resonanceBonus = 0;
     if (resonanceCount >= 4) resonanceBonus = 100;
     else if (resonanceCount >= 3) resonanceBonus = 70;
     else if (resonanceCount >= 2) resonanceBonus = 40;
+ */
+
+    // 二重=70, 三重=100, 单源=0
+    let resonanceBonus = 0;
+    if (resonanceCount >= 3) resonanceBonus = 100;
+    else if (resonanceCount >= 2) resonanceBonus = 70;
 
     // 板块热度得分（0-100）
     let thsScore = 0;
@@ -211,8 +217,9 @@ function calculateResonanceScore(
         else if (thsRank <= 5) thsScore = 60;
         else if (thsRank <= 10) thsScore = 40;
     }
-
-    // 研报加成得分（0-100）
+    
+    /*
+     // 研报加成得分（0-100）
     const reportScore = reportVerified ? 80 : 0;
 
     const score = Math.round(
@@ -220,6 +227,14 @@ function calculateResonanceScore(
         resonanceBonus * 0.40 +
         thsScore * 0.20 +
         reportScore * 0.15
+    );
+    */
+
+    
+    const score = Math.round(
+        newsScore * 0.25 +
+        resonanceBonus * 0.55 +
+        thsScore * 0.20
     );
 
     let level: 'critical' | 'high' | 'medium' | 'low';
@@ -467,7 +482,7 @@ export class HotBurstService {
             const { score, level } = calculateResonanceScore(
                 stock.currentCount, stock.surgeRatio,
                 thsSectorRank, thsVerified,
-                false,  // 研报暂未知
+                false,  // 暂停研报评分，保留参数位置以便后续恢复
                 thsVerified ? 2 : 1,  // 有同花顺至少算二重
             );
 
@@ -551,14 +566,14 @@ export class HotBurstService {
                 };
             }
 
-            // 计算共振数量（四个信号源）
-            signal.resonanceCount = [signal.clsVerified, signal.glhVerified, signal.thsVerified, signal.reportVerified].filter(Boolean).length;
+            // 计算共振数量（三个信号源）
+            signal.resonanceCount = [signal.clsVerified, signal.glhVerified, signal.thsVerified].filter(Boolean).length;
 
             // 重新计算评分（使用新算法）
             const { score, level } = calculateResonanceScore(
                 signal.newsCount, signal.newsSurgeRatio,
                 signal.thsSectorRank, signal.thsVerified,
-                signal.reportVerified,
+                signal.reportVerified,  // 当前评分未使用，后续恢复研报权重时可直接启用
                 signal.resonanceCount,
             );
             signal.resonanceScore = score;
@@ -666,7 +681,7 @@ export class HotBurstService {
         const safeDays = Math.min(Math.max(days, 1), 365);
 
         if (minResonance !== undefined) {
-            const safeMinResonance = Math.min(Math.max(minResonance, 2), 4);
+            const safeMinResonance = Math.min(Math.max(minResonance, 2), 3);
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= $1
@@ -691,7 +706,7 @@ export class HotBurstService {
         if (minResonanceOnly) {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($1::text || ' days')::interval`,
                 [safeDays]
             );
@@ -701,7 +716,7 @@ export class HotBurstService {
                 `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($3::text || ' days')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
@@ -820,7 +835,7 @@ export class HotBurstService {
                 `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($1::text || ' hours')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT 50`,
@@ -866,7 +881,7 @@ export class HotBurstService {
                 await HotBurstService.refreshOutbreaksQuotes(outbreaks);
                 HotBurstService.lastDetectResult = fallbackResult;
                 HotBurstService.lastDetectTime = Date.now();
-                console.log(`[HotBurst] 从 DB 恢复 ${outbreaks.length} 条三源共振记录`);
+                console.log(`[HotBurst] 从 DB 恢复 ${outbreaks.length} 条二源及以上共振记录`);
                 if (minResonanceCount > 0) {
                     return {
                         ...fallbackResult,
@@ -885,7 +900,7 @@ export class HotBurstService {
 
     /**
      * 从 DB 获取最新的机构调研推荐热门股记录（轻量查询，不触发检测）
-     * 首页面板专用：直接返回 DB 中最新的 N 条三源共振记录
+     * 首页面板专用：直接返回 DB 中最新的 N 条二源及以上共振记录
      */
     static async getLatestFromDB(limit: number = 5): Promise<HotBurstResult | null> {
         try {
@@ -893,7 +908,7 @@ export class HotBurstService {
                 `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1`,
                 [limit]

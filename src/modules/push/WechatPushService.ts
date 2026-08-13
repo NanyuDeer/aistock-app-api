@@ -1,5 +1,6 @@
 import pool from '../../core/db';
 import { ScanLoginController } from '../auth/scanLoginController';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 // 注意：微信 API 调用必须使用原生 fetch，不能用 sessionFetch（自定义 https.Agent keepAlive），
 // 否则微信服务器会返回 HTTP 412 Precondition Failed。详见 project_memory.md。
 
@@ -611,7 +612,7 @@ export class WechatPushService {
     static async dispatchLeaderStocks(stocks: LeaderStockPushItem[], force: boolean = false): Promise<PushResult> {
         // 只推送给订阅了龙头股推送的用户
         const openids = await WechatPushService.getSubscribedWechatOpenids('leader_push');
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const eventId = `leader:${today}`;
 
         const pushResult: PushResult = {
@@ -726,7 +727,7 @@ export class WechatPushService {
     static async dispatchOutbreakStocks(stocks: OutbreakPushItem[], force: boolean = false): Promise<PushResult> {
         // 只推送给订阅了机构调研推荐热门股推送的用户
         const openids = await WechatPushService.getSubscribedWechatOpenids('outbreak_push');
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
 
         const pushResult: PushResult = {
             matched_users: openids.length,
@@ -858,7 +859,7 @@ export class WechatPushService {
     static async dispatchMarketEventPush(payload: typeof WechatPushService.marketEventPayload): Promise<PushResult> {
         // 推送给所有已注册的微信用户（市场事件属重大行情，全量推送）
         const openids = await WechatPushService.getAllWechatOpenids();
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const eventId = `market_event:${today}:${payload?.title?.slice(0, 30) || 'unknown'}`;
 
         const pushResult: PushResult = {

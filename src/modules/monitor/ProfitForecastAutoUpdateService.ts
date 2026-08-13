@@ -14,6 +14,7 @@ import pool from '../../core/db';
 import { getReportRc, type ReportRcRow } from '../quote/TushareService';
 import { CacheService } from '../../shared/utils/CacheService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateStr, shanghaiDateYyyymmdd, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -24,14 +25,14 @@ function tsCodeToSymbol(tsCode: string): string {
 function getYesterdayStr(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    return shanghaiDateStr(d);
 }
 
 /** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
 function getYesterdayCompact(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 export class ProfitForecastAutoUpdateService {
@@ -48,7 +49,7 @@ export class ProfitForecastAutoUpdateService {
         }
 
         // 检查今天是否已经执行过
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const lastRunDate = await CacheService.get<string>('profit_forecast:auto_update:date');
         if (lastRunDate === today) {
             console.log('[ProfitForecastAutoUpdate] 今天已执行过，跳过');
@@ -281,10 +282,9 @@ export class ProfitForecastAutoUpdateService {
         return null;
     }
 
-    /** 格式化时间为中国时区带毫秒 */
+    /** 格式化时间为中国时区带毫秒（统一走 shanghaiTime 通用函数） */
     private static formatToChinaTimeWithMs(timestamp: number): string {
-        const d = new Date(timestamp + 8 * 3600 * 1000);
-        return d.toISOString().slice(0, 23).replace('T', ' ');
+        return shanghaiDateTimeMsStr(timestamp);
     }
 
     /** 是否正在运行 */

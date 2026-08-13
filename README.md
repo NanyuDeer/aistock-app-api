@@ -125,6 +125,9 @@ src/
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports） | eventId |
+| `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
+| `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
+| `/api/chat/usage/summary` | **用户累计 token 用量**（GET，JWT openid 鉴权） | — |
 | `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
 | `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
 
@@ -151,6 +154,8 @@ src/
 | `/internal/insight/events/:eventId/context` | **洞察归因上下文**（事件 + LEFT JOIN 来源文章 + 最新证据包，Python 归因 Agent 专用） | eventId，需 X-Internal-Token |
 | `/internal/insight/jobs/:jobId` | **洞察任务状态回报**（PATCH，Python 消费端） | jobId + status，需 X-Internal-Token |
 | `/internal/insight/results/external` | **洞察归因结果回写**（POST upsert + 更新推送分支） | result: {event_id, analysis_version, attribution_status, ...}，需 X-Internal-Token |
+| `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
+| `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
@@ -159,6 +164,10 @@ src/
 > 更新（2026-07-14）：`event_conduction` 加入报告白名单，POST 支持 `event_id` 作为隔离键（复用 `user_id` 列，同日不同事件分别保存、同事件重跑 upsert）；新增公开接口 `GET /api/agent/event/list`（分页列表，返回 eventId/title/source/publishTime/摘要/结论）和 `GET /api/agent/event/:eventId`（详情，返回完整 analysis_reports 含四模块 + event_podcast_brief）
 >
 > 新增接口（2026-07-15）：`POST /internal/push/market-event` — 晨报后重磅市场事件推送。Python morning_agent 生成晨报后解析 MARKET_EVENT_PUSHES 标记，阈值过滤（对称 ±1.5%）后调用此接口，触发微信模板消息 + 飞书卡片推送
+>
+> 更新（2026-08-03）：公开播报接口 `POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读）改为「文本先生成存库 + 音频缓存」：文本限长 250 字（约1分钟播报），首次请求文本+音频双写 `podcast_cache` 表（cache_key 唯一，7天过期），命中缓存直接返回音频路径，生成失败标记 failed；03:00 清理任务同步删除过期记录及对应 `podcast-{key}.mp3` 文件。建表脚本见 `docs/sql/podcast_cache.sql`
+>
+> 新增（2026-08-05）：ChatAgent P9 会话管理 + P10 线 2 计费 — 新表 `chat_sessions`（会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at）与 `chat_token_usage`（用户维度 token 计费：prompt/completion/total_tokens、question、created_at），均启动时自动建表（`src/index.ts`）；新增公开接口 `/api/chat/sessions`（POST 幂等 upsert / GET 最近50个 / DELETE，JWT openid 鉴权）与 `/api/chat/usage/summary`，内部接口 `/internal/usage/records` 与 `/internal/usage/summary`（供 Python ws.py 计费回调）
 
 ## Vibecoding 工作流
 

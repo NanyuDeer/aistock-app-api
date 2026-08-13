@@ -103,7 +103,7 @@ export async function evaluateStockResonance(
   const bestRank = matchedSectors.length > 0 ? Math.min(...matchedSectors.map(s => s.rank)) : 0;
   const thsVerified = matchedSectors.length > 0;
   const reportVerified = reportStocks.length > 0;
-  const resonanceCount = [clsVerified, glhVerified, thsVerified, reportVerified].filter(Boolean).length;
+  const resonanceCount = [clsVerified, glhVerified, thsVerified].filter(Boolean).length;
 
   return {
     symbol,

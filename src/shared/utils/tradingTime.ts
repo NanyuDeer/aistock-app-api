@@ -8,6 +8,8 @@ const NEXT_TRADING_SEARCH_MAX_DAYS = 30;
 // 非交易时段缓存 TTL 上限，防止跨天/跨周末缓存过长导致交易日开盘后仍返回旧数据
 const MAX_NON_TRADING_TTL_SECONDS = 4 * 60 * 60; // 4 小时
 
+import { shanghaiDateTimeParts } from './shanghaiTime';
+
 interface HolidayApiResponse {
     code: number;
     holiday: { holiday: boolean; name?: string; wage?: number; after?: boolean; target?: string; } | null;
@@ -17,21 +19,13 @@ interface ChinaDateTimeParts { year: number; month: number; day: number; hour: n
 
 export interface AShareTradingTimeOptions { now?: Date | number; fetcher?: typeof fetch; afterCloseUpdateTime?: { hour: number; minute: number }; }
 
-const chinaDateFormatter = new Intl.DateTimeFormat('en-GB', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, hourCycle: 'h23',
-});
-
 const holidayCache = new Map<string, boolean>();
 
+/** 上海时区时间分量，统一走 shared/utils/shanghaiTime 通用函数 */
 function parseChinaDateTimeParts(date: Date): ChinaDateTimeParts {
-    const parts = chinaDateFormatter.formatToParts(date);
-    const partMap: Partial<Record<Intl.DateTimeFormatPartTypes, string>> = {};
-    for (const part of parts) { if (part.type !== 'literal') partMap[part.type] = part.value; }
-    const year = Number(partMap.year), month = Number(partMap.month), day = Number(partMap.day);
-    const hour = Number(partMap.hour), minute = Number(partMap.minute), second = Number(partMap.second);
-    if (![year, month, day, hour, minute, second].every(Number.isFinite)) throw new Error('Failed to parse China time components');
-    return { year, month, day, hour, minute, second };
+    const parts = shanghaiDateTimeParts(date);
+    if (!parts) throw new Error('Failed to parse China time components');
+    return { year: parts.year, month: parts.month, day: parts.day, hour: parts.hour, minute: parts.minute, second: parts.second };
 }
 
 function formatDateKey(parts: Pick<ChinaDateTimeParts, 'year' | 'month' | 'day'>): string {
