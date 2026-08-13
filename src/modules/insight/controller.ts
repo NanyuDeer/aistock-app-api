@@ -56,6 +56,8 @@ interface InsightDetailRow {
     open_price: number | null;
     latest_price: number | null;
     price_source: string | null;
+    /** 归因依据（最新证据包 evidence 数组，价格异动事件展示） */
+    evidence_package: unknown[];
 }
 
 function openidFromRequest(req: Request): string | null {
@@ -137,7 +139,11 @@ export class InsightController {
                 res.status(404).json({ code: 404, message: 'not found' });
                 return;
             }
-            res.json({ code: 200, data: rows[0] });
+            // 追加最新证据包（价格异动事件的"归因依据"，前端详情展示；无来源文章时替代原始来源区块）
+            const pkg = await pool.query(
+                `SELECT evidence FROM watchlist_evidence_packages
+                 WHERE event_id=$1 ORDER BY frozen_seq DESC LIMIT 1`, [eventId]);
+            res.json({ code: 200, data: { ...rows[0], evidence_package: pkg.rows[0]?.evidence ?? [] } });
         } catch (error) {
             next(error);
         }

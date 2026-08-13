@@ -153,9 +153,11 @@ describe('InsightController.get', () => {
         process.env.JWT_SECRET = TEST_SECRET;
         const token = buildToken(TEST_OPENID);
         const fakeRow = { event_id: EVENT_ID, symbol: '000962', stock_name: '东方钽业' };
-        let captured: { text: string; params: unknown[] } | null = null;
+        const calls: { text: string; params: unknown[] }[] = [];
         mock.method(pool, 'query', (async (text: string, params?: unknown[]) => {
-            captured = { text, params: params ?? [] };
+            calls.push({ text, params: params ?? [] });
+            // 第二次调用为最新证据包查询
+            if (calls.length > 1) return { rows: [{ evidence: [] }] };
             return { rows: [fakeRow] };
         }) as unknown as typeof pool.query);
 
@@ -169,8 +171,8 @@ describe('InsightController.get', () => {
 
         await InsightController.get(req, res, next);
 
-        assert.ok(captured, '登录用户应发起数据库查询');
-        const sql = captured as { text: string; params: unknown[] };
+        assert.ok(calls.length >= 1, '登录用户应发起数据库查询');
+        const sql = calls[0];
         assert.match(
             sql.text,
             /JOIN user_stocks us ON us\.symbol = e\.symbol AND us\.openid = \$1/,
@@ -182,6 +184,8 @@ describe('InsightController.get', () => {
         assert.match(sql.text, /ORDER BY ps\.snapshot_time DESC LIMIT 1/, 'LATERAL join 取最新一条快照');
         assert.equal(sql.params[0], TEST_OPENID, '第一个参数应为 openid');
         assert.equal(sql.params[1], EVENT_ID, '第二个参数应为 eventId');
-        assert.deepEqual(resState.body, { code: 200, data: fakeRow }, '响应格式应为 { code, data }');
+        assert.equal(calls.length, 2, '详情应追加最新证据包查询');
+        assert.match(calls[1].text, /watchlist_evidence_packages/, '证据包查询目标为 watchlist_evidence_packages');
+        assert.deepEqual(resState.body, { code: 200, data: { ...fakeRow, evidence_package: [] } }, '响应应含证据包字段');
     });
 });
