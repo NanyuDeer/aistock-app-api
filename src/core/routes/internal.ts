@@ -94,6 +94,23 @@ function extractChainSummary(content: unknown): ChainSummaryItem[] {
         .slice(0, 5)
 }
 
+/**
+ * 事件卡片展示过滤条件（展示层，仅用于 GET /api/agent/event/list，不删除任何数据）。
+ *
+ * 判断"事件整体结论"而非 chain 是否含 bullish/bearish：
+ * 1. transmission.chain 非空（chain 为空 = 未形成明确行业传导 → 不展示）
+ * 2. event_investment.rating != 'neutral'（rating 为系统定义的"事件整体方向"：
+ *    positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性）
+ *    - rating 缺失（event_investment 为 null，如旧数据/LLM Call4 失败）视为非中性，
+ *      避免误杀 chain 有明确方向的正常事件
+ *    - chain 中存在 neutral/bearish 节点不影响展示，只要整体结论非中性即可
+ * 说明：不通过 investment.focusIndustries 是否为空判断；不影响详情接口与落库数据。
+ */
+const EVENT_LIST_DISPLAY_FILTER_SQL = `
+  AND jsonb_typeof(content->'analysis_reports'->'event_transmission'->'chain') = 'array'
+  AND jsonb_array_length(content->'analysis_reports'->'event_transmission'->'chain') > 0
+  AND (content->'analysis_reports'->'event_investment'->>'rating') IS DISTINCT FROM 'neutral'`;
+
 const router: Router = Router()
 
 // 内网鉴权中间件
@@ -2039,7 +2056,7 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                    SELECT DISTINCT ON (user_id)
                      id, report_date, user_id, content, created_at
                    FROM agent_analysis_reports
-                   WHERE report_type = 'event_conduction'
+                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}
                    ORDER BY user_id, created_at DESC
                  ) AS deduped
                  ORDER BY created_at DESC
@@ -2049,7 +2066,7 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
             pool.query(
                 `SELECT COUNT(DISTINCT user_id) AS total
                  FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'`
+                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}`
             ),
             // 查询最新的 global_importance 报告
             pool.query(
