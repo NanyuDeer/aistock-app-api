@@ -56,6 +56,8 @@ interface WindLeaderSector {
     downstream_stocks?: WindLeaderStock[];
     flow_data?: unknown;
     leading_stock_info?: WindLeaderLeadingStockInfo | null;
+    /** 长期趋势龙头（trend_scores 评分最高，无命中回退 main_stocks 最高分） */
+    long_leader?: WindLeaderStock | null;
 }
 
 interface WindLeaderStock {
@@ -562,6 +564,7 @@ export class WindLeaderService {
             downstream_stocks: (sector.downstream_stocks || []).map(formatStock),
             flow_data: sector.flow_data || null,
             leading_stock_info: sector.leading_stock_info || null,
+            long_leader: sector.long_leader || null,
         }));
 
         try {

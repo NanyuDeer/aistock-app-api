@@ -13,9 +13,9 @@ import assert from 'node:assert/strict';
 import { describe, it, afterEach } from 'node:test';
 import { buildNewsApiUrl, tradingDayWindowStart } from '../services/EastmoneyCrawler';
 
-/** mock 节假日 API：一律非节假日 → 非交易日只由周末决定 */
-function mockHolidayApiNonHoliday(): void {
-    mock.method(global, 'fetch', async () => ({
+/** mock 节假日 API：一律非节假日 → 非交易日只由周末决定；返回 mock 实例供计数 */
+function mockHolidayApiNonHoliday(): ReturnType<typeof mock.method> {
+    return mock.method(global, 'fetch', async () => ({
         ok: true,
         json: async () => ({ code: 0, holiday: { holiday: false } }),
     } as unknown as Response));
@@ -82,5 +82,18 @@ describe('EastmoneyCrawler 东财窗口 (E-2)', () => {
         const decoded = decodeURIComponent(url);
         assert.ok(decoded.includes('"sort":"time"'), '新闻应按时序取最新');
         assert.ok(!decoded.includes('"sort":"default"'), '不得回退相关性排序');
+    });
+
+    it('窗口起点缓存：同参数二次调用不重复请求节假日 API', async () => {
+        const fetchMock = mockHolidayApiNonHoliday();
+        // 用独立日期避免与前面用例共享窗口缓存
+        const end = new Date('2026-07-03T04:00:00Z'); // 上海 7-03 周五
+        await tradingDayWindowStart(end, 30);
+        const callsAfterFirst = fetchMock.mock.calls.length;
+
+        // 二次调用（同 end 同 days）：应命中缓存，不新增节假日 API 请求
+        await tradingDayWindowStart(end, 30);
+        const callsAfterSecond = fetchMock.mock.calls.length;
+        assert.equal(callsAfterSecond, callsAfterFirst, '缓存命中后不应重复请求节假日 API');
     });
 });

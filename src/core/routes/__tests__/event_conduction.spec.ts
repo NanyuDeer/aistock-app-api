@@ -621,7 +621,7 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body2.data.hasMore, false, '末页 hasMore 应为 false');
     });
 
-    // ── 8c. eventType 服务端筛选（方案A：服务端筛选 + 服务端分页） ──
+    // ── 9. Detail 404 ──
 
     it('event/list 支持 eventType 筛选：SELECT/COUNT 同条件且参数含筛选值', async () => {
         mockCalls = [];
