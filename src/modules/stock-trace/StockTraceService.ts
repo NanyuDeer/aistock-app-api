@@ -73,16 +73,21 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
 
 /** 统一事件抓取中台：异动事件创建/修订后触发 event_triggered 采集（P0-3）。
  * fire-and-forget；失败仅告警，不阻断 stock_trace 主流程。baseUrl 与鉴权
- * 头对齐 StockTraceSnapshotService 读库调用（同款 env 变量与 token）。 */
+ * 头对齐 StockTraceSnapshotService 读库调用（同款 env 变量与 token）。
+ * E-3 加固（2026-08-14）：占位/缺失 token 不发请求（对齐 StockTraceTriggerService
+ * 语义，避免 Python 侧 403 徒增无效请求）；显式 5s 超时防悬空。 */
 export async function triggerEventScrape(event: EventRow): Promise<void> {
     const baseUrl = (process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '').replace(/\/+$/, '');
     if (!baseUrl) return;
+    const token = process.env.INTERNAL_API_TOKEN || '';
+    if (!token || token === 'change-me-in-production') return;
     await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-Internal-Token': process.env.INTERNAL_API_TOKEN || '',
+            'X-Internal-Token': token,
         },
+        signal: AbortSignal.timeout(5000),
         body: JSON.stringify({
             scrape_mode: 'event_triggered',
             event: {
