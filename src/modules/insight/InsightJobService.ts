@@ -21,14 +21,21 @@ interface PendingOutboxRow {
  * 入队：INSERT job（ON CONFLICT DO NOTHING 幂等）→ INSERT outbox → 提交后立即发布。
  * 使用池内单个连接承载事务，避免 pool.query('BEGIN') 在多请求并发下跨连接破坏原子性。
  * @param eventId watchlist_insight_events.event_id
+ * @param opts.force 强制重入队：同 (event_id, analysis_version) 已存在时重置 job 为 queued 并
+ *   追加新 outbox（新 stream 消息），供补抓场景让 Python 重新归因（UPSERT 覆盖旧结果）。
+ *   副作用：attempt_count 清零，会把已达 MAX_ATTEMPTS 的 job 从 dead_letter 复活重试（补抓场景
+ *   符合预期——新证据包值得重试）。默认 false 保持幂等（已存在则 ROLLBACK 不重复入队）。
  */
-export async function enqueue(eventId: string): Promise<void> {
+export async function enqueue(eventId: string, opts: { force?: boolean } = {}): Promise<void> {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const conflictClause = opts.force
+            ? `ON CONFLICT (event_id, analysis_version) DO UPDATE SET status = 'queued', attempt_count = 0`
+            : `ON CONFLICT (event_id, analysis_version) DO NOTHING`;
         const { rows } = await client.query<{ job_id: string }>(
             `INSERT INTO watchlist_insight_jobs (event_id, analysis_version) VALUES ($1, $2)
-             ON CONFLICT (event_id, analysis_version) DO NOTHING RETURNING job_id`,
+             ${conflictClause} RETURNING job_id`,
             [eventId, WATCHLIST_INSIGHT_ANALYSIS_VERSION],
         );
         if (rows.length === 0) {

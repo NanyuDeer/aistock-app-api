@@ -106,7 +106,32 @@ psql "$DATABASE_URL" -f scripts/cleanup-stock-trace.sql
 | 微信模板字段验证 | 首次生成推送的微信模板消息各字段（股票、方向、主因、置信度等）渲染正确 | 待核 |
 | push_records 表迁移已应用 | `watchlist_insight_push_records` 表存在，且推送去重（event_id + openid + push_kind + channel 唯一）生效 | 待核 |
 
-## 8. 回滚与确认
+## 8. 二期补充（午盘/尾盘价格异动洞察）
 
-- 回滚：如需停用，可将 `INSIGHT_CONSUMER_ENABLED=false`，并停用 app-api 采集 cron；数据表保留不删，后续可随时恢复。
-- 全部步骤执行完成后，在发布记录中勾选本清单，并确认第 7 节联调核对项全部通过。
+二期（价格异动洞察）新增以下内容，详见独立文档 `docs/insight-phase2-deploy.md`：
+
+1. 执行 `017_watchlist_price_move.sql` 迁移（新增 `watchlist_price_snapshots` / `watchlist_evidence_packages` 表）。
+2. 部署 app-api（午盘 11:30 打点 + 尾盘 15:05 打点 + 午盘 11:50 补抓共 3 个 cron，自动启用）。
+3. agent-py 无需新配置（consumer 与一期共用同一 `watchlist-insight.jobs` Stream）。
+4. 前端发布：验证列表/详情页价格异动展示（`move_bps`、`direction`、`snap_direction` 等字段）。
+5. 次日 Tushare daily 校准仅质量指标，不回溯改写已发布洞察。
+
+### 二期联调核对项
+
+| 核对项 | 验证方式 | 状态 |
+|--------|---------|------|
+| 017 迁移已执行 | `watchlist_price_snapshots` / `watchlist_evidence_packages` 表存在 | 待核 |
+| 午盘 cron 11:30 触发 | 11:30 后有 `midday_price_move` 事件写入 | 待核 |
+| 尾盘 cron 15:05 触发 | 15:05 后有 `close_price_move` 事件写入 | 待核 |
+| 阈值 700 bps 生效 | 事件 `move_bps` 绝对值 >= 700 | 待核 |
+| 证据包已冻结 | `watchlist_evidence_packages` 有对应 event_id 记录 | 待核 |
+| Python 消费归因 | `watchlist_insight_results` 有价格异动事件结果 | 待核 |
+| 前端展示正确 | 列表/详情页展示价格异动字段 + 归因结果 | 待核 |
+
+> 详细部署步骤、已知保留点及回滚方案见 `docs/insight-phase2-deploy.md`。
+
+## 9. 回滚与确认
+
+- 回滚（一期）：可将 `INSIGHT_CONSUMER_ENABLED=false`，并停用 app-api 采集 cron；数据表保留不删，后续可随时恢复。
+- 回滚（二期）：从 app-api `src/index.ts` 中移除午盘/尾盘/补抓 cron 注册项后重新部署；agent-py 侧无需变更；数据表保留不删。
+- 全部步骤执行完成后，在发布记录中勾选本清单，并确认第 7 节及第 8 节中二期联调核对项全部通过。

@@ -1,8 +1,8 @@
 // src/modules/insight/internalRouter.ts
 // 自选股洞察 internal API（Python 归因 Agent 专用）：x-internal-token 鉴权
-// - GET  /events/:eventId/context   取归因上下文（事件 + 来源文章）
+// - GET  /events/:eventId/context   取归因上下文（事件 + 来源文章 + 证据包）
 // - PATCH /jobs/:jobId              回报任务状态
-// - POST  /results/external         回写归因结果（upsert）
+// - POST  /results/external         回写归因结果（upsert + 更新推送）
 import { Router, type Request, type Response } from 'express';
 import pool from '../../core/db';
 import { reportStatus, type InsightJobStatus } from './InsightJobService';
@@ -29,7 +29,7 @@ router.use((req, res, next) => {
     next();
 });
 
-/** Python 取归因上下文：来源文章 + 事件信息 */
+/** Python 取归因上下文：事件信息 + 来源文章（LEFT JOIN，价格异动事件 source_id 为 NULL） + 最新证据包 */
 router.get('/events/:eventId/context', async (req: Request, res: Response) => {
     try {
         const eventId = param(req, 'eventId');
@@ -38,7 +38,7 @@ router.get('/events/:eventId/context', async (req: Request, res: Response) => {
                     s.title, s.keywords, s.content, s.published_at, s.source_id,
                     s.source_url AS url
              FROM watchlist_insight_events e
-             JOIN watchlist_insight_sources s ON s.source_id = e.source_id
+             LEFT JOIN watchlist_insight_sources s ON s.source_id = e.source_id
              WHERE e.event_id = $1`,
             [eventId],
         );
@@ -46,7 +46,12 @@ router.get('/events/:eventId/context', async (req: Request, res: Response) => {
             res.status(404).json({ code: 404, message: 'Event not found' });
             return;
         }
-        res.json({ code: 200, data: rows[0] });
+        // 追加最新证据包（Python 归因侧读取 evidence_package 做多来源候选抽取）
+        const pkg = await pool.query(
+            `SELECT evidence FROM watchlist_evidence_packages
+             WHERE event_id=$1 ORDER BY frozen_seq DESC LIMIT 1`, [eventId]);
+        const evidencePackage = pkg.rows[0]?.evidence ?? [];
+        res.json({ code: 200, data: { ...rows[0], evidence_package: evidencePackage } });
     } catch (error: unknown) {
         res.status(502).json({ code: 502, message: errMsg(error) });
     }
@@ -88,7 +93,10 @@ interface ExternalResultInput {
     model_provider?: string;
 }
 
-/** Python 回写归因结果（按 (event_id, analysis_version) upsert，全字段覆盖） */
+/** Python 回写归因结果（按 (event_id, analysis_version) upsert，全字段覆盖）
+ *  - 首次落库（prior 无记录）：pushCreated
+ *  - 更新落库且 isSubstantiveChange === true：pushUpdated
+ *  - 无实质变化：不推送 */
 router.post('/results/external', async (req: Request, res: Response) => {
     const body = req.body as { result?: ExternalResultInput } | undefined;
     const result = body?.result;
@@ -97,6 +105,23 @@ router.post('/results/external', async (req: Request, res: Response) => {
         return;
     }
     try {
+        // UPSERT 前读取旧记录，判断是否首次落库
+        const prior = await pool.query(
+            'SELECT 1 FROM watchlist_insight_results WHERE event_id=$1 AND analysis_version=$2',
+            [result.event_id, result.analysis_version]);
+        const isNew = prior.rows.length === 0;
+
+        // UPSERT 前计算实质变化：INSERT 后旧值已被覆盖，此时判定将恒为 false（读到的 old 即新值）
+        let changed = false;
+        if (!isNew) {
+            const { isSubstantiveChange } = await import('./InsightPushService');
+            changed = await isSubstantiveChange(result.event_id, {
+                attribution_status: result.attribution_status ?? 'unconfirmed',
+                confidence: result.confidence ?? 'low',
+                primary_driver: result.primary_driver || {},
+            });
+        }
+
         await pool.query(
             `INSERT INTO watchlist_insight_results
                (event_id, analysis_version, attribution_status, confidence, primary_driver,
@@ -117,33 +142,16 @@ router.post('/results/external', async (req: Request, res: Response) => {
              result.podcast_brief || '', result.validation_status || 'llm', result.model_provider || ''],
         );
         // 结果落库后触发洞察推送（fire-and-forget：失败只记日志，不影响回写响应）
-        void import('./InsightPushService').then(m => m.pushCreated(result.event_id)).catch(e =>
-            console.error('[insight] push failed', e));
+        if (isNew) {
+            void import('./InsightPushService').then(m => m.pushCreated(result.event_id)).catch(e =>
+                console.error('[insight] push created failed', e));
+        } else if (changed) {
+            void import('./InsightPushService').then(m => m.pushUpdated(result.event_id)).catch(e =>
+                console.error('[insight] push updated failed', e));
+        }
         res.status(201).json({ code: 201, data: {} });
     } catch (error: unknown) {
         res.status(500).json({ code: 500, message: errMsg(error) });
-    }
-});
-
-/** 统一事件抓取中台：按日期读取同花顺原创/涨停雷达源（watchlist_insight_sources） */
-router.get('/sources', async (req: Request, res: Response) => {
-    try {
-        const day = String(req.query.date || '');
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
-            res.status(400).json({ code: 400, message: 'Invalid date format' });
-            return;
-        }
-        const { rows } = await pool.query(
-            `SELECT source_id, title, content, keywords, published_at,
-                    source_url AS url, source_id AS id
-             FROM watchlist_insight_sources
-             WHERE trade_date = $1::date
-             ORDER BY published_at DESC`,
-            [day],
-        );
-        res.json({ code: 200, data: { items: rows } });
-    } catch (error: unknown) {
-        res.status(502).json({ code: 502, message: errMsg(error) });
     }
 });
 
