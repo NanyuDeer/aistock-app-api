@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-14 — 修复风口龙头接口 long_leader 恒为 null（getAnalysis 读时枚举字段遗漏）
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/WindLeaderService.ts`：
+  1. `getAnalysis` 返回对象补充 `long_leader: sector.long_leader || null`——此前读数据时显式枚举字段构造返回对象，遗漏新增的 long_leader，导致接口返回恒为 null（数据文件 hot-sectors.json 中实际已有值）
+  2. `WindLeaderSector` 接口补充 `long_leader?: WindLeaderStock | null`
+
+### 测试
+- `src/modules/monitor/__tests__/windLeaderLongLeader.spec.ts` 追加 `getAnalysis preserves long_leader field in response sectors` 用例（mock fs 读文件），现 5/5 通过
+
+---
+
 ## [master] 2026-08-14 — 风口龙头板块新增 long_leader（长期趋势龙头）字段
 **开发者**: Aria
 
