@@ -43,10 +43,19 @@ function horizonKeys(row: PredictionRecordRow): string[] {
   return horizons.map((h) => h.horizon);
 }
 
+/** 越年近似档位集合（P2 裁决：approximate 档到期日为近似，命中率统计需分桶排除） */
+function approximateHorizonSet(row: PredictionRecordRow): Set<string> {
+  const approx = (row.prediction as { due_dates_approximate?: unknown })?.due_dates_approximate;
+  if (!Array.isArray(approx)) return new Set();
+  return new Set(approx.filter((h): h is string => typeof h === 'string'));
+}
+
 /**
  * 按已验证档位口径统计（hit/(hit+miss)，insufficient 不计）。
  * status='skipped' 的行显式跳过（不计入 pending/verified/命中统计），单独累加 skippedCount；
  * total 仍含 skipped 行（口径与列表 items 对齐）。
+ * P2 裁决：越年近似档（due_dates_approximate）照常验证，但 hit/miss 不计入命中率分母
+ * （近似到期日语义与精确档不同，分桶避免统计失真）。
  */
 function computeStats(rows: PredictionRecordRow[]) {
   let pendingCount = 0;
@@ -55,12 +64,14 @@ function computeStats(rows: PredictionRecordRow[]) {
   let hitCount = 0;
   let missCount = 0;
   let skippedCount = 0;
+  let approximateHorizonCount = 0;
   for (const row of rows) {
     if (row.status === 'skipped') {
       skippedCount += 1;
       continue;
     }
     const keys = horizonKeys(row);
+    const approxSet = approximateHorizonSet(row);
     const verification = row.verification ?? {};
     const allVerified = keys.length > 0 && keys.every((h) => Boolean(verification[h]));
     if (allVerified) verifiedCount += 1;
@@ -69,6 +80,11 @@ function computeStats(rows: PredictionRecordRow[]) {
       const entry = verification[h];
       if (!entry) continue;
       verifiedHorizonCount += 1;
+      if (approxSet.has(h)) {
+        // 近似档：单独计数，不混入命中率分母（P2 分桶）
+        approximateHorizonCount += 1;
+        continue;
+      }
       if (entry.result === 'hit') hitCount += 1;
       else if (entry.result === 'miss') missCount += 1;
     }
@@ -83,6 +99,7 @@ function computeStats(rows: PredictionRecordRow[]) {
     verifiedHorizonCount,
     hitCount,
     missCount,
+    approximateHorizonCount,
   };
 }
 

@@ -1,6 +1,19 @@
-﻿# Changelog — aistock-app-api
+# Changelog — aistock-app-api
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
+
+## [changer] 2026-08-14 — 预测记录支持越年近似档标记
+
+**开发者**: changelog
+
+### 新增
+- `POST /internal/predictions` 接受可选 `due_dates_approximate`（string[]，越年近似档名列表），合并进 prediction jsonb（skip_reason 先例，免 DB 迁移）
+- 公开统计新增 `approximateHorizonCount`：越年近似档照常验证但 hit/miss 不计入命中率分母（分桶避免统计失真）
+
+### 改进
+- internalRouter 校验 `due_dates_approximate` 类型（非数组 / 含非 string 元素 → 400）
+
+---
 
 ## [changer] 2026-08-14 — 大盘溯源影响持续性预判记录支持状态追踪与按需补偿
 

@@ -322,6 +322,90 @@ test('POST /internal/predictions non-string skip_reason -> 400', async () => {
     assert.equal(body.code, 400)
 })
 
+test('POST /internal/predictions with due_dates_approximate -> create 收到且透传（P2 越年近似标记）', async () => {
+    let captured: unknown
+    __internalPredictionDependencies.create = (async (input: Parameters<typeof __internalPredictionDependencies.create>[0]) => {
+        captured = input
+        return {
+            id: 2,
+            source_type: input.source_type,
+            source_id: input.source_id,
+            schema_version: input.schema_version,
+            // service 语义：due_dates_approximate 合并进 prediction jsonb（mock 模拟）
+            prediction: {
+                ...input.prediction,
+                ...(input.due_dates_approximate !== undefined
+                    ? { due_dates_approximate: input.due_dates_approximate }
+                    : {}),
+            },
+            verification: {},
+            status: input.status ?? 'pending',
+            due_dates: input.due_dates,
+            created_at: new Date().toISOString(),
+        }
+    }) as typeof __internalPredictionDependencies.create
+
+    const res = await makeJsonRequest(
+        port,
+        'POST',
+        '/internal/predictions',
+        INTERNAL_TOKEN,
+        {
+            source_type: 'market_trace',
+            source_id: 'review:2026-08-13',
+            prediction: { attribution_summary: 'x' },
+            due_dates: { short: '2026-08-20', long: '2027-02-05' },
+            due_dates_approximate: ['long'],
+        },
+    )
+
+    assert.equal(res.status, 200)
+    const input = captured as { due_dates_approximate?: string[] }
+    assert.deepEqual(input.due_dates_approximate, ['long'])
+    const created = (res.body as { data: { prediction: Record<string, unknown> } }).data
+    assert.deepEqual(created.prediction.due_dates_approximate, ['long'])
+})
+
+test('POST /internal/predictions non-array due_dates_approximate -> 400', async () => {
+    const res = await makeJsonRequest(
+        port,
+        'POST',
+        '/internal/predictions',
+        INTERNAL_TOKEN,
+        {
+            source_type: 'market_trace',
+            source_id: 'review:2026-08-07',
+            prediction: {},
+            due_dates: {},
+            due_dates_approximate: 'long',
+        },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('POST /internal/predictions due_dates_approximate with non-string element -> 400', async () => {
+    const res = await makeJsonRequest(
+        port,
+        'POST',
+        '/internal/predictions',
+        INTERNAL_TOKEN,
+        {
+            source_type: 'market_trace',
+            source_id: 'review:2026-08-07',
+            prediction: {},
+            due_dates: {},
+            due_dates_approximate: [123],
+        },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
 // ==================== POST /regenerate : 鉴权 / 日期校验 / 限流 / 409 / 转发 ====================
 
 test('POST /internal/predictions/regenerate without internal token -> 403', async () => {
