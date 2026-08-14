@@ -761,15 +761,20 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  * GET /internal/market/close-snapshot
  * 当日 A 股大盘收盘事实快照（供 Python Agent 拉取当日收盘事实）
  *
+ * 可选 query 参数：?date=YYYY-MM-DD（历史交易日回补；缺省 = 当日）。
+ *
  * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
  * - 409：服务未就绪，data 含 status 与 reason：
- *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / 指数数据延迟
+ *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / date 格式非法 / 指数数据延迟
  *   - status='incomplete' + reason='incomplete_daily_coverage'：已收盘但 daily 覆盖残缺
  * - 502：其它意外异常（沿用既有 502 约定）
  */
-router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
+router.get('/market/close-snapshot', async (req: Request, res: Response) => {
+    const dateParam = queryStr(req, 'date')
     try {
-        const data = await MarketSnapshotService.getTodayCloseSnapshot()
+        const data = dateParam
+            ? await MarketSnapshotService.getCloseSnapshotByDate(dateParam)
+            : await MarketSnapshotService.getTodayCloseSnapshot()
         res.json({ code: 200, data })
     } catch (err: unknown) {
         if (err instanceof MarketSnapshotUnavailableError) {

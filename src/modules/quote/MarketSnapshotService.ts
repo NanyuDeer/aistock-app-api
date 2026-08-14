@@ -460,6 +460,24 @@ export async function getLastCloseSnapshot(): Promise<CloseMarketSnapshot> {
 }
 
 /**
+ * 按目标交易日重建收盘快照（三期：review 历史切片回补）。
+ *
+ * 实现：校验 YYYY-MM-DD 格式 → 构造目标日 15:30 CST 伪时刻（复用
+ * getLastCloseSnapshot 模式）→ getTodayCloseSnapshot(fakeNow) 按需重算。
+ * 历史 daily 数据在库即可；非交易日/数据缺失由构建逻辑抛 market_not_closed /
+ * incomplete_daily_coverage（409 语义不变）。
+ */
+export async function getCloseSnapshotByDate(dateStr: string): Promise<CloseMarketSnapshot> {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    if (!m) {
+        throw new MarketSnapshotUnavailableError('market_not_closed', `invalid date format: ${dateStr}`);
+    }
+    // 目标日 15:30 CST = 07:30 UTC（与 getLastCloseSnapshot 的伪时刻构造一致）
+    const fakeNow = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 7, 30, 0, 0));
+    return getTodayCloseSnapshot(fakeNow);
+}
+
+/**
  * 构建当日 A 股大盘收盘事实快照。
  *
  * 步骤：
