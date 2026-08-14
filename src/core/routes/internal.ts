@@ -94,6 +94,23 @@ function extractChainSummary(content: unknown): ChainSummaryItem[] {
         .slice(0, 5)
 }
 
+/**
+ * 事件卡片展示过滤条件（展示层，仅用于 GET /api/agent/event/list，不删除任何数据）。
+ *
+ * 判断"事件整体结论"而非 chain 是否含 bullish/bearish：
+ * 1. transmission.chain 非空（chain 为空 = 未形成明确行业传导 → 不展示）
+ * 2. event_investment.rating != 'neutral'（rating 为系统定义的"事件整体方向"：
+ *    positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性）
+ *    - rating 缺失（event_investment 为 null，如旧数据/LLM Call4 失败）视为非中性，
+ *      避免误杀 chain 有明确方向的正常事件
+ *    - chain 中存在 neutral/bearish 节点不影响展示，只要整体结论非中性即可
+ * 说明：不通过 investment.focusIndustries 是否为空判断；不影响详情接口与落库数据。
+ */
+const EVENT_LIST_DISPLAY_FILTER_SQL = `
+  AND jsonb_typeof(content->'analysis_reports'->'event_transmission'->'chain') = 'array'
+  AND jsonb_array_length(content->'analysis_reports'->'event_transmission'->'chain') > 0
+  AND (content->'analysis_reports'->'event_investment'->>'rating') IS DISTINCT FROM 'neutral'`;
+
 const router: Router = Router()
 
 // 内网鉴权中间件
@@ -658,6 +675,37 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
         })
     } catch (err: unknown) {
         console.error(`[Internal] industry/${name}/chain error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/industry/graph
+ * 读取 IndustryKG 全图快照（B-5，裁决书 B 论题）。
+ * 供 Python build_iterate_cases 产片时采集 window_before.industry_graph
+ * （get_industry_graph_full）：返回 chains（上下游边）+ graph_update_time。
+ * 注意：必须在 /industry/:name/chain 之后注册不冲突（路径段数不同）；
+ * 图谱未初始化 → 502，采集侧降级 None 不阻断产片。
+ */
+router.get('/industry/graph', async (_req: Request, res: Response) => {
+    try {
+        const graph = IndustryKGService.getFullGraph()
+        res.json({
+            code: 200,
+            data: {
+                chains: graph.edges.map((edge) => ({
+                    source: edge.source,
+                    target: edge.target,
+                    confidence: edge.confidence,
+                })),
+                graph_update_time: graph.updateTime,
+                industry_count: graph.industryCount,
+                edge_count: graph.edgeCount,
+                concept_count: graph.conceptCount,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industry/graph error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -2039,7 +2087,7 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                    SELECT DISTINCT ON (user_id)
                      id, report_date, user_id, content, created_at
                    FROM agent_analysis_reports
-                   WHERE report_type = 'event_conduction'
+                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}
                    ORDER BY user_id, created_at DESC
                  ) AS deduped
                  ORDER BY created_at DESC
@@ -2049,7 +2097,7 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
             pool.query(
                 `SELECT COUNT(DISTINCT user_id) AS total
                  FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'`
+                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}`
             ),
             // 查询最新的 global_importance 报告
             pool.query(
