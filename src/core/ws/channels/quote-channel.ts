@@ -5,19 +5,40 @@ import type { WebSocket } from 'ws'
 
 export interface ClientInfo {
   userId?: string
+  tokenExpiresAt?: number
   subscribedSymbols: Set<string>
 }
 
 const clients = new Map<WebSocket, ClientInfo>()
+/** userId → 连接集合，供定向推送直接命中，避免每次遍历全部连接 */
+const clientsByUser = new Map<string, Set<WebSocket>>()
 
 /** 注册客户端 */
 export function registerClient(ws: WebSocket, info: ClientInfo): void {
   clients.set(ws, info)
+  if (!info.userId) return
+  let sockets = clientsByUser.get(info.userId)
+  if (!sockets) {
+    sockets = new Set()
+    clientsByUser.set(info.userId, sockets)
+  }
+  sockets.add(ws)
 }
 
 /** 注销客户端 */
 export function unregisterClient(ws: WebSocket): void {
+  const userId = clients.get(ws)?.userId
+  if (userId) {
+    const sockets = clientsByUser.get(userId)
+    sockets?.delete(ws)
+    if (sockets && sockets.size === 0) clientsByUser.delete(userId)
+  }
   clients.delete(ws)
+}
+
+/** 获取指定用户的全部连接（未登录用户无索引，返回 undefined） */
+export function getClientsByUser(userId: string): Set<WebSocket> | undefined {
+  return clientsByUser.get(userId)
 }
 
 /** 获取客户端信息 */
