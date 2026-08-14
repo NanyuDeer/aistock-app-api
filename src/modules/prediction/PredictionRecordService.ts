@@ -33,21 +33,30 @@ export class PredictionRecordService {
     schema_version: string;
     prediction: Record<string, unknown>;
     due_dates: Record<string, string>;
+    status?: 'pending' | 'skipped';
+    skip_reason?: string;
   }): Promise<PredictionRecordRow | null> {
+    // skip_reason 合并进 prediction（免 DB 迁移，SPEC §8）；status 缺省 pending
+    const status = input.status ?? 'pending';
+    const prediction = input.skip_reason !== undefined
+      ? { ...input.prediction, skip_reason: input.skip_reason }
+      : input.prediction;
     const result = await pool.query<PredictionRecordRow>(
-      `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates)
-       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb)
+      `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates, status)
+       VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
        ON CONFLICT (source_type, source_id)
        DO UPDATE SET schema_version = EXCLUDED.schema_version,
                      prediction = EXCLUDED.prediction,
-                     due_dates = EXCLUDED.due_dates
+                     due_dates = EXCLUDED.due_dates,
+                     status = EXCLUDED.status
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
       [
         input.source_type,
         input.source_id,
         input.schema_version,
-        JSON.stringify(input.prediction),
+        JSON.stringify(prediction),
         JSON.stringify(input.due_dates),
+        status,
       ],
     );
     return result.rows[0] ?? null;
@@ -65,14 +74,24 @@ export class PredictionRecordService {
     return result.rows;
   }
 
-  /** 列表（public 路由）：status 可选过滤，created_at DESC 分页 */
+  /** 列表（public 路由）：status/source_id 可选过滤（可组合），created_at DESC 分页 */
   static async list(params: {
-    status?: 'pending' | 'verified';
+    status?: 'pending' | 'verified' | 'skipped';
+    source_id?: string;
     page: number;
     pageSize: number;
   }): Promise<{ rows: PredictionRecordRow[]; total: number }> {
-    const where = params.status ? 'WHERE status = $1' : '';
-    const filterValues: unknown[] = params.status ? [params.status] : [];
+    const conditions: string[] = [];
+    const filterValues: unknown[] = [];
+    if (params.status) {
+      conditions.push(`status = $${filterValues.length + 1}`);
+      filterValues.push(params.status);
+    }
+    if (params.source_id) {
+      conditions.push(`source_id = $${filterValues.length + 1}`);
+      filterValues.push(params.source_id);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const countResult = await pool.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM prediction_records ${where}`,
       filterValues,
@@ -91,13 +110,26 @@ export class PredictionRecordService {
   }
 
   /** 全量读取（public 路由统计用；数据量小 ≈1 条/交易日） */
-  static async listAllForStats(status?: 'pending' | 'verified'): Promise<PredictionRecordRow[]> {
-    const where = status ? 'WHERE status = $1' : '';
+  static async listAllForStats(
+    status?: 'pending' | 'verified' | 'skipped',
+    source_id?: string,
+  ): Promise<PredictionRecordRow[]> {
+    const conditions: string[] = [];
+    const filterValues: unknown[] = [];
+    if (status) {
+      conditions.push(`status = $${filterValues.length + 1}`);
+      filterValues.push(status);
+    }
+    if (source_id) {
+      conditions.push(`source_id = $${filterValues.length + 1}`);
+      filterValues.push(source_id);
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await pool.query<PredictionRecordRow>(
       `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
        FROM prediction_records ${where}
        ORDER BY created_at DESC`,
-      status ? [status] : [],
+      filterValues,
     );
     return result.rows;
   }

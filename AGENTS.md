@@ -204,11 +204,12 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `POST /internal/usage/records` | chat_token_usage | 记录一次对话 token 用量（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数；成功 `{code:200,data:{id}}`） |
 | `GET /internal/usage/summary?user_id=` | chat_token_usage | 按 user_id 累计用量（SUM/COUNT 聚合，无记录全 0，返回 prompt/completion/total_tokens + turn_count） |
 | `GET /internal/user-profile/:userId` | user_profiles | 用户画像检索（Phase 4-3；agent-py 对话入口按 user_id 拉取注入，Redis 5min 缓存；无记录返回 200 + 空对象，不 404） |
-| `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates） |
-| `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
+| `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates；支持可选 status='pending'\|'skipped' 与 skip_reason——skip_reason 合并进 prediction 对象，免 DB 迁移） |
+| `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描）；支持可选 `source_id`（如 `review:2026-08-14`）过滤 |
 | `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
+| `POST /internal/predictions/regenerate` | prediction_records | **按需/补偿预测代理（2026-08-14）**：仅限当日（trade_date===上海今日）+ Redis 限流（`prediction:regenerate:{date}` 每小时 ≤3 → 429）+ 已验证拒覆盖 409 + 90s 超时（AbortController），转发 Python `POST /api/agent/internal/predictions/from-trace`（复用 AGENT_PY_URL，勿新建 AGENT_PY_BASE_URL）；上游 409 透传、超时 504、其余非 OK 502 |
 
-> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified)/due_dates(JSONB)/created_at；status 仅 `{pending, verified}`（无 expired）；`appendVerification` 全档位覆盖自动置 verified。Python agent-py scheduler 每日 16:00 到期验证任务消费。
+> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified|skipped，TEXT 无 CHECK)/due_dates(JSONB)/created_at；`appendVerification` 全档位覆盖自动置 verified。`computeStats` 显式跳过 `status='skipped'`（单独 `skippedCount`，不计 pending/verified——硬约束）；`listPending` 的 `WHERE status='pending'` 天然排除 skipped。Python agent-py scheduler 每日 16:00 到期验证任务消费。大盘溯源页预判卡片经公开 `GET /api/predictions?source_id=review:{date}` 读取（G14 修复）。
 
 ### 7.2 Agent 分析报告持久化接口
 

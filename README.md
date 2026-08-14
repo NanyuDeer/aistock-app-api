@@ -127,7 +127,7 @@ src/
 | `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
-| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页） | status=all\|pending\|verified, page, pageSize |
+| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
 | `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
