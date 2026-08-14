@@ -229,6 +229,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
+| `/api/agent/report/chat/:reportId` | GET | 深度分析（chat_analysis）报告详情（批次 2，2026-08-13）：JWT Bearer 验签 + user_id 取服务端验签 openid + `report_type='chat_analysis'` + 7 天有效期过滤；不存在/非本人/过期 → `{code:0, data:null}` 不泄露存在性；**必须注册在 `/report/:intent/:date` 通用端点之前**（Express 按注册顺序匹配，否则被通用端点抢占 → 400） |
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
 | `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |

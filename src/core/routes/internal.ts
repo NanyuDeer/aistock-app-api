@@ -23,6 +23,8 @@ import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+import { verifyJwt } from '../../shared/utils/jwt'
+import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist'
 // MarketSnapshotService 通过 namespace 导入：路由调用 MarketSnapshotService.getTodayCloseSnapshot()，
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
@@ -1709,6 +1711,71 @@ publicRouter.get('/broadcast/:briefType/:date', async (req: Request, res: Respon
         })
     } catch (err: unknown) {
         console.error('[Public] broadcast artifact GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/report/chat/:reportId
+ * 深度分析报告详情（公开接口，需 JWT Bearer 鉴权）
+ *
+ * chat_analysis 是私密对话内容（非 alert 等公开数据），report_id 自增主键可枚举，
+ * 必须服务端验签：user_id 取 token 的 openid（绝不信客户端参数，硬约束 6）。
+ * 不存在/非本人/过期（7 天 TTL）→ data: null，不泄露存在性。
+ *
+ * 注意：必须注册在 /report/:intent/:date 通用端点之前（Express 按注册顺序匹配，
+ * 否则 /report/chat/5 会被通用端点捕获 → intent='chat'、date='5' → 400）。
+ */
+publicRouter.get('/report/chat/:reportId', async (req: Request, res: Response) => {
+    // 鉴权：Bearer 优先、Cookie token= 兜底（与 requireAuth 提取逻辑同源，tokenBlacklist.extractTokenFromRequest）
+    const token = extractTokenFromRequest(req)
+    if (!token) {
+        res.status(401).json({ code: 401, message: '未登录' })
+        return
+    }
+    const payload = verifyJwt(token, process.env.JWT_SECRET!)
+    if (!payload) {
+        res.status(401).json({ code: 401, message: 'token 无效或已过期' })
+        return
+    }
+    // token-revocation Step 2：验签通过后查黑名单（命中即拒绝）
+    if (await isTokenRevoked(payload.jti)) {
+        res.status(401).json({ code: 401, message: REVOKED_MESSAGE })
+        return
+    }
+
+    const reportId = param(req, 'reportId')
+    if (!/^\d+$/.test(reportId)) {
+        res.status(400).json({ code: -1, message: `Invalid report_id: ${reportId}` })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                    generation_time_ms, model_version,
+                    created_at AT TIME ZONE 'UTC' AS created_at
+             FROM agent_analysis_reports
+             WHERE id = $1
+               AND report_type = 'chat_analysis'
+               AND user_id = $2
+               AND (expires_at IS NULL OR expires_at > NOW())
+             LIMIT 1`,
+            [reportId, payload.openid]
+        )
+        const row = result.rows.length > 0 ? result.rows[0] : null
+        // 不存在/非本人/过期 → data: null（不泄露存在性）
+        let data: unknown = null
+        if (row) {
+            if (row.content) {
+                row.content = cleanReportContent(row.content as Record<string, unknown>)
+            }
+            // id 为 BIGSERIAL，pg 返回 string，归一为 Number（repo 既有约定，见 usage 聚合注释）
+            data = { ...row, id: Number(row.id) }
+        }
+        res.json({ code: 0, data })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report/chat GET error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
     }
 })
