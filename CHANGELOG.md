@@ -2,6 +2,44 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-14 — 修复风口龙头股爬取把新闻链接当龙头（玻璃基板"概念细分|…"）+ 行业板块龙头股缺失
+**开发者**: 37588
+
+### 修复
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  1. 新增 `isValidStockCode()`（仅接受 A 股代码段 60/68/00/30/43/83/87/92，排除日期型 2026xx 与同花顺板块代码 881/884/885/886xxx）、`isValidStockName()`（长度 2~12，排除 | 分隔符与"概念/细分/新增"等描述词）、`extractStockCodeFromHref()`（排除 news. 域名链接后提取合法代码）
+  2. 龙头股爬取策略 1/3/4 全部改用严格校验：同花顺概念页新闻链接 `news.10jqka.com.cn/20260805/c678696112.shtml` 的日期 `202608` 不再被误当股票代码、新闻标题不再被当股票名（此前污染 leading_stock，如玻璃基板显示"概念细分|玻璃基板新增…细分方向"）
+  3. `extractLeadingStock` fallback 回退到 main_stocks 评分最高者补全 code/价格/涨幅（行业板块 881xxx 无概念页龙头结构时必走此分支）
+  4. 行业板块（881xxx）主循环补充自身成分股进 main_stocks（此前 strongly_related 为空导致 main_stocks 恒空）
+  5. `identifyHotConcepts` 领涨股补充按板块类型分流（行业板块用 industry 成分股接口）
+
+### 测试
+- 新增 `src/modules/monitor/__tests__/windLeaderStockValidation.spec.ts` 6 用例（合法代码/日期误判/板块代码误判/新闻标题拒收/新闻链接提取）全过
+
+> 验证：`npx tsc --noEmit` 0 错误；新增 6 测试全过；`npm run build` 成功。
+
+---
+
+## [master] 2026-08-14 — 知识图谱修复：专家修正表 + AI prompt 改进 + 缓存 TTL 修复 + 风口行业板块修复
+**开发者**: 37588
+
+### 修复
+- `src/modules/monitor/IndustryKGService.ts`：
+  1. 新增 `EXPERT_INDUSTRY_RELATIONS` 专家人工修正表（约 90 个热门行业权威上下游，按行业名精确匹配；上游=原材料/零部件/设备/能源供应方，下游=应用/渠道/终端；不收录并列、细分-父级、服务外包关系）
+  2. 新增 `applyExpertEdges()`：覆盖专家表行业的全部 AI 边，替换为权威上下游；幂等，缓存加载与重新生成统一走这里
+  3. `buildAIEdges(industries, force?)`：force 时跳过 ai_edges 缓存；AI 边生成/加载后统一过专家表
+  4. `rebuild(force?)`：AI 生成失败时用专家表兜底
+  5. `initialize()`：修复缓存 TTL bug——full_graph.json 过期判断改用缓存内部 `updateTime`（此前文件 mtime 被龙头股后台加载重写刷新，15 天 TTL 永不触发）
+  6. `aiGenerateChainBatch` prompt 大改：明确 881xxx 二级/884xxx 三级行业概念、严禁把并列/细分-父级/服务外包当上下游、增加半导体/生物制品正确示例
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：风口榜单行业板块（881xxx）新增 `isIndustryBoardCode()` + `mapIndustryToChain()`——行业板块不走"概念→行业"映射（此前找不到概念 fallback 随机行业排名导致 related 错乱、上下游为空），改从知识图谱直接取该行业上下游（`getUpstreamDownstreamByName`，失败容错返回空）；主循环两处调用点按板块类型分流
+
+### 文档
+- `src/modules/monitor/AGENTS.md`：补充 IndustryKGService 专家修正表/TTL 修复/AI prompt 层级约束，以及风口行业板块 mapIndustryToChain 说明
+
+> 验证：`npx tsc --noEmit` 0 错误；专家表覆盖逻辑本地脚本断言 6/6 通过（贵金属错误边电力/民爆移除、新增上游工业金属+下游饰品/半导体等；生物制品错误边动物保健/原料药移除、保留医院等下游）。
+
+---
+
 ## [changer] 2026-08-12 — Phase 5 删会话联动删 checkpointer thread
 **开发者**: 37588
 
