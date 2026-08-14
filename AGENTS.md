@@ -227,10 +227,12 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
-| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
-| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
+| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段；**展示层过滤**：仅返回 chain 非空 且 `event_investment.rating` 非 `neutral` 的事件，SELECT/COUNT 同条件，见下方 2026-08-14 说明） |
+| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段；**不做展示过滤**，保留历史数据可审计） |
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
+>
+> **`event/list` 展示过滤契约**（2026-08-14 新增）：事件卡片是否展示以"事件整体结论"为准（`content.analysis_reports.event_investment.rating`：positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性），条件为 `transmission.chain` 非空 **且** rating 非 `neutral`（SQL 常量 `EVENT_LIST_DISPLAY_FILTER_SQL`，SELECT 与 COUNT 必须使用完全一致的条件保证分页正确）。**禁止**把"chain 是否含 bullish/bearish"或"focusIndustries 是否为空"作为展示条件；rating 缺失（event_investment 为 null）视为非中性，避免误杀 chain 有明确方向的旧事件。过滤仅作用于展示层，不删除任何数据，不影响详情接口与 GI/事件传导。
 
 > publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
 
