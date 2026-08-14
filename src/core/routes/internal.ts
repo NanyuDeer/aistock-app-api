@@ -2047,6 +2047,13 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
     const page = Math.max(1, queryInt(req, 'page', 1))
     const pageSize = Math.min(Math.max(1, queryInt(req, 'pageSize', 10)), 100)
     const offset = (page - 1) * pageSize
+    // 可选事件类型筛选（2026-08-14，方案A：服务端筛选 + 服务端分页）：
+    // eventType 有值时在 WHERE 增加 content->>'event_type' = eventType，
+    // 先筛选再 ORDER BY / LIMIT / OFFSET；SELECT 与 COUNT 使用同一条件。
+    // 不传 eventType 时保持原行为（不追加条件、不追加参数）。
+    const eventType = (queryStr(req, 'eventType') || '').trim()
+    const eventTypeCond = (placeholder: string): string =>
+        eventType ? ` AND content->>'event_type' = ${placeholder}` : ''
 
     try {
         const [dataResult, countResult, giResult] = await Promise.all([
@@ -2056,17 +2063,18 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                    SELECT DISTINCT ON (user_id)
                      id, report_date, user_id, content, created_at
                    FROM agent_analysis_reports
-                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}
+                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$3')}
                    ORDER BY user_id, created_at DESC
                  ) AS deduped
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2`,
-                [pageSize, offset]
+                eventType ? [pageSize, offset, eventType] : [pageSize, offset]
             ),
             pool.query(
                 `SELECT COUNT(DISTINCT user_id) AS total
                  FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}`
+                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$1')}`,
+                eventType ? [eventType] : []
             ),
             // 查询最新的 global_importance 报告
             pool.query(

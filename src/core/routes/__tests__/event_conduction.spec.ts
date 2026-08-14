@@ -621,6 +621,75 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body2.data.hasMore, false, '末页 hasMore 应为 false');
     });
 
+    // ── 8c. eventType 服务端筛选（方案A：服务端筛选 + 服务端分页） ──
+
+    it('event/list 支持 eventType 筛选：SELECT/COUNT 同条件且参数含筛选值', async () => {
+        mockCalls = [];
+        mockResponder = (sql: string, params: unknown[]) => {
+            if (sql.includes('COUNT')) {
+                return { rows: [{ total: 1 }] };
+            }
+            return {
+                rows: [{
+                    id: 1, report_date: '2026-08-14', user_id: 'evt_t1',
+                    content: { eventId: 'evt_t1', title: 'T', source: 'cls', publishTime: '2026-08-14T10:00:00', event_type: '产业政策' },
+                    created_at: '2026-08-14T10:00:00Z',
+                }],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: `/api/agent/event/list?page=1&pageSize=10&eventType=${encodeURIComponent('产业政策')}`,
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { data: { events: unknown[]; total: number; hasMore: boolean } };
+        assert.strictEqual(body.data.events.length, 1);
+        assert.strictEqual(body.data.total, 1);
+
+        const selectCall = mockCalls.find((c) => c.sql.includes('DISTINCT ON'));
+        const countCall = mockCalls.find((c) => c.sql.includes('COUNT(DISTINCT'));
+        assert.ok(selectCall, '应存在 SELECT 查询');
+        assert.ok(countCall, '应存在 COUNT 查询');
+        // SELECT 与 COUNT 必须包含完全一致的事件类型条件
+        assert.ok(selectCall!.sql.includes("content->>'event_type'"), 'SELECT 应包含 event_type 条件');
+        assert.ok(countCall!.sql.includes("content->>'event_type'"), 'COUNT 应包含 event_type 条件');
+        // SELECT 参数：[pageSize, offset, eventType]；COUNT 参数：[eventType]
+        assert.ok(selectCall!.params.includes('产业政策'), 'SELECT 参数应含筛选值');
+        assert.ok(countCall!.params.includes('产业政策'), 'COUNT 参数应含筛选值');
+    });
+
+    it('event/list 不传 eventType 时无 event_type 条件（行为不变）', async () => {
+        mockCalls = [];
+        mockResponder = (sql: string) => {
+            if (sql.includes('COUNT')) {
+                return { rows: [{ total: 1 }] };
+            }
+            return {
+                rows: [{
+                    id: 1, report_date: '2026-08-14', user_id: 'evt_x',
+                    content: { eventId: 'evt_x', title: 'X', source: 'cls', publishTime: '2026-08-14T10:00:00' },
+                    created_at: '2026-08-14T10:00:00Z',
+                }],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, { method: 'GET', path: '/api/agent/event/list?page=1&pageSize=10' });
+
+        assert.strictEqual(res.status, 200);
+        const selectCall = mockCalls.find((c) => c.sql.includes('DISTINCT ON'));
+        const countCall = mockCalls.find((c) => c.sql.includes('COUNT(DISTINCT'));
+        assert.ok(selectCall, '应存在 SELECT 查询');
+        assert.ok(countCall, '应存在 COUNT 查询');
+        assert.ok(!selectCall!.sql.includes("content->>'event_type'"), '不传 eventType 时 SELECT 不应含条件');
+        assert.ok(!countCall!.sql.includes("content->>'event_type'"), '不传 eventType 时 COUNT 不应含条件');
+        // 无 eventType 时不追加参数（SELECT 仍为 [pageSize, offset]）
+        assert.deepStrictEqual(selectCall!.params, [10, 0]);
+    });
+
     // ── 9. Detail 404 ──
 
     it('GET /api/agent/event/:eventId returns 404 for non-existent event', async () => {
