@@ -3,13 +3,14 @@ import { PredictionRecordService, type PredictionRecordRow } from './PredictionR
 
 const router: Router = Router();
 
-const VALID_STATUSES = ['pending', 'verified'] as const;
+const VALID_STATUSES = ['pending', 'verified', 'skipped'] as const;
 
 /** 测试注入点（tsx ESM live binding 无法 patch 模块私有函数，沿用仓库 __xxxDependencies 模式） */
 export const __predictionPublicDependencies = {
-  list: (params: { status?: 'pending' | 'verified'; page: number; pageSize: number }) =>
+  list: (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) =>
     PredictionRecordService.list(params),
-  listAllForStats: (status?: 'pending' | 'verified') => PredictionRecordService.listAllForStats(status),
+  listAllForStats: (status?: 'pending' | 'verified' | 'skipped', source_id?: string) =>
+    PredictionRecordService.listAllForStats(status, source_id),
   getById: (id: number) => PredictionRecordService.getById(id),
 };
 
@@ -42,14 +43,23 @@ function horizonKeys(row: PredictionRecordRow): string[] {
   return horizons.map((h) => h.horizon);
 }
 
-/** 按已验证档位口径统计（hit/(hit+miss)，insufficient 不计） */
+/**
+ * 按已验证档位口径统计（hit/(hit+miss)，insufficient 不计）。
+ * status='skipped' 的行显式跳过（不计入 pending/verified/命中统计），单独累加 skippedCount；
+ * total 仍含 skipped 行（口径与列表 items 对齐）。
+ */
 function computeStats(rows: PredictionRecordRow[]) {
   let pendingCount = 0;
   let verifiedCount = 0;
   let verifiedHorizonCount = 0;
   let hitCount = 0;
   let missCount = 0;
+  let skippedCount = 0;
   for (const row of rows) {
+    if (row.status === 'skipped') {
+      skippedCount += 1;
+      continue;
+    }
     const keys = horizonKeys(row);
     const verification = row.verification ?? {};
     const allVerified = keys.length > 0 && keys.every((h) => Boolean(verification[h]));
@@ -68,6 +78,7 @@ function computeStats(rows: PredictionRecordRow[]) {
     total: rows.length,
     pendingCount,
     verifiedCount,
+    skippedCount,
     hitRate: comparable > 0 ? hitCount / comparable : null,
     verifiedHorizonCount,
     hitCount,
@@ -77,21 +88,30 @@ function computeStats(rows: PredictionRecordRow[]) {
 
 router.get('/', async (req: Request, res: Response) => {
   const statusRaw = typeof req.query.status === 'string' ? req.query.status : 'all';
-  const status: 'pending' | 'verified' | undefined =
+  const status: 'pending' | 'verified' | 'skipped' | undefined =
     statusRaw === 'all' ? undefined : VALID_STATUSES.includes(statusRaw as typeof VALID_STATUSES[number])
-      ? (statusRaw as 'pending' | 'verified')
+      ? (statusRaw as 'pending' | 'verified' | 'skipped')
       : undefined;
   if (statusRaw !== 'all' && status === undefined) {
-    res.status(400).json({ code: 400, message: 'status must be all|pending|verified' });
+    res.status(400).json({ code: 400, message: 'status must be all|pending|verified|skipped' });
     return;
+  }
+  // source_id 过滤（统计与列表同一口径）：格式 review:YYYY-MM-DD
+  let sourceId: string | undefined;
+  if (req.query.source_id !== undefined) {
+    if (typeof req.query.source_id !== 'string' || !/^review:\d{4}-\d{2}-\d{2}$/.test(req.query.source_id)) {
+      res.status(400).json({ code: 400, message: 'source_id must match review:YYYY-MM-DD' });
+      return;
+    }
+    sourceId = req.query.source_id;
   }
   const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
   const pageSize = Math.min(50, Math.max(1, Number.parseInt(String(req.query.pageSize ?? '20'), 10) || 20));
 
   try {
-    const allRows = await __predictionPublicDependencies.listAllForStats(status);
+    const allRows = await __predictionPublicDependencies.listAllForStats(status, sourceId);
     const stats = computeStats(allRows);
-    const { rows, total } = await __predictionPublicDependencies.list({ status, page, pageSize });
+    const { rows, total } = await __predictionPublicDependencies.list({ status, source_id: sourceId, page, pageSize });
     res.json({
       code: 200,
       data: {
