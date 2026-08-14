@@ -272,3 +272,35 @@ test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skip
   assert.equal(body.data.stats.missCount, 1)
   assert.equal(body.data.stats.hitRate, 2 / 3)
 })
+
+test('GET /api/predictions -> 200：越年近似档不计入命中率分母（approximateHorizonCount 单独统计）', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      prediction: {
+        ...baseRow().prediction,
+        due_dates_approximate: ['mid', 'long'],
+      },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+        long: { horizon: 'long', result: 'hit' as const, actual: '+1.50%', reason: 'x', verified_at: '2027-01-05T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as {
+    data: { stats: { verifiedHorizonCount: number; hitCount: number; missCount: number; hitRate: number | null; approximateHorizonCount: number } }
+  }
+  // 近似档照常验证（档位进度不受影响）：short/mid/long 三档均有 verification
+  assert.equal(body.data.stats.verifiedHorizonCount, 3)
+  // 命中率只统计精确档 short：hit=1；mid/long 近似档不混入分母
+  assert.equal(body.data.stats.hitCount, 1)
+  assert.equal(body.data.stats.missCount, 0)
+  assert.equal(body.data.stats.approximateHorizonCount, 2)
+  assert.equal(body.data.stats.hitRate, 1)
+})

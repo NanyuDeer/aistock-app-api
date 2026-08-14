@@ -50,6 +50,7 @@ router.post('/', async (req: Request, res: Response) => {
     due_dates?: unknown;
     status?: unknown;
     skip_reason?: unknown;
+    due_dates_approximate?: unknown;
   };
   if (
     typeof body.source_type !== 'string' || !body.source_type.trim() ||
@@ -68,6 +69,15 @@ router.post('/', async (req: Request, res: Response) => {
     res.status(400).json({ code: 400, message: 'skip_reason must be a string' });
     return;
   }
+  // P2 越年近似：due_dates_approximate 可选（string[]），缺省/空 = 全精确档
+  if (
+    body.due_dates_approximate !== undefined &&
+    (!Array.isArray(body.due_dates_approximate) ||
+      !body.due_dates_approximate.every((h) => typeof h === 'string'))
+  ) {
+    res.status(400).json({ code: 400, message: 'due_dates_approximate must be an array of strings' });
+    return;
+  }
   try {
     const record = await __internalPredictionDependencies.create({
       source_type: body.source_type,
@@ -77,6 +87,7 @@ router.post('/', async (req: Request, res: Response) => {
       due_dates: body.due_dates as Record<string, string>,
       status: body.status as 'pending' | 'skipped' | undefined,
       skip_reason: body.skip_reason as string | undefined,
+      due_dates_approximate: body.due_dates_approximate as string[] | undefined,
     });
     res.json({ code: 200, data: record });
   } catch (err) {

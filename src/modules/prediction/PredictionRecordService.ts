@@ -35,12 +35,16 @@ export class PredictionRecordService {
     due_dates: Record<string, string>;
     status?: 'pending' | 'skipped';
     skip_reason?: string;
+    due_dates_approximate?: string[];
   }): Promise<PredictionRecordRow | null> {
-    // skip_reason 合并进 prediction（免 DB 迁移，SPEC §8）；status 缺省 pending
+    // skip_reason / due_dates_approximate 合并进 prediction（免 DB 迁移，SPEC §8）；
+    // due_dates_approximate：越年近似档位名列表（P2 裁决），缺省/空 = 全精确档
     const status = input.status ?? 'pending';
-    const prediction = input.skip_reason !== undefined
-      ? { ...input.prediction, skip_reason: input.skip_reason }
-      : input.prediction;
+    const prediction = {
+      ...input.prediction,
+      ...(input.skip_reason !== undefined ? { skip_reason: input.skip_reason } : {}),
+      ...(input.due_dates_approximate !== undefined ? { due_dates_approximate: input.due_dates_approximate } : {}),
+    };
     const result = await pool.query<PredictionRecordRow>(
       `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates, status)
        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
