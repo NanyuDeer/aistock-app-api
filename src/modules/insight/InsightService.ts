@@ -65,7 +65,7 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
         const created = await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate);
         // 每个命中事件都接入任务队列：enqueue 幂等（(event_id, analysis_version) 唯一键 DO NOTHING），
         // 事件已存在时重复调用安全且具备自愈能力，保证 watchlist-insight.jobs Stream 必有消息
-        const eventId = buildEventId(hit.symbol, a.tradeDate);
+        const eventId = buildEventId(hit.symbol, a.tradeDate, 'limit_up');
         try {
             await enqueue(eventId);
         } catch (e) {
@@ -81,7 +81,7 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
 }
 
 /** 读取用户自选股集合（仅保留 stocks 表中存在的标的） */
-async function getWatchlistSymbols(): Promise<Set<string>> {
+export async function getWatchlistSymbols(): Promise<Set<string>> {
     const { rows } = await pool.query(
         'SELECT DISTINCT us.symbol FROM user_stocks us JOIN stocks s ON s.symbol = us.symbol',
     );
@@ -89,12 +89,14 @@ async function getWatchlistSymbols(): Promise<Set<string>> {
 }
 
 /**
- * 生成洞察事件 ID：wi_YYYYMMDD_symbol_limit_up。
+ * 生成洞察事件 ID：涨停 wi_{date}_{symbol}_limit_up；价格异动 wi_{date}_{symbol}_pm_{direction}。
  * 事件 ID 由 createEvent 内部生成，runCycle 入队时需同源复用，故抽为导出辅助，
  * 保证与 016 迁移及 watchlist_insight_jobs.event_id 关联键格式一致。
  */
-export function buildEventId(symbol: string, tradeDate: string): string {
-    return `wi_${tradeDate.replace(/-/g, '')}_${symbol}_limit_up`;
+export function buildEventId(symbol: string, tradeDate: string, kind: 'limit_up' | 'pm', direction?: 'up' | 'down'): string {
+    return kind === 'limit_up'
+        ? `wi_${tradeDate.replace(/-/g, '')}_${symbol}_limit_up`
+        : `wi_${tradeDate.replace(/-/g, '')}_${symbol}_pm_${direction}`;
 }
 
 /**
@@ -109,7 +111,7 @@ export async function createEvent(
     sourceId: string,
     tradeDate: string,
 ): Promise<boolean> {
-    const eventId = buildEventId(symbol, tradeDate);
+    const eventId = buildEventId(symbol, tradeDate, 'limit_up');
     const res = await pool.query(
         `INSERT INTO watchlist_insight_events (event_id, symbol, stock_name, trade_date, source_id)
          VALUES ($1,$2,$3,$4,$5) ON CONFLICT (symbol, trade_date, direction, insight_group) DO NOTHING RETURNING event_id`,

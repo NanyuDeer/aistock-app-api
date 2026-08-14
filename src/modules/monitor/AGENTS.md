@@ -45,7 +45,13 @@
 - `modules/crawler/StockInfoService` — 股票信息（研判）
 
 ## 开发注意事项
+- 行业知识图谱（`IndustryKGService`）：
+  - 行业上下游边由 AI 批量生成（`buildAIEdges`，每批 20 行业）+ **专家人工修正表**（`EXPERT_INDUSTRY_RELATIONS`，按行业名精确匹配，约 90 个热门行业权威上下游）双重保障；`applyExpertEdges` 幂等覆盖 AI 边，缓存命中与重新生成统一生效
+  - 缓存 TTL 修复：full_graph.json 的过期判断用缓存内部 `updateTime` 而非文件 mtime（mtime 会被龙头股后台加载重写刷新，导致永不更新）；`rebuild(force)` 支持强制跳过 ai_edges 缓存
+  - AI prompt 明确：881xxx 为二级行业、884xxx 为三级细分，严禁把并列/细分-父级/服务外包当上下游
 - 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10，网页同款口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填
+- 风口榜单会出现行业板块（881xxx）：行业板块不走"概念→行业"映射（`mapConceptToIndustries`），改走 `mapIndustryToChain` 直接从知识图谱取行业上下游（`getUpstreamDownstreamByName`，失败返回空不阻塞）；前端 WindLeaderPanel 流向图支持无 related 节点的行业板块布局
+- 龙头股爬取必须经 `isValidStockCode`/`isValidStockName`/`extractStockCodeFromHref` 校验：同花顺概念页新闻链接（`news.10jqka.com.cn/20260805/...`）URL 中日期 `202608` 会被旧正则 `/(\d{6})/` 误当股票代码、新闻标题被当股票名（曾污染 leading_stock 如"概念细分|玻璃基板…"）；`extractLeadingStock` 爬取失败时回退 main_stocks 评分最高者补全 code/价格（行业板块 881xxx 无概念页龙头结构）
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
 - 飞书消息 AI 任务每分钟执行一次；仅处理正文/OCR非空且已有候选股票代码的消息，失败不自动重试

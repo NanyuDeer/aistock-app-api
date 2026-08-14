@@ -79,6 +79,49 @@ describe('enqueue', () => {
         assert.ok(capturedSql.includes('INSERT INTO watchlist_insight_jobs (event_id, analysis_version)'));
         assert.ok(capturedSql.includes('ON CONFLICT (event_id, analysis_version) DO NOTHING'));
     });
+
+    it('force=true 时同 event 已存在仍重置 job 为 queued 并追加 outbox（补抓重归因）', async () => {
+        let jobInsertCalls = 0;
+        let outboxInsertCalls = 0;
+        let capturedSql = '';
+        const tx: string[] = [];
+        const clientQuery = (async (text: string) => {
+            if (text === 'BEGIN' || text === 'COMMIT' || text === 'ROLLBACK') {
+                tx.push(text);
+                return { rows: [] };
+            }
+            if (text.includes('INSERT INTO watchlist_insight_jobs')) {
+                jobInsertCalls++;
+                capturedSql = text;
+                // 真实 DB 冲突语义：DO NOTHING 冲突返回 0 行（ROLLBACK），DO UPDATE 恒返回行
+                if (text.includes('DO NOTHING') && jobInsertCalls >= 2) {
+                    return { rows: [] };
+                }
+                return { rows: [{ job_id: '11111111-1111-4111-8111-111111111111' }] };
+            }
+            if (text.includes('INSERT INTO watchlist_insight_outbox')) {
+                outboxInsertCalls++;
+                return { rows: [] };
+            }
+            return { rows: [] };
+        }) as unknown as typeof pool.query;
+        const client = { query: clientQuery, release: () => {} };
+        mock.method(pool, 'connect', (async () => client) as unknown as typeof pool.connect);
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        mock.method(redis, 'xadd', (async () => '0-0') as unknown as typeof redis.xadd);
+
+        const eventId = 'wi_20260805_000962_limit_up';
+        await enqueue(eventId);
+        await enqueue(eventId, { force: true });
+
+        assert.equal(jobInsertCalls, 2, '两次入队都执行 job INSERT');
+        assert.equal(outboxInsertCalls, 2, 'force 重入队应追加新 outbox（产生新 stream 消息供 Python 重归因）');
+        assert.equal(tx.filter(t => t === 'ROLLBACK').length, 0, 'force 不应 ROLLBACK');
+        assert.ok(
+            capturedSql.includes("DO UPDATE SET status = 'queued', attempt_count = 0"),
+            'force 应把已存在 job 重置为 queued 并清零尝试次数',
+        );
+    });
 });
 
 // ==================== publishPending ====================

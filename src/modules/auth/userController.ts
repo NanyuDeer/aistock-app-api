@@ -4,8 +4,11 @@ import { verifyJwt } from '../../shared/utils/jwt';
 import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import { isValidAShareSymbol } from '../../shared/utils/validator';
 import pool from '../../core/db';
+import { NotificationService, NotificationTableUnavailableError } from '../../core/notification/NotificationService';
 
 export class UserController {
+    private static readonly UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
     private static log(stage: string, message: string, data?: any): void {
         const ts = new Date().toISOString();
         const detail = data !== undefined ? ` | ${JSON.stringify(data)}` : '';
@@ -411,5 +414,55 @@ export class UserController {
             enabled: Number(updated?.enabled ?? enabledValue) === 1,
             updated_at: updated?.updated_at || null,
         });
+    }
+
+    static async listNotifications(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+        const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+        try {
+            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor));
+        } catch (error) {
+            UserController.respondNotificationError(res, error, '通知读取失败');
+        }
+    }
+
+    static async markNotificationsRead(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const rawIds = Array.isArray(req.body?.ids)
+            ? req.body.ids.map((id: unknown) => String(id)).filter(Boolean).slice(0, 50)
+            : [];
+        if (!rawIds.length) {
+            createResponse(res, 400, '缺少 ids 参数');
+            return;
+        }
+        // 通知 id 是 UUID，非法值直接落到 $2::uuid[] 会让 PG 抛类型错误并被外层当成 500
+        const ids = rawIds.filter((id: string) => UserController.UUID_PATTERN.test(id));
+        if (!ids.length) {
+            createResponse(res, 400, 'ids 需为合法的通知 ID');
+            return;
+        }
+        try {
+            await NotificationService.markRead(auth.openid, ids);
+            createResponse(res, 200, 'success', { ids });
+        } catch (error) {
+            UserController.respondNotificationError(res, error, '通知状态更新失败');
+        }
+    }
+
+    private static respondNotificationError(res: Response, error: unknown, fallback: string): void {
+        if (error instanceof NotificationTableUnavailableError) {
+            createResponse(res, 503, '通知服务暂不可用');
+            return;
+        }
+        createResponse(res, 500, error instanceof Error ? error.message : fallback);
     }
 }

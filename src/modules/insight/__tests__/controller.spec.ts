@@ -9,11 +9,10 @@
  * 仓库惯例：Node 内建 test runner（node:test）+ .spec.ts + __tests__ 目录。
  * 运行：`node --import tsx --test src/modules/insight/__tests__/controller.spec.ts`
  */
-import { describe, it, afterEach, after, mock } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import type { NextFunction, Request, Response } from 'express';
 import pool from '../../../core/db';
-import redis from '../../../core/redis';
 import { signJwt } from '../../../shared/utils/jwt';
 import { InsightController } from '../controller';
 
@@ -53,11 +52,6 @@ afterEach(() => {
     mock.restoreAll();
     if (ORIGINAL_SECRET === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = ORIGINAL_SECRET;
-});
-
-// openidFromRequest 走 tokenBlacklist → CacheService（加载 core/redis），after() 需断开防进程挂起。
-after(() => {
-    redis.disconnect();
 });
 
 describe('InsightController.list', () => {
@@ -159,9 +153,11 @@ describe('InsightController.get', () => {
         process.env.JWT_SECRET = TEST_SECRET;
         const token = buildToken(TEST_OPENID);
         const fakeRow = { event_id: EVENT_ID, symbol: '000962', stock_name: '东方钽业' };
-        let captured: { text: string; params: unknown[] } | null = null;
+        const calls: { text: string; params: unknown[] }[] = [];
         mock.method(pool, 'query', (async (text: string, params?: unknown[]) => {
-            captured = { text, params: params ?? [] };
+            calls.push({ text, params: params ?? [] });
+            // 第二次调用为最新证据包查询
+            if (calls.length > 1) return { rows: [{ evidence: [] }] };
             return { rows: [fakeRow] };
         }) as unknown as typeof pool.query);
 
@@ -175,16 +171,21 @@ describe('InsightController.get', () => {
 
         await InsightController.get(req, res, next);
 
-        assert.ok(captured, '登录用户应发起数据库查询');
-        const sql = captured as { text: string; params: unknown[] };
+        assert.ok(calls.length >= 1, '登录用户应发起数据库查询');
+        const sql = calls[0];
         assert.match(
             sql.text,
             /JOIN user_stocks us ON us\.symbol = e\.symbol AND us\.openid = \$1/,
             '详情 SQL 应按登录用户自选股过滤',
         );
         assert.match(sql.text, /WHERE e\.event_id = \$2/, '详情 SQL 应以 eventId 为第二参数');
+        assert.match(sql.text, /LEFT JOIN LATERAL/, '详情 SQL 应包含 LATERAL join 取价格快照');
+        assert.match(sql.text, /watchlist_price_snapshots ps/, 'LATERAL join 目标为 watchlist_price_snapshots');
+        assert.match(sql.text, /ORDER BY ps\.snapshot_time DESC LIMIT 1/, 'LATERAL join 取最新一条快照');
         assert.equal(sql.params[0], TEST_OPENID, '第一个参数应为 openid');
         assert.equal(sql.params[1], EVENT_ID, '第二个参数应为 eventId');
-        assert.deepEqual(resState.body, { code: 200, data: fakeRow }, '响应格式应为 { code, data }');
+        assert.equal(calls.length, 2, '详情应追加最新证据包查询');
+        assert.match(calls[1].text, /watchlist_evidence_packages/, '证据包查询目标为 watchlist_evidence_packages');
+        assert.deepEqual(resState.body, { code: 200, data: { ...fakeRow, evidence_package: [] } }, '响应应含证据包字段');
     });
 });

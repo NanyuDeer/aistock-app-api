@@ -36,7 +36,7 @@ const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
-    'chat_analysis',
+    'chat_analysis', 'event_scrape',
 ]
 
 interface ChainSummaryItem {
@@ -432,6 +432,7 @@ router.get('/monitor/alerts', async (req: Request, res: Response) => {
             change_type: queryStr(req, 'change_type'),
             limit: queryInt(req, 'limit', 20),
             offset: queryInt(req, 'offset', 0),
+            dateFrom: queryStr(req, 'dateFrom') || undefined,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {

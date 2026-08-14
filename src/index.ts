@@ -79,6 +79,8 @@ import { StockSyncService } from './modules/monitor/StockSyncService';
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
 import { InsightController } from './modules/insight/controller';
+import { NotificationService } from './core/notification/NotificationService';
+import { NotificationRetryService } from './core/notification/NotificationRetryService';
 
 // prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
 import predictionInternalRouter from './modules/prediction/internalRouter';
@@ -206,6 +208,8 @@ app.get('/api/users/me/push-history', (req, res, next) => UserController.getPush
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
+app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -664,6 +668,30 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
+// 自选股洞察午盘/尾盘价格打点：11:30 午盘、15:05 尾盘（与六时段定时任务对齐）
+const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.run(snapshotType);
+        console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
+    } catch (err) {
+        console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+
+// 午盘触发后 20 分钟补抓：仅处理当日 event_type='midday_price_move' 的事件
+cron.schedule('50 11 * * 1-5', async () => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.refetchMiddayEvidence();
+        console.log(`[PriceMoveCron] refetch 完成 events=${r.events}`);
+    } catch (err) {
+        console.error('[PriceMoveCron] refetch 失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 飞书消息千问分析：每分钟串行处理少量待分析记录。
 cron.schedule('* * * * *', async () => {
     if (!FeishuMessageAiService.isConfigured()) return;
@@ -737,6 +765,18 @@ cron.schedule('35 15 * * *', async () => {
         console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
     } catch (err: unknown) {
         console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        const result = await NotificationRetryService.run();
+        if (result.flushed || result.delivered || result.retrying || result.dropped) {
+            console.log(`[NotificationRetry] flushed=${result.flushed}, delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+        }
+    } catch (err: unknown) {
+        console.error('[NotificationRetry] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -833,6 +873,21 @@ async function start() {
         console.log('[PG] Connected successfully');
     } catch (err: unknown) {
         console.error('[PG] Connection failed:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await NotificationService.ensureSchemaAtStartup();
+        console.log('[DB] user_notifications table ready');
+        // 启动补投：进程上次退出时 outbox 里可能还有没投递成功的通知
+        NotificationRetryService.run()
+            .then(result => {
+                if (result.delivered || result.retrying || result.dropped) {
+                    console.log(`[NotificationRetry] 启动补投: delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+                }
+            })
+            .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
+    } catch (err: unknown) {
+        console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {
