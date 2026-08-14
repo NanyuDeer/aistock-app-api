@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-14 — 风口龙头板块新增 long_leader（长期趋势龙头）字段
+**开发者**: Aria
+
+### 新增
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  1. 新增导出函数 `queryTopTrendScore(codes)`：查 `trend_scores` 表最新评分日中成分股代码集合内 score 最高、非 D 评级、未被 60 日均线剔除（ma60_excluded != true）的股票；返回 `SelectedStock`（reason_tag=评级、source='trend_score'），DB 错误/无命中返回 null（回退路径）
+  2. `HotSectorAnalysis` 接口新增 `long_leader: SelectedStock | null`
+  3. 主循环板块分析新增第 10 步：行业板块（881xxx）用 `getBoardTopStocks(20,'industry')` 成分股代码、概念板块用概念成分股代码，调 `queryTopTrendScore` 取趋势龙头；无命中回退 `finalMainStocks` 评分最高者
+
+### 测试
+- 新增 `src/modules/monitor/__tests__/windLeaderLongLeader.spec.ts`：4 用例覆盖空数组/DB 命中/SQL 过滤条件（MAX(score_date)、排除 D、ma60_excluded）/无命中/DB 错误回退
+
+---
+
 ## [changer] 2026-08-13 — 深度分析报告详情查询接口
 **开发者**: 37588
 

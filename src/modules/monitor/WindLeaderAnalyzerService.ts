@@ -175,6 +175,7 @@ interface HotSectorAnalysis {
     downstream_stocks: SelectedStock[];
     flow_data: { nodes: FlowNode[]; links: FlowLink[]; transfer_direction: string };
     leading_stock_info: LeadingStockInfo;
+    long_leader: SelectedStock | null;   // 长期趋势龙头：板块成分股中 trend_scores 评分最高（无命中回退 main_stocks 最高分）
 }
 
 // ==================== 缓存 ====================
@@ -196,6 +197,50 @@ async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string
     } catch (err) {
         console.warn('[HotSectorAnalyzer] getStocksIndustryMap failed:', (err as Error).message);
         return new Map();
+    }
+}
+
+/**
+ * 查询板块成分股中长期趋势龙头：trend_scores 表最新评分日中，给定成分股代码集合内
+ * score 最高且未被 60 日均线剔除、非 D 评级的股票。
+ * 返回 null 表示成分股无趋势评分命中（调用方回退 main_stocks 最高分）。
+ */
+export async function queryTopTrendScore(codes: string[]): Promise<SelectedStock | null> {
+    if (!Array.isArray(codes) || codes.length === 0) return null;
+    try {
+        const result = await pool.query(
+            `SELECT t.symbol, t.score, t.label,
+                    COALESCE(s.name, '') AS name,
+                    COALESCE(s.industry, '') AS industry
+             FROM trend_scores t
+             LEFT JOIN stocks s ON t.symbol = s.symbol
+             WHERE t.score_date = (SELECT MAX(score_date) FROM trend_scores)
+               AND t.symbol = ANY($1)
+               AND t.label NOT IN ('D')
+               AND (t.ma60_excluded IS NULL OR t.ma60_excluded = false)
+             ORDER BY t.score DESC
+             LIMIT 1`,
+            [codes],
+        );
+        const row = result.rows[0];
+        if (!row) return null;
+        const score = Number(row.score);
+        return {
+            code: row.symbol,
+            name: row.name,
+            industry: row.industry,
+            score: Number.isFinite(score) ? score : 0,
+            reason: `趋势评分${row.label || ''}`,
+            reason_tag: row.label || '',
+            reason_tag_class: '',
+            source: 'trend_score',
+            in_concept: false,
+            chain_position: '核心',
+            related_industry: row.industry || '',
+        };
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] queryTopTrendScore failed:', (err as Error).message);
+        return null;
     }
 }
 
@@ -3956,6 +4001,20 @@ export class WindLeaderAnalyzerService {
                 concept.name, concept, finalMainStocks, concept.code, enhancement,
             );
 
+            // 10. 长期趋势龙头：板块成分股中 trend_scores 评分最高者（长线榜展示用）
+            // 概念板块用概念成分股代码；行业板块（881xxx）无概念成分股，用行业成分股代码。
+            // 无趋势评分命中时回退 main_stocks 评分最高者。
+            let longLeaderCodes: string[] = [];
+            if (isIndustryBoardCode(concept.code)) {
+                const indTop = await getBoardTopStocks(concept.code, 20, 'industry');
+                longLeaderCodes = indTop.map(s => s.code);
+            } else {
+                longLeaderCodes = Array.from(conceptCodes);
+            }
+            const longLeader = (await queryTopTrendScore(longLeaderCodes))
+                || [...finalMainStocks].sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+                || null;
+
             // 板块综合评分（用于泡泡图大小）：频次*5 + 均涨幅*3 + 最新涨幅*2
             const sectorScore = Math.round(
                 (concept.frequency || 0) * 5 +
@@ -3993,6 +4052,7 @@ export class WindLeaderAnalyzerService {
                 downstream_stocks: filteredDownstream,
                 flow_data: flowData,
                 leading_stock_info: leadingStockInfo,
+                long_leader: longLeader,
             });
         }
 
