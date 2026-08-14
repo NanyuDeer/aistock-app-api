@@ -680,6 +680,37 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/industry/graph
+ * 读取 IndustryKG 全图快照（B-5，裁决书 B 论题）。
+ * 供 Python build_iterate_cases 产片时采集 window_before.industry_graph
+ * （get_industry_graph_full）：返回 chains（上下游边）+ graph_update_time。
+ * 注意：必须在 /industry/:name/chain 之后注册不冲突（路径段数不同）；
+ * 图谱未初始化 → 502，采集侧降级 None 不阻断产片。
+ */
+router.get('/industry/graph', async (_req: Request, res: Response) => {
+    try {
+        const graph = IndustryKGService.getFullGraph()
+        res.json({
+            code: 200,
+            data: {
+                chains: graph.edges.map((edge) => ({
+                    source: edge.source,
+                    target: edge.target,
+                    confidence: edge.confidence,
+                })),
+                graph_update_time: graph.updateTime,
+                industry_count: graph.industryCount,
+                edge_count: graph.edgeCount,
+                concept_count: graph.conceptCount,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industry/graph error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/institution-research/history
  * 机构调研推荐热门股历史记录（从数据库查询，分页）
  *
