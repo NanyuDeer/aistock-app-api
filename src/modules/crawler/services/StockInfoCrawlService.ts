@@ -78,7 +78,7 @@ function buildSubmitItem(item: CrawlCandidate, judgement: AiJudgement): SubmitIt
 const DEFAULT_OPTIONS: Required<CrawlOptions> = {
     source: 'all',
     limit: 200,
-    lookback_days: 30,
+    lookback_days: 30, // E-2（2026-08-14）：语义由"自然日"改为"A 股交易日"（回溯跳过周末/节假日）
     announcement_page_size: 20,
     news_page_size: 10,
     max_announcements_per_stock: 3,

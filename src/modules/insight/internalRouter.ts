@@ -35,7 +35,8 @@ router.get('/events/:eventId/context', async (req: Request, res: Response) => {
         const eventId = param(req, 'eventId');
         const { rows } = await pool.query(
             `SELECT e.symbol, e.stock_name, e.trade_date, e.event_type, e.direction,
-                    s.title, s.keywords, s.content, s.published_at, s.source_id
+                    s.title, s.keywords, s.content, s.published_at, s.source_id,
+                    s.source_url AS url
              FROM watchlist_insight_events e
              JOIN watchlist_insight_sources s ON s.source_id = e.source_id
              WHERE e.event_id = $1`,
