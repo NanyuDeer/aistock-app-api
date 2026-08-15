@@ -30,6 +30,7 @@ import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
+import { getIndexMap } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -178,6 +179,25 @@ router.get('/health', (_req: Request, res: Response) => {
 })
 
 router.use(verifyInternalToken)
+
+/**
+ * GET /internal/ths/index-map
+ * 同花顺 885/886 板块指数全表（板块名 → ts_code 映射，进程缓存 + 6h TTL）。
+ *
+ * 供 Python Agent 预测验证器（M2 roadmap）板块名匹配用。
+ *
+ * - 200: { code: 200, data: { ts_codes: [{ ts_code, name, count, exchange, list_date, type }], updated_at } }
+ * - 502: 取数失败
+ */
+router.get('/ths/index-map', async (_req: Request, res: Response) => {
+    try {
+        const data = await getIndexMap()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/index-map error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
 
 /**
  * GET /internal/quote/:symbol
