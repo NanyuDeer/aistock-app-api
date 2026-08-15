@@ -209,12 +209,21 @@ router.get('/', async (req: Request, res: Response) => {
     }
     return;
   }
-  if (status !== 'pending') {
-    res.status(400).json({ code: 400, message: 'unsupported status filter (only pending)' });
+  if (status !== 'pending' && status !== 'verified') {
+    res.status(400).json({ code: 400, message: 'unsupported status filter (only pending|verified)' });
     return;
   }
+  const limitRaw = req.query.limit;
+  const limit =
+    typeof limitRaw === 'string' && /^\d+$/.test(limitRaw) ? Number(limitRaw) : 200;
+  const beforeIdRaw = req.query.before_id;
+  const beforeId =
+    typeof beforeIdRaw === 'string' && /^\d+$/.test(beforeIdRaw) ? Number(beforeIdRaw) : undefined;
   try {
-    const rows = await PredictionRecordService.listPending();
+    const rows =
+      status === 'pending'
+        ? await PredictionRecordService.listPending(limit, beforeId)
+        : await PredictionRecordService.listByStatus(status, limit, beforeId);
     res.json({ code: 200, data: rows });
   } catch (err) {
     res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });

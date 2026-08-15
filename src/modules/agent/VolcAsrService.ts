@@ -112,7 +112,7 @@ export class VolcAsrService {
         const config = {
           app: { appid: this.appid, token: this.token, cluster: this.cluster },
           user: { uid: 'aistock-app' },
-          audio: { format: 'mp3', rate: 16000, bits: 16, channel: 1, language: 'zh-CN' },
+          audio: { format: 'wav', rate: 16000, bits: 16, channel: 1, language: 'zh-CN' },
           request: {
             reqid,
             sequence,

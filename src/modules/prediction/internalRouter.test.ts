@@ -19,6 +19,7 @@ import test, { after, afterEach, before } from 'node:test'
 import express from 'express'
 
 import predictionInternalRouter, { __internalPredictionDependencies } from './internalRouter'
+import { PredictionRecordService } from './PredictionRecordService'
 import redis from '../../core/redis'
 import pool from '../../core/db'
 
@@ -232,6 +233,85 @@ test('GET /internal/predictions?source_id= (empty) -> 400', async () => {
     assert.equal(res.status, 400)
     const body = res.body as { code: number }
     assert.equal(body.code, 400)
+})
+
+// ==================== GET / : pending/verified 游标分页（H8/D3） ====================
+
+test('GET /internal/predictions?status=pending&before_id=100&limit=50 -> 透传游标', async () => {
+    let captured: unknown
+    const original = PredictionRecordService.listPending
+    PredictionRecordService.listPending = (async (limit: number, beforeId?: number) => {
+        captured = { limit, beforeId }
+        return []
+    }) as typeof PredictionRecordService.listPending
+
+    try {
+        const res = await makeJsonRequest(
+            port,
+            'GET',
+            '/internal/predictions?status=pending&before_id=100&limit=50',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: unknown[] }
+        assert.equal(body.code, 200)
+        assert.ok(Array.isArray(body.data))
+        const params = captured as { limit: number; beforeId?: number }
+        assert.equal(params.limit, 50)
+        assert.equal(params.beforeId, 100)
+    } finally {
+        PredictionRecordService.listPending = original
+    }
+})
+
+test('GET /internal/predictions?status=verified&before_id=100&limit=50 -> 走 listByStatus（D3 统计出口）', async () => {
+    let captured: unknown
+    const original = PredictionRecordService.listByStatus
+    PredictionRecordService.listByStatus = (async (status: string, limit: number, beforeId?: number) => {
+        captured = { status, limit, beforeId }
+        return []
+    }) as typeof PredictionRecordService.listByStatus
+
+    try {
+        const res = await makeJsonRequest(
+            port,
+            'GET',
+            '/internal/predictions?status=verified&before_id=100&limit=50',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: unknown[] }
+        assert.equal(body.code, 200)
+        const params = captured as { status: string; limit: number; beforeId?: number }
+        assert.equal(params.status, 'verified')
+        assert.equal(params.limit, 50)
+        assert.equal(params.beforeId, 100)
+    } finally {
+        PredictionRecordService.listByStatus = original
+    }
+})
+
+test('GET /internal/predictions?status=pending&before_id=abc -> 200 忽略非法游标（默认全量）', async () => {
+    let captured: unknown
+    const original = PredictionRecordService.listPending
+    PredictionRecordService.listPending = (async (limit: number, beforeId?: number) => {
+        captured = { limit, beforeId }
+        return []
+    }) as typeof PredictionRecordService.listPending
+
+    try {
+        const res = await makeJsonRequest(
+            port,
+            'GET',
+            '/internal/predictions?status=pending&before_id=abc',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const params = captured as { limit: number; beforeId?: number }
+        assert.equal(params.beforeId, undefined)
+    } finally {
+        PredictionRecordService.listPending = original
+    }
 })
 
 // ==================== POST / : status / skip_reason 透传 ====================

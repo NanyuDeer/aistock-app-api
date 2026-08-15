@@ -21,8 +21,10 @@ function toTsCode(symbol: string): string {
     return `${symbol}.${identity.market.toUpperCase()}`;
 }
 
-function getApiName(klt: KLinePeriod): string {
-    if (klt === 101) return 'daily';
+const INDEX_TS_CODES = new Set(['000001.SH', '000300.SH', '000688.SH', '399001.SZ', '399006.SZ'])
+
+function getApiName(klt: KLinePeriod, tsCode: string): string {
+    if (klt === 101) return INDEX_TS_CODES.has(tsCode) ? 'index_daily' : 'daily';
     if (klt === 102) return 'weekly';
     if (klt === 103) return 'monthly';
     return 'min_data';
@@ -47,7 +49,7 @@ export class TushareKlineService {
     static async getKLine(options: KLineOptions): Promise<Record<string, any>[]> {
         const { symbol, klt = 101, fqt = 1, limit = 120, startDate, endDate } = options;
         const tsCode = toTsCode(symbol);
-        const apiName = getApiName(klt);
+        const apiName = getApiName(klt, tsCode);
 
         await tushareKlineThrottler.throttle();
 
@@ -100,6 +102,33 @@ export class TushareKlineService {
                 '涨跌幅': Math.round(pctChg * 100) / 100,
                 '涨跌额': Math.round(change * 100) / 100,
                 '换手率': toNumber(row.turnover) ?? 0,
+            };
+        });
+    }
+
+    /** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
+     * 指数必须走 Tushare index_daily（ts_code 显式传，不经 getStockIdentity——
+     * 000001 会被误判为深市个股平安银行 000001.SZ）。 */
+    static async getIndexKLine(tsCode: string, limit = 120): Promise<Record<string, any>[]> {
+        await tushareKlineThrottler.throttle();
+        const rows = await tushareRequest('index_daily', { ts_code: tsCode });
+        if (!rows || rows.length === 0) return [];
+        const sorted = rows.sort((a, b) =>
+            String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
+        const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
+        return sliced.map(row => {
+            const close = toNumber(row.close) ?? 0;
+            const preClose = toNumber(row.pre_close) ?? 0;
+            const high = toNumber(row.high) ?? 0;
+            const low = toNumber(row.low) ?? 0;
+            const pctChg = toNumber(row.pct_chg) ?? (preClose > 0 ? ((close - preClose) / preClose) * 100 : 0);
+            return {
+                '时间': String(row.trade_date || ''),
+                '开盘价': toNumber(row.open),
+                '收盘价': close,
+                '最高价': high,
+                '最低价': low,
+                '涨跌幅': Math.round(pctChg * 100) / 100,
             };
         });
     }

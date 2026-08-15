@@ -134,9 +134,9 @@ app.use(cors({
 app.use('/api/agent', publicRouter);
 
 // ASR 语音识别：二进制 mp3/wav 上传 → 火山流式识别 → { text }
-// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/mpeg
+// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/wav
 const asrDeps = createDefaultAsrDeps();
-app.post('/api/agent/asr', express.raw({ type: 'audio/mpeg', limit: '5mb' }), (req, res, next) => {
+app.post('/api/agent/asr', express.raw({ type: 'audio/wav', limit: '5mb' }), (req, res, next) => {
     AsrController.recognize(req, res, next, asrDeps);
 });
 

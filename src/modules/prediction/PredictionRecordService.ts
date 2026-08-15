@@ -66,14 +66,54 @@ export class PredictionRecordService {
     return result.rows[0] ?? null;
   }
 
-  static async listPending(limit = 200): Promise<PredictionRecordRow[]> {
+  static async listPending(limit = 200, beforeId?: number): Promise<PredictionRecordRow[]> {
+    // 游标：只取 id < beforeId 的 pending（按 id 倒序取最近 limit 条）
+    if (beforeId !== undefined) {
+      const result = await pool.query<PredictionRecordRow>(
+        `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+         FROM prediction_records
+         WHERE status = 'pending' AND id < $1
+         ORDER BY id DESC
+         LIMIT $2`,
+        [beforeId, limit],
+      );
+      return result.rows;
+    }
     const result = await pool.query<PredictionRecordRow>(
       `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
        FROM prediction_records
        WHERE status = 'pending'
-       ORDER BY created_at ASC
+       ORDER BY id DESC
        LIMIT $1`,
       [limit],
+    );
+    return result.rows;
+  }
+
+  /** 按状态列表（内部路由 verified 游标分页，D3 统计出口）：id < beforeId 分页 */
+  static async listByStatus(
+    status: string,
+    limit = 200,
+    beforeId?: number,
+  ): Promise<PredictionRecordRow[]> {
+    if (beforeId !== undefined) {
+      const result = await pool.query<PredictionRecordRow>(
+        `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+         FROM prediction_records
+         WHERE status = $1 AND id < $2
+         ORDER BY id DESC
+         LIMIT $3`,
+        [status, beforeId, limit],
+      );
+      return result.rows;
+    }
+    const result = await pool.query<PredictionRecordRow>(
+      `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+       FROM prediction_records
+       WHERE status = $1
+       ORDER BY id DESC
+       LIMIT $2`,
+      [status, limit],
     );
     return result.rows;
   }

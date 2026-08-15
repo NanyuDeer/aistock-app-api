@@ -2,6 +2,38 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-15 — 预测验证 v2 支撑端点（指数日 K + 游标分页）
+
+**开发者**: changer-collab
+
+### 新增
+- `GET /internal/index/:code/kline`：指数日 K 端点（Tushare index_daily，显式 ts_code 不经 getStockIdentity——`000001` 会被误判为深市个股），预测验证 v2 窗口判定的历史数据源；支持 `days`（1-200）参数，指数映射 000001/000300/000688/399001/399006
+- `TushareKlineService.getIndexKLine`：指数日线拉取（index_daily + 统一字段映射，经 tushare 节流器）
+- `GET /internal/predictions` 游标分页：`before_id` 参数（pending/listByStatus 均支持，按 id 倒序），防全量扫描
+
+### 改进
+- `PredictionRecordService.listPending`/`listByStatus` 支持 `beforeId` 游标参数；非法游标忽略回退全量
+
+---
+
+## [changer] 2026-08-15 — ASR 录音格式 mp3 → wav（对齐前端录音 + 火山识别）
+
+**开发者**: 37588
+
+### 背景
+App 真机录音 mp3 不可靠（部分 Android ROM 缺编码器 start 抛错），前端录音改 wav + 16kHz；后端 ASR 链路同步对齐。
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：火山 full request `audio.format` 'mp3' → 'wav'（rate 16000/bits 16/channel 1 不变，wav 需 pcm_s16le 与 16k 匹配）
+- `src/index.ts`：`/api/agent/asr` express.raw type 'audio/mpeg' → 'audio/wav'
+- `src/modules/agent/asrController.ts`：接口注释同步
+- 测试：`volcAsrService.spec.ts`（format 断言 wav）、`asrController.spec.ts`（Content-Type audio/wav）
+
+### 验证
+- `tsx --test` 定向 12/12 通过、`tsc --noEmit` 无报错
+
+---
+
 ## [changer] 2026-08-14 — 预测记录支持越年近似档标记
 
 **开发者**: changelog
