@@ -243,6 +243,47 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
     }
 })
 
+/** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
+ * 指数必须走 index_daily（Tushare），且不经 getStockIdentity——000001 会被误判为深市个股。
+ * - 200: { code: 200, data: { code, klt: 101, days, rows } }
+ * - 400: code 不在指数映射 / days 非 1-200 整数
+ * - 502: 服务异常
+ */
+const INDEX_CODE_TO_TS: Record<string, string> = {
+    '000001': '000001.SH', // 上证指数
+    '000300': '000300.SH', // 沪深300
+    '000688': '000688.SH', // 科创50
+    '399001': '399001.SZ', // 深证成指
+    '399006': '399006.SZ', // 创业板指
+}
+
+router.get('/index/:code/kline', async (req: Request, res: Response) => {
+    const code = param(req, 'code')
+    const tsCode = INDEX_CODE_TO_TS[code]
+    if (!tsCode) {
+        return res.status(400).json({ code: 400, message: 'Invalid index code — 支持: 000001/000300/000688/399001/399006' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 200) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-200 的整数' })
+    }
+    try {
+        const rows = await TushareKlineService.getIndexKLine(tsCode, days)
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        res.json({ code: 200, data: { code, klt: 101, days: clean.length, rows: clean } })
+    } catch (err: unknown) {
+        console.error(`[Internal] index/${code}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 /**
  * GET /internal/flow/:symbol
  * 个股资金流向（新浪 + Tushare 双源）
