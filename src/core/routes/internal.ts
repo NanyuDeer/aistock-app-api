@@ -30,7 +30,7 @@ import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
-import { getIndexMap, resolveBoardName } from '../../modules/quote/ThsBoardService'
+import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -216,6 +216,34 @@ router.get('/ths/resolve', async (req: Request, res: Response) => {
         res.json({ code: 200, data: { matched } })
     } catch (err: unknown) {
         console.error(`[Internal] ths/resolve error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+const CODE_RE = /^\d{6}\.TI$/i
+
+/**
+ * GET /internal/ths/:code/daily
+ * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
+ *
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
+ * - 502: 服务异常
+ */
+router.get('/ths/:code/daily', async (req: Request, res: Response) => {
+    const code = String(req.params.code || '').toUpperCase()
+    const start = String(req.query.start || '')
+    const end = String(req.query.end || '')
+    const YM = /^\d{8}$/
+    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    }
+    try {
+        const rows = await getBoardDailyRange(code, start, end)
+        res.json({ code: 200, data: { ts_code: code, days: rows.length, rows } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/${code}/daily error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })

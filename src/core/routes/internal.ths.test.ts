@@ -82,6 +82,7 @@ test('GET /internal/ths/index-map -> 取数失败 502', async () => {
     ThsBoardService.__resetIndexMapCache()
     const res = await makeGetRequest(port, '/internal/ths/index-map', INTERNAL_TOKEN)
     assert.equal(res.status, 502)
+    assert.equal((res.body as { code: number }).code, 502)
 })
 
 // ============ Task 2: GET /internal/ths/resolve（三级匹配） ============
@@ -115,8 +116,61 @@ test('GET /internal/ths/resolve?name=不存在的板块 -> matched null', async 
     assert.equal(body.data.matched, null)
 })
 
+test('GET /internal/ths/resolve?name=白酒龙头 -> 归一化包含命中（ns.includes(n) 分支）', async () => {
+    patchGetThsIndex(async () => [
+        { ts_code: '885525.TI', name: '白酒概念', count: 20, exchange: 'A', list_date: '20140415', type: 'N' },
+    ])
+    ThsBoardService.__resetIndexMapCache()
+    // 白酒龙头 归一化后不精确命中「白酒概念」（normName 剥概念后缀得「白酒」），走
+    // n.includes(ns) || ns.includes(n) 包含分支（Task 1/2 评审补覆盖：该分支此前从未命中）
+    const res = await makeGetRequest(port, '/internal/ths/resolve?name=' + encodeURIComponent('白酒龙头'), INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { matched: { ts_code: string; name: string } | null } }
+    assert.equal(body.code, 200)
+    assert.equal(body.data.matched?.ts_code, '885525.TI')
+    assert.equal(body.data.matched?.name, '白酒概念')
+})
+
 test('GET /internal/ths/resolve 缺 name -> 400', async () => {
     const res = await makeGetRequest(port, '/internal/ths/resolve', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
+    assert.equal((res.body as { code: number }).code, 400)
+})
+
+// ============ Task 3: GET /internal/ths/:code/daily（区间日 K） ============
+// 与 Task 1 同款约定：__dailyDeps 属性注入（tsx ESM 下 namespace 绑定只读，只能替换对象属性），
+// 不触达真实 Tushare。契约键 pct_change → pct_chg（H7：Tushare 缺失保行为 null，不静默丢行）。
+
+function patchGetThsDaily(impl: ThsBoardService.ThsDailyDeps['getThsDaily']): void {
+    ThsBoardService.__dailyDeps.getThsDaily = impl
+}
+
+test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows', async () => {
+    patchGetThsDaily(async () => [
+        { ts_code: '885525.TI', trade_date: '20250102', pct_change: 1.23 },
+        { ts_code: '885525.TI', trade_date: '20250103', pct_change: -0.5 },
+    ])
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { ts_code: string; days: number; rows: Array<{ trade_date: string; pct_chg: number | null }> } }
+    assert.equal(body.code, 200)
+    assert.equal(body.data.ts_code, '885525.TI')
+    assert.equal(body.data.days, 2)
+    const rows = body.data.rows
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].pct_chg, 1.23) // pct_change -> pct_chg 契约键
+    assert.equal(rows[0].trade_date, '20250102') // 升序
+    assert.equal(rows[1].pct_chg, -0.5)
+})
+
+test('GET /internal/ths/xxx/daily 非法 code -> 400', async () => {
+    const res = await makeGetRequest(port, '/internal/ths/abc/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
+    assert.equal((res.body as { code: number }).code, 400)
+})
+
+test('GET /internal/ths/885525.TI/daily 缺 start/end -> 400', async () => {
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily', INTERNAL_TOKEN)
     assert.equal(res.status, 400)
     assert.equal((res.body as { code: number }).code, 400)
 })

@@ -5,7 +5,7 @@
  * 板块名 → ts_code 全表映射。取数复用 TushareService.getThsIndex；
  * 进程缓存 + 6 小时 TTL 近似覆盖"每交易日刷新"语义。
  */
-import { getThsIndex } from './TushareService'
+import { getThsIndex, getThsDaily } from './TushareService'
 
 const INDEX_MAP_TTL_MS = 6 * 60 * 60 * 1000 // 每 6 小时刷新（覆盖跨交易日 TTL 语义）
 
@@ -73,4 +73,34 @@ export async function resolveBoardName(name: string): Promise<{ ts_code: string;
         return n.includes(ns) || ns.includes(n)
     })
     return contain ? { ts_code: contain.ts_code, name: contain.name } : null
+}
+
+// ============ 板块区间日 K（Task 3：/internal/ths/:code/daily） ============
+
+/** DI 注入点：测试通过替换此对象避免触达真实 Tushare（与 __indexMapDeps 同款约定） */
+export interface ThsDailyDeps {
+    getThsDaily: (tsCode: string, startDate: string, endDate?: string) => Promise<Array<Record<string, unknown>>>
+}
+export const __dailyDeps: ThsDailyDeps = {
+    // ThsDailyRow 是 interface（无隐式索引签名），直接赋给 Record<string, unknown>[] 会报 TS2322；
+    // 每个 ThsDailyRow 都是 Record<string, unknown> 形状对象，此拓宽安全（DI 层保持宽松行类型供 mock 注入）。
+    getThsDaily: getThsDaily as unknown as ThsDailyDeps['getThsDaily'],
+}
+
+const CODE_RE = /^\d{6}\.TI$/i
+
+/** 板块指数区间日 K：pct_change → pct_chg 契约键归一（Tushare 缺失时保行为 null，H7 不静默丢行），
+ * rows 按 trade_date 升序（YYYYMMDD 字典序 = 时间序）。 */
+export async function getBoardDailyRange(
+    code: string, start: string, end: string,
+): Promise<Array<{ trade_date: string; pct_chg: number | null }>> {
+    const rows = await __dailyDeps.getThsDaily(code, start, end)
+    const out = rows
+        .filter((r) => r.trade_date !== undefined)
+        .map((r) => ({
+            trade_date: String(r.trade_date),
+            pct_chg: typeof r.pct_change === 'number' ? r.pct_change : null,
+        }))
+    out.sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
+    return out
 }
