@@ -2,6 +2,24 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-15 — ASR 录音格式 mp3 → wav（对齐前端录音 + 火山识别）
+
+**开发者**: 37588
+
+### 背景
+App 真机录音 mp3 不可靠（部分 Android ROM 缺编码器 start 抛错），前端录音改 wav + 16kHz；后端 ASR 链路同步对齐。
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：火山 full request `audio.format` 'mp3' → 'wav'（rate 16000/bits 16/channel 1 不变，wav 需 pcm_s16le 与 16k 匹配）
+- `src/index.ts`：`/api/agent/asr` express.raw type 'audio/mpeg' → 'audio/wav'
+- `src/modules/agent/asrController.ts`：接口注释同步
+- 测试：`volcAsrService.spec.ts`（format 断言 wav）、`asrController.spec.ts`（Content-Type audio/wav）
+
+### 验证
+- `tsx --test` 定向 12/12 通过、`tsc --noEmit` 无报错
+
+---
+
 ## [changer] 2026-08-14 — 预测记录支持越年近似档标记
 
 **开发者**: changelog

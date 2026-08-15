@@ -70,7 +70,7 @@ describe('VolcAsrService', () => {
     assert.equal(config.app.appid, '5551085502')
     assert.equal(config.app.token, 'test-token')
     assert.equal(config.app.cluster, 'volcengine_streaming_common')
-    assert.equal(config.audio.format, 'mp3')
+    assert.equal(config.audio.format, 'wav')
     assert.equal(config.audio.rate, 16000)
     assert.equal(config.audio.bits, 16)
     assert.equal(config.audio.channel, 1)

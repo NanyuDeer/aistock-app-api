@@ -15,8 +15,8 @@ after(() => {
 
 function buildApp(deps: AsrControllerDeps): Express {
   const app: Express = express()
-  // 对齐 index.ts：publicRouter 区在 express.json() 之前；ASR 用 express.raw 只消费 audio/mpeg
-  app.post('/api/agent/asr', express.raw({ type: 'audio/mpeg', limit: '5mb' }), (req: Request, res: Response, next: NextFunction) => {
+  // 对齐 index.ts：publicRouter 区在 express.json() 之前；ASR 用 express.raw 只消费 audio/wav
+  app.post('/api/agent/asr', express.raw({ type: 'audio/wav', limit: '5mb' }), (req: Request, res: Response, next: NextFunction) => {
     AsrController.recognize(req, res, next, deps)
   })
   return app
@@ -40,7 +40,7 @@ async function postAudio(
 ): Promise<{ status: number; json: Record<string, unknown> }> {
   const res = await fetch(`http://127.0.0.1:${port}/api/agent/asr`, {
     method: 'POST',
-    headers: { 'Content-Type': 'audio/mpeg', ...headers },
+    headers: { 'Content-Type': 'audio/wav', ...headers },
     body,
   })
   const json = await res.json() as Record<string, unknown>
