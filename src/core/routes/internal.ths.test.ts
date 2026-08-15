@@ -83,3 +83,40 @@ test('GET /internal/ths/index-map -> 取数失败 502', async () => {
     const res = await makeGetRequest(port, '/internal/ths/index-map', INTERNAL_TOKEN)
     assert.equal(res.status, 502)
 })
+
+// ============ Task 2: GET /internal/ths/resolve（三级匹配） ============
+// 与 Task 1 同款约定：resolveBoardName 内部走 getIndexMap()（进程缓存 + 6h TTL），
+// 故每个用例先 patchGetThsIndex 注入 mock，再 __resetIndexMapCache() 隔离缓存，
+// 避免命中上一用例的缓存（不用 brief 的 namespace 赋值——ESM/tsx 下会抛只读绑定错误）。
+
+test('GET /internal/ths/resolve?name=白酒板块 -> 归一化精确命中', async () => {
+    patchGetThsIndex(async () => [
+        { ts_code: '885525.TI', name: '白酒概念', count: 20, exchange: 'A', list_date: '20140415', type: 'N' },
+    ])
+    ThsBoardService.__resetIndexMapCache()
+    const res = await makeGetRequest(port, '/internal/ths/resolve?name=' + encodeURIComponent('白酒板块'), INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { matched: { ts_code: string; name: string } | null } }
+    assert.equal(body.code, 200)
+    const matched = body.data.matched
+    assert.equal(matched?.ts_code, '885525.TI')
+    assert.equal(matched?.name, '白酒概念')
+})
+
+test('GET /internal/ths/resolve?name=不存在的板块 -> matched null', async () => {
+    patchGetThsIndex(async () => [
+        { ts_code: '885525.TI', name: '白酒概念', count: 20, exchange: 'A', list_date: '20140415', type: 'N' },
+    ])
+    ThsBoardService.__resetIndexMapCache()
+    const res = await makeGetRequest(port, '/internal/ths/resolve?name=' + encodeURIComponent('不存在板块'), INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { matched: { ts_code: string; name: string } | null } }
+    assert.equal(body.code, 200)
+    assert.equal(body.data.matched, null)
+})
+
+test('GET /internal/ths/resolve 缺 name -> 400', async () => {
+    const res = await makeGetRequest(port, '/internal/ths/resolve', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
+    assert.equal((res.body as { code: number }).code, 400)
+})

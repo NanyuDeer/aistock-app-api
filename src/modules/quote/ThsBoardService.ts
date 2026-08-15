@@ -49,3 +49,28 @@ export async function getIndexMap(): Promise<{ ts_codes: ThsIndexRow[]; updated_
 export function __resetIndexMapCache(): void {
     cache = null
 }
+
+// ============ 板块名三级匹配（Task 2：/internal/ths/resolve） ============
+
+const SUFFIX_RE = /（A股）|\(A股\)|概念$|板块$|行业$|产业链$/g
+const SPACE_RE = /[\s（）()]/g
+
+function normName(s: string): string {
+    return String(s).replace(SPACE_RE, '').replace(SUFFIX_RE, '').toLowerCase()
+}
+
+/** 三级匹配：归一化精确 → 归一化双向包含 → null。返回 { ts_code, name } 或 null。 */
+export async function resolveBoardName(name: string): Promise<{ ts_code: string; name: string } | null> {
+    const trimmed = (name || '').trim()
+    if (!trimmed) return null
+    const { ts_codes } = await getIndexMap()
+    const ns = normName(trimmed)
+    if (!ns) return null
+    const exact = ts_codes.find((r) => normName(r.name) === ns)
+    if (exact) return { ts_code: exact.ts_code, name: exact.name }
+    const contain = ts_codes.find((r) => {
+        const n = normName(r.name)
+        return n.includes(ns) || ns.includes(n)
+    })
+    return contain ? { ts_code: contain.ts_code, name: contain.name } : null
+}

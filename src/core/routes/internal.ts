@@ -30,7 +30,7 @@ import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
-import { getIndexMap } from '../../modules/quote/ThsBoardService'
+import { getIndexMap, resolveBoardName } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -195,6 +195,27 @@ router.get('/ths/index-map', async (_req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: unknown) {
         console.error(`[Internal] ths/index-map error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/ths/resolve
+ * 板块名 → ts_code 三级匹配（归一化精确 → 归一化双向包含 → 未命中 null）。
+ * 归一化：去空格/全角括号、剥「概念/板块/行业/产业链」后缀、小写。
+ *
+ * - 200: { code: 200, data: { matched: { ts_code, name } | null } }（未命中 matched: null，非 404）
+ * - 400: name 缺失或为空
+ * - 502: 服务异常
+ */
+router.get('/ths/resolve', async (req: Request, res: Response) => {
+    const name = String(req.query.name || '').trim()
+    if (!name) return res.status(400).json({ code: 400, message: 'name 必填' })
+    try {
+        const matched = await resolveBoardName(name)
+        res.json({ code: 200, data: { matched } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/resolve error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
