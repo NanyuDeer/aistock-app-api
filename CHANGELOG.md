@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-15 — 预测验证 v2 支撑端点（指数日 K + 游标分页）
+
+**开发者**: changer-collab
+
+### 新增
+- `GET /internal/index/:code/kline`：指数日 K 端点（Tushare index_daily，显式 ts_code 不经 getStockIdentity——`000001` 会被误判为深市个股），预测验证 v2 窗口判定的历史数据源；支持 `days`（1-200）参数，指数映射 000001/000300/000688/399001/399006
+- `TushareKlineService.getIndexKLine`：指数日线拉取（index_daily + 统一字段映射，经 tushare 节流器）
+- `GET /internal/predictions` 游标分页：`before_id` 参数（pending/listByStatus 均支持，按 id 倒序），防全量扫描
+
+### 改进
+- `PredictionRecordService.listPending`/`listByStatus` 支持 `beforeId` 游标参数；非法游标忽略回退全量
+
+---
+
 ## [changer] 2026-08-15 — ASR 录音格式 mp3 → wav（对齐前端录音 + 火山识别）
 
 **开发者**: 37588
