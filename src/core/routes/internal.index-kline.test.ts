@@ -117,3 +117,32 @@ test('GET /internal/index/000001/kline -> 502 when service throws', async () => 
         ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = original
     }
 })
+
+test('GET /internal/index/000001/kline?start_date=20260101&end_date=20260131 -> 按区间过滤', async () => {
+    // 复用该文件既有 TushareKlineService.getIndexKLine patch 模式：
+    // patch 返回 3 行日期 20251201/20260110/20260120，期望 rows 只含后两行
+    const original = (TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine
+    ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = async () => [
+        { '时间': '20251201' },
+        { '时间': '20260110' },
+        { '时间': '20260120' },
+    ]
+    try {
+        const res = await makeGetRequest(
+            port,
+            '/internal/index/000001/kline?start_date=20260101&end_date=20260131',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { data: { rows: Array<{ trade_date: string }> } }
+        assert.deepEqual(body.data.rows.map((r) => r.trade_date), ['20260110', '20260120'])
+    } finally {
+        ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = original
+    }
+})
+
+test('GET /internal/index/000001/kline?start_date=bad -> 400', async () => {
+    const res = await makeGetRequest(port, '/internal/index/000001/kline?start_date=bad', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
+    assert.equal((res.body as Record<string, unknown>).code, 400)
+})

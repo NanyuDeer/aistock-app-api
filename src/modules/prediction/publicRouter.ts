@@ -51,6 +51,43 @@ function approximateHorizonSet(row: PredictionRecordRow): Set<string> {
 }
 
 /**
+ * 按 target_type 分桶的命中统计（与 agent-py 统计口径对齐）。
+ * 只计入 result ∈ {hit, miss} 且非 approximate 的档位；旧记录无 target_type 视为 index 兼容；
+ * skipped 行与 computeStats 口径一致，不参与分桶。
+ */
+function bucketStats(rows: PredictionRecordRow[]): {
+  combined: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
+  index: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
+  sector: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
+} {
+  const entries: Array<{ result: string; target_type: string; approximate: boolean; prediction_id: number }> = []
+  for (const r of rows) {
+    // skipped 行即使带 verification 内容也不计入（与 computeStats 一致）
+    if (r.status === 'skipped') continue
+    const v = r.verification as Record<string, { result?: string; target_type?: string; approximate?: boolean }> | null
+    if (!v) continue
+    for (const horizon of Object.keys(v)) {
+      const e = v[horizon]
+      if (e?.result === 'hit' || e?.result === 'miss') {
+        entries.push({
+          result: e.result,
+          target_type: e.target_type || 'index', // 旧记录兼容
+          approximate: Boolean(e.approximate),
+          prediction_id: r.id,
+        })
+      }
+    }
+  }
+  const pick = (tt: string | null) => entries.filter((e) => !e.approximate && (tt === null || e.target_type === tt))
+  const sum = (arr: typeof entries) => {
+    const n = arr.length
+    const hits = arr.filter((e) => e.result === 'hit').length
+    return { n, hits, hitRate: n ? hits / n : 0, sufficientSample: n >= 30 }
+  }
+  return { combined: sum(pick(null)), index: sum(pick('index')), sector: sum(pick('sector')) }
+}
+
+/**
  * 按已验证档位口径统计（hit/(hit+miss)，insufficient 不计）。
  * status='skipped' 的行显式跳过（不计入 pending/verified/命中统计），单独累加 skippedCount；
  * total 仍含 skipped 行（口径与列表 items 对齐）。
@@ -100,6 +137,7 @@ function computeStats(rows: PredictionRecordRow[]) {
     hitCount,
     missCount,
     approximateHorizonCount,
+    bucketStats: bucketStats(rows),
   };
 }
 

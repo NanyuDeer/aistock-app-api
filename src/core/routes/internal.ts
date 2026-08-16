@@ -30,6 +30,7 @@ import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
+import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -180,6 +181,74 @@ router.get('/health', (_req: Request, res: Response) => {
 router.use(verifyInternalToken)
 
 /**
+ * GET /internal/ths/index-map
+ * 同花顺 885/886 板块指数全表（板块名 → ts_code 映射，进程缓存 + 6h TTL）。
+ *
+ * 供 Python Agent 预测验证器（M2 roadmap）板块名匹配用。
+ *
+ * - 200: { code: 200, data: { ts_codes: [{ ts_code, name, count, exchange, list_date, type }], updated_at } }
+ * - 502: 取数失败
+ */
+router.get('/ths/index-map', async (_req: Request, res: Response) => {
+    try {
+        const data = await getIndexMap()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/index-map error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/ths/resolve
+ * 板块名 → ts_code 三级匹配（归一化精确 → 归一化双向包含 → 未命中 null）。
+ * 归一化：去空格/全角括号、剥「概念/板块/行业/产业链」后缀、小写。
+ *
+ * - 200: { code: 200, data: { matched: { ts_code, name } | null } }（未命中 matched: null，非 404）
+ * - 400: name 缺失或为空
+ * - 502: 服务异常
+ */
+router.get('/ths/resolve', async (req: Request, res: Response) => {
+    const name = String(req.query.name || '').trim()
+    if (!name) return res.status(400).json({ code: 400, message: 'name 必填' })
+    try {
+        const matched = await resolveBoardName(name)
+        res.json({ code: 200, data: { matched } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/resolve error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+const CODE_RE = /^\d{6}\.TI$/i
+
+/**
+ * GET /internal/ths/:code/daily
+ * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
+ *
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
+ * - 502: 服务异常
+ */
+router.get('/ths/:code/daily', async (req: Request, res: Response) => {
+    const code = String(req.params.code || '').toUpperCase()
+    const start = String(req.query.start || '')
+    const end = String(req.query.end || '')
+    const YM = /^\d{8}$/
+    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    }
+    try {
+        const rows = await getBoardDailyRange(code, start, end)
+        res.json({ code: 200, data: { ts_code: code, days: rows.length, rows } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/${code}/daily error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/quote/:symbol
  * 个股实时行情（腾讯数据源）
  */
@@ -267,8 +336,16 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
     if (!Number.isInteger(days) || days < 1 || days > 200) {
         return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-200 的整数' })
     }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（H9 向后兼容）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
     try {
-        const rows = await TushareKlineService.getIndexKLine(tsCode, days)
+        // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
+        const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
         const clean = rows.map((r) => ({
             trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
             open: r.open ?? r['开盘价'] ?? null,
@@ -277,7 +354,15 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
         }))
-        res.json({ code: 200, data: { code, klt: 101, days: clean.length, rows: clean } })
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { code, klt: 101, days: filtered.length, rows: filtered } })
     } catch (err: unknown) {
         console.error(`[Internal] index/${code}/kline error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
