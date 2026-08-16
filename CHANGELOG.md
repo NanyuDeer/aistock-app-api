@@ -2,6 +2,23 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-16 — 修复 Chat WS 桥接帧类型：文本帧被转成二进制帧导致对话回答为空
+
+**开发者**: 37588
+
+### 背景
+H5 对话页 AI 回答为空。定位到 chat-bridge 上游文本帧（agent-py `send_json`）经 `clientWs.send(data)` 转发时，因 `ws` 库 message 回调 data 恒为 Buffer，被默认按二进制帧发送 → 浏览器端 `JSON.parse(Blob)` 失败，所有 WS 事件被静默丢弃。
+
+### 修复
+- `src/core/ws/chat-bridge.ts`：上游 → 前端转发显式保留帧类型 `clientWs.send(data, { binary: isBinary })`（文本帧保持文本帧、二进制帧保持二进制帧）
+- 测试：`chat-bridge.spec.ts` 新增 2 个帧类型回归用例（上游文本帧 → 客户端 `isBinary=false`；上游二进制帧 → 客户端 `isBinary=true`），断言失败时 finally 关闭连接防 afterEach 挂起
+
+### 验证
+- `chat-bridge.spec.ts` 定向 8/8 通过（修复前文本帧用例 RED 失败：`true !== false`）
+- `npx tsc --noEmit` 无报错
+
+---
+
 ## [changer] 2026-08-15 — 预测验证 v2 支撑端点（指数日 K + 游标分页）
 
 **开发者**: changer-collab
