@@ -133,10 +133,10 @@ app.use(cors({
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
 
-// ASR 语音识别：二进制 mp3/wav 上传 → 火山流式识别 → { text }
-// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/wav
+// ASR 语音识别：二进制 amr 上传 → 火山流式识别 → { text }
+// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/amr
 const asrDeps = createDefaultAsrDeps();
-app.post('/api/agent/asr', express.raw({ type: 'audio/wav', limit: '5mb' }), (req, res, next) => {
+app.post('/api/agent/asr', express.raw({ type: 'audio/amr', limit: '5mb' }), (req, res, next) => {
     AsrController.recognize(req, res, next, asrDeps);
 });
 
