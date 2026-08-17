@@ -2,6 +2,31 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-17 — ASR 音频格式 wav → amr（对齐 App 端录音格式契约）
+
+**开发者**: 37588
+
+### 背景
+App Android 真机语音输入失败根因定位为：uni-app App 端 Android 不真正支持 `wav` 录音（HTML5+ `plus.audio.getRecorder` 生成无效文件），故前端录音改为 `amr`。后端火山 V2 ASR 需同步把音频协议 `format`/`rate` 对齐才能识别。
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：全量请求 `audio: { format:'wav', rate:16000 }` → `{ format:'amr', rate:8000 }`（AMR-NB 窄带固定 8k）；注释「mp3/wav 均可」→「amr/mp3/wav 均可」
+- `src/index.ts`：`express.raw` 消费 `type:'audio/wav'` → `'audio/amr'`；注释同步
+- `src/modules/agent/asrController.ts`：头注释 body 描述 `wav` → `amr`
+- 测试同步期望：`volcAsrService.spec.ts` 断言 `format:'amr'`/`rate:8000`；`asrController.spec.ts` 请求 `Content-Type: audio/amr`
+
+### 验证
+- `volcAsrService.spec.ts` + `asrController.spec.ts` 定向 12/12 通过（RED→GREEN）
+- `npx tsc --noEmit` 无报错
+
+### 配套（前端 app-frontend，同批）
+- `speechInput.ts` 录音启动 `format:'amr',sampleRate:8000`，上传 `Content-Type: audio/amr`（见 frontend changelog）
+
+### 待真机验证
+- 部署后端后 App 真机语音输入，确认 `/agent/asr` 收到 amr 并返回 `{ text }`
+
+---
+
 ## [changer] 2026-08-16 — 修复 Chat WS 桥接帧类型：文本帧被转成二进制帧导致对话回答为空
 
 **开发者**: 37588
