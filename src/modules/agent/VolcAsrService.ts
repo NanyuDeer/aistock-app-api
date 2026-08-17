@@ -74,7 +74,7 @@ export class VolcAsrService {
   }
 
   /**
-   * 识别一段音频（mp3/wav 均可，V2 协议 audio.format 直传免转码）。
+   * 识别一段音频（amr/mp3/wav 均可，V2 协议 audio.format 直传免转码）。
    * 返回聚合后的识别文本；失败抛错（错误信息可直接透出给前端）。
    */
   recognize(audio: Buffer): Promise<AsrRecognizeResult> {
@@ -112,7 +112,7 @@ export class VolcAsrService {
         const config = {
           app: { appid: this.appid, token: this.token, cluster: this.cluster },
           user: { uid: 'aistock-app' },
-          audio: { format: 'wav', rate: 16000, bits: 16, channel: 1, language: 'zh-CN' },
+          audio: { format: 'amr', rate: 8000, bits: 16, channel: 1, language: 'zh-CN' },
           request: {
             reqid,
             sequence,

@@ -3,7 +3,7 @@
  *
  * POST /api/agent/asr
  *  - 鉴权：JWT（Bearer/Cookie，复用 extractTokenFromRequest + isTokenRevoked，对齐 profileController.requireAuth）
- *  - body：wav 二进制（express.raw 消费 audio/wav；前端录音 wav + 16kHz 与火山 ASR format/rate 对齐）
+ *  - body：amr 二进制（express.raw 消费 audio/amr；前端录音 amr + 8kHz 与火山 ASR format/rate 对齐）
  *  - 返回：200 { text }（空文本表示静音，前端复用"未识别到语音"）
  *
  * 错误矩阵：401 无/非法 token；400 请求体超限（raw limit 前置）；503 火山凭证缺失；
