@@ -888,8 +888,10 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
         return { date: dailyByDateCache.date, data: dailyByDateCache.data };
     }
 
-    // 尝试最近3天
-    for (let offset = 0; offset < 3; offset++) {
+    // 尝试最近10天（覆盖周末与长假）：分析在凌晨运行，周一/长假后首个交易日可能位于
+    // 3 个日历日之外——窗口太短会取不到最近交易日，导致 moneyflow 日期回退到今天而返回空，
+    // 净流入（net_inflow）与 MA60 均缺失
+    for (let offset = 0; offset < 10; offset++) {
         const d = new Date();
         d.setDate(d.getDate() - offset);
         const dateStr = formatDate(d);
@@ -2574,7 +2576,7 @@ export function deriveCycle(a: {
     return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按 short_term_days 降序，相同按 freq20 降序），按 name 去重；
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按上榜次数 freq20 降序，相同按热度 short_heat 降序），按 name 去重；
  * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
@@ -2583,6 +2585,7 @@ export function applyDualRankings<T extends {
     short_term_days?: number;
     frequency?: number;
     freq20?: number;
+    ai_analysis?: AiAnalysis | string | null;
 }>(sectors: T[]): T[] {
     const longBoard = sectors
         .filter(s => s.cycle === 'long' || s.cycle === 'both')
@@ -2595,9 +2598,12 @@ export function applyDualRankings<T extends {
     const shortBoard = sectors
         .filter(s => s.cycle === 'short' || s.cycle === 'both')
         .sort((a, b) => {
-            const daysDiff = (b.short_term_days ?? 0) - (a.short_term_days ?? 0);
-            if (daysDiff !== 0) return daysDiff;
-            return (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            // 短线榜按上榜次数（近10日 freq20）降序，相同按短线热度（short_heat，存于 ai_analysis）降序
+            const freqDiff = (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            if (freqDiff !== 0) return freqDiff;
+            const heatOf = (s: { ai_analysis?: AiAnalysis | string | null }) =>
+                typeof s.ai_analysis === 'object' && s.ai_analysis ? (s.ai_analysis.short_heat ?? 0) : 0;
+            return heatOf(b) - heatOf(a);
         })
         .slice(0, 8);
     const merged = new Map<string, T>();

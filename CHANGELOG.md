@@ -27,6 +27,21 @@ App Android 真机语音输入失败根因定位为：uni-app App 端 Android �
 
 ---
 
+## [master] 2026-08-17 — 风口龙头：短线榜排序口径（上榜次数-热度）+ 最近交易日窗口修复
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  - `applyDualRankings` 短线榜排序由 `short_term_days → freq20` 改为**上榜次数 freq20 → 热度 short_heat（存于 ai_analysis）** 降序。原 `short_term_days` 是 HotSectorAnalysis 顶层不存在字段（实际在 ai_analysis 内），比较恒为 0，短线榜实际只按 freq20 排序且与前端口径不一致；现显式读 `ai_analysis.short_heat`，与前端 leaders 页"上榜次数-热度"口径统一
+  - `getLatestDailyMap` 最近交易日回溯窗口 3 天 → **10 天**：分析在凌晨运行，周一/长假后首个交易日可能位于 3 个日历日之外（如 2026-08-17 周一凌晨只回溯 17/16/15 均非交易日），导致 moneyflow 日期回退到当天返回空 → 所有板块 net_inflow=0、MA60 缺失（日志：`资金流向数据获取成功: 0条`）。10 天可覆盖周末 + 长假
+- `tests/WindLeaderCycle.test.ts`：短线榜测试改为断言 freq20→short_heat 降序；顺带修正 `deriveCycle({})` 陈旧断言（四态化后兜底为 none 非 short）
+
+### 验证
+- WindLeaderCycle 8/8 通过；`npx tsc --noEmit` 0 错误；用线上数据模拟新排序验证顺序符合"上榜次数-热度"
+
+---
+
 ## [changer] 2026-08-16 — 修复 Chat WS 桥接帧类型：文本帧被转成二进制帧导致对话回答为空
 
 **开发者**: 37588
