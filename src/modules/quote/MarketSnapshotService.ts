@@ -16,11 +16,13 @@ import {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     type IndexDailyRow,
     type DailyPriceRow,
     type LimitStepRow,
     type MoneyflowCntThsRow,
+    type MoneyflowIndDcRow,
     type MoneyflowThsRow,
     type CompleteDailyResult,
     type DailyCoverageReason,
@@ -229,6 +231,9 @@ export interface MarketSnapshotDeps {
     getLimitListThs: typeof getLimitListThs;
     getLimitStep: typeof getLimitStep;
     getMoneyflowCntThs: typeof getMoneyflowCntThs;
+    /** D6（2026-08-17 数据源裁决）：行业板块资金流（doc_id=371 免费族），
+     * 用于快照 sectors 概念板块（cnt_ths）之外的行业板块净流入补漏。 */
+    getMoneyflowIndDc: typeof getMoneyflowIndDc;
     getMoneyflowThsByDate: typeof getMoneyflowThsByDate;
     /**
      * 当前时刻工厂。生产环境默认返回 new Date()；测试可注入固定时间，
@@ -243,6 +248,7 @@ export const __marketSnapshotDependencies: MarketSnapshotDeps = {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     now: () => new Date(),
 };
@@ -337,6 +343,65 @@ function toSectorFact(row: MoneyflowCntThsRow): SectorFact {
         company_num: row.company_num,
         trade_date: row.trade_date,
     };
+}
+
+/**
+ * 板块名称归一化（D6，2026-08-17 数据源裁决）。
+ * 复用 WindLeaderAnalyzerService.ts:1094-1103 的匹配逻辑（模块解耦禁止跨模块 import，
+ * 此处本地同构实现，后续如需收敛可提取到 shared/utils）。
+ * 去空白/括号后缀/概念指数后缀/连接词/罗马数字分级后缀，小写化。
+ */
+function normalizeBoardName(name: string): string {
+    return String(name || '')
+        .replace(/\s+/g, '')
+        .replace(/[（(](?:概念|指数)[)）]/g, '')
+        .replace(/(概念|指数)$/, '')
+        .replace(/[及与和]/g, '')
+        .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/, '')
+        .toLowerCase();
+}
+
+/**
+ * D6（2026-08-17 数据源裁决）：以 cnt_ths（概念板块）为主，ind_dc（行业板块）
+ * 按名称归一匹配补漏——仅对概念板块中净流入为 0 的行，用同名行业板块的真实净流入补齐。
+ * 单位换算：cnt_ths net_amount 为亿元，ind_dc net_amount 为元 → /1e8 对齐亿元。
+ * 仅展示层（sectors 字段），不进 AI 推理链路。
+ */
+export function mergeIndustryInflow(
+    conceptRows: MoneyflowCntThsRow[],
+    industryRows: MoneyflowIndDcRow[],
+): MoneyflowCntThsRow[] {
+    // ind_dc 按归一化名称索引；同名多个时优先 content_type=行业，仍多个取净额绝对值最大者
+    const indByNorm = new Map<string, MoneyflowIndDcRow>();
+    for (const row of industryRows) {
+        const norm = normalizeBoardName(row.name);
+        if (!norm) continue;
+        const prev = indByNorm.get(norm);
+        if (!prev) {
+            indByNorm.set(norm, row);
+            continue;
+        }
+        const prevIsIndustry = prev.content_type === '行业';
+        const curIsIndustry = row.content_type === '行业';
+        const preferCur = (curIsIndustry && !prevIsIndustry)
+            || (curIsIndustry === prevIsIndustry
+                && Math.abs(row.net_amount || 0) > Math.abs(prev.net_amount || 0));
+        if (preferCur) indByNorm.set(norm, row);
+    }
+    if (indByNorm.size === 0) return conceptRows;
+
+    return conceptRows.map((row) => {
+        // 已有净流入的行不补（概念板块自身数据优先，防覆盖真实值）
+        if ((Number(row.net_amount) || 0) !== 0) return row;
+        const norm = normalizeBoardName(row.name);
+        const ind = norm ? indByNorm.get(norm) : undefined;
+        if (!ind || typeof ind.net_amount !== 'number' || !Number.isFinite(ind.net_amount)) return row;
+        return {
+            ...row,
+            // 元 → 亿元，与 cnt_ths 口径对齐（四舍五入到 4 位，避免浮点噪声）
+            net_amount: Math.round((ind.net_amount / 1e8) * 10000) / 10000,
+        };
+    });
 }
 
 /**
@@ -631,7 +696,17 @@ export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMa
 
     // ---- 7. 概念板块（涨跌与资金流各自独立排序，前 5 / 后 5） ----
     const sectorRows = await deps.getMoneyflowCntThs(currentTradeDate);
-    const sectors = selectTopSectors(sectorRows);
+    // D6（2026-08-17 数据源裁决）：moneyflow_cnt_ths 只含概念板块(885/886xxx)，
+    // 不含行业板块(881xxx/BKxxxx)。用 moneyflow_ind_dc（doc_id=371 免费族）按名称
+    // 归一匹配，为概念板块中净流入为 0 的行业板块补充真实净流入（仅展示层，不进 AI 链路）。
+    // ind_dc 为补漏源：失败时降级为纯概念板块（保持 D6 前行为），不阻断快照。
+    let industryRows: MoneyflowIndDcRow[] = [];
+    try {
+        industryRows = await deps.getMoneyflowIndDc(currentTradeDate);
+    } catch (err) {
+        console.warn('[MarketSnapshot] moneyflow_ind_dc 获取失败，行业板块净流入保持0:', err instanceof Error ? err.message : String(err));
+    }
+    const sectors = selectTopSectors(mergeIndustryInflow(sectorRows, industryRows));
 
     // ---- 8. 主力资金净额（大单 + 特大单，万元 → 元） ----
     const moneyflowRows = await deps.getMoneyflowThsByDate(currentTradeDate);

@@ -184,6 +184,7 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
         getLimitListThs: deps.getLimitListThs,
         getLimitStep: deps.getLimitStep,
         getMoneyflowCntThs: deps.getMoneyflowCntThs,
+        getMoneyflowIndDc: deps.getMoneyflowIndDc,
         getMoneyflowThsByDate: deps.getMoneyflowThsByDate,
         now: deps.now,
     };
@@ -206,6 +207,7 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
     deps.getLimitListThs = (async () => []) as typeof orig.getLimitListThs;
     deps.getLimitStep = (async () => []) as typeof orig.getLimitStep;
     deps.getMoneyflowCntThs = (async () => []) as typeof orig.getMoneyflowCntThs;
+    deps.getMoneyflowIndDc = (async () => []) as typeof orig.getMoneyflowIndDc;
     deps.getMoneyflowThsByDate = (async () => []) as typeof orig.getMoneyflowThsByDate;
     deps.now = fixture.now;
 
@@ -215,6 +217,7 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
         deps.getLimitListThs = orig.getLimitListThs;
         deps.getLimitStep = orig.getLimitStep;
         deps.getMoneyflowCntThs = orig.getMoneyflowCntThs;
+        deps.getMoneyflowIndDc = orig.getMoneyflowIndDc;
         deps.getMoneyflowThsByDate = orig.getMoneyflowThsByDate;
         deps.now = orig.now;
     };
