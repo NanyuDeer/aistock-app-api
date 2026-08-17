@@ -23,6 +23,7 @@ import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 import { verifyJwt } from '../../shared/utils/jwt'
 import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist'
 // MarketSnapshotService 通过 namespace 导入：路由调用 MarketSnapshotService.getTodayCloseSnapshot()，
@@ -2385,6 +2386,67 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
     } catch (err: unknown) {
         console.error('[Public] agent/event/:eventId error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+// =============================================================================
+// 交易日历查询（公开）
+// 供前端在"前一天/后一天"跳档时跳过非交易日，以及首页"市场洞见"取最近交易日。
+// 工作日历以服务端 TradingCalendarService 为权威（周末 + 官方休市日历），
+// 避免前端各自维护节假日表导致不一致。挂 /api/agent/*，与报告查询等公开接口同源。
+// =============================================================================
+
+function tradingCalendarDateParam(req: Request): string | undefined {
+    const date = queryStr(req, 'date')
+    return date && isCalendarDate(date) ? date : undefined
+}
+
+/** GET /api/agent/trading-calendar/previous?date=YYYY-MM-DD → 严格早于 date 的前一个交易日 */
+publicRouter.get('/trading-calendar/previous', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const prev = TradingCalendarService.getPreviousTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: prev.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/previous error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/next?date=YYYY-MM-DD → 严格晚于 date 的下一个交易日 */
+publicRouter.get('/trading-calendar/next', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const next = TradingCalendarService.getNextTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: next.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/next error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/recent?date=YYYY-MM-DD&count=N → 截至 date 最近 N 个交易日（含当天，若当天为交易日） */
+publicRouter.get('/trading-calendar/recent', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    const count = Math.min(Math.max(queryInt(req, 'count', 3), 1), 10)
+    try {
+        const days = TradingCalendarService.getRecentTradingDays(new Date(`${date}T00:00:00.000Z`), count)
+        res.json({ code: 0, data: days.map(d => d.toISOString().slice(0, 10)) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/recent error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
     }
 })
 
