@@ -166,7 +166,8 @@ app.use(express.urlencoded({ extended: true }));
 // H5 为 history 路由，深链接如 /h5/modules/user/pages/login 需 fallback 回 index.html，否则刷新会 404。
 const H5_DIST_DIR = process.env.H5_DIST_DIR || path.join(__dirname, '..', 'h5-dist');
 app.use('/h5', express.static(H5_DIST_DIR, { index: 'index.html' }));
-app.get('/h5/*', (_req, res) => {
+// Express 5 的 path 不支持裸 `*`，必须用命名通配 `/*splat`，否则启动即抛 PathError
+app.get('/h5/*splat', (_req, res) => {
     const indexFile = path.join(H5_DIST_DIR, 'index.html');
     if (fs.existsSync(indexFile)) {
         res.sendFile(indexFile);
