@@ -2,6 +2,23 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-node] 2026-08-18 — 恐贪指数服务：Python FastAPI 迁移为 Node/TS 并入 app-api
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/indicators.ts`：恐贪指数纯函数（clamp / percentileRank / pctRankOrNeutral / labelOf / levelOf / sparkline）
+- `src/modules/fear-greed/calculator.ts`：韭圈儿 6 指标计算（波动率 / 北向资金偏离 / 上涨占比 / IF 升贴水 / 股债回报差 / 融资买入），前 5 等权合成综合指数
+- `src/modules/fear-greed/FearGreedService.ts`：编排服务（内存 30 分钟缓存 + PG 快照表 fear_greed_snapshot / breadth_daily + Redis 缓存 + 上证指数序列对齐）
+- `src/modules/fear-greed/controller.ts`：dashboard / indexes / history / refresh 四个路由处理器
+- `tests/fear-greed.indicators.test.ts`、`tests/fear-greed.calculator.test.ts`：单元测试（node --import tsx --test）
+- `src/index.ts`：注册 `/api/fear-greed/*` 路由、每日 16:30 cron 自动刷新、启动时幂等建表
+
+### 重构
+- 原独立 Python FastAPI 服务（aistock-fear-greed）迁移为 Node/TS 模块并入 app-api，路由契约保持 `/api/fear-greed/*` 不变；Web demo 与 agent-py services/ 已清理
+
+---
+
 ## [master] 2026-08-07 — 公开 Brief 校验支持变体后缀 missing_sources（防复发）
 
 **开发者**: Aria
