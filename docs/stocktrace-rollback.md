@@ -41,8 +41,11 @@
 3. 验证消费者已停止：
 
    ```bash
-   # 检查日志，确认不再有 "stock_trace_job_completed" 行
-   pm2 logs aistock-agent --lines 20 | Select-String "stock_trace_job_completed"
+   # 生产机（Linux）：
+   pm2 logs aistock-agent --lines 20 2>&1 | grep "stock_trace_job_completed"
+
+   # 或本地 PowerShell（通过 SSH）：
+   ssh root@<host> "pm2 logs aistock-agent --lines 20 2>&1" | Select-String "stock_trace_job_completed"
 
    # 或查询 PG stock_trace_results 表，确认 no new rows
    psql -h 127.0.0.1 -p 15432 -U aistock -d aistock -c \
@@ -80,12 +83,6 @@
    git revert c66374c 77d108b --no-edit
    ```
 
-   或者使用 `git revert` 范围语法（从旧到新）：
-
-   ```bash
-   git revert 77d108b..HEAD --no-edit   # 如果不包含其他提交
-   ```
-
    > **注意**：revert 会同时恢复被注释停用的 11:50 补抓 cron（`50 11 * * 1-5` refetchMiddayEvidence，见 `src/index.ts` L684-693）。该 cron 在 2026-08-15 迁移时因 stocktrace 以 revision 机制处理盘中变化而被注释停用。revert 后该 cron 恢复注册，如仍需保持停用请重新注释。
 
 3. 重启 app-api 服务：
@@ -113,10 +110,18 @@
    - 或手动调用 `PriceMoveService.run('midday')` 或 `PriceMoveService.run('close')`，通过临时脚本或路由（需临时添加）：
 
      ```bash
-     # 通过 node --import tsx 执行临时脚本（需自行创建）
-     node --import tsx -e "
+     # 方式 A（推荐）：临时脚本文件
+     # 新建 scripts/manual-trigger-pricemove.ts：
+     #   import { PriceMoveService } from '../src/modules/insight/PriceMoveService';
+     #   PriceMoveService.run('midday').then(r => { console.log(r); process.exit(0); })
+     #     .catch(e => { console.error(e); process.exit(1); });
+     node --import tsx scripts/manual-trigger-pricemove.ts
+
+     # 方式 B：npx tsx -e（tsx 支持 ESM 内联，不受 CJS 默认模式限制）
+     npx tsx -e "
        import { PriceMoveService } from './src/modules/insight/PriceMoveService';
-       PriceMoveService.run('midday').then(r => console.log(JSON.stringify(r)));
+       PriceMoveService.run('midday').then(r => { console.log(r); process.exit(0); })
+         .catch(e => { console.error(e); process.exit(1); });
      "
      ```
 
