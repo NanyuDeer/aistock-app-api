@@ -31,10 +31,11 @@ function shanghaiDate(d: Date = new Date()): string {
     return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-/** 腾讯行情行 → 取"最新价"与"今开"（字段名以 getBatchQuotes 返回为准，兼容中/英文键） */
-function extractPrices(row: Record<string, any>): { latest: number | null; open: number | null } {
+/** 腾讯行情行 → 取"最新价"与"今开价"（键名以 TencentQuoteService 解析输出为准；兼容中/英文键）
+ *  注意：今开字段键是"今开价"（FIELD_INDEX '今开价':5），活动级(activity)字段集才包含它。 */
+export function extractPrices(row: Record<string, any>): { latest: number | null; open: number | null } {
     const latest = Number(row['最新价'] ?? row.latest ?? NaN);
-    const open = Number(row['今开'] ?? row.open ?? NaN);
+    const open = Number(row['今开价'] ?? row['今开'] ?? row.open ?? NaN);
     return { latest: Number.isFinite(latest) ? latest : null, open: Number.isFinite(open) ? open : null };
 }
 
@@ -51,7 +52,9 @@ export class PriceMoveService {
         }
         const symbols = [...(await getWatchlistSymbols())];
         if (symbols.length === 0) return { scanned: 0, triggered: 0 };
-        const quotes = await TencentQuoteService.getCachedBatchQuotes(symbols, 'core');
+        // 必须用 activity 级别：今开价仅在该字段集返回，core 只有代码/名称/最新价/涨跌幅，
+        // 缺今开会令 computeMoveBps 恒返回 null，异动永不触发（2026-08-15 实测定位）
+        const quotes = await TencentQuoteService.getCachedBatchQuotes(symbols, 'activity');
         let triggered = 0;
         for (const row of quotes) {
             const symbol = String(row['股票代码'] ?? row.symbol ?? '');
