@@ -48,6 +48,7 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
+import { OAuthBridgeController } from './modules/auth/oauthBridgeController';
 import { UserController } from './modules/auth/userController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
@@ -158,6 +159,22 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.text({ type: 'text/xml' }));
 app.use(express.urlencoded({ extended: true }));
 
+// ==================== H5 落地页静态托管（App「分享到微信再授权」OAuth 落地页） ====================
+// gupiao-api.yaozhineng.com/h5/* → app-api 56790（无需改 caddy）。
+// H5 产物来自 aistock-app-frontend `pnpm run build:h5`（manifest h5.router.base=/h5/），
+// 部署时上传到 H5_DIST_DIR（默认 dist 上一级的 h5-dist 目录）。
+// H5 为 history 路由，深链接如 /h5/modules/user/pages/login 需 fallback 回 index.html，否则刷新会 404。
+const H5_DIST_DIR = process.env.H5_DIST_DIR || path.join(__dirname, '..', 'h5-dist');
+app.use('/h5', express.static(H5_DIST_DIR, { index: 'index.html' }));
+app.get('/h5/*', (_req, res) => {
+    const indexFile = path.join(H5_DIST_DIR, 'index.html');
+    if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+    } else {
+        res.status(404).json({ code: 404, message: 'H5 未部署，请先上传 build:h5 产物' });
+    }
+});
+
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
     const start = Date.now();
     res.on('finish', () => {
@@ -206,6 +223,9 @@ app.all('/api/auth/wechat/push', (req, res, next) => WechatEventController.handl
 app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.generateQrCode(req, res, next));
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
 app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
+// 「分享到微信再授权」OAuth 桥接：H5 回传 token / App 轮询领取
+app.post('/api/auth/oauth/store', (req, res, next) => OAuthBridgeController.storeOauthResult(req, res, next));
+app.get('/api/auth/oauth/result', (req, res, next) => OAuthBridgeController.getOauthResult(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
