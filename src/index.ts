@@ -93,6 +93,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
 
+// fear-greed 恐贪指数模块
+import * as FearGreedController from './modules/fear-greed/controller';
+import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
+
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
 import { StockInfoJudgementController } from './modules/crawler/judgementController';
@@ -615,6 +619,13 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 
 app.use('/internal/insight', insightInternalRouter);
 
+// ==================== 恐贪指数路由（市场恐惧贪婪指数） ====================
+// 契约对齐原 Python FastAPI /api/fear-greed/*，前端（aistock-app-frontend）经 vite 代理访问
+app.get('/api/fear-greed/dashboard', FearGreedController.dashboard);
+app.get('/api/fear-greed/indexes', FearGreedController.indexes);
+app.get('/api/fear-greed/history', FearGreedController.history);
+app.post('/api/fear-greed/refresh', FearGreedController.refresh);
+
 app.use('/internal/predictions', predictionInternalRouter);
 
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
@@ -907,6 +918,17 @@ cron.schedule('*/10 9-15 * * 1-5', async () => {
         console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
     } catch (err: unknown) {
         console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 恐贪指数：每日 16:30 收盘后自动刷新（幂等，覆盖当日快照）
+cron.schedule('30 16 * * *', async () => {
+    console.log('[FearGreedCron] 开始刷新恐贪指数');
+    try {
+        await refreshJq();
+        console.log('[FearGreedCron] 恐贪指数刷新完成');
+    } catch (err: unknown) {
+        console.error('[FearGreedCron] 刷新失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 }
@@ -1262,6 +1284,14 @@ async function start() {
         console.log('[DB] watchlist_insight_sources table ready');
     } catch (err: unknown) {
         console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
+    }
+
+    // 恐贪指数：建表（fear_greed_snapshot + breadth_daily，幂等）
+    try {
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed_snapshot / breadth_daily tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear-greed schema check:', err instanceof Error ? err.message : String(err));
     }
 
     // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
