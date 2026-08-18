@@ -2,6 +2,28 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-08-15 — 自选股午尾盘价格异动归因迁移至 stocktrace 完整链路
+
+**开发者**: Aria
+
+### 重构
+- `src/modules/insight/PriceMoveService.ts`：11:30/15:05 触发从 insight 内存推送改接 stocktrace 事件层（`emitStockTraceEvent`），使用 `mv` 事件类型、`isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值改为 `changePct`（原 `moveBps` 映射）
+- `src/modules/stock-trace/StockTraceSnapshotService.ts`：五域证据采集——capital（资金流向）、technical（技术指标，含 T-72h 窗口）新增，company（统一事件库优先，回落同花顺/财联社，T-72h 窗口）新增 domain 枚举
+
+### 修复
+- `src/modules/insight/PriceMoveService.ts`：今开字段——改用 activity 行情快照（`GetSnapshot`）的 `'今开价'` 键，修复原 `open` 字段恒 null 导致 moveBps 失真的 bug
+
+### 改进
+- 11:50 补抓 cron 停用（`refetchMiddayEvidence` 不再触发，数据一致性由 stocktrace 事件层保证）
+
+### 文档
+- `docs/stocktrace-rollback.md`：回滚手册（含 SHA 对照、回滚顺序、验证命令）
+
+### 验证
+- 定向测试 All passed；`npx tsc --noEmit` 0 错误
+
+---
+
 ## [changer] 2026-08-12 — Phase 5 删会话联动删 checkpointer thread
 **开发者**: 37588
 

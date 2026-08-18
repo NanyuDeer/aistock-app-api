@@ -7,7 +7,7 @@
 自选股洞察：对用户自选股生成异动洞察报告，涵盖一期（涨停雷达）与二期（午盘/尾盘价格异动）：
 
 - **一期（limit_up_radar）**：采集同花顺涨停雷达文章，命中自选股后创建事件、入队、Python 归因、推送。
-- **二期（midday_price_move / close_price_move）**：午盘 11:30 / 尾盘 15:05 打点，按 `abs(move_bps) >= 700`（700 触发 / 699 不触发）触发价格异动；Node 冻结证据包（公告/新闻/业绩/研报/涨停雷达 + L2 量化联动），Python 按证据时效分层（T0/T1/T2/earnings）候选抽取 + LLM 归因 + 置信度封顶；20 分钟补抓重归因。
+- **二期（midday_price_move / close_price_move）**：午盘 11:30 / 尾盘 15:05 打点，触发改接 stocktrace 事件层（`emitStockTraceEvent`，`mv` 事件类型），`isEligiblePriceSecurity` 过滤，阈值 `changePct`；Node 侧价格快照与证据采集已迁移至 `modules/stock-trace`，Python 归因走 stocktrace 五层候选（company/sector/market/capital/technical）。**涨停雷达保留 insight 路径不变。**
 
 ## 核心文件与职责
 
@@ -52,9 +52,9 @@
 
 | 时间 | 任务 |
 |------|------|
-| 交易日 11:30 | 午盘价格打点 |
-| 交易日 11:50 | 午盘补抓（20 分钟窗口，重新冻结证据包 + force 重入队） |
-| 交易日 15:05 | 尾盘价格打点 |
+| 交易日 11:30 | 午盘价格打点（触发改接 stocktrace 事件层；PriceMoveService 保留打点，证据采集已迁移至 stock-trace 模块） |
+| 交易日 11:50 | ~~午盘补抓~~ **已停用**（2026-08-15） |
+| 交易日 15:05 | 尾盘价格打点（触发改接 stocktrace 事件层） |
 
 ## 测试
 

@@ -283,9 +283,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 03:00 | 风口龙头分析 | WindLeaderAnalyzerService（空结果不覆盖旧数据） |
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |
-| 11:30 | 午盘价格打点 | PriceMoveService.run('midday')，自选股按 abs(move_bps)>=700 触发价格异动洞察 |
-| 11:50 | 午盘补抓 | refetchMiddayEvidence：对当日午盘已触发事件重新冻结证据包（frozen_seq++）+ force 重入队，Python 重新归因 |
-| 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件 |
+| 11:30 | 午盘价格打点 | PriceMoveService.run('midday')，触发改接 stocktrace 事件层（mv 事件），`isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值 `changePct` 映射 |
+| 11:50 | ~~午盘补抓~~ | **已停用**（2026-08-15，数据一致性由 stocktrace 事件层保证） |
+| 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件，触发改接 stocktrace 事件层 |
 | 15:00 | 数据归档 | — |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 19:05 | 收盘后任务 | — |
