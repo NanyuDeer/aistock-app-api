@@ -25,6 +25,9 @@ import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
 import { getSemiAnnualReport } from './modules/quote/TushareService';
+import { AnnualFinancialController } from './modules/quote/annualFinancialController';
+import { IndustryHealthController } from './modules/quote/industryHealthController';
+import { ResearchReportController } from './modules/quote/researchReportController';
 
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
@@ -489,6 +492,9 @@ app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
     }
 });
 
+// 个股年报财务聚合数据（Tushare fina_indicator + cashflow + holder_number + balancesheet + 半年报）
+app.get('/api/cn/stocks/:symbol/annual-financial', (req, res, next) => AnnualFinancialController.getAnnualFinancial(req, res, next));
+
 app.get('/api/cn/stocks/:symbol/news', (req, res, next) => {
     if (!isValidAShareSymbol(req.params.symbol)) {
         res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
@@ -575,6 +581,12 @@ app.get('/api/kg/concepts', (req, res, next) => IndustryKGController.getConcepts
 app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGController.getIndustryStocks(req, res, next));
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
 
+// 行业景气指数（同花顺板块日K聚合，7个月趋势+景气评分）
+app.get('/api/cn/industry/:name/health', (req, res, next) => IndustryHealthController.getHealth(req, res, next));
+
+// 券商研报（Tushare report_rc，评级/目标价/盈利预测聚合）
+app.get('/api/cn/research/:symbol/reports', (req, res, next) => ResearchReportController.getReports(req, res, next));
+
 // ==================== Internal API（Python Agent 服务专用） ====================
 app.use('/internal', internalRouter);
 
@@ -629,7 +641,7 @@ cron.schedule('5 19 * * 1-5', async () => {
         let success = 0, failed = 0;
         for (const symbol of symbols) {
             try {
-                const cacheKey = `capital_flow:${symbol}`;
+                const cacheKey = `capital_flow:v2:${symbol}`;
                 const data = await getCapitalFlow(symbol);
                 const ttl = await getAShareAdaptiveCacheTtlSeconds(3 * 60);
                 await CacheService.put(cacheKey, data as unknown as Record<string, unknown>, ttl);
