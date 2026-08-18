@@ -7,7 +7,7 @@
 **开发者**: Aria
 
 ### 重构
-- `src/modules/insight/PriceMoveService.ts`：11:30/15:05 触发从 insight 内存推送改接 stocktrace 事件层（`emitStockTraceEvent`），使用 `mv` 事件类型、`isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值改为 `changePct`（原 `moveBps` 映射）
+- `src/modules/insight/PriceMoveService.ts`：11:30/15:05 触发从 insight 内存推送改接 stocktrace 事件层（`PriceMoveService.run()` 触发分支调用 `StockTraceService.processPriceFact(security, fact)`），使用 `mv` 事件类型、`isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值改为 `changePct`（原 `moveBps` 映射，changePct=moveBps/100，previousClose=今开）
 - `src/modules/stock-trace/StockTraceSnapshotService.ts`：五域证据采集——capital（资金流向）、technical（技术指标，含 T-72h 窗口）新增，company（统一事件库优先，回落同花顺/财联社，T-72h 窗口）新增 domain 枚举
 
 ### 修复
