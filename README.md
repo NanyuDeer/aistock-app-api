@@ -75,7 +75,8 @@ src/
 │   │   ├── internal.ts     # Internal API（Python Agent 服务专用）
 │   │   └── configController.ts # 配置接口
 │   └── ws/                 # WebSocket 服务
-│       ├── handler.ts      # 连接管理 + 事件分发
+│       ├── handler.ts      # 连接管理 + 事件分发（noServer + 按 path 精确分发：/ws 行情频道）
+│       ├── chat-bridge.ts  # Chat WS 桥接（P0：/api/agent/ws/chat 验签 JWT + 覆写 user_id + 反代 agent-py）
 │       └── channels/       # 频道（alert/quote）
 ├── modules/                # 业务模块层（每人负责一个模块）
 │   ├── quote/              # 行情模块
@@ -122,9 +123,12 @@ src/
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/stock-monitors/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
-| `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8000`） |
-| `/api/agent/event/list` | **事件传导报告列表**（公开，分页） | page, pageSize |
-| `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports） | eventId |
+| `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8080`）。**P0 身份鉴权（chat 三路径 `/chat/message`、`/chat/stream/messages`、`/chat/stream/updates`）**：校验 `Authorization: Bearer` JWT（非法/过期 401），覆写 body `user_id` 为服务端 openid（无 token 则 null）——客户端自报 user_id 失效；非 chat 路径行为不变 |
+| `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
+| `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
+| `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
+| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
+| `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
 | `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
 | `/api/chat/usage/summary` | **用户累计 token 用量**（GET，JWT openid 鉴权） | — |
@@ -151,6 +155,9 @@ src/
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
 | `/internal/push/market-event` | **市场事件重磅推送**（POST，Python Agent 调用） | market/direction/indices/cause/evidence_url/title 等，需 X-Internal-Token |
+| `/internal/insight/events/:eventId/context` | **洞察归因上下文**（事件 + LEFT JOIN 来源文章 + 最新证据包，Python 归因 Agent 专用） | eventId，需 X-Internal-Token |
+| `/internal/insight/jobs/:jobId` | **洞察任务状态回报**（PATCH，Python 消费端） | jobId + status，需 X-Internal-Token |
+| `/internal/insight/results/external` | **洞察归因结果回写**（POST upsert + 更新推送分支） | result: {event_id, analysis_version, attribution_status, ...}，需 X-Internal-Token |
 | `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
 | `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
 
@@ -163,6 +170,8 @@ src/
 > 新增接口（2026-07-15）：`POST /internal/push/market-event` — 晨报后重磅市场事件推送。Python morning_agent 生成晨报后解析 MARKET_EVENT_PUSHES 标记，阈值过滤（对称 ±1.5%）后调用此接口，触发微信模板消息 + 飞书卡片推送
 >
 > 更新（2026-08-03）：公开播报接口 `POST /api/agent/brief/generate-podcast`（publicRouter，单主播朗读）改为「文本先生成存库 + 音频缓存」：文本限长 250 字（约1分钟播报），首次请求文本+音频双写 `podcast_cache` 表（cache_key 唯一，7天过期），命中缓存直接返回音频路径，生成失败标记 failed；03:00 清理任务同步删除过期记录及对应 `podcast-{key}.mp3` 文件。建表脚本见 `docs/sql/podcast_cache.sql`
+>
+> 更新（2026-08-10）：`GET /api/agent/event/list` 与 `GET /api/agent/event/:eventId` 响应新增 `chain_summary` 字段（从 `content.analysis_reports.event_transmission.chain` 提取，按 impactStrength 降序 Top5，过滤空行业，旧数据返回 []）。前端列表页直接消费，消除 N+1 详情补数。`extractChainSummary` 函数位于 `src/core/routes/internal.ts`。
 >
 > 新增（2026-08-05）：ChatAgent P9 会话管理 + P10 线 2 计费 — 新表 `chat_sessions`（会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at）与 `chat_token_usage`（用户维度 token 计费：prompt/completion/total_tokens、question、created_at），均启动时自动建表（`src/index.ts`）；新增公开接口 `/api/chat/sessions`（POST 幂等 upsert / GET 最近50个 / DELETE，JWT openid 鉴权）与 `/api/chat/usage/summary`，内部接口 `/internal/usage/records` 与 `/internal/usage/summary`（供 Python ws.py 计费回调）
 

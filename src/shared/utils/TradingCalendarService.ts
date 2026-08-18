@@ -59,6 +59,16 @@ function previousShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalen
     };
 }
 
+function nextShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalendarDate {
+    const next = new Date(Date.UTC(date.year, date.month - 1, date.day + 1));
+    return {
+        ...date,
+        year: next.getUTCFullYear(),
+        month: next.getUTCMonth() + 1,
+        day: next.getUTCDate(),
+    };
+}
+
 function toDate(date: ShanghaiCalendarDate): Date {
     return new Date(Date.UTC(
         date.year,
@@ -151,6 +161,59 @@ export class TradingCalendarService {
             }
             result = previousShanghaiCalendarDate(result);
         }
+    }
+
+    /**
+     * 获取严格晚于指定日期（不含当日）的最近一个下一个交易日。
+     *
+     * 与 getPreviousTradingDay 对称：始终从"明天"开始向后回溯，
+     * 返回的 Date 同样归一化墙钟为 08:00 上海（=UTC 午夜）。
+     * 用于前端"后一天"导航跳档，自动跳过周末与法定节假日。
+     */
+    static getNextTradingDay(date: Date = new Date()): Date {
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        result = nextShanghaiCalendarDate(result);
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
+                return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
+            }
+            result = nextShanghaiCalendarDate(result);
+        }
+    }
+
+    /**
+     * 获取截至指定日期（含当日）最近 count 个交易日的日期列表。
+     *
+     * 若指定日期本身非交易日，先从当日向前回溯到最近交易日作为起点；
+     * 再向上取前 count-1 个交易日。返回的 Date 均归一化墙钟为 08:00 上海。
+     * 用于首页"市场洞见"等需要展示"最近几个交易日"数据的场景，
+     * 避免把周末/法定节假日当日期标签展示。
+     */
+    static getRecentTradingDays(date: Date = new Date(), count: number): Date[] {
+        if (!Number.isInteger(count) || count < 1) count = 1;
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        // 起点回溯到最近交易日（含当天）
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+            result = previousShanghaiCalendarDate(result);
+        }
+        const days: Date[] = [];
+        for (let i = 0; i < count; i++) {
+            days.push(toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 }));
+            result = previousShanghaiCalendarDate(result);
+            while (true) {
+                this.assertCalendarCoverage(result.year);
+                if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+                result = previousShanghaiCalendarDate(result);
+            }
+        }
+        return days;
     }
 
     private static assertCalendarCoverage(year: number): void {

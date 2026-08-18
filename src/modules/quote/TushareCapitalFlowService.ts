@@ -31,6 +31,15 @@ export interface CapitalFlowOrder {
     value: number;
 }
 
+/** 单个时间窗口（今日/5日/10日/20日）的资金汇总与拆解 */
+export interface CapitalFlowWindow {
+    days: number;
+    mainInflow: number;
+    retailInflow: number;
+    ratio: number;
+    orders: CapitalFlowOrder[];
+}
+
 export interface CapitalFlowResult {
     symbol: string;
     tradeDate: string;
@@ -38,15 +47,19 @@ export interface CapitalFlowResult {
     retailInflow: number;
     ratio: string;
     fiveDay: number;
+    tenDay: number;
+    twentyDay: number;
     streak: string;
     tag: string;
     tagClass: string;
     trendBadge: string;
     narrative: string;
     risk: string;
+    summary: string;
     trend: number[];
     trendDates: string[];
     orders: CapitalFlowOrder[];
+    windows: CapitalFlowWindow[];
 }
 
 async function fetchMoneyFlow(symbol: string, startDate: string): Promise<MoneyFlowRow[]> {
@@ -187,7 +200,8 @@ export async function getCapitalFlow(symbol: string): Promise<CapitalFlowResult>
 
     const today = new Date();
     const start = new Date(today);
-    start.setDate(start.getDate() - 20);
+    // 取约 40 个自然日，确保能覆盖 20 个交易日，用于 5/10/20 日累计统计
+    start.setDate(start.getDate() - 40);
     const pad = (n: number) => n.toString().padStart(2, '0');
     const startDate = `${start.getFullYear()}${pad(start.getMonth() + 1)}${pad(start.getDate())}`;
 
@@ -236,13 +250,15 @@ export async function getCapitalFlow(symbol: string): Promise<CapitalFlowResult>
         return `${d.slice(4, 6)}/${d.slice(6, 8)}`;
     });
 
-    const fiveDayRows = sorted.slice(-5);
-    const fiveDay = Math.round(fiveDayRows.reduce((sum, r) => {
+    const dayMain = (r: MoneyFlowRow): number => {
         const eNet = parseNetAmount(r.buy_elg_amount, r.sell_elg_amount) / 10000;
         const lNet = parseNetAmount(r.buy_lg_amount, r.sell_lg_amount) / 10000;
-        const dayMain = hasElgData ? eNet + lNet : lNet;
-        return sum + dayMain;
-    }, 0) * 100) / 100;
+        return hasElgData ? eNet + lNet : lNet;
+    };
+    const sumLast = (count: number) => Math.round(sorted.slice(-count).reduce((sum, r) => sum + dayMain(r), 0) * 100) / 100;
+    const fiveDay = sumLast(5);
+    const tenDay = sumLast(10);
+    const twentyDay = sumLast(20);
 
     const orders: CapitalFlowOrder[] = hasElgData
         ? [
@@ -261,6 +277,47 @@ export async function getCapitalFlow(symbol: string): Promise<CapitalFlowResult>
         ? Math.round((mdNet + smNet) * 100) / 100
         : Math.round((mdNet + smNet) * 100) / 100;
 
+    // 今日/5日/10日/20日 四个时间窗口的资金汇总与拆解
+    const windowSizes = [1, 5, 10, 20];
+    const windows: CapitalFlowWindow[] = windowSizes.map(days => {
+        const rows = sorted.slice(-days);
+        const sumNetWan = (buyKey: 'buy_elg_amount' | 'buy_lg_amount' | 'buy_md_amount' | 'buy_sm_amount',
+                           sellKey: 'sell_elg_amount' | 'sell_lg_amount' | 'sell_md_amount' | 'sell_sm_amount') =>
+            rows.reduce((sum, r) => sum + parseNetAmount(r[buyKey], r[sellKey]), 0);
+        const elgNetWan = sumNetWan('buy_elg_amount', 'sell_elg_amount');
+        const lgNetWan = sumNetWan('buy_lg_amount', 'sell_lg_amount');
+        const mdNetWan = sumNetWan('buy_md_amount', 'sell_md_amount');
+        const smNetWan = sumNetWan('buy_sm_amount', 'sell_sm_amount');
+        const mainNetWan = hasElgData ? elgNetWan + lgNetWan : lgNetWan;
+        const retailNetWan = mdNetWan + smNetWan;
+        const totalWan = rows.reduce((sum, r) => sum
+            + (Number(r.buy_elg_amount) || 0) + (Number(r.sell_elg_amount) || 0)
+            + (Number(r.buy_lg_amount) || 0) + (Number(r.sell_lg_amount) || 0)
+            + (Number(r.buy_md_amount) || 0) + (Number(r.sell_md_amount) || 0)
+            + (Number(r.buy_sm_amount) || 0) + (Number(r.sell_sm_amount) || 0), 0);
+        const ratio = totalWan > 0 ? Math.round((mainNetWan / totalWan) * 1000) / 10 : 0;
+        const toYi = (wan: number) => Math.round((wan / 10000) * 100) / 100;
+        const orders: CapitalFlowOrder[] = hasElgData
+            ? [
+                { label: '超大单', value: toYi(elgNetWan) },
+                { label: '大单', value: toYi(lgNetWan) },
+                { label: '中单', value: toYi(mdNetWan) },
+                { label: '小单', value: toYi(smNetWan) },
+            ]
+            : [
+                { label: '大单', value: toYi(lgNetWan) },
+                { label: '中单', value: toYi(mdNetWan) },
+                { label: '小单', value: toYi(smNetWan) },
+            ];
+        return {
+            days,
+            mainInflow: toYi(mainNetWan),
+            retailInflow: toYi(retailNetWan),
+            ratio,
+            orders,
+        };
+    });
+
     const streak = computeStreak(trend);
     const { tag, tagClass } = computeTagAndClass(mainInflow, Math.abs(ratioVal), streak);
     const trendBadge = computeTrendBadge(mainInflow, Math.abs(ratioVal), streak);
@@ -274,15 +331,19 @@ export async function getCapitalFlow(symbol: string): Promise<CapitalFlowResult>
         retailInflow,
         ratio: ratioStr,
         fiveDay,
+        tenDay,
+        twentyDay,
         streak,
         tag,
         tagClass,
         trendBadge,
         narrative,
         risk,
+        summary: '',
         trend,
         trendDates,
         orders,
+        windows,
     };
 }
 
@@ -333,15 +394,27 @@ async function buildResultFromSina(symbol: string): Promise<CapitalFlowResult | 
         retailInflow,
         ratio: ratioStr,
         fiveDay,
+        tenDay: mainInflow,
+        twentyDay: mainInflow,
         streak,
         tag,
         tagClass,
         trendBadge,
         narrative,
         risk,
+        summary: '',
         trend,
         trendDates,
         orders,
+        windows: [
+            {
+                days: 1,
+                mainInflow,
+                retailInflow,
+                ratio: ratioVal,
+                orders,
+            },
+        ],
     };
 }
 
@@ -353,12 +426,15 @@ function buildEmptyResult(symbol: string): CapitalFlowResult {
         retailInflow: 0,
         ratio: '0%',
         fiveDay: 0,
+        tenDay: 0,
+        twentyDay: 0,
         streak: '无数据',
         tag: '无数据',
         tagClass: 'is-neutral',
         trendBadge: '趋势：暂无资金流向数据',
         narrative: '暂无资金流向数据，可能该股票不在Tushare资金流向覆盖范围内。',
         risk: '数据不足，无法判断资金面风险。',
+        summary: '',
         trend: [],
         trendDates: [],
         orders: [
@@ -367,25 +443,28 @@ function buildEmptyResult(symbol: string): CapitalFlowResult {
             { label: '中单', value: 0 },
             { label: '小单', value: 0 },
         ],
+        windows: [],
     };
 }
 
 const CAPITAL_FLOW_AI_SYSTEM_PROMPT = `你是一名A股资金流向分析师。根据资金流向数据生成简短分析。
 规则：
 1. 只输出一个JSON对象，不要任何解释、前后缀、Markdown代码块。
-2. JSON仅含四个字段：tag、analysis、risk、trend。
+2. JSON仅含五个字段：tag、analysis、risk、trend、summary。
 3. tag：四字资金标签，如"主力抢筹""温和流出""机构加仓""散户主导""筹码松动"。
 4. analysis：资金流向分析，约50字，含主力动向与博弈特征。
 5. risk：短线风险提示，约20字。
 6. trend：趋势提醒，10字以内，如"主力持续流入""资金逐步撤离"。
-7. 四项总字数不超过110字。
-8. 语言专业克制，避免空泛。`;
+7. summary：一句话（50字以内），综合今日主力净流入与5/10/20日累计资金流向，指出当前资金节奏（如持续流入、回流初期、持续流出、切换期）。
+8. 五字段总字数不超过160字。
+9. 语言专业克制，避免空泛。`;
 
 interface AiCapitalFlowResult {
     tag: string;
     analysis: string;
     risk: string;
     trend: string;
+    summary: string;
 }
 
 async function requestAiAnalysis(symbol: string, stockName: string, data: CapitalFlowResult): Promise<AiCapitalFlowResult | null> {
@@ -394,12 +473,21 @@ async function requestAiAnalysis(symbol: string, stockName: string, data: Capita
     const evaModel = process.env.EVA_MODEL;
     if (!apiBaseUrl || !apiKey || !evaModel) return null;
 
+    const w1 = data.windows.find(w => w.days === 1);
+    const w5 = data.windows.find(w => w.days === 5);
+    const w10 = data.windows.find(w => w.days === 10);
+    const w20 = data.windows.find(w => w.days === 20);
+    const ordersText = (w: CapitalFlowWindow | undefined) => w
+        ? `超大单${w.orders.find(o => o.label === '超大单')?.value || 0}亿、大单${w.orders.find(o => o.label === '大单')?.value || 0}亿、中单${w.orders.find(o => o.label === '中单')?.value || 0}亿、小单${w.orders.find(o => o.label === '小单')?.value || 0}亿`
+        : '无';
     const prompt = `股票：${stockName}(${symbol})，日期：${data.tradeDate}
-主力净流入：${data.mainInflow}亿元，散户净流入：${data.retailInflow}亿元
-占比：${data.ratio}，5日累计：${data.fiveDay}亿元，连续状态：${data.streak}
+今日：主力净流入${w1?.mainInflow ?? data.mainInflow}亿元，占比${w1?.ratio ?? 0}%，拆解：${ordersText(w1)}
+5日累计：${w5?.mainInflow ?? data.fiveDay}亿元
+10日累计：${w10?.mainInflow ?? data.tenDay}亿元
+20日累计：${w20?.mainInflow ?? data.twentyDay}亿元
+连续状态：${data.streak}
 标签：${data.tag}
 10日主力净流入趋势：[${data.trend.join(', ')}]
-资金拆解：超大单${data.orders.find(o => o.label === '超大单')?.value || 0}亿、大单${data.orders.find(o => o.label === '大单')?.value || 0}亿、中单${data.orders.find(o => o.label === '中单')?.value || 0}亿、小单${data.orders.find(o => o.label === '小单')?.value || 0}亿
 
 请生成JSON格式的资金流向分析。`;
 
@@ -433,7 +521,13 @@ async function requestAiAnalysis(symbol: string, stockName: string, data: Capita
         const jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
         const parsed = JSON.parse(jsonStr);
         if (!parsed.tag || !parsed.analysis || !parsed.risk || !parsed.trend) return null;
-        return { tag: String(parsed.tag), analysis: String(parsed.analysis), risk: String(parsed.risk), trend: String(parsed.trend) };
+        return {
+            tag: String(parsed.tag),
+            analysis: String(parsed.analysis),
+            risk: String(parsed.risk),
+            trend: String(parsed.trend),
+            summary: parsed.summary ? String(parsed.summary) : String(parsed.analysis),
+        };
     } catch {
         return null;
     } finally {
@@ -460,6 +554,7 @@ export async function getCapitalFlowWithAi(symbol: string): Promise<CapitalFlowR
         data.narrative = ai.analysis;
         data.risk = ai.risk;
         data.trendBadge = `趋势：${ai.trend}`;
+        data.summary = ai.summary;
     }
     return data;
 }

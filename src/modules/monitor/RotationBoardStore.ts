@@ -13,6 +13,7 @@
 import pool from '../../core/db';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { getThsIndex } from '../quote/TushareService';
+import { CacheService } from '../../shared/utils/CacheService';
 
 // ==================== 常量 ====================
 
@@ -182,6 +183,51 @@ export function parseKline(jsonpText: string): Map<string, number> {
     return byDate;
 }
 
+/** 板块日 K 线单点（OHLC） */
+export interface BoardKlinePoint {
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+}
+
+/**
+ * 解析 last.js JSONP → { date: { open, high, low, close } }
+ * 行格式：date,open,high,low,close,volume,amount,...（close 已验证位于 p[4]）
+ * 防御：若 high < low 则交换，兼容列序差异，不改变有效数据。
+ */
+export function parseKlineFull(jsonpText: string): Map<string, BoardKlinePoint> {
+    const byDate = new Map<string, BoardKlinePoint>();
+    const start = jsonpText.indexOf('(');
+    const end = jsonpText.lastIndexOf(')');
+    if (start < 0 || end <= start) return byDate;
+    let body: string;
+    try {
+        body = jsonpText.slice(start + 1, end);
+    } catch {
+        return byDate;
+    }
+    let parsed: { data?: string };
+    try {
+        parsed = JSON.parse(body) as { data?: string };
+    } catch {
+        return byDate;
+    }
+    if (!parsed.data) return byDate;
+    for (const row of parsed.data.split(';')) {
+        if (!row) continue;
+        const p = row.split(',');
+        const open = parseFloat(p[1]);
+        let high = parseFloat(p[2]);
+        let low = parseFloat(p[3]);
+        const close = parseFloat(p[4]);
+        if (!p[0] || ![open, high, low, close].every(Number.isFinite)) continue;
+        if (high < low) [high, low] = [low, high];
+        byDate.set(p[0], { open, high, low, close });
+    }
+    return byDate;
+}
+
 /** 计算全部可交易日期的每日涨跌榜（含 pct_change），供回填/增量入库 */
 export function computeDailyBoards(klines: Map<string, Map<string, number>>, poolItems: BoardPoolItem[]): DailyRotationRow[] {
     // 每个板块: date -> 当日涨跌幅(%)
@@ -345,4 +391,51 @@ export async function queryRotationDaily(days: number): Promise<DailyRotationRow
         down_rank: r.down_rank as number | null,
         pct_change: Number(r.pct_change),
     }));
+}
+
+// ==================== 板块日 K 线（详情页按需） ====================
+
+/** 板块 K 线缓存 TTL（1 小时，Redis+Map 双写降级） */
+const BOARD_KLINE_CACHE_TTL = 3600;
+
+/** 板块日 K 线返回结构（对齐前端 TrendKLineData：ohlc 每行 = [open, close, low, high]） */
+export interface BoardKlineData {
+    dates: string[];
+    ohlc: [number, number, number, number][];
+}
+
+/**
+ * 按需拉取单板块日 K 线（复用同花顺 bk_ 板块指数日线源）
+ * @param code 6 位同花顺板块代码（如 881121 / 885551）
+ * @param days 返回最近 N 个交易日，默认 120，上限 120
+ * @returns null 表示抓取/解析失败（前端展示空态）
+ */
+export async function fetchBoardKline(code: string, days = 120): Promise<BoardKlineData | null> {
+    const cacheKey = `wind:board-kline:${code}`;
+    try {
+        const cached = await CacheService.get<string>(cacheKey);
+        if (cached) return JSON.parse(cached) as BoardKlineData;
+    } catch {
+        // 缓存解析失败忽略，回源抓取
+    }
+    try {
+        const resp = await sessionFetch(KLINE_URL(code), { headers: KLINE_HEADERS });
+        if (!resp.ok) return null;
+        const text = await resp.text();
+        const byDate = parseKlineFull(text);
+        const sorted = [...byDate.keys()].sort().slice(-Math.min(days, 120));
+        if (sorted.length === 0) return null;
+        const data: BoardKlineData = {
+            dates: sorted.map((d) => `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`),
+            ohlc: sorted.map((d) => {
+                const p = byDate.get(d)!;
+                return [p.open, p.close, p.low, p.high];
+            }),
+        };
+        await CacheService.put(cacheKey, JSON.stringify(data), BOARD_KLINE_CACHE_TTL);
+        return data;
+    } catch (err) {
+        console.warn(`[RotationBoardStore] fetchBoardKline(${code}) 失败:`, (err as Error).message);
+        return null;
+    }
 }

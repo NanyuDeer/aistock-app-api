@@ -22,6 +22,11 @@ interface InsightListRow {
     primary_driver: unknown;
     secondary_drivers: unknown;
     display_report: unknown;
+    /** 价格异动字段（LATERAL join watchlist_price_snapshots，列表卡片展示方向/相对开盘涨跌幅） */
+    move_bps: number | null;
+    open_price: number | null;
+    latest_price: number | null;
+    price_source: string | null;
 }
 
 interface InsightDetailRow {
@@ -45,6 +50,14 @@ interface InsightDetailRow {
     keywords: unknown;
     source_url: string | null;
     published_at: Date | null;
+    /** 价格异动字段（LATERAL join watchlist_price_snapshots） */
+    move_bps: number | null;
+    snap_direction: string | null;
+    open_price: number | null;
+    latest_price: number | null;
+    price_source: string | null;
+    /** 归因依据（最新证据包 evidence 数组，价格异动事件展示） */
+    evidence_package: unknown[];
 }
 
 function openidFromRequest(req: Request): string | null {
@@ -70,10 +83,17 @@ export class InsightController {
             }
             const { rows } = await pool.query<InsightListRow>(
                 `SELECT e.event_id, e.symbol, e.stock_name, e.trade_date, e.event_type, e.direction, e.created_at,
-                        r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers, r.display_report
+                        r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers, r.display_report,
+                        snap.move_bps, snap.open_price, snap.latest_price, snap.price_source
                  FROM watchlist_insight_events e
                  JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
                  LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
+                 LEFT JOIN LATERAL (
+                     SELECT move_bps, open_price, latest_price, price_source
+                     FROM watchlist_price_snapshots ps
+                     WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
+                     ORDER BY ps.snapshot_time DESC LIMIT 1
+                 ) snap ON true
                  ORDER BY e.created_at DESC LIMIT 100`,
                 [openid],
             );
@@ -100,11 +120,18 @@ export class InsightController {
             // JOIN user_stocks 校验归属：仅返回登录用户自选股对应的事件，无归属行即 404
             const { rows } = await pool.query<InsightDetailRow>(
                 `SELECT e.*, r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers,
-                        r.display_report, r.podcast_brief, s.title, s.keywords, s.source_url, s.published_at
+                        r.display_report, r.podcast_brief, s.title, s.keywords, s.source_url, s.published_at,
+                        snap.move_bps, snap.snap_direction, snap.open_price, snap.latest_price, snap.price_source
                  FROM watchlist_insight_events e
                  JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
                  LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
                  LEFT JOIN watchlist_insight_sources s ON s.source_id = e.source_id
+                 LEFT JOIN LATERAL (
+                     SELECT move_bps, direction AS snap_direction, open_price, latest_price, price_source
+                     FROM watchlist_price_snapshots ps
+                     WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
+                     ORDER BY ps.snapshot_time DESC LIMIT 1
+                 ) snap ON true
                  WHERE e.event_id = $2`,
                 [openid, eventId],
             );
@@ -112,7 +139,11 @@ export class InsightController {
                 res.status(404).json({ code: 404, message: 'not found' });
                 return;
             }
-            res.json({ code: 200, data: rows[0] });
+            // 追加最新证据包（价格异动事件的"归因依据"，前端详情展示；无来源文章时替代原始来源区块）
+            const pkg = await pool.query(
+                `SELECT evidence FROM watchlist_evidence_packages
+                 WHERE event_id=$1 ORDER BY frozen_seq DESC LIMIT 1`, [eventId]);
+            res.json({ code: 200, data: { ...rows[0], evidence_package: pkg.rows[0]?.evidence ?? [] } });
         } catch (error) {
             next(error);
         }

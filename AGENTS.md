@@ -34,6 +34,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
 | Chat | `modules/chat` | 会话元数据（P9）、token 用量统计（P10 线 2） | — |
+| User | `modules/user` | 用户画像 profile（Phase 4-3 改进 15）：`GET/PUT /api/user/profile`（JWT，openid 即 user_id；部分更新，investment_preferences 数组整体替换） | [user/AGENTS.md](./src/modules/user/AGENTS.md) |
 
 > 新增模块时，必须创建对应的 `src/modules/<模块名>/AGENTS.md`。
 
@@ -66,7 +67,8 @@ src/
 │   │   ├── internal.ts     # Internal API（Python Agent 专用 + Agent 报告持久化）
 │   │   └── configController.ts
 │   └── ws/
-│       ├── handler.ts      # WebSocket 连接管理 + 事件分发
+│       ├── handler.ts      # WebSocket 连接管理 + 事件分发（noServer + 按 path 精确分发：/ws 行情频道）
+│       ├── chat-bridge.ts  # Chat WS 桥接（P0：/api/agent/ws/chat 验签 JWT → 覆写 user_id → 反代 agent-py）
 │       └── channels/       # 频道（alert / quote）
 ├── modules/                # 业务模块层（每人负责一个）
 │   ├── quote/              # 行情
@@ -135,6 +137,7 @@ src/
 | 禁用 emoji | 禁止使用 emoji 图标，统一用 SvgIcon 组件加载 SVG |
 | 接口兼容 | aistock-app-api 必须与 aistock-api 端点完全兼容，支持无缝替换 |
 | 内部接口鉴权 | `/internal/*` 接口必须校验 `X-Internal-Token` |
+| JWT 撤销 | `token_blacklist:{jti}` 黑名单（TTL=token 剩余寿命）；logout 按 jti 撤销，`degraded: true`（仅内存）/ `legacy: true`（无 jti 旧 token）；各鉴权入口验签后查黑名单，命中 401 / WS 4401；读侧 fail-open + 写侧 never-silent（2026-08-11 token-revocation） |
 
 ## 6. 降级策略
 
@@ -193,13 +196,23 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
 | `GET /internal/market/quick-snapshot` | 腾讯 | 15:30 后简版收盘快照（snapshot_kind=quick，指数/宽度/概念板块/主力资金均腾讯源）；**非交易日 409**（不返回"伪当日"） |
-| `GET /internal/market/close-snapshot` | Tushare | 当日完整收盘快照（15:30 门禁 + 交易日/数据完整性校验） |
+| `GET /internal/market/close-snapshot` | Tushare | 当日完整收盘快照（15:30 门禁 + 交易日/数据完整性校验）；**可选 `?date=YYYY-MM-DD` 按历史交易日回补**（复用 `getTodayCloseSnapshot(fakeNow)` 构建；date 格式非法 409 market_not_closed） |
 | `GET /internal/market/last-close-snapshot` | Tushare | **严格早于今天的最近交易日**收盘快照（盘中/空窗/非交易日回退用；目标日数据缺失则 409） |
 | `GET /internal/quote/:symbol/kline` | Tushare | 个股日 K 线（P5 D41：days≤120、klt=101、fqt∈{0,1,2}；复用 TushareKlineService，返回英文键行 trade_date/open/high/low/close/pct_chg） |
 | `GET /internal/index/quotes` | 腾讯行情 | A 股指数快照（P5 工作线 B：6 位纯数字代码、逗号分隔去重、上限 MAX_SYMBOLS；复用 IndexQuoteController 缓存+腾讯源，驼峰输出 index/name/price/changePercent/changeAmount；腾讯源失败单指数 → null 不整体 500） |
+| `GET /internal/ths/index-map` | Tushare | 同花顺板块全表（885 概念 + 886 行业，`ThsBoardService` 进程缓存 + 6h TTL 刷新；**M2 板块验证**） |
+| `GET /internal/ths/resolve?name=` | Tushare | 板块名三级匹配（归一化精确 → 归一化双向包含 → `matched:null` 200 非 404；缺 name 400；**M2 板块验证**） |
+| `GET /internal/ths/:code/daily?start=&end=` | Tushare | 板块区间日 K（`pct_change`→`pct_chg` 契约键、None 保行为 null、升序；code 须 `6位.TI`、start/end 须 YYYYMMDD 否则 400；**M2 板块验证**） |
 | `POST /internal/push/market-event` | 推送 | 市场事件重磅推送（Python morning_agent 触发） |
 | `POST /internal/usage/records` | chat_token_usage | 记录一次对话 token 用量（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数；成功 `{code:200,data:{id}}`） |
 | `GET /internal/usage/summary?user_id=` | chat_token_usage | 按 user_id 累计用量（SUM/COUNT 聚合，无记录全 0，返回 prompt/completion/total_tokens + turn_count） |
+| `GET /internal/user-profile/:userId` | user_profiles | 用户画像检索（Phase 4-3；agent-py 对话入口按 user_id 拉取注入，Redis 5min 缓存；无记录返回 200 + 空对象，不 404） |
+| `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates；支持可选 status='pending'\|'skipped'、skip_reason 与 **due_dates_approximate（string[]，P2 越年近似档名列表）**——skip_reason/due_dates_approximate 均合并进 prediction 对象，免 DB 迁移） |
+| `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描）；支持可选 `source_id`（如 `review:2026-08-14`）过滤 |
+| `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
+| `POST /internal/predictions/regenerate` | prediction_records | **按需/补偿预测代理（2026-08-14）**：仅限当日（trade_date===上海今日）+ Redis 限流（`prediction:regenerate:{date}` 每小时 ≤3 → 429）+ 已验证拒覆盖 409 + 90s 超时（AbortController），转发 Python `POST /api/agent/internal/predictions/from-trace`（复用 AGENT_PY_URL，勿新建 AGENT_PY_BASE_URL）；上游 409 透传、超时 504、其余非 OK 502 |
+
+> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified|skipped，TEXT 无 CHECK)/due_dates(JSONB)/created_at；`appendVerification` 全档位覆盖自动置 verified。`computeStats` 显式跳过 `status='skipped'`（单独 `skippedCount`，不计 pending/verified——硬约束）；**P2 越年近似档（prediction.due_dates_approximate）照常验证但 hit/miss 不计入命中率分母（单独 `approximateHorizonCount` 分桶）**；`listPending` 的 `WHERE status='pending'` 天然排除 skipped。Python agent-py scheduler 每日 16:00 到期验证任务消费。大盘溯源页预判卡片经公开 `GET /api/predictions?source_id=review:{date}` 读取（G14 修复）。
 
 ### 7.2 Agent 分析报告持久化接口
 
@@ -220,18 +233,36 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
+| `/api/agent/report/chat/:reportId` | GET | 深度分析（chat_analysis）报告详情（批次 2，2026-08-13）：JWT Bearer 验签 + user_id 取服务端验签 openid + `report_type='chat_analysis'` + 7 天有效期过滤；不存在/非本人/过期 → `{code:0, data:null}` 不泄露存在性；**必须注册在 `/report/:intent/:date` 通用端点之前**（Express 按注册顺序匹配，否则被通用端点抢占 → 400） |
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
+| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段；**展示层过滤**：仅返回 chain 非空 且 `event_investment.rating` 非 `neutral` 的事件，SELECT/COUNT 同条件，见下方 2026-08-14 说明） |
+| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段；**不做展示过滤**，保留历史数据可审计） |
+
+> **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
+>
+> **`event/list` 展示过滤契约**（2026-08-14 新增）：事件卡片是否展示以"事件整体结论"为准（`content.analysis_reports.event_investment.rating`：positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性），条件为 `transmission.chain` 非空 **且** rating 非 `neutral`（SQL 常量 `EVENT_LIST_DISPLAY_FILTER_SQL`，SELECT 与 COUNT 必须使用完全一致的条件保证分页正确）。**禁止**把"chain 是否含 bullish/bearish"或"focusIndustries 是否为空"作为展示条件；rating 缺失（event_investment 为 null）视为非中性，避免误杀 chain 有明确方向的旧事件。过滤仅作用于展示层，不删除任何数据，不影响详情接口与 GI/事件传导。
 
 > publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
+
+### 7.6 预测公开接口（前端直接调用，无需 X-Internal-Token）
+
+| 接口 | 方法 | 说明 |
+|------|------|------|
+| `GET /api/predictions` | GET | 历史预测列表（B2.1）：`status=all\|pending\|verified`（默认 all）+ `page`（默认1）+ `pageSize`（默认20，上限50），按 created_at DESC；响应含 `items`（每项附 `report_date`，从 source_id `review:YYYY-MM-DD` 解析，失败回退 created_at 上海日期）+ `stats`（total/pendingCount/verifiedCount/hitRate/verifiedHorizonCount/hitCount/missCount/**approximateHorizonCount**；命中率 = hit/(hit+miss)，insufficient 不计，**P2 越年近似档不计入命中率分母**）+ `pagination`；`id` 已归一为数字（pg BIGSERIAL 返回 string） |
+| `GET /api/predictions/:id` | GET | 历史预测详情；`:id` 非正整数 → 400，不存在 → 404 |
+
+> `modules/prediction/publicRouter.ts`（含 `__predictionPublicDependencies` 测试注入点，测试见 `publicRouter.test.ts`，6 用例 mock Service 层不触达 PG）。
 
 ### 7.4 Agent 反代接口
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `/api/agent/*` | GET/POST | 反代到 Python FastAPI（SSE 流式透传，自动注入 `X-Internal-Token`） |
+| `/api/agent/*` | GET/POST | 反代到 Python FastAPI（SSE 流式透传，自动注入 `X-Internal-Token`）。**P0 身份鉴权（chat 三路径）**：`/chat/message`、`/chat/stream/messages`、`/chat/stream/updates` 校验 `Authorization: Bearer` JWT（非法/过期 401，上游零调用）+ 覆写 body `user_id` 为 openid（无 token 置 null）；非 chat 路径行为不变（原始 pipe 透传） |
+| `/api/agent/ws/chat` | WS | **P0 Chat WS 桥接**（`core/ws/chat-bridge.ts`）：upgrade 验签 query `token`——无 token 放行（user_id=None）、非法/过期 `close(4401)`；作为 WS 客户端连 agent-py（带 `X-Internal-Token`），双向转发并覆写消息体 `user_id`（前端→上游），上游→前端字节原样透传 |
 
-> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）。
+> 配置环境变量 `AGENT_PY_URL`（默认 `http://localhost:8080`）、`JWT_SECRET`（chat 路径验签）。
+> **Caddy 部署顺序**：WS 面收口依赖 Caddy 删 `gupiao-api.yaozhineng.com` 块内 `@agentWs` 命名路由（使 `/api/agent/ws/*` 落 app-api 56790）；切换前 WS 仍直连 agent-py。
 
 ### 7.5 Chat 会话与用量接口（前端直接调用，JWT openid 鉴权）
 
@@ -242,7 +273,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/chat/sessions/:id` | DELETE | 删除会话（id + user_id 双条件，防越权删他人会话） |
 | `/api/chat/usage/summary` | GET | 当前用户累计 token 用量（prompt/completion/total_tokens + turn_count，无记录全 0） |
 
-> 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。
+> 身份契约：JWT payload 的 `openid` 即计费 user_id（Authorization Bearer 优先，Cookie `token=` 兜底）。**P0（2026-08-11）**：chat agent 路径（HTTP chat 三路径 + WS 桥接）的 `user_id` 由 app-api 验签后服务端注入，客户端自报一律失效（无 token 为 null）。
+> **token-revocation（2026-08-11）**：signJwt 自动生成 `jti`；`POST /api/auth/logout` 按 jti 写 `token_blacklist:{jti}`（TTL=剩余寿命）；鉴权入口（chat/auth/monitor/insight/stock-trace + agent.proxy chat 三路径 + chat-bridge WS）验签后查黑名单，命中 401 / close(4401)；`degraded`/`legacy` 为显式降级字段，前端可选用作提示（不改 token 存储方式）。
 > 数据库表：`chat_sessions`（P9 会话元数据：id PK、user_id、title、last_message_at、created_at，索引 idx_chat_sessions_user）、`chat_token_usage`（P10 线 2 用户维度计费：BIGSERIAL PK、user_id、session_id 预留、三个 token 字段、question、created_at），均在启动时自动建表（`src/index.ts`）。
 
 ## 8. 定时任务速查
@@ -258,6 +290,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 03:00 | 风口龙头分析 | WindLeaderAnalyzerService（空结果不覆盖旧数据） |
 | 08:00 | 数据预热 | — |
 | 09:30-15:05 | 机构调研检测 | 交易日 6 个时段（开盘/上午/午前/午盘/尾盘/收盘） |
+| 11:30 | 午盘价格打点 | PriceMoveService.run('midday')，自选股按 abs(move_bps)>=700 触发价格异动洞察 |
+| 11:50 | 午盘补抓 | refetchMiddayEvidence：对当日午盘已触发事件重新冻结证据包（frozen_seq++）+ force 重入队，Python 重新归因 |
+| 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件 |
 | 15:00 | 数据归档 | — |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 19:05 | 收盘后任务 | — |

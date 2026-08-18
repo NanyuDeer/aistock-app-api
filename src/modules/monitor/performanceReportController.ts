@@ -99,6 +99,110 @@ const LATEST_REPORT_CTE = `
     )
 `;
 
+// ================================================================
+// 业绩排序评分模型（多因子加权，总分 100）
+// 维度：净利同比 35 / 营收同比 25 / 盈利质量 20 / 增长加速度 10 / 报告可靠性 10
+// ================================================================
+
+/** 维度一：净利润同比增长率（35分） */
+function scoreNetProfitGrowth(yoyGrowth: number | null, opts?: { prevProfit: number | null; curProfit: number | null; abnormal: boolean }): number {
+    // 特殊处理
+    if (opts) {
+        const { prevProfit, curProfit, abnormal } = opts;
+        if (prevProfit !== null && prevProfit < 0 && curProfit !== null && curProfit > 0) return 30; // 扭盈
+        if (prevProfit !== null && prevProfit > 0 && curProfit !== null && curProfit < 0) return 0;   // 转亏
+        if (abnormal) return 14; // 基数异常，给中位数
+    }
+    if (yoyGrowth === null || yoyGrowth === undefined) return 0;
+
+    if (yoyGrowth >= 100) return 35;
+    if (yoyGrowth >= 50) return 28 + (yoyGrowth - 50) * 0.14;
+    if (yoyGrowth >= 20) return 20 + (yoyGrowth - 20) * 0.27;
+    if (yoyGrowth >= 0) return 14 + yoyGrowth * 0.30;
+    if (yoyGrowth >= -20) return 7 + (yoyGrowth + 20) * 0.35;
+    if (yoyGrowth >= -50) return (yoyGrowth + 50) * 0.23;
+    return 0;
+}
+
+/** 维度二：营收同比增长率（25分） */
+function scoreRevenueGrowth(yoyGrowth: number | null): number {
+    if (yoyGrowth === null || yoyGrowth === undefined) return 12; // 缺失给中位数
+
+    if (yoyGrowth >= 50) return 25;
+    if (yoyGrowth >= 30) return 20 + (yoyGrowth - 30) * 0.25;
+    if (yoyGrowth >= 15) return 15 + (yoyGrowth - 15) * 0.33;
+    if (yoyGrowth >= 0) return 10 + yoyGrowth * 0.33;
+    if (yoyGrowth >= -15) return 5 + (yoyGrowth + 15) * 0.33;
+    if (yoyGrowth >= -30) return (yoyGrowth + 30) * 0.33;
+    return 0;
+}
+
+/** 维度三：盈利质量（20分）——净利率(10) + ROE(10) */
+function scoreProfitability(netMargin: number | null, roe: number | null): number {
+    let marginScore = 0;
+    if (netMargin !== null && netMargin !== undefined) {
+        if (netMargin >= 30) marginScore = 10;
+        else if (netMargin >= 20) marginScore = 8 + (netMargin - 20) * 0.2;
+        else if (netMargin >= 10) marginScore = 5 + (netMargin - 10) * 0.3;
+        else if (netMargin >= 0) marginScore = netMargin * 0.5;
+        else marginScore = 0;
+    }
+
+    let roeScore = 0;
+    if (roe !== null && roe !== undefined) {
+        if (roe >= 20) roeScore = 10;
+        else if (roe >= 15) roeScore = 8 + (roe - 15) * 0.4;
+        else if (roe >= 10) roeScore = 5 + (roe - 10) * 0.6;
+        else if (roe >= 0) roeScore = roe * 0.5;
+        else roeScore = 0;
+    }
+
+    if (netMargin !== null && netMargin !== undefined && roe !== null && roe !== undefined) return marginScore + roeScore;
+    if (netMargin !== null && netMargin !== undefined) return marginScore + 5;
+    if (roe !== null && roe !== undefined) return 5 + roeScore;
+    return 10; // 都缺失给中位数
+}
+
+/** 维度四：增长加速度（10分）——本期净利同比 - 上期净利同比 */
+function scoreGrowthAcceleration(currentGrowth: number | null, previousGrowth: number | null): number {
+    if (currentGrowth === null || currentGrowth === undefined || previousGrowth === null || previousGrowth === undefined) return 5;
+    const delta = currentGrowth - previousGrowth;
+    if (delta >= 30) return 10;
+    if (delta >= 15) return 8 + (delta - 15) * 0.13;
+    if (delta >= 0) return 6 + delta * 0.13;
+    if (delta >= -15) return 4 + (delta + 15) * 0.13;
+    if (delta >= -30) return (delta + 30) * 0.13;
+    return 0;
+}
+
+/** 维度五：报告可靠性（10分） */
+function scoreReportReliability(reportType: string): number {
+    switch (reportType) {
+        case 'formal': return 10;
+        case 'express': return 7;
+        default: return 4;
+    }
+}
+
+/** 同比增速计算：上期为 0 → 返回 null 并标记基数异常 */
+function calcYoy(current: number | null, previous: number | null): { value: number | null; abnormal: boolean } {
+    if (current === null || current === undefined || previous === null || previous === undefined) return { value: null, abnormal: false };
+    if (previous === 0) return { value: null, abnormal: true };
+    return { value: ((current - previous) / Math.abs(previous)) * 100, abnormal: false };
+}
+
+/** 报告期格式化：20260630 → 2026半年报 */
+function formatReportPeriod(period: string): string {
+    if (!period || period.length < 8) return period || '';
+    const y = period.slice(0, 4);
+    const m = period.slice(4, 6);
+    if (m === '03') return `${y}一季报`;
+    if (m === '06') return `${y}半年报`;
+    if (m === '09') return `${y}三季报`;
+    if (m === '12') return `${y}年报`;
+    return period;
+}
+
 export class PerformanceReportController {
     private static readonly DEFAULT_PAGE_SIZE = 50;
     private static readonly MAX_PAGE_SIZE = 500;
@@ -399,6 +503,239 @@ export class PerformanceReportController {
         try {
             const result = await AiScoreService.analyze(symbol);
             createResponse(res, 200, 'success', result);
+        } catch (error: any) {
+            createResponse(res, 500, error instanceof Error ? error.message : 'Internal Server Error');
+        }
+    }
+
+    /**
+     * GET /api/cn/stocks/performance-reports/ranking
+     * 业绩排行榜：按多因子评分（净利增速/营收增速/盈利质量/加速度/可靠性）对最新一期报告排序
+     */
+    static async getPerformanceRanking(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const url = new URL(req.originalUrl, `http://${req.get('host')}`);
+        const reportPeriod = (url.searchParams.get('reportPeriod') || '').trim() || currentReportPeriod();
+        const sortByRaw = (url.searchParams.get('sortBy') || 'score').trim();
+        const sortOrderRaw = (url.searchParams.get('sortOrder') || 'desc').trim().toLowerCase();
+        const reportTypeRaw = (url.searchParams.get('reportType') || 'all').trim();
+        const pageParam = url.searchParams.get('page') || '1';
+        const pageSizeParam = url.searchParams.get('pageSize') || '50';
+        const keyword = (url.searchParams.get('keyword') || '').trim();
+
+        const allowedSortBy = new Set(['score', 'profit_growth', 'revenue_growth', 'profitability', 'roe', 'acceleration']);
+        if (!allowedSortBy.has(sortByRaw)) {
+            createResponse(res, 400, 'Invalid sortBy - 仅支持 score / profit_growth / revenue_growth / profitability / roe / acceleration');
+            return;
+        }
+        if (sortOrderRaw !== 'asc' && sortOrderRaw !== 'desc') {
+            createResponse(res, 400, 'Invalid sortOrder - 仅支持 asc 或 desc');
+            return;
+        }
+
+        let page = 1;
+        if (pageParam) {
+            const parsed = Number(pageParam);
+            if (!Number.isInteger(parsed) || parsed < 1) { createResponse(res, 400, 'Invalid page - page 必须是大于0的整数'); return; }
+            page = parsed;
+        }
+        let pageSize = 50;
+        if (pageSizeParam) {
+            const parsed = Number(pageSizeParam);
+            if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) { createResponse(res, 400, 'Invalid pageSize - pageSize 必须是 1-500 的整数'); return; }
+            pageSize = parsed;
+        }
+
+        if (!['all', 'formal', 'express'].includes(reportTypeRaw)) {
+            createResponse(res, 400, 'Invalid reportType - 仅支持 all / formal / express');
+            return;
+        }
+
+        try {
+            // 取该报告期内每只股票的最新报告 + 去年同期报告（用于同比）+ 上一期报告（用于加速度）
+            const query = `
+                WITH latest AS (
+                    SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+                           p.total_revenue, p.n_income_attr_p, p.created_at, p.ai_tag,
+                           i.grossprofit_margin, i.netprofit_margin, i.roe,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY p.symbol
+                               ORDER BY p.report_type = 'formal' DESC, p.ann_date DESC
+                           ) AS rn
+                    FROM performance_reports p
+                    LEFT JOIN LATERAL (
+                        SELECT grossprofit_margin, netprofit_margin, roe
+                        FROM performance_reports
+                        WHERE symbol = p.symbol AND end_date = p.end_date AND report_type = 'indicator'
+                        LIMIT 1
+                    ) i ON true
+                    WHERE p.end_date = $1
+                      AND p.report_type IN ('formal', 'express')
+                )
+                SELECT l.*,
+                       prev_same.total_revenue AS prev_revenue, prev_same.n_income_attr_p AS prev_profit,
+                       prev_period.n_income_attr_p AS prev_period_profit,
+                       prev_period_same.n_income_attr_p AS prev_period_same_profit
+                FROM latest l
+                LEFT JOIN LATERAL (
+                    SELECT total_revenue, n_income_attr_p
+                    FROM performance_reports
+                    WHERE symbol = l.symbol
+                      AND report_type IN ('formal', 'express')
+                      AND end_date IS NOT NULL AND end_date != ''
+                      AND end_date = (substr(l.end_date, 1, 4)::int - 1)::text || substr(l.end_date, 5)
+                    ORDER BY report_type = 'formal' DESC
+                    LIMIT 1
+                ) prev_same ON true
+                LEFT JOIN LATERAL (
+                    SELECT total_revenue, n_income_attr_p, end_date
+                    FROM performance_reports
+                    WHERE symbol = l.symbol
+                      AND report_type IN ('formal', 'express')
+                      AND end_date IS NOT NULL AND end_date != ''
+                      AND end_date < l.end_date
+                    ORDER BY end_date DESC, report_type DESC
+                    LIMIT 1
+                ) prev_period ON true
+                LEFT JOIN LATERAL (
+                    SELECT n_income_attr_p
+                    FROM performance_reports
+                    WHERE symbol = l.symbol
+                      AND report_type IN ('formal', 'express')
+                      AND end_date IS NOT NULL AND end_date != ''
+                      AND end_date = (substr(prev_period.end_date, 1, 4)::int - 1)::text || substr(prev_period.end_date, 5)
+                    ORDER BY report_type = 'formal' DESC
+                    LIMIT 1
+                ) prev_period_same ON true
+                WHERE l.rn = 1
+                  AND ($2 = 'all' OR l.report_type = $2)
+                  AND ($3 = '' OR l.symbol LIKE $3 OR l.stock_name LIKE $3)`;
+
+            const result = await pool.query(query, [reportPeriod, reportTypeRaw, keyword ? `%${keyword}%` : '']);
+            const rows = result.rows as any[];
+
+            // 计算每只股票的评分
+            const scored = rows.map((row) => {
+                // 去年同期数据（同比基准）
+                const prevProfit = row.prev_profit != null ? Number(row.prev_profit) : null;
+                const curProfit = row.n_income_attr_p != null ? Number(row.n_income_attr_p) : null;
+                const prevRevenue = row.prev_revenue != null ? Number(row.prev_revenue) : null;
+                const curRevenue = row.total_revenue != null ? Number(row.total_revenue) : null;
+                // 上一期及其去年同期（用于加速度）
+                const prevPeriodProfit = row.prev_period_profit != null ? Number(row.prev_period_profit) : null;
+                const prevPeriodSameProfit = row.prev_period_same_profit != null ? Number(row.prev_period_same_profit) : null;
+
+                // 营收/净利均为空 → 数据不足，不参与评分
+                const bothMissing = (curRevenue === null || curRevenue === 0) && (curProfit === null || curProfit === 0);
+                if (bothMissing) return null;
+
+                // 同比失真判断：
+                // 1. 上期净利基数极小（<1000万元）且当期有明显净利
+                // 2. 上期净利 <1亿元 但当期同比极端（|yoy|>1000%），如快报净利为全年预测值导致失真
+                const yoyRaw = calcYoy(curProfit, prevProfit);
+                const prevTiny = prevProfit !== null && Math.abs(prevProfit) < 1e7 && curProfit !== null && Math.abs(curProfit) > 1e6;
+                const extremeYoy = yoyRaw.value !== null && prevProfit !== null && Math.abs(prevProfit) < 1e8 && Math.abs(yoyRaw.value) > 1000;
+                const profitYoy = (prevTiny || extremeYoy)
+                    ? { value: null, abnormal: true }
+                    : yoyRaw;
+                const revenueYoy = calcYoy(curRevenue, prevRevenue);
+                // 上一期净利同比（本期同比的对照基准）
+                const prevPeriodYoy = calcYoy(prevPeriodProfit, prevPeriodSameProfit);
+
+                // 净利率：优先用 indicator 行，缺失时用利润/营收计算
+                let netMargin = row.netprofit_margin != null ? Number(row.netprofit_margin) : null;
+                if (netMargin === null && curRevenue !== null && curRevenue !== 0 && curProfit !== null) {
+                    netMargin = (curProfit / curRevenue) * 100;
+                }
+                const roe = row.roe != null ? Number(row.roe) : null;
+
+                const s1 = scoreNetProfitGrowth(profitYoy.value, {
+                    prevProfit, curProfit, abnormal: profitYoy.abnormal,
+                });
+                const s2 = scoreRevenueGrowth(revenueYoy.value);
+                const s3 = scoreProfitability(netMargin, roe);
+                // 加速度：本期净利同比 - 上一期净利同比
+                const accelDelta = (profitYoy.value != null && prevPeriodYoy.value != null)
+                    ? profitYoy.value - prevPeriodYoy.value
+                    : null;
+                const s4 = scoreGrowthAcceleration(profitYoy.value, prevPeriodYoy.value);
+                const s5 = scoreReportReliability(row.report_type);
+                const totalScore = s1 + s2 + s3 + s4 + s5;
+
+                return {
+                    symbol: row.symbol,
+                    stockName: row.stock_name || '',
+                    reportType: row.report_type,
+                    reportTypeLabel: row.report_type === 'formal' ? '正式报告' : '快报',
+                    end_date: row.end_date || '',
+                    ann_date: row.ann_date || '',
+                    ai_tag: row.ai_tag || '',
+                    revenue: curRevenue !== null && curRevenue !== undefined ? Math.round((curRevenue / 1e8) * 100) / 100 : null,
+                    revenueYoY: revenueYoy.value != null ? Math.round(revenueYoy.value * 100) / 100 : null,
+                    netProfit: curProfit !== null && curProfit !== undefined ? Math.round((curProfit / 1e8) * 100) / 100 : null,
+                    netProfitYoY: profitYoy.value != null ? Math.round(profitYoy.value * 100) / 100 : null,
+                    netMargin: netMargin != null ? Math.round(netMargin * 100) / 100 : null,
+                    roe: roe != null ? Math.round(roe * 100) / 100 : null,
+                    growthAcceleration: accelDelta != null ? Math.round(accelDelta * 100) / 100 : null,
+                    score: Math.round(totalScore * 10) / 10,
+                    scoreDimensions: {
+                        netProfitGrowth: Math.round(s1 * 10) / 10,
+                        revenueGrowth: Math.round(s2 * 10) / 10,
+                        profitability: Math.round(s3 * 10) / 10,
+                        growthAcceleration: Math.round(s4 * 10) / 10,
+                        reportReliability: Math.round(s5 * 10) / 10,
+                    },
+                    growthAbnormal: profitYoy.abnormal,
+                    rank: 0,
+                };
+            }).filter((x): x is NonNullable<typeof x> => x !== null);
+
+            // 排序
+            const sortKeyMap: Record<string, (r: any) => number | null> = {
+                score: (r) => r.score,
+                profit_growth: (r) => r.netProfitYoY,
+                revenue_growth: (r) => r.revenueYoY,
+                profitability: (r) => r.netMargin,
+                roe: (r) => r.roe,
+                acceleration: (r) => r.growthAcceleration,
+            };
+            const keyFn = sortKeyMap[sortByRaw] || sortKeyMap.score;
+            // sortDir：升序返回 a-b（小在前），降序返回 b-a（大在前）；null 值始终排最后
+            const sortDir = sortOrderRaw === 'asc' ? 1 : -1;
+            scored.sort((a, b) => {
+                const va = keyFn(a);
+                const vb = keyFn(b);
+                if (va === null && vb === null) return 0;
+                if (va === null) return 1;
+                if (vb === null) return -1;
+                if (va !== vb) return sortDir * (va - vb);
+                // 次级排序：净利同比 > 营收同比 > 报告可靠性 > 股票代码（方向与主排序一致）
+                const pa = a.netProfitYoY ?? -Infinity;
+                const pb = b.netProfitYoY ?? -Infinity;
+                if (pa !== pb) return sortDir * (pa - pb);
+                const ra = a.revenueYoY ?? -Infinity;
+                const rb = b.revenueYoY ?? -Infinity;
+                if (ra !== rb) return sortDir * (ra - rb);
+                const relA = scoreReportReliability(a.reportType);
+                const relB = scoreReportReliability(b.reportType);
+                if (relA !== relB) return sortDir * (relA - relB);
+                return a.symbol.localeCompare(b.symbol);
+            });
+
+            // 排名 + 分页
+            scored.forEach((item, index) => { item.rank = index + 1; });
+            const total = scored.length;
+            const start = (page - 1) * pageSize;
+            const list = scored.slice(start, start + pageSize);
+
+            createResponse(res, 200, 'success', {
+                '报告期': reportPeriod,
+                '报告期标签': formatReportPeriod(reportPeriod),
+                '排序方式': sortByRaw,
+                '总数量': total,
+                '当前页': page,
+                '每页数量': pageSize,
+                '排行榜': list,
+            });
         } catch (error: any) {
             createResponse(res, 500, error instanceof Error ? error.message : 'Internal Server Error');
         }

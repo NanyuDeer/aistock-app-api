@@ -19,6 +19,7 @@ const MIGRATIONS = [
     '014_stock_trace_artifacts.sql',
     '015_stock_trace_jobs.sql',
     '016_watchlist_insights.sql',
+    '017_watchlist_price_move.sql',
 ] as const;
 
 function buildTestUrl(sourceUrl: string, password: string): string {

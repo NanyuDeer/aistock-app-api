@@ -175,6 +175,7 @@ interface HotSectorAnalysis {
     downstream_stocks: SelectedStock[];
     flow_data: { nodes: FlowNode[]; links: FlowLink[]; transfer_direction: string };
     leading_stock_info: LeadingStockInfo;
+    long_leader: SelectedStock | null;   // 长期趋势龙头：板块成分股中 trend_scores 评分最高（无命中回退 main_stocks 最高分）
 }
 
 // ==================== 缓存 ====================
@@ -196,6 +197,50 @@ async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string
     } catch (err) {
         console.warn('[HotSectorAnalyzer] getStocksIndustryMap failed:', (err as Error).message);
         return new Map();
+    }
+}
+
+/**
+ * 查询板块成分股中长期趋势龙头：trend_scores 表最新评分日中，给定成分股代码集合内
+ * score 最高且未被 60 日均线剔除、非 D 评级的股票。
+ * 返回 null 表示成分股无趋势评分命中（调用方回退 main_stocks 最高分）。
+ */
+export async function queryTopTrendScore(codes: string[]): Promise<SelectedStock | null> {
+    if (!Array.isArray(codes) || codes.length === 0) return null;
+    try {
+        const result = await pool.query(
+            `SELECT t.symbol, t.score, t.label,
+                    COALESCE(s.name, '') AS name,
+                    COALESCE(s.industry, '') AS industry
+             FROM trend_scores t
+             LEFT JOIN stocks s ON t.symbol = s.symbol
+             WHERE t.score_date = (SELECT MAX(score_date) FROM trend_scores)
+               AND t.symbol = ANY($1)
+               AND t.label NOT IN ('D')
+               AND (t.ma60_excluded IS NULL OR t.ma60_excluded = false)
+             ORDER BY t.score DESC
+             LIMIT 1`,
+            [codes],
+        );
+        const row = result.rows[0];
+        if (!row) return null;
+        const score = Number(row.score);
+        return {
+            code: row.symbol,
+            name: row.name,
+            industry: row.industry,
+            score: Number.isFinite(score) ? score : 0,
+            reason: `趋势评分${row.label || ''}`,
+            reason_tag: row.label || '',
+            reason_tag_class: '',
+            source: 'trend_score',
+            in_concept: false,
+            chain_position: '核心',
+            related_industry: row.industry || '',
+        };
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] queryTopTrendScore failed:', (err as Error).message);
+        return null;
     }
 }
 
@@ -843,8 +888,10 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
         return { date: dailyByDateCache.date, data: dailyByDateCache.data };
     }
 
-    // 尝试最近3天
-    for (let offset = 0; offset < 3; offset++) {
+    // 尝试最近10天（覆盖周末与长假）：分析在凌晨运行，周一/长假后首个交易日可能位于
+    // 3 个日历日之外——窗口太短会取不到最近交易日，导致 moneyflow 日期回退到今天而返回空，
+    // 净流入（net_inflow）与 MA60 均缺失
+    for (let offset = 0; offset < 10; offset++) {
         const d = new Date();
         d.setDate(d.getDate() - offset);
         const dateStr = formatDate(d);
@@ -1336,7 +1383,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
         const topStockAttr = $('input.topStock').attr('topstock') || $('input.topStock').attr('topStock') || '';
         console.log(`[HotSectorAnalyzer] 概念${boardCode} topstock字段: "${topStockAttr}"`);
         
-        const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+        const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
         console.log(`[HotSectorAnalyzer] 概念${boardCode} 解析后的龙头股代码: ${topStockCodes.join(', ') || '无'}`);
         
         if (topStockCodes.length > 0) {
@@ -1401,10 +1448,8 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
                     row.find('a').each((j, a) => {
                         const href = $(a).attr('href') || '';
                         const name = $(a).text().trim();
-                        // 从href中提取股票代码，如 /300801/ 或 stockpage.10jqka.com.cn/300801
-                        const codeMatch = href.match(/(\d{6})/);
-                        const code = codeMatch ? codeMatch[1] : '';
-                        if (code && name && /^\d{6}$/.test(code)) {
+                        const code = extractStockCodeFromHref(href);
+                        if (code && isValidStockName(name)) {
                             // 去重
                             if (!leadingStocks.some(s => s.code === code)) {
                                 leadingStocks.push({ code, name });
@@ -1421,9 +1466,8 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
             $('table.m_table').find('a').each((i, a) => {
                 const href = $(a).attr('href') || '';
                 const name = $(a).text().trim();
-                const codeMatch = href.match(/(\d{6})/);
-                const code = codeMatch ? codeMatch[1] : '';
-                if (code && name && /^\d{6}$/.test(code)) {
+                const code = extractStockCodeFromHref(href);
+                if (code && isValidStockName(name)) {
                     if (!leadingStocks.some(s => s.code === code)) {
                         leadingStocks.push({ code, name });
                     }
@@ -1563,7 +1607,7 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
 
                 // 策略1：从 topStock 隐藏字段提取
                 const topStockAttr = $('input.topStock').attr('topStock') || '';
-                const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+                const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
                 if (topStockCodes.length > 0) {
                     for (const code of topStockCodes) {
                         const name = $(`a[code="${code}"]`).first().text().trim();
@@ -1592,9 +1636,8 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
                             $(el).closest('tr').find('a').each((j, a) => {
                                 const href = $(a).attr('href') || '';
                                 const name = $(a).text().trim();
-                                const codeMatch = href.match(/(\d{6})/);
-                                const code = codeMatch ? codeMatch[1] : '';
-                                if (code && name && /^\d{6}$/.test(code) && !stocks.some(s => s.code === code)) {
+                                const code = extractStockCodeFromHref(href);
+                                if (code && isValidStockName(name) && !stocks.some(s => s.code === code)) {
                                     stocks.push({ code, name });
                                 }
                             });
@@ -1608,9 +1651,8 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
                     $('table.m_table').find('a').each((i, a) => {
                         const href = $(a).attr('href') || '';
                         const name = $(a).text().trim();
-                        const codeMatch = href.match(/(\d{6})/);
-                        const code = codeMatch ? codeMatch[1] : '';
-                        if (code && name && /^\d{6}$/.test(code) && !stocks.some(s => s.code === code)) {
+                        const code = extractStockCodeFromHref(href);
+                        if (code && isValidStockName(name) && !stocks.some(s => s.code === code)) {
                             stocks.push({ code, name });
                         }
                         if (stocks.length >= 3) return false;
@@ -1711,7 +1753,9 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             console.log(`[HotSectorAnalyzer] ${missingLeader.length}个板块领涨股缺失，用成分股涨幅排序补充: ${missingLeader.map(c => `${c.name}(${c.code})`).join(', ')}`);
             await Promise.all(missingLeader.map(async (concept) => {
                 try {
-                    const topStocks = await getBoardTopStocks(concept.code, 1, 'concept');
+                    // 行业板块（881xxx）成分股走 industry 接口，概念板块走 concept 接口
+                    const boardType: 'concept' | 'industry' = isIndustryBoardCode(concept.code) ? 'industry' : 'concept';
+                    const topStocks = await getBoardTopStocks(concept.code, 1, boardType);
                     if (topStocks.length > 0) {
                         concept.leading_stock = topStocks[0].name;
                         concept.leading_change = topStocks[0].change_pct || 0;
@@ -1916,6 +1960,89 @@ async function mapByRankingIndustry(conceptName: string, topN: number = 3): Prom
         stock_count: 0,
         overlap_codes: [],
     }));
+}
+
+/** 板块代码是否为行业板块（881xxx 为同花顺二级行业） */
+function isIndustryBoardCode(code: string): boolean {
+    return typeof code === 'string' && code.startsWith('881');
+}
+
+/**
+ * 校验 6 位数字是否为合法 A 股代码。
+ * 排除两类误判：
+ * 1. 日期型：同花顺新闻 URL 形如 news.10jqka.com.cn/20260805/c678696112.shtml，
+ *    截取前 6 位为 "202608"（日期 2026-08），首位 2 不合法。
+ * 2. 同花顺板块代码 881/884/885/886xxx：首位 8 但非个股（A 股个股代码段：
+ *    沪市 60/68、深市 00/30、北交所 43/83/87/92）。
+ */
+export function isValidStockCode(code: string): boolean {
+    return /^(60|68|00|30|43|83|87|92)\d{4}$/.test(code);
+}
+
+/**
+ * 校验是否为合法股票名：非空、长度 2~12、不含描述性关键词。
+ * 防"概念细分|玻璃基板新增…细分方向"这类新闻标题被当作股票名（含 | 分隔符与"概念/细分/新增"等词）。
+ */
+export function isValidStockName(name: string): boolean {
+    const n = (name || '').trim();
+    if (!n || n.length < 2 || n.length > 12) return false;
+    if (/[|｜、,，。;；：:]/.test(n)) return false;
+    if (/概念|细分|新增|方向|设备|耗材|龙头|板块/.test(n)) return false;
+    return true;
+}
+
+/**
+ * 从链接 href 中提取股票代码。
+ * 排除新闻链接（同花顺新闻域名 news.10jqka.com.cn，其 URL 含日期 20260805 会被误认为代码），
+ * 再按 6 位数字段提取并校验合法代码。
+ */
+export function extractStockCodeFromHref(href: string): string | null {
+    if (!href) return null;
+    // 排除新闻/资讯链接（news. 域名）
+    if (/news\./i.test(href)) return null;
+    const m = href.match(/(\d{6})/);
+    if (!m) return null;
+    return isValidStockCode(m[1]) ? m[1] : null;
+}
+
+/**
+ * 行业板块专用：直接从知识图谱获取该行业的上/下游，不走"概念→行业"映射。
+ * 修复：风口榜单出现行业板块（881xxx）时，此前会被当作概念查询
+ * （getConceptRelatedIndustriesByName 找不到 → fallback 随机行业排名），
+ * 导致层级流向图 related 错乱、上下游为空。行业板块应直接展示其产业链上下游。
+ */
+async function mapIndustryToChain(industryName: string): Promise<{
+    industryResult: ConceptIndustryResult;
+    transmission: TransmissionResult;
+}> {
+    // 知识图谱可能尚未初始化（构建中），失败时返回空上下游，不阻塞风口分析
+    let kg: { upstream: { name: string }[]; downstream: { name: string }[] } = { upstream: [], downstream: [] };
+    try {
+        kg = IndustryKGService.getUpstreamDownstreamByName(industryName, 1);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] 行业 ${industryName} 获取知识图谱上下游失败: ${(err as Error).message}`);
+    }
+
+    // 行业板块无"强关联行业"，related 为空（主节点直接连接上下游）
+    const industryResult: ConceptIndustryResult = { strongly_related: [], all_ranked: [] };
+
+    const industryBoards = await getIndustryBoards();
+    const codeMap = new Map(industryBoards.map(i => [i.name, i.code]));
+    const makeItem = (name: string, dir: 'upstream' | 'downstream', factor: number): TransmissionItem => ({
+        name,
+        code: codeMap.get(name) || '',
+        factor,
+        direction: dir,
+        source_industry: industryName, // 上游/下游直接挂在主行业下
+    });
+
+    // 权重：越靠前的产业链关联越强，递减 0.05
+    const upstream = kg.upstream.map((ind, i) =>
+        makeItem(ind.name, 'upstream', Math.round((0.5 - i * 0.05) * 1000) / 1000));
+    const downstream = kg.downstream.map((ind, i) =>
+        makeItem(ind.name, 'downstream', Math.round((0.4 - i * 0.05) * 1000) / 1000));
+
+    return { industryResult, transmission: { upstream, downstream } };
 }
 
 // ==================== 产业链上下游（同花顺行业分类） ====================
@@ -2449,7 +2576,7 @@ export function deriveCycle(a: {
     return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按 short_term_days 降序，相同按 freq20 降序），按 name 去重；
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按上榜次数 freq20 降序，相同按热度 short_heat 降序），按 name 去重；
  * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
@@ -2458,6 +2585,7 @@ export function applyDualRankings<T extends {
     short_term_days?: number;
     frequency?: number;
     freq20?: number;
+    ai_analysis?: AiAnalysis | string | null;
 }>(sectors: T[]): T[] {
     const longBoard = sectors
         .filter(s => s.cycle === 'long' || s.cycle === 'both')
@@ -2470,9 +2598,12 @@ export function applyDualRankings<T extends {
     const shortBoard = sectors
         .filter(s => s.cycle === 'short' || s.cycle === 'both')
         .sort((a, b) => {
-            const daysDiff = (b.short_term_days ?? 0) - (a.short_term_days ?? 0);
-            if (daysDiff !== 0) return daysDiff;
-            return (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            // 短线榜按上榜次数（近10日 freq20）降序，相同按短线热度（short_heat，存于 ai_analysis）降序
+            const freqDiff = (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            if (freqDiff !== 0) return freqDiff;
+            const heatOf = (s: { ai_analysis?: AiAnalysis | string | null }) =>
+                typeof s.ai_analysis === 'object' && s.ai_analysis ? (s.ai_analysis.short_heat ?? 0) : 0;
+            return heatOf(b) - heatOf(a);
         })
         .slice(0, 8);
     const merged = new Map<string, T>();
@@ -3348,19 +3479,20 @@ async function extractLeadingStock(
         };
     }
 
-    // 同花顺页面爬取失败时，不再回退到其他数据源，确保龙头股必须来自同花顺
-    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})同花顺页面未爬取到龙头股，不使用备选数据源`);
+    // 同花顺页面爬取失败时，回退到 main_stocks 中评分最高的股票作为龙头股（保证有 code/价格/涨幅，行业板块 881xxx 无概念页结构时必走此分支）
+    const fallbackStock = [...mainStocks].sort((a, b) => (b.score || 0) - (a.score || 0)).find(s => s.code);
+    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})同花顺页面未爬取到龙头股，回退到评分最高核心股: ${fallbackStock ? fallbackStock.name : '无'}`);
     return {
-        name: concept.leading_stock !== '--' ? concept.leading_stock : '',
-        code: '',
-        industry: '',
-        price: null,
-        change_pct: null,
-        reason: concept.driver || '',
-        reason_tag: '',
-        reason_tag_class: '',
-        related_industry: '',
-        in_concept: false,
+        name: fallbackStock?.name || (concept.leading_stock !== '--' ? concept.leading_stock : ''),
+        code: fallbackStock?.code || '',
+        industry: fallbackStock?.industry || '',
+        price: fallbackStock?.price ?? null,
+        change_pct: fallbackStock?.change_pct ?? null,
+        reason: fallbackStock?.reason || concept.driver || '',
+        reason_tag: fallbackStock?.reason_tag || '',
+        reason_tag_class: fallbackStock?.reason_tag_class || '',
+        related_industry: fallbackStock?.related_industry || conceptName,
+        in_concept: fallbackStock?.in_concept ?? false,
     };
 }
 
@@ -3443,7 +3575,7 @@ export class WindLeaderAnalyzerService {
                     const $ = cheerio.load(html);
                     // 提取龙头股
                     const topStockAttr = $('input.topStock').attr('topStock') || '';
-                    const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+                    const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
                     const leadingStocks: { code: string; name: string }[] = [];
                     if (topStockCodes.length > 0) {
                         for (const code of topStockCodes) {
@@ -3523,8 +3655,19 @@ export class WindLeaderAnalyzerService {
             }
 
             // 收集强关联行业的候选股代码
-            const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
+            const industryResult = isIndustryBoardCode(concept.code)
+                ? { strongly_related: [] as IndustryMapping[], all_ranked: [] as IndustryMapping[] }
+                : await mapConceptToIndustries(concept.code, concept.name, 3);
             conceptIndustryMap.set(concept.code, industryResult.strongly_related);
+            if (isIndustryBoardCode(concept.code)) {
+                // 行业板块：补充行业自身龙头股作为候选（无概念关联行业）
+                const topStocks = await getBoardTopStocks(concept.code, 10, 'industry');
+                for (const s of topStocks) {
+                    if (s.code && !allCandidateCodes.includes(s.code)) {
+                        allCandidateCodes.push(s.code);
+                    }
+                }
+            }
             for (const ind of industryResult.strongly_related) {
                 const topStocks = await getBoardTopStocks(ind.code, 10, 'industry');
                 for (const s of topStocks) {
@@ -3535,7 +3678,9 @@ export class WindLeaderAnalyzerService {
             }
 
             // 收集上下游行业的候选股代码（限制数量，使用与流向图一致的过滤逻辑）
-            const transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
+            const transmission = isIndustryBoardCode(concept.code)
+                ? (await mapIndustryToChain(concept.name)).transmission
+                : await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
             const filteredTrans = filterTransmissionForFlow(transmission);
             for (const up of filteredTrans.upstream.slice(0, 1)) {
                 const indCode = industryBoards.find(i => i.name === up.name)?.code || '';
@@ -3589,12 +3734,18 @@ export class WindLeaderAnalyzerService {
             }
             console.log(`[HotSectorAnalyzer] ${concept.name}: 月线=${monthlySignal} MA60=${concept.ma60_status} 量能=${concept.vol_trend} 涨停=${concept.limit_up_count} 连板=${concept.max_boards}`);
 
-            // 2. 映射强关联二级行业
-            const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
+            // 2. 映射关联行业/上下游（概念板块→强关联行业；行业板块→直接取行业产业链上下游）
+            let industryResult: ConceptIndustryResult;
+            let transmission: TransmissionResult;
+            if (isIndustryBoardCode(concept.code)) {
+                const chain = await mapIndustryToChain(concept.name);
+                industryResult = chain.industryResult;
+                transmission = chain.transmission;
+            } else {
+                industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
+                transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
+            }
             const relatedIndNames = industryResult.strongly_related.map(r => r.name);
-
-            // 3. 计算上下游传导（使用全排名行业）
-            const transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
 
             // 4. 双链分流 AI 研判（长线池→长线链 / 短线池→短线链 / 交集→both）
             const chain: 'long' | 'short' | 'both' = concept.in_long_pool && concept.in_short_pool ? 'both'
@@ -3713,6 +3864,19 @@ export class WindLeaderAnalyzerService {
                         change_pct: changePct,
                     });
                 }
+            }
+
+            // 行业板块（881xxx）无概念关联行业，直接用行业自身成分股选核心股
+            if (isIndustryBoardCode(concept.code)) {
+                const indStocks = await selectStocksFromIndustry(
+                    concept.code, concept.name, concept.name, conceptCodes, 5, enhancement,
+                );
+                for (const s of indStocks) {
+                    s.chain_position = '核心';
+                    s.related_industry = concept.name;
+                    s.overlap_ratio = 1;
+                }
+                mainStocks.push(...indStocks);
             }
 
             for (const ind of industryResult.strongly_related) {
@@ -3843,6 +4007,20 @@ export class WindLeaderAnalyzerService {
                 concept.name, concept, finalMainStocks, concept.code, enhancement,
             );
 
+            // 10. 长期趋势龙头：板块成分股中 trend_scores 评分最高者（长线榜展示用）
+            // 概念板块用概念成分股代码；行业板块（881xxx）无概念成分股，用行业成分股代码。
+            // 无趋势评分命中时回退 main_stocks 评分最高者。
+            let longLeaderCodes: string[] = [];
+            if (isIndustryBoardCode(concept.code)) {
+                const indTop = await getBoardTopStocks(concept.code, 20, 'industry');
+                longLeaderCodes = indTop.map(s => s.code);
+            } else {
+                longLeaderCodes = Array.from(conceptCodes);
+            }
+            const longLeader = (await queryTopTrendScore(longLeaderCodes))
+                || [...finalMainStocks].sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+                || null;
+
             // 板块综合评分（用于泡泡图大小）：频次*5 + 均涨幅*3 + 最新涨幅*2
             const sectorScore = Math.round(
                 (concept.frequency || 0) * 5 +
@@ -3880,6 +4058,7 @@ export class WindLeaderAnalyzerService {
                 downstream_stocks: filteredDownstream,
                 flow_data: flowData,
                 leading_stock_info: leadingStockInfo,
+                long_leader: longLeader,
             });
         }
 
