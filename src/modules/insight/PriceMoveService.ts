@@ -39,6 +39,12 @@ export function extractPrices(row: Record<string, any>): { latest: number | null
     return { latest: Number.isFinite(latest) ? latest : null, open: Number.isFinite(open) ? open : null };
 }
 
+/** 相对今开 moveBps 转 changePct（stocktrace PriceFact 使用：bps / 100 = 百分比值）
+ * 如 moveBps=750 表示 7.5%，返回 changePct=7.5 */
+export function moveBpsToChangePct(moveBps: number): number {
+    return moveBps / 100;
+}
+
 export class PriceMoveService {
     /**
      * 执行一轮打点：拉全自选股实时行情 → 计算 move_bps → 达到阈值者写快照并触发。
@@ -68,9 +74,23 @@ export class PriceMoveService {
                 symbol, tradeDate, snapshotType, openPrice: open, latestPrice: latest,
                 moveBps, direction, priceSource: 'realtime_snapshot',
             };
+            // --- 事件层切换：stocktrace 接管 ---
+            const { StockTraceService } = await import('../stock-trace/StockTraceService');
+            const securities = await StockTraceService.getFavoriteSecurities();
+            const security = securities.find((s) => s.symbol === symbol);
+            if (security) {
+                await StockTraceService.processPriceFact(security, {
+                    symbol,
+                    stockName: security.stockName,
+                    latestPrice: latest,
+                    previousClose: open,          // 保留相对今开语义：以今开为基准
+                    changePct: moveBpsToChangePct(moveBps),
+                    observedAt: new Date(),
+                });
+                triggered++;
+            }
+            // persistSnapshot 保留仅作记录（同 symbol+trade_date+snapshot_type 幂等更新）
             await this.persistSnapshot(snapshot);
-            await this.triggerEvent(snapshot);
-            triggered++;
         }
         console.log(`[PriceMove] ${snapshotType} 打点完成 scanned=${symbols.length} triggered=${triggered}`);
         return { scanned: symbols.length, triggered };

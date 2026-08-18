@@ -2,7 +2,7 @@
 // 仓库惯例：node:test + assert（非 jest），运行 node --import tsx --test
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeMoveBps, extractPrices } from '../PriceMoveService';
+import { computeMoveBps, extractPrices, moveBpsToChangePct } from '../PriceMoveService';
 
 describe('computeMoveBps', () => {
     it('700 bps 触发（+7%）', () => {
@@ -37,5 +37,17 @@ describe('extractPrices', () => {
     });
     it('今开价/最新价非数字返回 null', () => {
         assert.deepEqual(extractPrices({ '股票代码': '600519' }), { latest: null, open: null });
+    });
+});
+
+describe('moveBpsToChangePct（触发适配换算）', () => {
+    it('moveBps 750 → changePct 7.5（相对今开 +7.5%）', () => {
+        assert.equal(moveBpsToChangePct(750), 7.5);
+    });
+    it('moveBps -820 → changePct -8.2', () => {
+        assert.equal(moveBpsToChangePct(-820), -8.2);
+    });
+    it('moveBps 0 → 0', () => {
+        assert.equal(moveBpsToChangePct(0), 0);
     });
 });
