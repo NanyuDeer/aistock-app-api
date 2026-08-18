@@ -253,6 +253,7 @@ app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(r
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
 app.get('/api/chat/usage/sessions/:id', (req, res, next) => SessionUsageController.detailBySession(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.put('/api/users/me/favorites/order', (req, res, next) => UserController.saveFavoritesOrder(req, res, next));
 
 // 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
 app.post('/api/chat/sessions', (req, res, next) => SessionController.upsert(req, res, next));
@@ -1312,6 +1313,15 @@ async function start() {
         console.log('[DB] podcast_cache table ready');
     } catch (err: unknown) {
         console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // user_stocks 自选股排序字段（幂等迁移，表由外部初始化脚本创建）
+    // 作用：自选股支持拖拽排序，列表按 sort_order ASC 返回；老数据默认 0，回退到 created_at DESC
+    try {
+        await pool.query('ALTER TABLE user_stocks ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0');
+        console.log('[DB] user_stocks.sort_order column ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_stocks.sort_order migration:', err instanceof Error ? err.message : String(err));
     }
 
     // 会话元数据表（P9 会话管理）：消息仍前端本地存储，服务端只存会话标题/时间

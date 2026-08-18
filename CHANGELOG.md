@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 自选股排序：sort_order 字段 + 排序保存接口
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/auth/userController.ts`：
+  - `user_stocks` 幂等迁移新增 `sort_order` 字段；列表查询改按 `sort_order ASC, created_at DESC` 排序。
+  - `addFavorites` 新添加股票 `sort_order` 置为当前最大值 +1。
+  - 新增 `saveFavoritesOrder`：按传入 symbols 顺序批量更新 `sort_order`，仅更新该用户自选内的代码。
+- `src/index.ts`：注册 `PUT /api/users/me/favorites/order` 路由。
+
+---
+
 ## [feat/fear-greed-node] 2026-08-18 — 恐贪指数服务：Python FastAPI 迁移为 Node/TS 并入 app-api
 
 **开发者**: 林晓研
