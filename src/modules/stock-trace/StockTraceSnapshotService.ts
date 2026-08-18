@@ -5,6 +5,7 @@ import { StockInfoService } from '../crawler/StockInfoService';
 import { getThsDaily, getThsIndex } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
 import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
+import type { CapitalFlowResult } from '../quote/TushareCapitalFlowService';
 import {
     type DataReadiness,
     type DataReadinessDomains,
@@ -449,11 +450,17 @@ export class StockTraceSnapshotService {
 
     // capital 域：Tushare 资金流（最近可用交易日），8s 超时降级
     private static async collectCapitalSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const timeout = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('capital_collector_timeout')), 8_000));
         try {
             const { getCapitalFlow } = await import('../quote/TushareCapitalFlowService');
-            const flow = await Promise.race([getCapitalFlow(event.symbol), timeout]);
+            const flow = await new Promise<CapitalFlowResult>((resolve, reject) => {
+                const timer = setTimeout(() => reject(new Error('capital_collector_timeout')), 8_000);
+                void getCapitalFlow(event.symbol).then(
+                    (value) => { clearTimeout(timer); resolve(value); },
+                    (error: unknown) => { clearTimeout(timer); reject(error); },
+                );
+            });
+            // buildEmptyResult 返回 tradeDate=''，此时返回空数组使 capital 域为 missing 而非假证据
+            if (!flow.tradeDate) return [];
             return [sourceRecord({
                 sourceId: `capital:${event.symbol}:${flow.tradeDate}`, kind: 'capital_fact', provider: 'tushare_moneyflow',
                 sourceLevel: 'B', title: `资金流向 ${event.symbol}`,
@@ -475,10 +482,12 @@ export class StockTraceSnapshotService {
         const latest = recent[recent.length - 1];
         const avgVolume = recent.slice(0, -1).reduce((s, r) => s + Number(r['成交量'] ?? 0), 0) / Math.max(1, recent.length - 1);
         const volRatio = avgVolume > 0 ? Number(latest['成交量'] ?? 0) / avgVolume : 0;
+        const openPrice = Number(latest['开盘价']);
+        const amplitude = openPrice > 0 ? Math.abs(Number(latest['最高价']) - Number(latest['最低价'])) / openPrice * 100 | 0 : null;
         return [sourceRecord({
             sourceId: `technical:${event.symbol}:${capturedAt.getTime()}`, kind: 'technical_fact', provider: 'tencent_kline',
             sourceLevel: 'B', title: `技术面量价 ${event.symbol}`,
-            contentExcerpt: `m30 最新收 ${latest['收盘价']}，量比 ${volRatio.toFixed(2)}，日内波幅 ${Math.abs(Number(latest['最高价']) - Number(latest['最低价'])) / Number(latest['开盘价']) * 100 | 0}%`,
+            contentExcerpt: `m30 最新收 ${latest['收盘价']}，量比 ${volRatio.toFixed(2)}${amplitude !== null ? `，日内波幅 ${amplitude}%` : ''}`,
             symbol: event.symbol, occurredAt: capturedAt, capturedAt,
             payload: { kline: recent.map(r => ({ t: r['时间'], o: r['开盘价'], c: r['收盘价'], h: r['最高价'], l: r['最低价'], v: r['成交量'] })), vol_ratio: volRatio },
         })];
