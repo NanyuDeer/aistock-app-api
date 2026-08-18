@@ -5,6 +5,7 @@ import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { TencentKlineService } from '../quote/TencentKlineService';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { getWatchlistSymbols } from './InsightService';
+import { isEligiblePriceSecurity } from '../stock-trace/types';
 
 const THRESHOLD_BPS = 700;
 
@@ -61,6 +62,8 @@ export class PriceMoveService {
         // 必须用 activity 级别：今开价仅在该字段集返回，core 只有代码/名称/最新价/涨跌幅，
         // 缺今开会令 computeMoveBps 恒返回 null，异动永不触发（2026-08-15 实测定位）
         const quotes = await TencentQuoteService.getCachedBatchQuotes(symbols, 'activity');
+        const { StockTraceService } = await import('../stock-trace/StockTraceService');
+        const securities = await StockTraceService.getFavoriteSecurities();
         let triggered = 0;
         for (const row of quotes) {
             const symbol = String(row['股票代码'] ?? row.symbol ?? '');
@@ -75,10 +78,8 @@ export class PriceMoveService {
                 moveBps, direction, priceSource: 'realtime_snapshot',
             };
             // --- 事件层切换：stocktrace 接管 ---
-            const { StockTraceService } = await import('../stock-trace/StockTraceService');
-            const securities = await StockTraceService.getFavoriteSecurities();
             const security = securities.find((s) => s.symbol === symbol);
-            if (security) {
+            if (security && isEligiblePriceSecurity(security, new Date())) {
                 await StockTraceService.processPriceFact(security, {
                     symbol,
                     stockName: security.stockName,
