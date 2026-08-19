@@ -32,8 +32,6 @@ import {
     getThsHot,
     getLimitListThs,
     getLimitStep,
-    getMoneyflowCntThs,
-    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     getMoneyflowThs5dMap,
     calcMainForceNetRatio,
@@ -46,9 +44,7 @@ import {
     type ThsHotRow,
     type LimitListThsRow,
     type LimitStepRow,
-    type MoneyflowCntThsRow,
     type MoneyflowThsRow,
-    type MoneyflowIndDcRow,
     getStockCompany,
     type StockCompanyRow,
 } from '../quote/TushareService';
@@ -71,7 +67,6 @@ interface BoardBase {
     price: number;
     up_count: number;
     down_count: number;
-    net_inflow: number;
 }
 
 /** 同花顺行业板块（带 leading_stock） */
@@ -155,7 +150,6 @@ interface HotSectorAnalysis {
     freq_delta?: number;
     avg_change: number;
     today_change: number;
-    net_inflow: number;
     driver_type?: string;
     ma60_status?: string;
     vol_trend?: string;
@@ -664,7 +658,6 @@ async function getConceptBoards(): Promise<BoardBase[]> {
                 price: 0,
                 up_count: 0,
                 down_count: 0,
-                net_inflow: 0,
             }));
             console.log(`[HotSectorAnalyzer] Tushare概念板块获取成功: ${result.length}个`);
             await cacheSet(cacheKey, result);
@@ -690,7 +683,6 @@ async function getConceptBoards(): Promise<BoardBase[]> {
                 price: 0,
                 up_count: parseInt(String(item.zfl ?? '')) || 0,       // 涨幅家数
                 down_count: 0,
-                net_inflow: (parseFloat(String(item.zjjlr ?? '')) || 0) * 100000000, // 亿元→元
             })).filter((item) => item.code && item.name);
 
             if (result.length > 0) {
@@ -717,7 +709,6 @@ async function getConceptBoards(): Promise<BoardBase[]> {
                     price: 0,
                     up_count: 0,
                     down_count: 0,
-                    net_inflow: 0,
                 });
             }
         });
@@ -752,7 +743,6 @@ async function getIndustryBoards(): Promise<IndustryBoard[]> {
                 price: 0,
                 up_count: 0,
                 down_count: 0,
-                net_inflow: 0,
                 leading_stock: '--',
             }));
 
@@ -779,7 +769,6 @@ async function getIndustryBoards(): Promise<IndustryBoard[]> {
             const href = nameEl.attr('href') || '';
             const code = href.match(/code\/(\d+)/)?.[1] || '';
             const change = parseFloat(cells.eq(2).text().trim()) || 0;
-            const netInflow = parseFloat(cells.eq(5).text().trim()) || 0;
             const upCount = parseInt(cells.eq(6).text().trim()) || 0;
             const downCount = parseInt(cells.eq(7).text().trim()) || 0;
             const leadingStock = cells.eq(9).find('a').text().trim() || '';
@@ -792,7 +781,6 @@ async function getIndustryBoards(): Promise<IndustryBoard[]> {
                     price: 0,
                     up_count: upCount,
                     down_count: downCount,
-                    net_inflow: netInflow * 100000000, // 亿元→元
                     leading_stock: leadingStock,
                 });
             }
@@ -890,7 +878,7 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
 
     // 尝试最近10天（覆盖周末与长假）：分析在凌晨运行，周一/长假后首个交易日可能位于
     // 3 个日历日之外——窗口太短会取不到最近交易日，导致 moneyflow 日期回退到今天而返回空，
-    // 净流入（net_inflow）与 MA60 均缺失
+    // moneyflow 与 MA60 数据均缺失
     for (let offset = 0; offset < 10; offset++) {
         const d = new Date();
         d.setDate(d.getDate() - offset);
@@ -1116,7 +1104,6 @@ interface HotConcept {
     freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
     avg_change: number;     // 120日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
-    net_inflow: number;     // 板块主力净流入（万元，moneyflow_cnt_ths；amount_trend 已合并移除）
     driver?: string;        // 驱动文本（当前无数据源，不填占位文本）
     driver_type?: string;   // 驱动类型：政策/业绩/事件/技术（AI 研判回填，非规则归类）
     ma60_status?: string;   // MA60 位置：站上(+x%)/跌破(-x%)/贴近/数据不足
@@ -1561,7 +1548,6 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             freq_delta: sector.freq_delta,
             avg_change: Math.round(sector.avgZf5 * 100) / 100,
             today_change: Math.round(sector.latestZf5 * 100) / 100,
-            net_inflow: 0,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -1673,81 +1659,13 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
         }
     }
 
-    // 从Tushare moneyflow_cnt_ths获取资金流向数据
+    // 净流入已彻底下线（2026-08-19，改用同花顺成交额展示，资金维度改由量能/换手体现）。
+    // 此前经 getMoneyflowCntThs / getMoneyflowIndDc 抓取东财派生板块资金流并写入
+    // concept.net_inflow（用于资金评分与 AI prompt），现整块移除。
+    // 下方保留独立的领涨股补充逻辑与评分，try/catch 统一包裹。
     try {
-        // 用最近交易日（而非当前日期），避免当天数据未收盘导致 moneyflow_cnt_ths 返回空
-        const { date: latestTradeDate } = await getLatestDailyMap();
-        const moneyflowDate = latestTradeDate || formatDate(new Date());
-        const moneyflowData = await getMoneyflowCntThs(moneyflowDate);
-        // 同时用ts_code和去掉后缀的code建立索引，兼容不同code格式
-        const mfMap = new Map(moneyflowData.map(r => [r.ts_code, r]));
-        const mfMapByShortCode = new Map(moneyflowData.map(r => [r.ts_code.replace(/\.(TI|SI)$/, ''), r]));
-        for (const concept of result) {
-            // 优先精确匹配，再尝试短码匹配
-            const mf = mfMap.get(concept.code) || mfMapByShortCode.get(concept.code);
-            if (mf) {
-                // net_amount单位是亿元，转为万元存储（前端formatNetInflow会转换显示）
-                const netAmountWan = (mf.net_amount || 0) * 10000;
-                concept.net_inflow = netAmountWan;
-                // 用lead_stock补充领涨股（如果爬取失败）
-                if (concept.leading_stock === '--' && mf.lead_stock) {
-                    concept.leading_stock = mf.lead_stock;
-                    concept.leading_change = mf.pct_change_stock || 0;
-                }
-            }
-        }
-        console.log(`[HotSectorAnalyzer] 资金流向数据获取成功: ${moneyflowData.length}条`);
-        if (moneyflowData.length > 0) {
-            const samples = moneyflowData.slice(0, 3).map(r => `${r.ts_code}(${r.name})`);
-            const has881 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('881'));
-            const has885 = moneyflowData.some(r => r.ts_code.replace(/\.(TI|SI)$/, '').startsWith('885'));
-            console.log(`[HotSectorAnalyzer] moneyflow_cnt_ths 样本: ${samples.join(', ')} | 含881xxx行业: ${has881} | 含885xxx概念: ${has885}`);
-        }
 
-        // moneyflow_cnt_ths 只含概念板块(885/886xxx)，不含行业板块(881xxx/BKxxxx)。
-        // 用 moneyflow_ind_dc 按名称补充行业板块净流入（net_amount 单位：元 → 万元 /10000）
-        const missingInflow = result.filter(c => c.net_inflow === 0);
-        if (missingInflow.length > 0) {
-            try {
-                const indRows = await getMoneyflowIndDc(moneyflowDate);
-                if (indRows.length > 0) {
-                    const indByNormName = new Map<string, MoneyflowIndDcRow[]>();
-                    for (const r of indRows) {
-                        const norm = normalizeBoardName(r.name);
-                        if (!norm) continue;
-                        const arr = indByNormName.get(norm) || [];
-                        arr.push(r);
-                        indByNormName.set(norm, arr);
-                    }
-                    let matchedInd = 0;
-                    for (const concept of missingInflow) {
-                        const norm = normalizeBoardName(concept.name);
-                        const candidates = norm ? indByNormName.get(norm) : undefined;
-                        if (!candidates || candidates.length === 0) continue;
-                        // 同名多个时取 content_type=行业 的；仍多个取净额绝对值最大者
-                        let pick = candidates.find(c => c.content_type === '行业') || candidates[0];
-                        if (candidates.length > 1) {
-                            pick = candidates.reduce((best, c) =>
-                                Math.abs(c.net_amount || 0) > Math.abs(best.net_amount || 0) ? c : best, pick);
-                        }
-                        if (pick.net_amount !== undefined && pick.net_amount !== null) {
-                            concept.net_inflow = pick.net_amount / 10000; // 元 → 万元
-                            if (concept.leading_stock === '--' && pick.buy_sm_amount_stock) {
-                                concept.leading_stock = pick.buy_sm_amount_stock;
-                            }
-                            matchedInd++;
-                        }
-                    }
-                    console.log(`[HotSectorAnalyzer] moneyflow_ind_dc 补充行业板块净流入: ${matchedInd}/${missingInflow.length} 个`);
-                } else {
-                    console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 返回空，行业板块净流入保持0');
-                }
-            } catch (err) {
-                console.warn('[HotSectorAnalyzer] moneyflow_ind_dc 获取失败（行业板块净流入保持0）:', err instanceof Error ? err.message : String(err));
-            }
-        }
-
-        // 对 moneyflow_cnt_ths 匹配不到的板块（行业板块881xxx不在概念资金流向里），用成分股按涨幅排序补充领涨股
+        // 领涨股缺失的板块（行业板块/概念板块），用成分股按涨幅排序补充
         const missingLeader = result.filter(c => c.leading_stock === '--');
         if (missingLeader.length > 0) {
             console.log(`[HotSectorAnalyzer] ${missingLeader.length}个板块领涨股缺失，用成分股涨幅排序补充: ${missingLeader.map(c => `${c.name}(${c.code})`).join(', ')}`);
@@ -1765,43 +1683,16 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             }));
         }
 
-        // 补充资金数据后重新计算评分
-        // 收集所有板块的net_inflow用于归一化
-        const inflows = result.map(c => c.net_inflow).filter(v => v !== 0);
-        const hasFundData = inflows.length > 0;
-
-        if (hasFundData) {
-            // 有资金数据：评分 = 频次(40%) + 资金净流入(30%) + 平均涨幅(20%) + 最新涨幅(10%)
-            const maxInflow = Math.max(...inflows);
-            const minOutflow = Math.min(...inflows);
-            const absMax = Math.max(Math.abs(maxInflow), Math.abs(minOutflow), 1);
-
-            for (const concept of result) {
-                const freqScore = Math.min(10, concept.frequency * 1.2);
-                const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
-                const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
-
-                let fundScore = 5;
-                if (concept.net_inflow > 0) {
-                    fundScore = 5 + 5 * Math.min(1, concept.net_inflow / absMax);
-                } else if (concept.net_inflow < 0) {
-                    fundScore = 5 - 5 * Math.min(1, Math.abs(concept.net_inflow) / absMax);
-                }
-
-                concept.score = Math.round((freqScore * 4.0 + fundScore * 3.0 + avgChangeScore * 2.0 + latestChangeScore * 1.0) * 100) / 100;
-            }
-        } else {
-            // 无资金数据：回退到旧逻辑 评分 = 频次(60%) + 平均涨幅(25%) + 最新涨幅(15%)
-            for (const concept of result) {
-                const freqScore = Math.min(10, concept.frequency * 1.2);
-                const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
-                const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
-                concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
-            }
+        // 资金评分（净流入下线后不再含资金因子）：评分 = 频次(60%) + 平均涨幅(25%) + 最新涨幅(15%)
+        for (const concept of result) {
+            const freqScore = Math.min(10, concept.frequency * 1.2);
+            const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
+            const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
+            concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
         }
     } catch (err: unknown) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        console.warn(`[HotSectorAnalyzer] 资金流向数据获取失败: ${errMsg}`);
+        console.warn(`[HotSectorAnalyzer] 领涨股补充/评分失败: ${errMsg}`);
     }
 
     await cacheSet(cacheKey, result);
@@ -2397,8 +2288,7 @@ export function buildAiPrompt(
 1. 热度筛选：freq120 是否平稳上升/持续高位？（剔除断续或爆发后沉寂）
 2. 趋势确认：月线多头排列且站上MA60→高天数75~120；月线走平/刚站稳→中天数45~75；月线走坏→可判反弹非反转，输出0或低天数
 3. 逻辑验证：从板块名称/领涨股/连板推断驱动类型，给出置信度依据（政策/业绩/资金/无支撑）
-4. 资金验证：板块净流入方向（持续净流入→加档；持续流出→降档）
-5. 已进入长线池（120日上榜≥16次）即具备长线基础：除非月线明确走坏或频次骤降，否则应给出≥30天的长线研判，避免一刀切输出0天
+4. 已进入长线池（120日上榜≥16次）即具备长线基础：除非月线明确走坏或频次骤降，否则应给出≥30天的长线研判，避免一刀切输出0天
 `
         : '';
     const shortGuide = chain !== 'long'
@@ -2419,7 +2309,6 @@ export function buildAiPrompt(
 - ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
 - 近10日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
 - 今日涨幅：${sectorData.today_change}%
-- 板块净流入：${sectorData.net_inflow}万元
 - 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
 - 上涨/下跌家数：${sectorData.up_count}/${sectorData.down_count}（行业维度）
 ${longData}${shortData}
@@ -2631,7 +2520,6 @@ function inferRuleLogicType(sectorName: string, fallback: string): string {
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
     const freq = sectorData.frequency;
     const avgChange = sectorData.avg_change;
-    const amountTrend = sectorData.net_inflow; // amount_trend 已合并到 net_inflow
 
     // 规则引擎降级八字段（仅降级，不写入 prompt）
     // 长线持续天数按月分档（1/2/3个月≈30/60/90天），不再固定45天；标签按板块名关键词+资金区分，避免全为"资金"
@@ -2646,12 +2534,12 @@ function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmiss
         longReason = '极高频霸榜+趋势延续，中线空间充足'; shortReason = '资金活跃但换手需警惕';
         persistence = '长期(2-3个月)';
         reason = '极高频上榜+持续放量，中线趋势强劲';
-    } else if (freq >= 12 && avgChange > 2 && amountTrend > 10) {
+    } else if (freq >= 12 && avgChange > 2) {
         longTermDays = 60; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
         logicType = '资金'; heatStage = '发酵期';
-        longReason = '高频上榜+资金加速流入，趋势强劲'; shortReason = '资金活跃但换手需警惕';
+        longReason = '高频上榜+持续放量，趋势强劲'; shortReason = '资金活跃但换手需警惕';
         persistence = '长期(1-2个月)';
-        reason = '高频上榜+持续放量+资金加速流入，趋势强劲';
+        reason = '高频上榜+持续放量，趋势强劲';
     } else if (freq >= 8 && avgChange > 1) {
         longTermDays = 30; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
         logicType = '无支撑'; heatStage = '启动期';
@@ -4038,7 +3926,6 @@ export class WindLeaderAnalyzerService {
                 freq_delta: concept.freq_delta,
                 avg_change: concept.avg_change,
                 today_change: concept.today_change,
-                net_inflow: concept.net_inflow,
                 leading_stock: concept.leading_stock,
                 leading_change: concept.leading_change,
                 up_count: concept.up_count,
