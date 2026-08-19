@@ -9,9 +9,25 @@
  *
  * 流程：full client request（seq=1）→ audio only ×N（中间 seq 递增，末包 seq 取反）→ full server response（code=1000 成功）
  *
- * 依赖注入：wsFactory 供单测替换（对齐 tts.service.ts 的 fetchImpl 注入风格）；Node 22 内置 WebSocket。
+ * 依赖注入：wsFactory 供单测替换（对齐 tts.service.ts 的 fetchImpl 注入风格）；默认用 npm `ws` 包客户端。
  */
 import { randomUUID } from 'crypto'
+// 用 npm `ws` 包而非 Node 内置全局 WebSocket：内置 WebSocket 需 Node 22+，
+// 而服务器 aistock-app-api 由 pm2 跑在 Node v20.20.2（全局 WebSocket=undefined），
+// 曾导致真机语音识别报 502「语音识别服务异常」（VolcAsrService 内部 ReferenceError）。
+// 与 volcenginePodcast.service.ts（TTS）保持同一连接库，规避 Node 版本依赖。
+import WebSocket from 'ws'
+
+/** VolcAsrService 所需的最小 WS 客户端接口（生产由 npm `ws` 包实现；单测注入手工 mock，
+ * 避免与 @types/ws 全量类型强绑定）。与 Node 内置 WebSocket（Node 22+）同形，可互替。 */
+export interface VolcAsrWsLike {
+  onopen: (() => void) | null
+  onmessage: ((ev: { data: unknown }) => void) | null
+  onclose: (() => void) | null
+  onerror: ((ev: { error?: unknown }) => void) | null
+  send(data: Buffer): void
+  close(): void
+}
 
 export interface VolcAsrServiceOptions {
   appid: string
@@ -19,8 +35,8 @@ export interface VolcAsrServiceOptions {
   cluster: string
   /** 建连地址（默认 wss://openspeech.bytedance.com/api/v2/asr；可注入便于测试） */
   connectUrl?: string
-  /** WS 客户端工厂（默认用 Node 全局 WebSocket；单测注入 mock） */
-  wsFactory?: () => WebSocket
+  /** WS 客户端工厂（默认用 npm `ws` 包 new WebSocket(url)；单测注入 mock） */
+  wsFactory?: () => VolcAsrWsLike
   /** 音频分块字节数（默认 8192） */
   chunkBytes?: number
   /** 整体识别超时 ms（默认 10000） */
@@ -59,7 +75,7 @@ export class VolcAsrService {
   private readonly token: string
   private readonly cluster: string
   private readonly connectUrl: string
-  private readonly wsFactory: () => WebSocket
+  private readonly wsFactory: () => VolcAsrWsLike
   private readonly chunkBytes: number
   private readonly timeoutMs: number
 
@@ -68,7 +84,10 @@ export class VolcAsrService {
     this.token = options.token
     this.cluster = options.cluster
     this.connectUrl = options.connectUrl ?? DEFAULT_CONNECT_URL
-    this.wsFactory = options.wsFactory ?? (() => new WebSocket(this.connectUrl))
+    // 断言理由：ws 包 WebSocket 回调签名带事件参数（onopen(event: Event) 等），
+    // 与最小接口的无参回调在 strictFunctionTypes 下不协变；运行时方法集完全满足
+    // VolcAsrWsLike（onopen/onmessage/onclose/onerror/send/close），见构造器上方接口注释。
+    this.wsFactory = options.wsFactory ?? (() => new WebSocket(this.connectUrl) as unknown as VolcAsrWsLike)
     this.chunkBytes = options.chunkBytes ?? 8192
     this.timeoutMs = options.timeoutMs ?? 10000
   }

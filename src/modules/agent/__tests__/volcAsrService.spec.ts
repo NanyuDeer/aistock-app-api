@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { VolcAsrService, type VolcAsrServiceOptions } from '../VolcAsrService'
+import { VolcAsrService, type VolcAsrServiceOptions, type VolcAsrWsLike } from '../VolcAsrService'
 
 /** 可编程 WS 客户端 mock（对齐 tts.service.spec.ts 的 fetchImpl 注入风格） */
 function createWsMock() {
@@ -47,7 +47,7 @@ describe('VolcAsrService', () => {
     token: 'test-token',
     cluster: 'volcengine_streaming_common',
     connectUrl: 'wss://openspeech.bytedance.com/api/v2/asr',
-    wsFactory: () => (createWsMock().ws as unknown as WebSocket),
+    wsFactory: () => (createWsMock().ws as unknown as VolcAsrWsLike),
     timeoutMs: 10000,
   }
 
@@ -55,7 +55,7 @@ describe('VolcAsrService', () => {
     const mock = createWsMock()
     const service = new VolcAsrService({
       ...baseOptions,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('fake-mp3'))
@@ -85,7 +85,7 @@ describe('VolcAsrService', () => {
     const service = new VolcAsrService({
       ...baseOptions,
       chunkBytes: 4,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('0123456789')) // 10 字节 → 3 块 (4+4+2)
@@ -114,7 +114,7 @@ describe('VolcAsrService', () => {
     const mock = createWsMock()
     const service = new VolcAsrService({
       ...baseOptions,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('fake-mp3'))
@@ -131,7 +131,7 @@ describe('VolcAsrService', () => {
     const mock = createWsMock()
     const service = new VolcAsrService({
       ...baseOptions,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('fake-mp3'))
@@ -144,7 +144,7 @@ describe('VolcAsrService', () => {
     const mock = createWsMock()
     const service = new VolcAsrService({
       ...baseOptions,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('fake-mp3'))
@@ -157,7 +157,7 @@ describe('VolcAsrService', () => {
     const service = new VolcAsrService({
       ...baseOptions,
       timeoutMs: 50,
-      wsFactory: () => (mock.ws as unknown as WebSocket),
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
     })
 
     const p = service.recognize(Buffer.from('fake-mp3'))

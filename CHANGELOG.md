@@ -2,6 +2,27 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 修复火山 ASR 在服务器 Node20 下 502（全局 WebSocket 缺失）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：默认 WS 客户端由「Node 22+ 内置全局 `new WebSocket(url)`」改为 npm `ws` 包（与 volcenginePodcast.service.ts TTS 同库，规避 Node 版本依赖）；新增最小接口 `VolcAsrWsLike`（onopen/onmessage/onclose/onerror/send/close），`wsFactory` 类型对齐。
+- 根因：服务器 pm2 将 aistock-app-api 跑在 Node v20.20.2（全局 WebSocket=undefined），每次识别抛 ReferenceError → 502「语音识别服务异常」（前端未 parse res.data 吞成笼统文案，配套前端修复见 aistock-app-frontend）。
+
+---
+
+## [master] 2026-08-19 — /api/agent/asr 改 multer multipart（配合 App 端 uni.uploadFile 直传根治）
+
+**开发者**: Aria
+
+### 改进
+- `src/index.ts`：`/api/agent/asr` 由 `express.raw(audio/amr)` 改为 `multer.memoryStorage().single('file')`（multipart 字段 `file`，5mb）。
+- `src/modules/agent/asrController.ts`：`recognize` 从 `req.file.buffer` 取音频（替代 req.body Buffer）。
+- 依赖：新增 multer@2.2.0、@types/multer@2.2.0。
+
+---
+
 ## [master] 2026-08-19 — 趋势股评分 K 线改用腾讯前复权，消除除权除息假跳变
 
 **开发者**: Aria
