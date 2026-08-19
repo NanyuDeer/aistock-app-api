@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-20 — 修复「未识别到语音」根因 2：V3 流式输入多帧响应，必须等最终帧
+
+**开发者**: Aria
+
+### 修复
+- 根因（线上真实语音抓包实证）：V3 `bigmodel_nostream` 流式输入对 3s 语音返回 13 个 full server response 帧——前 12 帧是中间结果（`text:""`、duration 递增），第 13 帧才是最终结果（text 非空 + `result.utterances`）。原代码收到第一个 0x9 帧即 resolve → 取到空文本 → App「未识别到语音」。
+- `src/modules/agent/VolcAsrService.ts`：onmessage 改为「聚合文本 + 等最终帧」——中间帧不结算；最终帧标记 = `result.utterances` 存在 或 text 非空；onclose 兜底用已聚合文本。
+- 测试：新增「流式多帧」+「仅中间帧后关闭」2 用例；23/23 通过。
+- 服务器：真实中文语音端到端复测识别成功（`{"text":"晚上好，欢迎收看收盘播报。今日沪深核心指数同步下跌。"} ms=1392`）。纯后端修复，App 无需重新打包。
+
+---
+
 ## [master] 2026-08-19 — 修复 App「未识别到语音」：App 假 pcm（实为 AMR-WB）→ 后端转码接入
 
 **开发者**: Aria

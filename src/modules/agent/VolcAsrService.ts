@@ -152,6 +152,11 @@ export class VolcAsrService {
 
       const ws = this.wsFactory()
       let sequence = 1
+      // V3 流式输入模式：服务端持续返回中间结果帧（text 为空、audio_info.duration 递增），
+      // 最后返回带 text/utterances 的最终帧（2026-08-20 线上抓包实证：3s 语音 13 帧，
+      // 前 12 帧空、第 13 帧才带文本）。必须聚合文本并等到最终帧才结算，
+      // 否则取到第一个空帧 → App「未识别到语音」。
+      let lastText = ''
 
       const cleanup = () => {
         clearTimeout(timeout)
@@ -167,6 +172,13 @@ export class VolcAsrService {
         settled = true
         cleanup()
         reject(err)
+      }
+
+      const settleWithText = (text: string) => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve({ text: text.trim() })
       }
 
       const sendFullRequest = () => {
@@ -238,7 +250,7 @@ export class VolcAsrService {
         if (buf.length < 12 + size) return // 粘包不完整，忽略（单结果场景足够）
         const payload = buf.subarray(12, 12 + size)
 
-        let parsed: { code?: number; message?: string; result?: { text?: string } }
+        let parsed: { code?: number; message?: string; result?: { text?: string; utterances?: unknown[] } }
         try {
           parsed = JSON.parse(payload.toString('utf8'))
         } catch {
@@ -251,11 +263,13 @@ export class VolcAsrService {
           return
         }
 
+        // 流式输入模式：中间结果帧（text 空、无 utterances）不结算，继续等最终帧。
+        // 最终帧标记：result.utterances 存在 或 text 非空（线上实证最终帧两者皆有）。
         const text = (parsed.result?.text ?? '').trim()
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve({ text })
+        if (text) lastText = text
+        const isFinal = Array.isArray(parsed.result?.utterances) || text.length > 0
+        if (!isFinal) return
+        settleWithText(text || lastText)
       }
 
       ws.onerror = (ev) => {
@@ -266,6 +280,11 @@ export class VolcAsrService {
       }
 
       ws.onclose = () => {
+        // 服务端可能在最终帧后关闭连接；若已有聚合文本则兜底结算，否则按连接中断处理
+        if (lastText) {
+          settleWithText(lastText)
+          return
+        }
         if (!settled) fail(new Error('语音识别服务连接中断'))
       }
     })
