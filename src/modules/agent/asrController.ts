@@ -3,7 +3,9 @@
  *
  * POST /api/agent/asr
  *  - 鉴权：JWT（Bearer/Cookie，复用 extractTokenFromRequest + isTokenRevoked，对齐 profileController.requireAuth）
- *  - body：amr 二进制（express.raw 消费 audio/amr；前端录音 amr + 8kHz 与火山 ASR format/rate 对齐）
+ *  - body：multipart/form-data 文件字段 `file`（multer 内存存储；前端 uni.uploadFile 直传录音
+ *    amr + 8kHz 文件路径——2026-08-19 由 express.raw(audio/amr 二进制) 改为 multipart，
+ *    对齐 App 端绕开 readFile 引擎缺陷的直传方案）
  *  - 返回：200 { text }（空文本表示静音，前端复用"未识别到语音"）
  *
  * 错误矩阵：401 无/非法 token；400 请求体超限（raw limit 前置）；503 火山凭证缺失；
@@ -73,9 +75,9 @@ export class AsrController {
       return
     }
 
-    // 2. 请求体校验（raw body 已由 express.raw 消费；非 Buffer → 400）
-    const audio = req.body
-    if (!Buffer.isBuffer(audio) || audio.length === 0) {
+    // 2. 请求体校验（multipart 文件由 multer 解析为 req.file；非文件 → 400）
+    const audio = (req as Request & { file?: Express.Multer.File }).file?.buffer
+    if (!audio || audio.length === 0) {
       res.status(400).json({ code: 400, message: '音频数据无效' })
       return
     }

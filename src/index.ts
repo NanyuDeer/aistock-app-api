@@ -37,6 +37,7 @@ import { createAgentProxy } from './modules/agent/agent.proxy';
 
 // ASR 语音识别（批次 3a：火山流式，App 端语音输入）
 import { AsrController, createDefaultAsrDeps } from './modules/agent/asrController';
+import multer from 'multer';
 
 // push 推送模块
 import { PotentialStockPushController } from './modules/push/controller';
@@ -141,10 +142,17 @@ app.use(cors({
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
 
-// ASR 语音识别：二进制 amr 上传 → 火山流式识别 → { text }
-// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/amr
+// ASR 语音识别：amr 文件上传（multipart, field=file）→ 火山流式识别 → { text }
+// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）。
+// 2026-08-19 由 express.raw(audio/amr 二进制) 改为 multer multipart：
+// 前端 App 端语音链路改用 uni.uploadFile 直传文件路径（绕开 plus.io.FileReader 真机
+// WebSocket is not defined 引擎缺陷，见 aistock-app-frontend docs/2026-08-18-app-voice-asr-troubleshooting.md）
 const asrDeps = createDefaultAsrDeps();
-app.post('/api/agent/asr', express.raw({ type: 'audio/amr', limit: '5mb' }), (req, res, next) => {
+const asrUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 }, // 对齐原 raw limit 5mb
+});
+app.post('/api/agent/asr', asrUpload.single('file'), (req, res, next) => {
     AsrController.recognize(req, res, next, asrDeps);
 });
 
