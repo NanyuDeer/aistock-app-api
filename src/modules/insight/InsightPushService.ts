@@ -17,6 +17,7 @@ interface InsightPushRow {
     primary_driver: { label?: string } | null;
     attribution_status: string;
     confidence: string;
+    created_at: Date | string;
     /** 飞书 open_id（user_subscriptions 解析，未绑定/非订阅为 null），飞书通道仅对非空值下发 */
     feishu_open_id: string | null;
 }
@@ -28,7 +29,7 @@ interface InsightPushRow {
  */
 export async function pushCreated(eventId: string): Promise<number> {
     const { rows } = await pool.query(
-        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
+        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, e.created_at, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
          FROM watchlist_insight_events e
          JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
          JOIN user_stocks us ON us.symbol = e.symbol
@@ -56,6 +57,7 @@ export async function pushCreated(eventId: string): Promise<number> {
                 summary: content,
                 targetPath: `/modules/favorites/pages/insight-detail?event_id=${encodeURIComponent(eventId)}`,
                 payload: { eventId, confidence: r.confidence, attributionStatus: r.attribution_status },
+                occurredAt: new Date(r.created_at).toISOString(),
             });
         } catch (error) {
             console.warn('[Insight] App notification failed:', error instanceof Error ? error.message : String(error));

@@ -47,6 +47,14 @@ function getDaysAgoCompact(days: number): string {
     return shanghaiDateYyyymmdd(d);
 }
 
+function annDateToIso(annDate: string): string | undefined {
+    if (!/^\d{8}$/.test(annDate)) return undefined;
+    const date = new Date(
+        `${annDate.slice(0, 4)}-${annDate.slice(4, 6)}-${annDate.slice(6, 8)}T00:00:00+08:00`,
+    );
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 export class PerformanceReportAutoUpdateService {
     private static running = false;
 
@@ -195,6 +203,7 @@ export class PerformanceReportAutoUpdateService {
                                 summary: row.summary || `公告日期 ${annDate}`,
                                 targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
                                 payload: { reportType: 'express', annDate },
+                                occurredAt: annDateToIso(annDate),
                             });
                         } catch (error) {
                             console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
@@ -238,6 +247,7 @@ export class PerformanceReportAutoUpdateService {
                                 summary: `公告日期 ${annDate}`,
                                 targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
                                 payload: { reportType: 'formal', annDate },
+                                occurredAt: annDateToIso(annDate),
                             });
                         } catch (error) {
                             console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
