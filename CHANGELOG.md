@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 修复 App「未识别到语音」：App 假 pcm（实为 AMR-WB）→ 后端转码接入
+
+**开发者**: Aria
+
+### 修复
+- 根因（线上诊断日志取证）：App 端 `format:'pcm'` 在 HTML5+ Android 产出「假 .pcm 实为 AMR-WB」（`magic=#!AMR-WB`；HTML5+ Android 只原生支持 amr/aac/3gp），V3 只支持 pcm/opus/mp3，按 pcm 解析 amr 数据 → 空文本 →「未识别到语音」。
+- 新增 `src/modules/agent/audioTranscode.ts`：`isAmr`（#!AMR 头判断）+ `transcodeToPcm16k`（ffmpeg-static stdin→stdout 转 PCM s16le 16k 单声道）。
+- `src/modules/agent/asrController.ts`：Deps 新增 `transcodeAmrToPcm`；recognize 对 amr 输入先转码再识别（转码失败 502 透出 stderr）。
+- 依赖：新增 `ffmpeg-static@5.3.0`（pnpm `onlyBuiltDependencies` 允许 install 脚本）。
+- 测试：audioTranscode.spec.ts（isAmr 6 用例）+ asrController.spec.ts 新增 2 用例；21/21 通过。
+- 服务器：ffmpeg 7.0.2 就位；端到端冒烟 `SMOKE PASS`（amr→pcm 转码 8ms → V3 识别返回）。
+- 配套前端（aistock-app-frontend）：App 录音改回 `amr+8k`。
+
+---
+
 ## [master] 2026-08-19 — 火山 ASR 升级 V3「豆包流式语音识别大模型」
 
 **开发者**: Aria

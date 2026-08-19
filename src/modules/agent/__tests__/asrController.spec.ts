@@ -56,6 +56,8 @@ const okDeps: AsrControllerDeps = {
   jwtSecret: JWT_SECRET,
   getCredentials: () => ({ appid: '5551085502', token: 'test-token', resourceId: 'volc.seedasr.sauc.duration' }),
   recognizeAudio: async () => ({ text: '贵州茅台' }),
+  // 默认直通（非 amr 输入不会调用）；amr 用例单独注入
+  transcodeAmrToPcm: async (audio: Buffer) => audio,
 }
 
 describe('AsrController', () => {
@@ -116,6 +118,46 @@ describe('AsrController', () => {
       const { status, json } = await postAudio(server, port, Buffer.from('fake-mp3'), { Authorization: `Bearer ${token}` })
       assert.equal(status, 200)
       assert.equal(json.text, '')
+    } finally { server.close() }
+  })
+
+  it('amr 头音频（App 假 pcm 实为 AMR）→ 先转码 PCM 再识别', async () => {
+    // 2026-08-19 根因用例：线上取证 App 端 format:\'pcm\' 产出 #!AMR-WB 假文件，
+    // 必须转码后送 V3（V3 只支持 pcm/opus/mp3）。
+    // 闭包赋值对 TS 控制流不可见（recognized 恒为 null），用容器承载
+    const seen = { audio: null as Buffer | null }
+    const app = buildApp({
+      ...okDeps,
+      transcodeAmrToPcm: async (audio: Buffer) => {
+        assert.ok(audio.subarray(0, 5).toString('ascii') === '#!AMR', '输入应为 amr 数据')
+        return Buffer.from('pcm-after-transcode')
+      },
+      recognizeAudio: async (audio: Buffer) => {
+        seen.audio = audio
+        return { text: '贵州茅台' }
+      },
+    })
+    const { server, port } = await listen(app)
+    const token = signJwt({ openid: 'o_test', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 }, JWT_SECRET)
+    try {
+      const { status, json } = await postAudio(server, port, Buffer.from('#!AMR\n1234'), { Authorization: `Bearer ${token}` })
+      assert.equal(status, 200)
+      assert.equal(json.text, '贵州茅台')
+      assert.equal(seen.audio?.toString(), 'pcm-after-transcode', '识别层收到转码后的 pcm')
+    } finally { server.close() }
+  })
+
+  it('amr 转码失败 → 502 透出转码错误', async () => {
+    const app = buildApp({
+      ...okDeps,
+      transcodeAmrToPcm: async () => { throw new Error('音频转码失败（ffmpeg exit 1）') },
+    })
+    const { server, port } = await listen(app)
+    const token = signJwt({ openid: 'o_test', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 }, JWT_SECRET)
+    try {
+      const { status, json } = await postAudio(server, port, Buffer.from('#!AMR\n1234'), { Authorization: `Bearer ${token}` })
+      assert.equal(status, 502)
+      assert.match(json.message as string, /ffmpeg exit 1/)
     } finally { server.close() }
   })
 })

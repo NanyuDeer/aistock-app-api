@@ -15,6 +15,7 @@ import { Request, Response, NextFunction } from 'express'
 import { verifyJwt } from '../../shared/utils/jwt'
 import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist'
 import { VolcAsrService } from './VolcAsrService'
+import { isAmr, transcodeToPcm16k } from './audioTranscode'
 
 export interface AsrCredentials {
   appid: string
@@ -30,6 +31,12 @@ export interface AsrControllerDeps {
   getCredentials: () => AsrCredentials | null
   /** 识别音频（生产注入 VolcAsrService.recognize；测试 mock） */
   recognizeAudio: (audio: Buffer) => Promise<{ text: string }>
+  /**
+   * amr → PCM 16kHz 转码（生产用 ffmpeg-static；测试 mock）。
+   * 2026-08-19：App 端 HTML5+ Android 录音 format:'pcm' 产出假 pcm（实为 AMR-WB，
+   * 线上魔数取证），而 V3 只支持 pcm/opus/mp3 → 必须先转码再识别。
+   */
+  transcodeAmrToPcm: (audio: Buffer) => Promise<Buffer>
 }
 
 /** 生产依赖工厂：从 env 读取火山凭证 */
@@ -50,6 +57,7 @@ export function createDefaultAsrDeps(): AsrControllerDeps {
       const service = new VolcAsrService({ appid, token, resourceId })
       return service.recognize(audio)
     },
+    transcodeAmrToPcm: (audio: Buffer) => transcodeToPcm16k(audio),
   }
 }
 
@@ -82,6 +90,14 @@ export class AsrController {
       res.status(400).json({ code: 400, message: '音频数据无效' })
       return
     }
+    // 诊断日志（2026-08-19 排查「未识别到语音」）：记录上传音频大小与文件头魔数，
+    // 确认 App 端 format:'pcm' 在 HTML5+ Android 上实际产出格式（amr 头 #!AMR=23 21 41 4d 52 0a、
+    // aac 帧同步 FFFx、真 pcm 无魔数）——验证完根因后按需移除。
+    const fileMeta = (req as Request & { file?: Express.Multer.File }).file
+    console.log(
+      `[asr] upload audio: size=${audio.length} magic=${audio.subarray(0, 8).toString('hex')}` +
+        ` name=${fileMeta?.originalname ?? '?'} type=${fileMeta?.mimetype ?? '?'}`,
+    )
 
     // 3. 凭证检查
     const credentials = deps.getCredentials()
@@ -90,9 +106,24 @@ export class AsrController {
       return
     }
 
-    // 4. 识别
+    // 4. 音频转码（2026-08-19「未识别到语音」根因修复）：App 端 HTML5+ 录音
+    //    format:'pcm' 实际产出 AMR-WB（假 pcm，线上魔数取证 #!AMR-WB），V3 只支持
+    //    pcm/opus/mp3 → 先转成 PCM 16kHz 再识别；非 amr（如测试/纯 pcm）直传。
+    let pcm = audio
+    if (isAmr(audio)) {
+      try {
+        pcm = await deps.transcodeAmrToPcm(audio)
+        console.log(`[asr] amr→pcm transcode: ${audio.length}B -> ${pcm.length}B`)
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : '音频转码失败'
+        res.status(502).json({ code: 502, message: reason })
+        return
+      }
+    }
+
+    // 5. 识别
     try {
-      const result = await deps.recognizeAudio(audio)
+      const result = await deps.recognizeAudio(pcm)
       res.status(200).json({ code: 200, message: 'success', text: result.text })
     } catch (err) {
       const message = err instanceof Error ? err.message : '语音识别服务异常'
