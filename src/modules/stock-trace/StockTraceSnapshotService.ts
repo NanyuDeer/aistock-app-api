@@ -27,7 +27,7 @@ const COLLECTOR_VERSIONS = {
     sector: 'ths-board-v1',
     market: 'tencent-index-v1',
     capital: 'tushare-moneyflow-v1',
-    technical: 'tencent-m30-kline-v1',
+    technical: 'eastmoney-m30-kline-v1',
 };
 
 let schemaPromise: Promise<void> | null = null;
@@ -485,23 +485,39 @@ export class StockTraceSnapshotService {
         }
     }
 
-    // technical 域：腾讯 m30 分钟K（近 5 个交易日）量比 + activity 行情换手/振幅
+    // technical 域：东财 m30 分钟K（近 5 个交易日 ≈ 20 根）量比与日内波幅。
+    // 腾讯 fqkline 分钟线接口当前不可用（2026-08-19 实测全部参数组合返回 bad params），切换东财。
     private static async collectTechnicalSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const { TencentKlineService } = await import('../quote/TencentKlineService');
-        const rows = await TencentKlineService.getKLine({ symbol: event.symbol, klt: 30, fqt: 0, limit: 40 });
-        const recent = rows.slice(-20); // 约 5 个交易日的 m30 K 线
+        const symbol = event.symbol;
+        const secid = /^[69]/.test(symbol) ? `1.${symbol}` : `0.${symbol}`;
+        const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&fields1=f1,f2,f3&fields2=f51,f52,f53,f54,f55,f56&klt=30&fqt=1&lmt=40&end=20500101`;
+        let json: { data?: { klines?: string[] } | null };
+        try {
+            const res = await fetch(url, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', Referer: 'https://quote.eastmoney.com/' },
+                signal: AbortSignal.timeout(8_000),
+            });
+            json = await res.json() as { data?: { klines?: string[] } | null };
+        } catch {
+            return []; // 超时/网络失败 → technical 域 missing
+        }
+        const klines = json?.data?.klines ?? [];
+        const recent = klines.slice(-20); // 约 5 个交易日的 m30 K 线
         if (recent.length === 0) return [];
-        const latest = recent[recent.length - 1];
-        const avgVolume = recent.slice(0, -1).reduce((s, r) => s + Number(r['成交量'] ?? 0), 0) / Math.max(1, recent.length - 1);
-        const volRatio = avgVolume > 0 ? Number(latest['成交量'] ?? 0) / avgVolume : 0;
-        const openPrice = Number(latest['开盘价']);
-        const amplitude = openPrice > 0 ? Math.abs(Number(latest['最高价']) - Number(latest['最低价'])) / openPrice * 100 | 0 : null;
+        const rows = recent.map((row) => {
+            const [t, o, c, h, l, v] = row.split(',');
+            return { t, o: Number(o), c: Number(c), h: Number(h), l: Number(l), v: Number(v) };
+        });
+        const latest = rows[rows.length - 1];
+        const avgVolume = rows.slice(0, -1).reduce((sum, r) => sum + r.v, 0) / Math.max(1, rows.length - 1);
+        const volRatio = avgVolume > 0 ? latest.v / avgVolume : 0;
+        const amplitude = latest.o > 0 ? Math.abs(latest.h - latest.l) / latest.o * 100 | 0 : null;
         return [sourceRecord({
-            sourceId: `technical:${event.symbol}:${capturedAt.getTime()}`, kind: 'technical_fact', provider: 'tencent_kline',
+            sourceId: `technical:${event.symbol}:${event.triggeredAt.getTime()}`, kind: 'technical_fact', provider: 'eastmoney_kline',
             sourceLevel: 'B', title: `技术面量价 ${event.symbol}`,
-            contentExcerpt: `m30 最新收 ${latest['收盘价']}，量比 ${volRatio.toFixed(2)}${amplitude !== null ? `，日内波幅 ${amplitude}%` : ''}`,
-            symbol: event.symbol, occurredAt: capturedAt, capturedAt,
-            payload: { kline: recent.map(r => ({ t: r['时间'], o: r['开盘价'], c: r['收盘价'], h: r['最高价'], l: r['最低价'], v: r['成交量'] })), vol_ratio: volRatio },
+            contentExcerpt: `m30 最新收 ${latest.c}，量比 ${volRatio.toFixed(2)}${amplitude !== null ? `，日内波幅 ${amplitude}%` : ''}`,
+            symbol: event.symbol, occurredAt: event.triggeredAt, capturedAt,
+            payload: { kline: rows, vol_ratio: volRatio },
         })];
     }
 
