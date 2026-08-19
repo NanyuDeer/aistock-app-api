@@ -65,8 +65,8 @@ describe('VolcAsrService (V3 豆包流式语音识别大模型)', () => {
 
     const p = service.recognize(Buffer.from('fake-pcm'))
     mock.emitOpen()
-    // 补发空 server response，让 recognize 正常结算（本用例只验证请求帧构造）
-    mock.emitMessage(buildServerResponse(''))
+    // 补发空最终帧（空文本但含 utterances，V3 最终帧标记），让 recognize 正常结算（本用例只验证请求帧构造）
+    mock.emitMessage(buildFinalFrame(''))
     await p
     assert.ok(mock.sent.length >= 2, '至少发送 full request + audio')
     const first = parseFrame(mock.sent[0].data)
@@ -93,8 +93,8 @@ describe('VolcAsrService (V3 豆包流式语音识别大模型)', () => {
 
     const p = service.recognize(Buffer.from('0123456789')) // 10 字节 → 3 块 (4+4+2)
     mock.emitOpen()
-    // 补发空 server response，让 recognize 正常结算（本用例只验证音频分块）
-    mock.emitMessage(buildServerResponse(''))
+    // 补发空最终帧（空文本但含 utterances，V3 最终帧标记），让 recognize 正常结算（本用例只验证音频分块）
+    mock.emitMessage(buildFinalFrame(''))
     await p
 
     // 第 1 帧是 full request，后 3 帧是 audio
@@ -126,6 +126,42 @@ describe('VolcAsrService (V3 豆包流式语音识别大模型)', () => {
     const result = await p
 
     assert.deepEqual(result, { text: '贵州茅台' })
+  })
+
+  it('流式输入多帧：中间空结果帧不结算，最终帧（含 utterances）才返回文本', async () => {
+    // 2026-08-20 线上抓包实证：V3 流式输入持续返回中间帧（text 空、duration 递增），
+    // 最后才返回带 text/utterances 的最终帧；取第一个空帧会误判「未识别到语音」。
+    const mock = createWsMock()
+    const service = new VolcAsrService({
+      ...baseOptions,
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
+    })
+
+    const p = service.recognize(Buffer.from('fake-pcm'))
+    mock.emitOpen()
+    // 三个中间结果帧（text 为空、无 utterances）
+    mock.emitMessage(buildStreamChunk(0))
+    mock.emitMessage(buildStreamChunk(256))
+    mock.emitMessage(buildStreamChunk(512))
+    // 若提前结算，promise 已在空文本上 resolve，以下断言会失败
+    mock.emitMessage(buildFinalFrame('贵州茅台'))
+    const result = await p
+
+    assert.deepEqual(result, { text: '贵州茅台' })
+  })
+
+  it('仅中间帧后服务端关闭（无最终帧）→ 连接中断错误', async () => {
+    const mock = createWsMock()
+    const service = new VolcAsrService({
+      ...baseOptions,
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
+    })
+
+    const p = service.recognize(Buffer.from('fake-pcm'))
+    mock.emitOpen()
+    mock.emitMessage(buildStreamChunk(0))
+    mock.emitClose()
+    await assert.rejects(p, /连接中断/)
   })
 
   it('火山返回错误码（type 0x9 但 code != 1000）→ 抛错透出 message', async () => {
@@ -186,6 +222,38 @@ function buildServerResponse(text: string): Buffer {
   const payload = Buffer.from(JSON.stringify({
     audio_info: { duration: 1000 },
     result: { additions: {}, text },
+  }), 'utf8')
+  const header = Buffer.from([0x11, 0x91, 0x10, 0x00])
+  const seq = Buffer.alloc(4)
+  seq.writeInt32BE(1, 0)
+  const size = Buffer.alloc(4)
+  size.writeUInt32BE(payload.length, 0)
+  return Buffer.concat([header, seq, size, payload])
+}
+
+/** 构造 V3 流式输入「中间结果帧」：text 空、无 utterances（线上实证前 N 帧形态） */
+function buildStreamChunk(duration: number): Buffer {
+  const payload = Buffer.from(JSON.stringify({
+    audio_info: { duration },
+    result: { additions: { log_id: 'x' }, text: '' },
+  }), 'utf8')
+  const header = Buffer.from([0x11, 0x91, 0x10, 0x00])
+  const seq = Buffer.alloc(4)
+  seq.writeInt32BE(1, 0)
+  const size = Buffer.alloc(4)
+  size.writeUInt32BE(payload.length, 0)
+  return Buffer.concat([header, seq, size, payload])
+}
+
+/** 构造 V3 流式输入「最终结果帧」：text 非空 + utterances（线上实证最终帧形态） */
+function buildFinalFrame(text: string): Buffer {
+  const payload = Buffer.from(JSON.stringify({
+    audio_info: { duration: 1000 },
+    result: {
+      additions: { log_id: 'x' },
+      text,
+      utterances: [{ definite: true, start_time: 120, end_time: 920, text, words: [] }],
+    },
   }), 'utf8')
   const header = Buffer.from([0x11, 0x91, 0x10, 0x00])
   const seq = Buffer.alloc(4)
