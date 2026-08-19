@@ -30,6 +30,12 @@ function parseDate(value: unknown, field: string): Date {
     return date;
 }
 
+function normalizeEventTime(value: unknown): string | undefined {
+    if (value === null || value === undefined || value === '') return undefined;
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
 async function getLastPushTime(): Promise<Date | null> {
     const cached = await CacheService.get<string>(LAST_PUSH_TIME_KEY);
     if (!cached) return null;
@@ -150,6 +156,7 @@ export class StockInfoPushService {
                         summary: event.ai_summary || event.title || '自选股资讯出现新动态',
                         targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
                         payload: { judgementId: event.id, infoType: event.info_type, url: event.url || '' },
+                        occurredAt: normalizeEventTime(event.published_at),
                     });
                 } catch (error) {
                     console.warn('[StockInfoPush] App notification failed:', error instanceof Error ? error.message : String(error));

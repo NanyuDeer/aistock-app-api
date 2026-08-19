@@ -191,12 +191,25 @@ export class StockTraceService {
                 event_id VARCHAR(128) NOT NULL REFERENCES stock_trace_events(event_id),
                 openid VARCHAR(128) NOT NULL,
                 push_kind VARCHAR(32) NOT NULL,
+                trigger_reason VARCHAR(64) NOT NULL DEFAULT '',
+                artifact_id UUID,
+                channel VARCHAR(24) NOT NULL DEFAULT 'websocket',
                 status VARCHAR(16) NOT NULL,
                 payload JSONB NOT NULL,
                 sent_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (event_id, openid, push_kind)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+        `);
+
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(64) NOT NULL DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS artifact_id UUID');
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS channel VARCHAR(24) NOT NULL DEFAULT 'websocket'");
+        await pool.query("UPDATE stock_trace_push_records SET trigger_reason = '' WHERE trigger_reason IS NULL");
+        await pool.query("ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET NOT NULL');
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_trace_push_records_delivery
+            ON stock_trace_push_records (event_id, openid, push_kind, trigger_reason)
         `);
         await StockTraceJobService.ensureSchema();
     }
@@ -419,7 +432,7 @@ export class StockTraceService {
             await pool.query(`
                 INSERT INTO stock_trace_push_records (id, event_id, openid, push_kind, trigger_reason, status, payload, sent_at)
                 VALUES ($1, $2, $3, 'initial', 'event_created', 'sent', $4::jsonb, CURRENT_TIMESTAMP)
-                ON CONFLICT (event_id, openid, push_kind) DO NOTHING
+                ON CONFLICT (event_id, openid, push_kind, trigger_reason) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
             try {
@@ -432,6 +445,7 @@ export class StockTraceService {
                     summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
                     targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
                     payload,
+                    occurredAt: event.triggeredAt ? new Date(event.triggeredAt).toISOString() : undefined,
                 });
             } catch (error) {
                 console.warn('[StockTrace] App notification failed:', error instanceof Error ? error.message : String(error));
