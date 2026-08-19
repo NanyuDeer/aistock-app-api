@@ -71,6 +71,18 @@ function asDate(value: unknown, fallback: Date): Date {
     return fallback;
 }
 
+/**
+ * 将 YYYYMMDD 交易日期转换为当日 15:00（北京时间）的 UTC 时间；
+ * 用于日线类证据（板块/资金流）的 occurred_at，避免落入采集时刻导致
+ * 晚于事件窗口而被结果校验器拒绝。格式非法时回退 capturedAt。
+ */
+function tradeDateAsUtc(tradeDate: string, fallback: Date): Date {
+    if (/^\d{8}$/.test(tradeDate)) {
+        return asDate(`${tradeDate.slice(0, 4)}-${tradeDate.slice(4, 6)}-${tradeDate.slice(6, 8)}T07:00:00Z`, fallback);
+    }
+    return fallback;
+}
+
 function sourceRecord(input: Omit<StockSourceRecord, 'contentHash'>): StockSourceRecord {
     return { ...input, contentHash: hash({
         source_id: input.sourceId,
@@ -435,7 +447,7 @@ export class StockTraceSnapshotService {
                 const dailyRows = await getThsDaily(index.ts_code, startDateStr);
                 const latest = dailyRows.sort((left, right) => String(right.trade_date).localeCompare(String(left.trade_date)))[0];
                 if (!latest) continue;
-                records.push(sourceRecord({ sourceId: `ths-board:${index.ts_code}:${latest.trade_date}`, kind: 'sector_fact', provider: 'ths', sourceLevel: 'B', title: board.sector_name, contentExcerpt: `Board latest daily change ${Number(latest.pct_change).toFixed(2)}% on ${latest.trade_date}.`, sourceRef: index.ts_code, symbol: event.symbol, occurredAt: asDate(`${latest.trade_date}T07:00:00Z`, capturedAt), capturedAt, payload: { board_code: index.ts_code, board_name: board.sector_name, board_type: index.type, trade_date: latest.trade_date, pct_change: Number(latest.pct_change), close: Number(latest.close), turnover_rate: Number(latest.turnover_rate) } }));
+                records.push(sourceRecord({ sourceId: `ths-board:${index.ts_code}:${latest.trade_date}`, kind: 'sector_fact', provider: 'ths', sourceLevel: 'B', title: board.sector_name, contentExcerpt: `Board latest daily change ${Number(latest.pct_change).toFixed(2)}% on ${latest.trade_date}.`, sourceRef: index.ts_code, symbol: event.symbol, occurredAt: tradeDateAsUtc(latest.trade_date, capturedAt), capturedAt, payload: { board_code: index.ts_code, board_name: board.sector_name, board_type: index.type, trade_date: latest.trade_date, pct_change: Number(latest.pct_change), close: Number(latest.close), turnover_rate: Number(latest.turnover_rate) } }));
             } catch {
                 continue;
             }
@@ -465,7 +477,7 @@ export class StockTraceSnapshotService {
                 sourceId: `capital:${event.symbol}:${flow.tradeDate}`, kind: 'capital_fact', provider: 'tushare_moneyflow',
                 sourceLevel: 'B', title: `资金流向 ${event.symbol}`,
                 contentExcerpt: `主力净流入 ${flow.mainInflow} 亿（${flow.tag}），5 日 ${flow.fiveDay} 亿`,
-                symbol: event.symbol, occurredAt: capturedAt, capturedAt,
+                symbol: event.symbol, occurredAt: tradeDateAsUtc(flow.tradeDate, capturedAt), capturedAt,
                 payload: { trade_date: flow.tradeDate, main_inflow: flow.mainInflow, retail_inflow: flow.retailInflow, five_day: flow.fiveDay, streak: flow.streak, tag: flow.tag },
             })];
         } catch {
