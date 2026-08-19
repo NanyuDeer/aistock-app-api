@@ -140,6 +140,21 @@ describe('VolcAsrService', () => {
     await assert.rejects(p, /auth failed/)
   })
 
+  it('服务端错误响应帧（type=0xF SERVER_ERROR_RESPONSE）→ 抛错透出 message（不得静默丢弃等超时）', async () => {
+    // 2026-08-19 线上诊断：火山对未开通资源返回 type=15 错误帧（403 requested resource not granted），
+    // 旧实现只处理 type=9 成功帧、把 0xF 当垃圾丢弃 → 识别请求一直等到 10s 超时（App 显示"语音识别超时"）。
+    const mock = createWsMock()
+    const service = new VolcAsrService({
+      ...baseOptions,
+      wsFactory: () => (mock.ws as unknown as VolcAsrWsLike),
+    })
+
+    const p = service.recognize(Buffer.from('fake-amr'))
+    mock.emitOpen()
+    mock.emitMessage(buildErrorResponse('requested resource not granted', 403))
+    await assert.rejects(p, /requested resource not granted/)
+  })
+
   it('建连失败 → 抛错', async () => {
     const mock = createWsMock()
     const service = new VolcAsrService({
@@ -179,4 +194,23 @@ function buildServerResponse(results: Array<{ text: string }>, code = 1000, mess
   const size = Buffer.alloc(4)
   size.writeUInt32BE(payload.length, 0)
   return Buffer.concat([header, size, payload])
+}
+
+/** 构造火山 SERVER_ERROR_RESPONSE 二进制帧（header byte1 高 4 位 type=0xF）。
+ * 实测帧布局（2026-08-19 线上探测）：[header 4B][backend_code 4B][size 4B][payload JSON]——
+ * 与 FULL_SERVER_RESPONSE（[header][size][payload]）不同，size 在 offset 8。 */
+function buildErrorResponse(message: string, code = 403): Buffer {
+  const backendCode = 45000030
+  const payload = Buffer.from(JSON.stringify({
+    reqid: 'test-reqid',
+    code,
+    message,
+    backend_code: backendCode,
+  }), 'utf8')
+  const header = Buffer.from([0x11, 0xf0, 0x10, 0x00])
+  const bc = Buffer.alloc(4)
+  bc.writeUInt32BE(backendCode, 0)
+  const size = Buffer.alloc(4)
+  size.writeUInt32BE(payload.length, 0)
+  return Buffer.concat([header, bc, size, payload])
 }

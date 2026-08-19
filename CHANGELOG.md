@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 火山 ASR V2 鉴权与错误帧解析修复（线上诊断驱动）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：
+  - WebSocket 建连补 `Authorization: Bearer; {token}` header（**分号**分隔，官方 Token 鉴权格式；不加 → 401 missing Authorization，`Bearer ` 空格 → invalid auth token）
+  - onmessage 处理 `SERVER_ERROR_RESPONSE(0xF)` 错误帧（原只认 0x9 成功帧，403 错误帧被丢弃 → 识别等到 10s 超时，App 显示「语音识别超时」）
+  - 帧 size 偏移按类型区分：成功帧 0x9 size@4；错误帧 0xF 实测 `[header 4B][backend_code 4B][size 4B][payload]` size@8（曾统一读 offset4 读到 backend_code 45000030 误判粘包跳过）
+- 根因：火山账号未开通「流式语音识别」资源，返回 403 type=15 错误帧；错误帧被忽略 → 超时。代码修复后错误毫秒级透出：`[resource_id=volc.streamingasr.common.cn] requested resource not granted`（剩余 403 需火山控制台开通资源）
+- 测试：VolcAsrService.spec.ts 新增「错误帧 type=0xF 透出 message」用例（按实测帧布局构造），7/7 通过
+
+---
+
 ## [master] 2026-08-19 — 修复火山 ASR 在服务器 Node20 下 502（全局 WebSocket 缺失）
 
 **开发者**: Aria

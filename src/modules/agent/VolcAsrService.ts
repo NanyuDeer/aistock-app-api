@@ -87,7 +87,12 @@ export class VolcAsrService {
     // 断言理由：ws 包 WebSocket 回调签名带事件参数（onopen(event: Event) 等），
     // 与最小接口的无参回调在 strictFunctionTypes 下不协变；运行时方法集完全满足
     // VolcAsrWsLike（onopen/onmessage/onclose/onerror/send/close），见构造器上方接口注释。
-    this.wsFactory = options.wsFactory ?? (() => new WebSocket(this.connectUrl) as unknown as VolcAsrWsLike)
+    // V2 Token 鉴权：Authorization: Bearer; {token}（分号分隔，官方文档 6561/107789）。
+    // 2026-08-19 线上诊断：不加 header → 401 missing Authorization；Bearer 空格 → invalid auth token；
+    // 只有 Bearer; 分号格式才通过鉴权层。
+    this.wsFactory = options.wsFactory ?? (() => new WebSocket(this.connectUrl, {
+      headers: { Authorization: `Bearer; ${this.token}` },
+    }) as unknown as VolcAsrWsLike)
     this.chunkBytes = options.chunkBytes ?? 8192
     this.timeoutMs = options.timeoutMs ?? 10000
   }
@@ -181,10 +186,19 @@ export class VolcAsrService {
           return
         }
         if (buf.length < 8) return // 忽略无效短帧
-        const size = buf.readUInt32BE(4)
-        if (buf.length < 8 + size) return // 粘包不完整，忽略（单结果场景足够）
-        const payload = buf.subarray(8, 8 + size)
-        if (buf[1] >> 4 !== 0x9) return // 非 full server response 忽略
+        const msgType = buf[1] >> 4
+        // 只处理 FULL_SERVER_RESPONSE(0x9) 与 SERVER_ERROR_RESPONSE(0xF)，其余（如 SERVER_ACK 0xB）忽略。
+        // 2026-08-19：曾只认 0x9，把 0xF 错误帧当垃圾丢弃 → 火山 403「requested resource not granted」
+        // 被静默吞掉、识别一直等到超时（App 显示"语音识别超时"）。错误帧必须透出 message。
+        if (msgType !== 0x9 && msgType !== 0xf) return
+        // 帧布局（2026-08-19 线上探测确认）：
+        // - FULL_SERVER_RESPONSE(0x9)：[header 4B][size 4B][payload] → size 在 offset 4
+        // - SERVER_ERROR_RESPONSE(0xF)：[header 4B][backend_code 4B][size 4B][payload] → size 在 offset 8
+        // 曾统一用 offset 4 读错误帧 size → 读到 backend_code 45000030，判定"粘包不完整"跳过 → 等超时。
+        const sizeOffset = msgType === 0xf ? 8 : 4
+        const size = buf.readUInt32BE(sizeOffset)
+        if (buf.length < sizeOffset + 4 + size) return // 粘包不完整，忽略（单结果场景足够）
+        const payload = buf.subarray(sizeOffset + 4, sizeOffset + 4 + size)
 
         let parsed: { code: number; message: string; result?: Array<{ text: string }> }
         try {
@@ -194,7 +208,7 @@ export class VolcAsrService {
           return
         }
 
-        if (parsed.code !== 1000) {
+        if (msgType === 0xf || parsed.code !== 1000) {
           fail(new Error(parsed.message || `语音识别失败（${parsed.code}）`))
           return
         }
