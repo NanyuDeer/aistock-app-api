@@ -54,7 +54,7 @@ async function postAudio(
 
 const okDeps: AsrControllerDeps = {
   jwtSecret: JWT_SECRET,
-  getCredentials: () => ({ appid: '5551085502', token: 'test-token', cluster: 'test-cluster' }),
+  getCredentials: () => ({ appid: '5551085502', token: 'test-token', resourceId: 'volc.seedasr.sauc.duration' }),
   recognizeAudio: async () => ({ text: '贵州茅台' }),
 }
 

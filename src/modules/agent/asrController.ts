@@ -19,7 +19,8 @@ import { VolcAsrService } from './VolcAsrService'
 export interface AsrCredentials {
   appid: string
   token: string
-  cluster: string
+  /** 资源 ID（V3 大模型，豆包流式语音识别 2.0 小时版 = volc.seedasr.sauc.duration） */
+  resourceId: string
 }
 
 export interface AsrControllerDeps {
@@ -38,15 +39,15 @@ export function createDefaultAsrDeps(): AsrControllerDeps {
     getCredentials: () => {
       const appid = process.env.VOLC_ASR_APPID
       const token = process.env.VOLC_ASR_TOKEN
-      const cluster = process.env.VOLC_ASR_CLUSTER
-      if (!appid || !token || !cluster) return null
-      return { appid, token, cluster }
+      const resourceId = process.env.VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'
+      if (!appid || !token) return null
+      return { appid, token, resourceId }
     },
     recognizeAudio: async (audio: Buffer) => {
       const appid = process.env.VOLC_ASR_APPID!
       const token = process.env.VOLC_ASR_TOKEN!
-      const cluster = process.env.VOLC_ASR_CLUSTER!
-      const service = new VolcAsrService({ appid, token, cluster })
+      const resourceId = process.env.VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'
+      const service = new VolcAsrService({ appid, token, resourceId })
       return service.recognize(audio)
     },
   }

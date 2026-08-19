@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 火山 ASR 升级 V3「豆包流式语音识别大模型」
+
+**开发者**: Aria
+
+### 变更
+- `src/modules/agent/VolcAsrService.ts` 整体重写为 V3（账号开通的是「豆包流式语音识别模型 2.0-小时版」，旧 V2 `/api/v2/asr` 未开通 → 403）：
+  - 接口 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream`；鉴权 `X-Api-App-Key`/`X-Api-Access-Key`/`X-Api-Resource-Id`/`X-Api-Request-Id`/`X-Api-Sequence(-1)`（移除 V2 的 Authorization header）
+  - 选项 `cluster` → `resourceId`（默认 `volc.seedasr.sauc.duration`）；请求体必填 `request.model_name='bigmodel'`
+  - 音频仅支持 pcm/wav/ogg/mp3（不支持 amr）、rate 必须 16000；响应帧 `[header][seq][size][payload]`（size@8、payload@12），`result` 为对象 `{text}`
+- `src/modules/agent/asrController.ts`：`AsrCredentials.cluster` → `resourceId`；`createDefaultAsrDeps` 读 `VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'`（默认值兜底，无需改 .env）
+- 测试：VolcAsrService.spec.ts 重写为 V3（parseFrame 按发送帧布局、audio sequence 从 payload 读）、asrController.spec.ts 改 credentials；13/13 通过
+- 配套前端（aistock-app-frontend）：App 录音格式 amr+8k → pcm+16k
+
+---
+
 ## [master] 2026-08-19 — 火山 ASR V2 鉴权与错误帧解析修复（线上诊断驱动）
 
 **开发者**: Aria
