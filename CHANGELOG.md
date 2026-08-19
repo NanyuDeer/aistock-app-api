@@ -2,6 +2,30 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-19 — 趋势股评分 K 线改用腾讯前复权，消除除权除息假跳变
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/TrendScoreService.ts`：新增 `parseTencentKlineToTrendKline`（兼容 TencentKlineService.getKLine 对象格式与原始行数组，日期转 YYYYMMDD、OHLC 与 Tushare 一致）与 `fetchAdjustedTrendKline`（腾讯日K fqt=1 前复权，近120日）；`calcTechnicalDim` 新增 klineOverride 参数，评分 K 线展示优先用前复权数据，获取失败回退 Tushare 不复权；修复源杰科技等除权股不复权价格断裂假跳变（2026-05-18 除权后 40% → 前复权 -1.6%）。
+- `tests/TrendScoreKlineAdjusted.test.ts`：新增 3 个测试用例（含除权标记行数组格式、非法行处理、getKLine 对象格式）。
+
+### 文档
+- `src/modules/monitor/AGENTS.md`：补充趋势股评分 K 线前复权说明。
+
+---
+
+## [master] 2026-08-19 — 风口龙头板块净流入彻底下线，改用同花顺实时成交额
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：删除东财派生板块资金流（getMoneyflowCntThs/getMoneyflowIndDc 及导入、相关类型）；板块级别 net_inflow 字段、AI prompt 的「板块净流入」行、ruleBasedAnalysis 的 amountTrend 全部移除；板块资金评分回退为「频次60%+平均涨幅25%+最新涨幅15%」。保留个股级资金流不受影响。
+- `src/modules/monitor/WindLeaderService.ts`：板块类型移除 net_inflow，新增 amount（板块当日成交额·元）；getAnalysis 实时增强：经 RotationBoardStore.fetchBoardRealtime（同花顺 d.10jqka.com.cn/v6/line/bk_<code>/01/last.js）以盘中实时涨幅/成交额覆盖静态快照。
+- `src/modules/monitor/RotationBoardStore.ts`：新增 fetchBoardRealtime 板块实时盘口读取（30s 内存缓存 TTL）。
+
+---
+
 ## [master] 2026-08-19 — 自选股排序：sort_order 字段 + 排序保存接口
 
 **开发者**: Aria
