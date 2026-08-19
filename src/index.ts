@@ -25,12 +25,18 @@ import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
 import { getSemiAnnualReport } from './modules/quote/TushareService';
+import { AnnualFinancialController } from './modules/quote/annualFinancialController';
+import { IndustryHealthController } from './modules/quote/industryHealthController';
+import { ResearchReportController } from './modules/quote/researchReportController';
 
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
 
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
+
+// ASR 语音识别（批次 3a：火山流式，App 端语音输入）
+import { AsrController, createDefaultAsrDeps } from './modules/agent/asrController';
 
 // push 推送模块
 import { PotentialStockPushController } from './modules/push/controller';
@@ -42,6 +48,7 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
+import { OAuthBridgeController } from './modules/auth/oauthBridgeController';
 import { UserController } from './modules/auth/userController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
@@ -85,6 +92,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 // prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
+
+// fear-greed 恐贪指数模块
+import * as FearGreedController from './modules/fear-greed/controller';
+import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -130,6 +141,13 @@ app.use(cors({
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
 
+// ASR 语音识别：二进制 amr 上传 → 火山流式识别 → { text }
+// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/amr
+const asrDeps = createDefaultAsrDeps();
+app.post('/api/agent/asr', express.raw({ type: 'audio/amr', limit: '5mb' }), (req, res, next) => {
+    AsrController.recognize(req, res, next, asrDeps);
+});
+
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
 // 导致 pipe 无数据可传。SSE 流式透传（upstreamRes.pipe(res) 不缓冲），自动注入 X-Internal-Token
@@ -144,6 +162,23 @@ app.use('/api/agent', createAgentProxy({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.text({ type: 'text/xml' }));
 app.use(express.urlencoded({ extended: true }));
+
+// ==================== H5 落地页静态托管（App「分享到微信再授权」OAuth 落地页） ====================
+// gupiao-api.yaozhineng.com/h5/* → app-api 56790（无需改 caddy）。
+// H5 产物来自 aistock-app-frontend `pnpm run build:h5`（manifest h5.router.base=/h5/），
+// 部署时上传到 H5_DIST_DIR（默认 dist 上一级的 h5-dist 目录）。
+// H5 为 history 路由，深链接如 /h5/modules/user/pages/login 需 fallback 回 index.html，否则刷新会 404。
+const H5_DIST_DIR = process.env.H5_DIST_DIR || path.join(__dirname, '..', 'h5-dist');
+app.use('/h5', express.static(H5_DIST_DIR, { index: 'index.html' }));
+// Express 5 的 path 不支持裸 `*`，必须用命名通配 `/*splat`，否则启动即抛 PathError
+app.get('/h5/*splat', (_req, res) => {
+    const indexFile = path.join(H5_DIST_DIR, 'index.html');
+    if (fs.existsSync(indexFile)) {
+        res.sendFile(indexFile);
+    } else {
+        res.status(404).json({ code: 404, message: 'H5 未部署，请先上传 build:h5 产物' });
+    }
+});
 
 app.use((req: express.Request, res: express.Response, next: express.NextFunction) => {
     const start = Date.now();
@@ -193,6 +228,9 @@ app.all('/api/auth/wechat/push', (req, res, next) => WechatEventController.handl
 app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.generateQrCode(req, res, next));
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
 app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
+// 「分享到微信再授权」OAuth 桥接：H5 回传 token / App 轮询领取
+app.post('/api/auth/oauth/store', (req, res, next) => OAuthBridgeController.storeOauthResult(req, res, next));
+app.get('/api/auth/oauth/result', (req, res, next) => OAuthBridgeController.getOauthResult(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
@@ -215,6 +253,7 @@ app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(r
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
 app.get('/api/chat/usage/sessions/:id', (req, res, next) => SessionUsageController.detailBySession(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.put('/api/users/me/favorites/order', (req, res, next) => UserController.saveFavoritesOrder(req, res, next));
 
 // 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
 app.post('/api/chat/sessions', (req, res, next) => SessionController.upsert(req, res, next));
@@ -449,6 +488,7 @@ app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => Perform
 app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
 app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
 app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
+app.get('/api/cn/stocks/performance-reports/ranking', (req, res, next) => PerformanceReportController.getPerformanceRanking(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 
@@ -477,6 +517,9 @@ app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
         res.status(500).json({ code: 500, message: err instanceof Error ? err.message : 'Internal Server Error' });
     }
 });
+
+// 个股年报财务聚合数据（Tushare fina_indicator + cashflow + holder_number + balancesheet + 半年报）
+app.get('/api/cn/stocks/:symbol/annual-financial', (req, res, next) => AnnualFinancialController.getAnnualFinancial(req, res, next));
 
 app.get('/api/cn/stocks/:symbol/news', (req, res, next) => {
     if (!isValidAShareSymbol(req.params.symbol)) {
@@ -564,12 +607,25 @@ app.get('/api/kg/concepts', (req, res, next) => IndustryKGController.getConcepts
 app.get('/api/kg/industry/:industryId/stocks', (req, res, next) => IndustryKGController.getIndustryStocks(req, res, next));
 app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req, res, next));
 
+// 行业景气指数（同花顺板块日K聚合，7个月趋势+景气评分）
+app.get('/api/cn/industry/:name/health', (req, res, next) => IndustryHealthController.getHealth(req, res, next));
+
+// 券商研报（Tushare report_rc，评级/目标价/盈利预测聚合）
+app.get('/api/cn/research/:symbol/reports', (req, res, next) => ResearchReportController.getReports(req, res, next));
+
 // ==================== Internal API（Python Agent 服务专用） ====================
 app.use('/internal', internalRouter);
 
 app.use('/internal/stock-trace', stockTraceInternalRouter);
 
 app.use('/internal/insight', insightInternalRouter);
+
+// ==================== 恐贪指数路由（市场恐惧贪婪指数） ====================
+// 契约对齐原 Python FastAPI /api/fear-greed/*，前端（aistock-app-frontend）经 vite 代理访问
+app.get('/api/fear-greed/dashboard', FearGreedController.dashboard);
+app.get('/api/fear-greed/indexes', FearGreedController.indexes);
+app.get('/api/fear-greed/history', FearGreedController.history);
+app.post('/api/fear-greed/refresh', FearGreedController.refresh);
 
 app.use('/internal/predictions', predictionInternalRouter);
 
@@ -618,7 +674,7 @@ cron.schedule('5 19 * * 1-5', async () => {
         let success = 0, failed = 0;
         for (const symbol of symbols) {
             try {
-                const cacheKey = `capital_flow:${symbol}`;
+                const cacheKey = `capital_flow:v2:${symbol}`;
                 const data = await getCapitalFlow(symbol);
                 const ttl = await getAShareAdaptiveCacheTtlSeconds(3 * 60);
                 await CacheService.put(cacheKey, data as unknown as Record<string, unknown>, ttl);
@@ -667,6 +723,30 @@ cron.schedule('30 11 * * 1-5', () => runInstitutionResearchDetect('午前'), { t
 cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
+
+// 自选股洞察午盘/尾盘价格打点：11:30 午盘、15:05 尾盘（与六时段定时任务对齐）
+const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.run(snapshotType);
+        console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
+    } catch (err) {
+        console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+
+// 午盘触发后 20 分钟补抓：仅处理当日 event_type='midday_price_move' 的事件
+cron.schedule('50 11 * * 1-5', async () => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.refetchMiddayEvidence();
+        console.log(`[PriceMoveCron] refetch 完成 events=${r.events}`);
+    } catch (err) {
+        console.error('[PriceMoveCron] refetch 失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 
 // 飞书消息千问分析：每分钟串行处理少量待分析记录。
 cron.schedule('* * * * *', async () => {
@@ -839,6 +919,17 @@ cron.schedule('*/10 9-15 * * 1-5', async () => {
         console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
     } catch (err: unknown) {
         console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 恐贪指数：每日 16:30 收盘后自动刷新（幂等，覆盖当日快照）
+cron.schedule('30 16 * * *', async () => {
+    console.log('[FearGreedCron] 开始刷新恐贪指数');
+    try {
+        await refreshJq();
+        console.log('[FearGreedCron] 恐贪指数刷新完成');
+    } catch (err: unknown) {
+        console.error('[FearGreedCron] 刷新失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 }
@@ -1196,6 +1287,14 @@ async function start() {
         console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
     }
 
+    // 恐贪指数：建表（fear_greed_snapshot + breadth_daily，幂等）
+    try {
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed_snapshot / breadth_daily tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear-greed schema check:', err instanceof Error ? err.message : String(err));
+    }
+
     // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
     try {
         await pool.query(`
@@ -1214,6 +1313,15 @@ async function start() {
         console.log('[DB] podcast_cache table ready');
     } catch (err: unknown) {
         console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // user_stocks 自选股排序字段（幂等迁移，表由外部初始化脚本创建）
+    // 作用：自选股支持拖拽排序，列表按 sort_order ASC 返回；老数据默认 0，回退到 created_at DESC
+    try {
+        await pool.query('ALTER TABLE user_stocks ADD COLUMN IF NOT EXISTS sort_order INTEGER DEFAULT 0');
+        console.log('[DB] user_stocks.sort_order column ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_stocks.sort_order migration:', err instanceof Error ? err.message : String(err));
     }
 
     // 会话元数据表（P9 会话管理）：消息仍前端本地存储，服务端只存会话标题/时间

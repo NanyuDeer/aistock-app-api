@@ -21,20 +21,30 @@ const EASTMONEY_NEWS_API = 'https://search-api-web.eastmoney.com/search/jsonp';
 // 中国时区 UTC+8
 const CHINA_TZ_OFFSET = 8 * 60;
 
+// E-2（2026-08-14）：窗口起点缓存——同一轮抓取内所有股票 end 相同（now）、
+// days 相同（默认 30），只回溯一次即可共享。否则 200 只股票 × 30 天会触发
+// 数千次节假日 API 请求（实测被 429 限流，节假日检测失效）。
+const _windowStartCache = new Map<string, Date>();
+
 /**
  * 从 end 向前回溯 days 个 A 股交易日，返回窗口起点日期（E-2，2026-08-14）。
  * 跳过周末与法定节假日（复用 tradingTime 的 isAShareTradingDay，节假日 API
  * 结果按 dateKey 缓存）——替代原"自然日 × 24h"窗口：长假后 30 自然日仅含
  * ~15 个交易日，公告密度大增时窗口过窄漏抓。
  * 语义：end 当天若为交易日计入第 1 天。
+ * 结果按 `${end 上海日期}:${days}` 缓存（同轮抓取共享，避免节假日 API 限流）。
  */
 export async function tradingDayWindowStart(end: Date, days: number): Promise<Date> {
+    const key = `${shanghaiDateStr(end)}:${days}`;
+    const cached = _windowStartCache.get(key);
+    if (cached) return cached;
     const cursor = new Date(end);
     let remaining = days;
     while (remaining > 0) {
         if (await isAShareTradingDay({ now: cursor })) remaining--;
         if (remaining > 0) cursor.setDate(cursor.getDate() - 1);
     }
+    _windowStartCache.set(key, cursor);
     return cursor;
 }
 

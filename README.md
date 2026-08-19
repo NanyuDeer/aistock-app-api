@@ -127,7 +127,7 @@ src/
 | `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
-| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页） | status=all\|pending\|verified, page, pageSize |
+| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
 | `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
@@ -155,6 +155,9 @@ src/
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
 | `/internal/push/market-event` | **市场事件重磅推送**（POST，Python Agent 调用） | market/direction/indices/cause/evidence_url/title 等，需 X-Internal-Token |
+| `/internal/insight/events/:eventId/context` | **洞察归因上下文**（事件 + LEFT JOIN 来源文章 + 最新证据包，Python 归因 Agent 专用） | eventId，需 X-Internal-Token |
+| `/internal/insight/jobs/:jobId` | **洞察任务状态回报**（PATCH，Python 消费端） | jobId + status，需 X-Internal-Token |
+| `/internal/insight/results/external` | **洞察归因结果回写**（POST upsert + 更新推送分支） | result: {event_id, analysis_version, attribution_status, ...}，需 X-Internal-Token |
 | `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
 | `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
 

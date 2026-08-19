@@ -117,9 +117,9 @@ test('GET /api/predictions -> 200：列表/统计/分页正确', async () => {
       },
     }),
   ]
-  __predictionPublicDependencies.listAllForStats = async (status?: 'pending' | 'verified') =>
+  __predictionPublicDependencies.listAllForStats = async (status?: 'pending' | 'verified' | 'skipped') =>
     status ? rows.filter((r) => r.status === status) : rows
-  __predictionPublicDependencies.list = async (params: { status?: 'pending' | 'verified'; page: number; pageSize: number }) => {
+  __predictionPublicDependencies.list = async (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) => {
     const filtered = params.status ? rows.filter((r) => r.status === params.status) : rows
     return { rows: filtered, total: filtered.length }
   }
@@ -130,7 +130,7 @@ test('GET /api/predictions -> 200：列表/统计/分页正确', async () => {
     code: number
     data: {
       items: Array<{ id: number; report_date: string }>
-      stats: { total: number; pendingCount: number; verifiedCount: number; hitRate: number | null; verifiedHorizonCount: number; hitCount: number; missCount: number }
+      stats: { total: number; pendingCount: number; verifiedCount: number; skippedCount: number; hitRate: number | null; verifiedHorizonCount: number; hitCount: number; missCount: number }
       pagination: { page: number; pageSize: number; total: number }
     }
   }
@@ -140,6 +140,7 @@ test('GET /api/predictions -> 200：列表/统计/分页正确', async () => {
   assert.equal(body.data.stats.total, 2)
   assert.equal(body.data.stats.pendingCount, 1)
   assert.equal(body.data.stats.verifiedCount, 1)
+  assert.equal(body.data.stats.skippedCount, 0)
   // 档位验证：short(hit)+mid(miss)+long(insufficient 计入档位数) → 命中率 2/3
   assert.equal(body.data.stats.verifiedHorizonCount, 4)
   assert.equal(body.data.stats.hitCount, 2)
@@ -171,4 +172,211 @@ test('GET /api/predictions/999 -> 404', async () => {
   __predictionPublicDependencies.getById = async () => null
   const res = await makeJsonRequest(port, '/api/predictions/999')
   assert.equal(res.status, 404)
+})
+
+test('GET /api/predictions?status=skipped -> 200：skipped 过滤生效', async () => {
+  const rows = [baseRow({ id: 1, status: 'skipped' })]
+  let capturedStatus: unknown
+  __predictionPublicDependencies.listAllForStats = async (status?: 'pending' | 'verified' | 'skipped') => {
+    capturedStatus = status
+    return status ? rows.filter((r) => r.status === status) : rows
+  }
+  __predictionPublicDependencies.list = async (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) => {
+    const filtered = params.status ? rows.filter((r) => r.status === params.status) : rows
+    return { rows: filtered, total: filtered.length }
+  }
+
+  const res = await makeJsonRequest(port, '/api/predictions?status=skipped')
+  assert.equal(res.status, 200)
+  assert.equal(capturedStatus, 'skipped')
+  const body = res.body as {
+    data: { stats: { total: number; skippedCount: number; pendingCount: number; verifiedCount: number }; pagination: { total: number } }
+  }
+  assert.equal(body.data.stats.total, 1)
+  assert.equal(body.data.stats.skippedCount, 1)
+  assert.equal(body.data.stats.pendingCount, 0)
+  assert.equal(body.data.stats.verifiedCount, 0)
+  assert.equal(body.data.pagination.total, 1)
+})
+
+test('GET /api/predictions?source_id=review:2026-08-07 -> 200：source_id 过滤生效', async () => {
+  const rows = [baseRow()]
+  let capturedSourceId: unknown
+  let capturedListSourceId: unknown
+  __predictionPublicDependencies.listAllForStats = async (_status?: 'pending' | 'verified' | 'skipped', source_id?: string) => {
+    capturedSourceId = source_id
+    return rows
+  }
+  __predictionPublicDependencies.list = async (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) => {
+    capturedListSourceId = params.source_id
+    return { rows, total: rows.length }
+  }
+
+  const res = await makeJsonRequest(port, '/api/predictions?source_id=review:2026-08-07')
+  assert.equal(res.status, 200)
+  assert.equal(capturedSourceId, 'review:2026-08-07')
+  assert.equal(capturedListSourceId, 'review:2026-08-07')
+})
+
+test('GET /api/predictions?source_id=bad-format -> 400', async () => {
+  const res = await makeJsonRequest(port, '/api/predictions?source_id=2026-08-07')
+  assert.equal(res.status, 400)
+  const body = res.body as { code: number }
+  assert.equal(body.code, 400)
+})
+
+test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skippedCount 单独统计）', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'pending',
+      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
+    }),
+    baseRow({
+      id: 2,
+      status: 'verified',
+      source_id: 'review:2026-08-08',
+      created_at: '2026-08-08T12:00:00.000Z',
+      due_dates: { short: '2026-08-18', mid: '2026-09-09', long: '2027-01-06' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
+        long: { horizon: 'long', result: 'insufficient' as const, actual: '', reason: '无数据源', verified_at: '2027-01-06T08:00:00.000Z' },
+      },
+    }),
+    // skipped 行即使带 verification 内容也不计入 pending/verified/命中统计
+    baseRow({
+      id: 3,
+      status: 'skipped',
+      source_id: 'review:2026-08-09',
+      created_at: '2026-08-09T12:00:00.000Z',
+      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as {
+    data: { stats: { total: number; pendingCount: number; verifiedCount: number; skippedCount: number; verifiedHorizonCount: number; hitCount: number; missCount: number; hitRate: number | null } }
+  }
+  assert.equal(body.data.stats.total, 3)
+  assert.equal(body.data.stats.skippedCount, 1)
+  assert.equal(body.data.stats.pendingCount, 1)
+  assert.equal(body.data.stats.verifiedCount, 1)
+  // row3(skipped) 的 short 档位不计入：1(row1) + 3(row2) = 4
+  assert.equal(body.data.stats.verifiedHorizonCount, 4)
+  // row3(skipped) 的 hit 不计入：1(row1) + 1(row2 short) = 2
+  assert.equal(body.data.stats.hitCount, 2)
+  assert.equal(body.data.stats.missCount, 1)
+  assert.equal(body.data.stats.hitRate, 2 / 3)
+})
+
+test('GET /api/predictions -> 200：越年近似档不计入命中率分母（approximateHorizonCount 单独统计）', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      prediction: {
+        ...baseRow().prediction,
+        due_dates_approximate: ['mid', 'long'],
+      },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+        long: { horizon: 'long', result: 'hit' as const, actual: '+1.50%', reason: 'x', verified_at: '2027-01-05T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as {
+    data: { stats: { verifiedHorizonCount: number; hitCount: number; missCount: number; hitRate: number | null; approximateHorizonCount: number } }
+  }
+  // 近似档照常验证（档位进度不受影响）：short/mid/long 三档均有 verification
+  assert.equal(body.data.stats.verifiedHorizonCount, 3)
+  // 命中率只统计精确档 short：hit=1；mid/long 近似档不混入分母
+  assert.equal(body.data.stats.hitCount, 1)
+  assert.equal(body.data.stats.missCount, 0)
+  assert.equal(body.data.stats.approximateHorizonCount, 2)
+  assert.equal(body.data.stats.hitRate, 1)
+})
+
+interface BucketShape {
+  n: number
+  hits: number
+  hitRate: number
+  sufficientSample: boolean
+}
+interface BucketStatsShape {
+  combined: BucketShape
+  index: BucketShape
+  sector: BucketShape
+}
+
+test('GET /api/predictions -> 200：bucketStats 按 target_type 分桶（index/sector 各计各的）', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'verified',
+      source_id: 'review:2026-08-07',
+      due_dates: { short: '2026-08-17', mid: '2026-09-08', long: '2027-01-05' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, target_type: 'index', actual: '+1.23%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, target_type: 'sector', actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as { data: { stats: { bucketStats: BucketStatsShape } } }
+  assert.equal(body.data.stats.bucketStats.index.n, 1)
+  assert.equal(body.data.stats.bucketStats.index.hits, 1)
+  assert.equal(body.data.stats.bucketStats.index.hitRate, 1)
+  assert.equal(body.data.stats.bucketStats.index.sufficientSample, false)
+  assert.equal(body.data.stats.bucketStats.sector.n, 1)
+  assert.equal(body.data.stats.bucketStats.sector.hits, 0)
+  assert.equal(body.data.stats.bucketStats.sector.hitRate, 0)
+  assert.equal(body.data.stats.bucketStats.sector.sufficientSample, false)
+  assert.equal(body.data.stats.bucketStats.combined.n, 2)
+  assert.equal(body.data.stats.bucketStats.combined.hits, 1)
+  assert.equal(body.data.stats.bucketStats.combined.hitRate, 0.5)
+})
+
+test('GET /api/predictions -> 200：bucketStats 旧记录无 target_type 归 index 且跳过 skipped 行', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'pending',
+      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
+    }),
+    // skipped 行即使带 verification（sector hit）也不计入分桶（与 computeStats 口径一致）
+    baseRow({
+      id: 2,
+      status: 'skipped',
+      source_id: 'review:2026-08-09',
+      created_at: '2026-08-09T12:00:00.000Z',
+      verification: { short: { horizon: 'short', result: 'hit' as const, target_type: 'sector', actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as { data: { stats: { bucketStats: BucketStatsShape } } }
+  // 无 target_type 旧记录归 index
+  assert.equal(body.data.stats.bucketStats.index.n, 1)
+  assert.equal(body.data.stats.bucketStats.index.hits, 1)
+  // skipped 行的 sector hit 不计入分桶
+  assert.equal(body.data.stats.bucketStats.sector.n, 0)
+  assert.equal(body.data.stats.bucketStats.sector.hits, 0)
+  assert.equal(body.data.stats.bucketStats.combined.n, 1)
+  assert.equal(body.data.stats.bucketStats.combined.hits, 1)
 })

@@ -1,5 +1,5 @@
 /**
- * InsightPushService 单元测试（pushCreated：命中用户 + 三通道 + push_records 去重）
+ * InsightPushService 单元测试（pushCreated / pushUpdated / isSubstantiveChange）
  *
  * 仓库惯例：Node 内建 test runner（node:test）+ .spec.ts 命名 + __tests__ 目录。
  * mock 方式与 insightService.spec.ts 一致：mock pool.query / 推送类静态方法。
@@ -16,7 +16,7 @@ import pool from '../../../core/db';
 import { registerClient, getAllClients } from '../../../core/ws/channels/quote-channel';
 import { WechatPushService } from '../../push/WechatPushService';
 import { MessagePushService } from '../../push/MessagePushService';
-import { pushCreated } from '../InsightPushService';
+import { pushCreated, pushUpdated, isSubstantiveChange } from '../InsightPushService';
 
 afterEach(() => {
     mock.restoreAll();
@@ -25,14 +25,18 @@ afterEach(() => {
 
 const EVENT_ID = 'wi_20260805_000962_limit_up';
 
-/** 构造 pool.query mock：命中查询 + push_records 判重结果，记录实际执行的 SQL */
+interface QueryCall {
+    text: string;
+    params: unknown[];
+}
+/** 构造 pool.query mock：命中查询 + push_records 判重结果，记录实际执行的 SQL 及参数 */
 function buildQueryMock(opts: {
     users: Array<Record<string, unknown>>;
     insertReturning: boolean;
-}): { executed: string[] } {
-    const executed: string[] = [];
-    const mockQuery = (async (text: string) => {
-        executed.push(text);
+}): { calls: QueryCall[] } {
+    const calls: QueryCall[] = [];
+    const mockQuery = (async (text: string, params?: unknown[]) => {
+        calls.push({ text, params: params ?? [] });
         if (text.includes('FROM watchlist_insight_events e')) {
             return { rows: opts.users };
         }
@@ -42,7 +46,7 @@ function buildQueryMock(opts: {
         return { rows: [] };
     }) as unknown as typeof pool.query;
     mock.method(pool, 'query', mockQuery);
-    return { executed };
+    return { calls };
 }
 
 /** 注册假 WS 客户端，返回 send 捕获（真实 pushAlertToUser 链路） */
@@ -78,7 +82,7 @@ function mockSendChannels() {
 
 describe('pushCreated', () => {
     it('命中用户时走 WS + 微信 + 飞书三通道并返回 sent 数', async () => {
-        const { executed } = buildQueryMock({
+        const { calls } = buildQueryMock({
             users: [{
                 openid: 'openid_1',
                 symbol: '000962',
@@ -114,17 +118,19 @@ describe('pushCreated', () => {
         assert.deepStrictEqual(wxArgs[0], ['openid_1', expectedContent, EVENT_ID]);
         assert.deepStrictEqual(feishuArgs[0], ['feishu_open_id_1', expectedContent, EVENT_ID], '飞书通道收到 feishu_open_id 而非微信 openid');
         // 命中查询 SQL 契约：过滤 watchlist_insight_push 开关（默认开启）+ 归因版本
-        assert.ok(executed[0].includes("r.analysis_version = 'watchlist-insight-v1'"));
-        assert.ok(executed[0].includes("s.setting_type = 'watchlist_insight_push'"));
-        assert.ok(executed[0].includes('(s.enabled IS NULL OR s.enabled != 0)'));
+        assert.ok(calls[0].text.includes("r.analysis_version = 'watchlist-insight-v1'"));
+        assert.ok(calls[0].text.includes("s.setting_type = 'watchlist_insight_push'"));
+        assert.ok(calls[0].text.includes('(s.enabled IS NULL OR s.enabled != 0)'));
         // 飞书通道解析契约：命中查询必须从 user_subscriptions 取 feishu_open_id（仅非空绑定）
-        assert.ok(executed[0].includes('LEFT JOIN user_subscriptions fs'));
-        assert.ok(executed[0].includes('fs.feishu_open_id'));
-        assert.ok(executed[0].includes("fs.status = 'subscribed'"));
+        assert.ok(calls[0].text.includes('LEFT JOIN user_subscriptions fs'));
+        assert.ok(calls[0].text.includes('fs.feishu_open_id'));
+        assert.ok(calls[0].text.includes("fs.status = 'subscribed'"));
         // push_records 插入走 UNIQUE 冲突 DO NOTHING（016 契约）
-        const insertSqls = executed.filter(t => t.includes('INSERT INTO watchlist_insight_push_records'));
-        assert.equal(insertSqls.length, 2, '微信 + 飞书各一次判重插入');
-        assert.ok(insertSqls.every(t => t.includes('ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING')));
+        const insertCalls = calls.filter(c => c.text.includes('INSERT INTO watchlist_insight_push_records'));
+        assert.equal(insertCalls.length, 2, '微信 + 飞书各一次判重插入');
+        assert.ok(insertCalls.every(c => c.text.includes('ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING')));
+        // pushCreated 使用 push_kind='created'
+        assert.ok(insertCalls.every(c => c.params[2] === 'created'), 'push_records 使用 push_kind=created');
     });
 
     it('无飞书绑定用户仅走 WS + 微信，跳过飞书通道', async () => {
@@ -211,7 +217,7 @@ describe('pushCreated', () => {
     });
 
     it('无命中用户时返回 0 且不触发任何发送', async () => {
-        const { executed } = buildQueryMock({ users: [], insertReturning: true });
+        const { calls } = buildQueryMock({ users: [], insertReturning: true });
 
         let sendCalls = 0;
         mock.method(WechatPushService, 'dispatchInsightPush',
@@ -221,11 +227,11 @@ describe('pushCreated', () => {
 
         assert.equal(sent, 0);
         assert.equal(sendCalls, 0);
-        assert.equal(executed.length, 1, '仅执行命中查询，无判重插入');
+        assert.equal(calls.length, 1, '仅执行命中查询，无判重插入');
     });
 
     it('微信/飞书发送失败时删除 push_records 判重记录，允许下次触发重试', async () => {
-        const { executed } = buildQueryMock({
+        const { calls } = buildQueryMock({
             users: [{
                 openid: 'openid_1',
                 symbol: '000962',
@@ -246,8 +252,116 @@ describe('pushCreated', () => {
         const sent = await pushCreated(EVENT_ID);
 
         assert.equal(sent, 0, '微信/飞书均失败不计 sent');
-        const deletes = executed.filter(t => t.includes('DELETE FROM watchlist_insight_push_records'));
+        const deletes = calls.filter(c => c.text.includes('DELETE FROM watchlist_insight_push_records'));
         assert.equal(deletes.length, 2, '微信 + 飞书发送失败各删除一次判重记录');
-        assert.ok(deletes.every(t => t.includes('WHERE id = $1')), '按插入返回的 id 精确删除');
+        assert.ok(deletes.every(c => c.text.includes('WHERE id = $1')), '按插入返回的 id 精确删除');
+    });
+});
+
+describe('pushUpdated', () => {
+    it('命中用户时使用 push_kind=updated 发送三通道', async () => {
+        const { calls } = buildQueryMock({
+            users: [{
+                openid: 'openid_1',
+                symbol: '000962',
+                stock_name: '东方钽业',
+                primary_driver: { label: '涨停板', category: '资金' },
+                attribution_status: 'confirmed',
+                confidence: 'high',
+                feishu_open_id: 'feishu_open_id_1',
+            }],
+            insertReturning: true,
+        });
+
+        registerFakeWsClient('openid_1');
+        const { wxArgs, feishuArgs } = mockSendChannels();
+
+        const sent = await pushUpdated(EVENT_ID);
+
+        assert.equal(sent, 1, 'pushUpdated 应正常发送');
+        // push_records 插入使用 push_kind='updated'
+        const insertCalls = calls.filter(c => c.text.includes('INSERT INTO watchlist_insight_push_records'));
+        assert.equal(insertCalls.length, 2, '微信 + 飞书各一次判重插入');
+        assert.ok(insertCalls.every(c => c.params[2] === 'updated'), 'push_records 使用 push_kind=updated');
+        // 微信/飞书发送入参内容与 pushCreated 一致
+        const expectedContent = '【自选股洞察】东方钽业(000962) 涨停板 · 置信度 high';
+        assert.deepStrictEqual(wxArgs[0], ['openid_1', expectedContent, EVENT_ID]);
+        assert.deepStrictEqual(feishuArgs[0], ['feishu_open_id_1', expectedContent, EVENT_ID]);
+    });
+
+    it('无命中用户时返回 0', async () => {
+        buildQueryMock({ users: [], insertReturning: true });
+        const sent = await pushUpdated(EVENT_ID);
+        assert.equal(sent, 0);
+    });
+});
+
+describe('isSubstantiveChange', () => {
+    it('无旧记录视为变化返回 true', async () => {
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'high', primary_driver: {},
+        });
+        assert.equal(result, true);
+    });
+
+    it('待验证→有主因（unconfirmed→confirmed）返回 true', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'unconfirmed', confidence: 'low', primary_driver: null }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'low', primary_driver: { label: '资金' },
+        });
+        assert.equal(result, true);
+    });
+
+    it('状态翻转（confirmed→unconfirmed）返回 true', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'confirmed', confidence: 'medium', primary_driver: { label: '资金' } }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'unconfirmed', confidence: 'medium', primary_driver: { label: '资金' },
+        });
+        assert.equal(result, true);
+    });
+
+    it('主因标签变化返回 true', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'confirmed', confidence: 'medium', primary_driver: { label: '资金' } }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'medium', primary_driver: { label: '政策利好' },
+        });
+        assert.equal(result, true);
+    });
+
+    it('置信度升级（low→high）返回 true', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'confirmed', confidence: 'low', primary_driver: { label: '资金' } }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'high', primary_driver: { label: '资金' },
+        });
+        assert.equal(result, true);
+    });
+
+    it('置信度降级（high→medium）不视为变化返回 false', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'confirmed', confidence: 'high', primary_driver: { label: '资金' } }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'medium', primary_driver: { label: '资金' },
+        });
+        assert.equal(result, false);
+    });
+
+    it('完全相同（无变化）返回 false', async () => {
+        mock.method(pool, 'query', (async () => ({
+            rows: [{ attribution_status: 'confirmed', confidence: 'high', primary_driver: { label: '资金' } }],
+        })) as unknown as typeof pool.query);
+        const result = await isSubstantiveChange(EVENT_ID, {
+            attribution_status: 'confirmed', confidence: 'high', primary_driver: { label: '资金' },
+        });
+        assert.equal(result, false);
     });
 });

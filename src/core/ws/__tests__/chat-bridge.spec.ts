@@ -169,15 +169,17 @@ describe('chat bridge', () => {
     assert.strictEqual(code, 4401);
   });
 
-  it('上游 → 前端：事件字节原样透传', async () => {
+  it('上游 → 前端：事件字节原样透传（文本帧保持文本帧，不转为二进制帧）', async () => {
     const upstream = await startUpstreamWs();
     const bridge = await startBridge(`http://127.0.0.1:${upstream.port}`);
     const client = await connectWs(`ws://127.0.0.1:${bridge.port}/api/agent/ws/chat`);
     const closed = waitForClose(client);
 
     const frame = JSON.stringify({ type: 'text', content: '逐字流' });
-    const received = new Promise<string>((resolve) => {
-      client.on('message', (data: Buffer) => resolve(data.toString()));
+    const received = new Promise<{ data: Buffer; isBinary: boolean }>((resolve) => {
+      // 回归（2026-08-16）：上游文本帧经 ws.send(Buffer) 被默认转成二进制帧，浏览器端
+      // JSON.parse(Blob) 失败 → 对话回答为空。必须显式 binary:false 保持文本帧。
+      client.on('message', (data: Buffer, isBinary: boolean) => resolve({ data, isBinary }));
     });
     // 竞态修正（相对简报原测试）：push 前先等桥接完成与上游的 WS 握手（upgradeHeaders 记录上游 connection 事件）。
     // 否则 client open 时桥接的上游连接仍处于 CONNECTING，不在上游 wss.clients 中，push 的帧被丢弃，
@@ -189,10 +191,54 @@ describe('chat bridge', () => {
     assert.ok(upstream.upgradeHeaders.length >= 1, 'bridge did not establish upstream connection');
     upstream.push(frame);
     const got = await received;
-    assert.strictEqual(got, frame); // 一字不改
+    try {
+      assert.strictEqual(got.data.toString(), frame); // 一字不改
+      assert.strictEqual(got.isBinary, false); // 文本帧必须保持文本帧（回归断言）
+    } finally {
+      // 断言失败也必须关闭连接，否则 server.close() 等待活动连接 → afterEach 挂起
+      client.close();
+      await closed;
+    }
+  });
 
-    client.close();
-    await closed;
+  it('上游二进制帧 → 前端保持二进制帧（不误转文本）', async () => {
+    // 构造一个能发二进制帧的上游 ws 服务（socket.send(Buffer) 即二进制帧）
+    const upstream = http.createServer();
+    const upstreamWss = new WebSocketServer({ server: upstream });
+    let sendBinary: (() => void) | null = null;
+    const upgradeHeaders2: http.IncomingHttpHeaders[] = [];
+    upstreamWss.on('connection', (socket, req) => {
+      upgradeHeaders2.push(req.headers);
+      sendBinary = () => socket.send(Buffer.from(JSON.stringify({ type: 'text', content: 'bin' })));
+    });
+    const upstreamPort = await new Promise<number>((resolve) => {
+      upstream.listen(0, '127.0.0.1', () => {
+        tracked.push({ close: () => new Promise((r) => upstreamWss.close(() => upstream.close(() => r()))) });
+        resolve((upstream.address() as AddressInfo).port);
+      });
+    });
+
+    const bridge = await startBridge(`http://127.0.0.1:${upstreamPort}`);
+    const client = await connectWs(`ws://127.0.0.1:${bridge.port}/api/agent/ws/chat`);
+    const closed = waitForClose(client);
+
+    const received = new Promise<{ data: Buffer; isBinary: boolean }>((resolve) => {
+      client.on('message', (data: Buffer, isBinary: boolean) => resolve({ data, isBinary }));
+    });
+    const deadline = Date.now() + 3000;
+    while (upgradeHeaders2.length < 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.ok(upgradeHeaders2.length >= 1, 'bridge did not establish upstream connection');
+    sendBinary!();
+    const got = await received;
+    try {
+      assert.strictEqual(got.data.toString(), JSON.stringify({ type: 'text', content: 'bin' }));
+      assert.strictEqual(got.isBinary, true); // 二进制帧保持二进制帧
+    } finally {
+      client.close();
+      await closed;
+    }
   });
 
   it('上游不可达：客户端收到 error 事件后关闭', async () => {

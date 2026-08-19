@@ -439,3 +439,65 @@ export async function fetchBoardKline(code: string, days = 120): Promise<BoardKl
         return null;
     }
 }
+
+// ==================== 板块实时盘口（风口龙头板块行情实时增强） ====================
+
+/** 板块实时盘口快照（同花顺 bk_ 板块指数日线最新两根推导） */
+export interface BoardRealtime {
+    date: string;        // 最新交易日期 'YYYYMMDD'
+    change_pct: number;  // 最近交易日涨跌幅(%)：盘中=当日实时，盘后=当日收盘
+    amount: number;      // 最近交易日成交额（元，同花顺 line 接口 amount 列实测为元）
+}
+
+/** 板块实时盘口内存缓存（TTL 30s，避免每次请求打爆同花顺上游） */
+const boardRealtimeCache = new Map<string, { at: number; data: BoardRealtime }>();
+const BOARD_REALTIME_TTL = 30_000;
+
+/**
+ * 读取单板块实时盘口（复用同花顺 bk_ 板块指数日线源，验证 amount 列为元）
+ * @param code 6 位同花顺板块代码（881xxx 行业 / 885xxx 886xxx 概念）
+ * @returns null 表示抓取/解析失败（如 data 行不足上游异常）
+ */
+export async function fetchBoardRealtime(code: string): Promise<BoardRealtime | null> {
+    const cached = boardRealtimeCache.get(code);
+    if (cached && Date.now() - cached.at < BOARD_REALTIME_TTL) return cached.data;
+    try {
+        const resp = await sessionFetch(KLINE_URL(code), { headers: KLINE_HEADERS });
+        if (!resp.ok) return null;
+        const text = await resp.text();
+        const start = text.indexOf('(');
+        const end = text.lastIndexOf(')');
+        if (start < 0 || end <= start) return null;
+        let parsed: { data?: string };
+        try {
+            parsed = JSON.parse(text.slice(start + 1, end)) as { data?: string };
+        } catch {
+            return null;
+        }
+        if (!parsed.data) return null;
+        const rows = parsed.data.split(';').filter(Boolean);
+        if (rows.length < 2) return null;
+        // 行格式：date,open,high,low,close,volume,amount,...（amount 单位：元）
+        const last = rows[rows.length - 1].split(',');
+        const prev = rows[rows.length - 2].split(',');
+        const close = parseFloat(last[4]);
+        const prevClose = parseFloat(prev[4]);
+        const amount = parseFloat(last[6]);
+        if (!last[0] || !Number.isFinite(close) || !Number.isFinite(prevClose) || prevClose <= 0) return null;
+        const data: BoardRealtime = {
+            date: last[0],
+            change_pct: (close - prevClose) / prevClose * 100,
+            amount: Number.isFinite(amount) ? amount : 0,
+        };
+        boardRealtimeCache.set(code, { at: Date.now(), data });
+        return data;
+    } catch (err) {
+        console.warn(`[RotationBoardStore] fetchBoardRealtime(${code}) 失败:`, (err as Error).message);
+        return null;
+    }
+}
+
+/** 清空板块实时盘口缓存（测试用） */
+export function clearBoardRealtimeCache(): void {
+    boardRealtimeCache.clear();
+}

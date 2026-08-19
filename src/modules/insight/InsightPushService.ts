@@ -9,6 +9,9 @@ import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
 import { NotificationService } from '../../core/notification/NotificationService';
 
+/** 置信度数字化映射（用于 isSubstantiveChange 升级判定） */
+const CONF_LEVEL: Record<string, number> = { low: 0, medium: 1, high: 2, unconfirmed: -1 };
+
 /** 命中用户的归因结果行（列名与 016 迁移 watchlist_insight_events/results 对齐） */
 interface InsightPushRow {
     openid: string;
@@ -23,11 +26,35 @@ interface InsightPushRow {
 }
 
 /**
- * 首次生成洞察后推送：命中持有该股票的自选股用户，经 WS + 微信 + 飞书三通道下发。
- * 微信/飞书通过 push_records 唯一键幂等去重（重复调用不重复发送）。
+ * 判断此次归因结果相比旧记录是否有实质变化（用于决定是否触发更新推送）。
+ * 变化条件：无旧记录 || 待验证→有主因 || 状态翻转 || 主因标签变化 || 置信度升级
+ */
+export async function isSubstantiveChange(
+    eventId: string,
+    next: { attribution_status: string; confidence: string; primary_driver: Record<string, unknown> },
+): Promise<boolean> {
+    const { rows } = await pool.query(
+        `SELECT attribution_status, confidence, primary_driver FROM watchlist_insight_results
+         WHERE event_id=$1 AND analysis_version='watchlist-insight-v1'`, [eventId]);
+    if (rows.length === 0) return true; // 无旧结果视为变化
+    const old = rows[0] as { attribution_status: string; confidence: string; primary_driver: { label?: string } | null };
+    const oldLabel = old.primary_driver?.label ?? '';
+    const newLabel = String((next.primary_driver as { label?: string } | null)?.label ?? '');
+    const oldStatus = String(old.attribution_status);
+    const newStatus = next.attribution_status;
+    return (
+        (oldStatus === 'unconfirmed' && newStatus === 'confirmed')  // 待验证→有主因
+        || oldStatus !== newStatus                                  // 状态翻转
+        || oldLabel !== newLabel                                    // 主因标签变化
+        || (CONF_LEVEL[next.confidence] ?? 0) > (CONF_LEVEL[old.confidence] ?? 0) // 置信度升级
+    );
+}
+
+/**
+ * 核心推送（按 kind 区分 push_kind，复用三通道 + push_records 去重）。
  * @returns 实际发送成功的用户数（微信或飞书至少成功一个计 1）
  */
-export async function pushCreated(eventId: string): Promise<number> {
+export async function pushWithKind(eventId: string, kind: string): Promise<number> {
     const { rows } = await pool.query(
         `SELECT DISTINCT u.openid, e.symbol, e.stock_name, e.created_at, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
          FROM watchlist_insight_events e
@@ -50,35 +77,57 @@ export async function pushCreated(eventId: string): Promise<number> {
         try {
             await NotificationService.createForUser(r.openid, {
                 category: 'insight',
-                sourceKey: `insight:${eventId}`,
+                sourceKey: `insight:${eventId}:${kind}`,
                 symbol: r.symbol,
                 stockName: r.stock_name,
-                title: `${r.stock_name}：自选股洞察`,
+                title: `${r.stock_name}：${kind === 'updated' ? '自选股洞察更新' : '自选股洞察'}`,
                 summary: content,
                 targetPath: `/modules/favorites/pages/insight-detail?event_id=${encodeURIComponent(eventId)}`,
-                payload: { eventId, confidence: r.confidence, attributionStatus: r.attribution_status },
+                payload: {
+                    eventId,
+                    kind,
+                    confidence: r.confidence,
+                    attributionStatus: r.attribution_status,
+                },
                 occurredAt: new Date(r.created_at).toISOString(),
             });
         } catch (error) {
             console.warn('[Insight] App notification failed:', error instanceof Error ? error.message : String(error));
         }
-        // 微信 + 飞书（复用现有推送基础设施，幂等去重走 push_records）
-        const wx = await sendWechat(r.openid, content, eventId);
+        // 微信 + 飞书（复用现有推送基础设施，幂等去重走 push_records，kind 区分 push_kind）
+        const wx = await sendWechat(r.openid, content, eventId, kind);
         // 飞书通道：仅已绑定飞书（feishu_open_id 非空）的用户下发；未绑定者跳过，微信/WS 不受影响
         const feishuOpenId = r.feishu_open_id?.trim() || '';
-        const feishu = feishuOpenId ? await sendFeishu(r.openid, feishuOpenId, content, eventId) : false;
+        const feishu = feishuOpenId ? await sendFeishu(r.openid, feishuOpenId, content, eventId, kind) : false;
         if (wx || feishu) sent++;
     }
     return sent;
 }
 
+/**
+ * 首次生成洞察后推送（push_kind='created'）：命中持有该股票的自选股用户，经 WS + 微信 + 飞书三通道下发。
+ * 微信/飞书通过 push_records 唯一键幂等去重（重复调用不重复发送）。
+ * @returns 实际发送成功的用户数（微信或飞书至少成功一个计 1）
+ */
+export async function pushCreated(eventId: string): Promise<number> {
+    return pushWithKind(eventId, 'created');
+}
+
+/**
+ * 归因结果更新后推送（push_kind='updated'）：复用三通道 + push_records 去重（push_kind='updated' 与 created 互不冲突）。
+ * @returns 实际发送成功的用户数（微信或飞书至少成功一个计 1）
+ */
+export async function pushUpdated(eventId: string): Promise<number> {
+    return pushWithKind(eventId, 'updated');
+}
+
 /** 微信推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖）。
  *  发送失败会删除刚插入的判重记录，避免 insert-before-send 语义下唯一键永久挡住后续重试。 */
-async function sendWechat(openid: string, content: string, eventId: string): Promise<boolean> {
+async function sendWechat(openid: string, content: string, eventId: string, kind: string = 'created'): Promise<boolean> {
     const res = await pool.query(
         `INSERT INTO watchlist_insight_push_records (event_id, openid, push_kind, channel)
-         VALUES ($1,$2,'created','wechat') ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING RETURNING id`,
-        [eventId, openid],
+         VALUES ($1,$2,$3,'wechat') ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING RETURNING id`,
+        [eventId, openid, kind],
     );
     if (res.rows.length === 0) return false;
     const recordId = res.rows[0].id as number;
@@ -94,11 +143,11 @@ async function sendWechat(openid: string, content: string, eventId: string): Pro
 /** 飞书推送：先插 push_records 判重，未推送过才调用发送（动态 import 避免与 push 模块循环依赖）。
  *  recordOpenid 为用户微信 openid（push_records 去重键，保证同一用户/事件/通道只发一次）；
  *  feishuOpenId 为真实发送目标（来自 user_subscriptions.feishu_open_id）。 */
-async function sendFeishu(recordOpenid: string, feishuOpenId: string, content: string, eventId: string): Promise<boolean> {
+async function sendFeishu(recordOpenid: string, feishuOpenId: string, content: string, eventId: string, kind: string = 'created'): Promise<boolean> {
     const res = await pool.query(
         `INSERT INTO watchlist_insight_push_records (event_id, openid, push_kind, channel)
-         VALUES ($1,$2,'created','feishu') ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING RETURNING id`,
-        [eventId, recordOpenid],
+         VALUES ($1,$2,$3,'feishu') ON CONFLICT (event_id, openid, push_kind, channel) DO NOTHING RETURNING id`,
+        [eventId, recordOpenid, kind],
     );
     if (res.rows.length === 0) return false;
     const recordId = res.rows[0].id as number;
