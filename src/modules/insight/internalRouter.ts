@@ -35,7 +35,8 @@ router.get('/events/:eventId/context', async (req: Request, res: Response) => {
         const eventId = param(req, 'eventId');
         const { rows } = await pool.query(
             `SELECT e.symbol, e.stock_name, e.trade_date, e.event_type, e.direction,
-                    s.title, s.keywords, s.content, s.published_at, s.source_id
+                    s.title, s.keywords, s.content, s.published_at, s.source_id,
+                    s.source_url AS url
              FROM watchlist_insight_events e
              JOIN watchlist_insight_sources s ON s.source_id = e.source_id
              WHERE e.event_id = $1`,
@@ -121,6 +122,28 @@ router.post('/results/external', async (req: Request, res: Response) => {
         res.status(201).json({ code: 201, data: {} });
     } catch (error: unknown) {
         res.status(500).json({ code: 500, message: errMsg(error) });
+    }
+});
+
+/** 统一事件抓取中台：按日期读取同花顺原创/涨停雷达源（watchlist_insight_sources） */
+router.get('/sources', async (req: Request, res: Response) => {
+    try {
+        const day = String(req.query.date || '');
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+            res.status(400).json({ code: 400, message: 'Invalid date format' });
+            return;
+        }
+        const { rows } = await pool.query(
+            `SELECT source_id, title, content, keywords, published_at,
+                    source_url AS url, source_id AS id
+             FROM watchlist_insight_sources
+             WHERE trade_date = $1::date
+             ORDER BY published_at DESC`,
+            [day],
+        );
+        res.json({ code: 200, data: { items: rows } });
+    } catch (error: unknown) {
+        res.status(502).json({ code: 502, message: errMsg(error) });
     }
 });
 
