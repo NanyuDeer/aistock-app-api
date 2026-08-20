@@ -474,7 +474,7 @@ function computeHighestBoard(rows: LimitStepRow[]): number {
 }
 
 /** amount(千元) → 元，对全市场日线求和。 */
-function sumAmountYuan(rows: DailyPriceRow[]): number {
+export function sumAmountYuan(rows: DailyPriceRow[]): number {
     let total = 0;
     for (const row of rows) {
         total += row.amount;
@@ -483,7 +483,7 @@ function sumAmountYuan(rows: DailyPriceRow[]): number {
 }
 
 /** CompleteDailyResult → DailyCoverageSummary（剥离 rows，仅保留元数据）。 */
-function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
+export function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
     return {
         complete: result.complete,
         reason: result.reason,

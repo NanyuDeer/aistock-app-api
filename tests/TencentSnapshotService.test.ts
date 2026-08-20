@@ -9,13 +9,36 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import https = require('node:https')
 import test from 'node:test'
-import { mock } from 'node:test'
+import { before, after, mock } from 'node:test'
 
 import {
     TencentSnapshotService,
     __tencentSnapshotDeps,
 } from '../src/modules/quote/TencentSnapshotService'
 import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
+import type { CompleteDailyResult, DailyPriceRow } from '../src/modules/quote/TushareService'
+
+// 前日完整日线 mock（编排缺口 #3：quick 改进版需满足 coverage.previous_daily.complete==True）
+// 所有 buildQuickSnapshot 测试共用同一桩，覆盖 toCoverageSummary/sumAmountYuan 依赖。
+const PREVIOUS_DAILY_ROW: DailyPriceRow = {
+    ts_code: '000001.SZ', trade_date: '20260729',
+    open: 10, high: 10.5, low: 9.8, close: 10.2,
+    pre_close: 10, change: 0.2, pct_chg: 2, vol: 1000000, amount: 20000000,
+}
+const PREVIOUS_DAILY_RESULT: CompleteDailyResult = {
+    rows: [PREVIOUS_DAILY_ROW],
+    complete: true,
+    reason: 'complete',
+    page_count: 1,
+}
+
+before(() => {
+    __tencentSnapshotDeps.getCompleteDailyByDate = async () => PREVIOUS_DAILY_RESULT
+})
+after(() => {
+    // 恢复为默认实现（指向真实 Tushare），避免影响后续测试
+    __tencentSnapshotDeps.getCompleteDailyByDate = require('../src/modules/quote/TushareService').getCompleteDailyByDate
+})
 
 // 6 大指数 mock 数据
 const INDEX_FACTS = [
@@ -152,6 +175,9 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.equal(snapshot.turnover.amount_yuan, 29000000)
         assert.equal(snapshot.turnover.source, 'tencent:quote')
         assert.equal(snapshot.turnover.approximate, true)
+        // 编排缺口 #3：quick 改进版前日必须完整（Node 用 Tushare 前日填充）并回填 prior 成交额
+        assert.equal(snapshot.coverage.previous_daily.complete, true)
+        assert.equal(snapshot.turnover.previous_amount_yuan, 20000000000)
         assert.equal(snapshot.limits.broken_count, null)
         assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, null)
         assert.equal(snapshot.main_force.source, 'tencent:board_main_flow')

@@ -11,14 +11,18 @@
 import { TencentQuoteService } from './TencentQuoteService'
 import {
     getStockBasicBulk,
+    getCompleteDailyByDate,
 } from './TushareService'
 import {
     isAtOrAfterClose,
+    toCoverageSummary,
+    sumAmountYuan,
     type CloseIndexFact,
     type SectorFact,
     type QuickCloseMarketSnapshot,
     type QuickDataAvailability,
     type MarketBreadth,
+    type DailyCoverageSummary,
     type QuickSnapshotCoverage,
     type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
@@ -203,12 +207,29 @@ export class TencentSnapshotService {
                 : mainForce.availability,
         }
 
+        // 3. previous_daily：前日完整日线来自 Tushare（前日已收盘就绪，不受 16 点即时性限制）。
+        //    为什么在此强取并 fail-loud：quick 改进版欲替代 full，需与 full 同样满足
+        //    coverage.previous_daily.complete==True 的硬门槛（编排缺口 #3）。前日数据缺失即抛错，
+        //    由上层按 502/market_not_closed 语义处理，不伪造"已收盘"。
+        const previousTradeDate = TradingCalendarService.getPreviousTradingDay(now)
+        const prevYyyymmdd = shanghaiDateStr(previousTradeDate).replace(/-/g, '')
+        const previousDaily = await __tencentSnapshotDeps.getCompleteDailyByDate(prevYyyymmdd)
+        if (!previousDaily.complete) {
+            throw new Error(
+                `market_not_closed: previous daily coverage incomplete (${previousDaily.reason})`,
+            )
+        }
+        const previousCoverage: DailyCoverageSummary = toCoverageSummary(previousDaily)
+        const previousAmountYuan = sumAmountYuan(previousDaily.rows)
+
         return this.assembleSnapshot(
             tradeDate,
             capturedAt,
             indexes,
             marketBreadth,
             coverage,
+            previousCoverage,
+            previousAmountYuan,
             {
                 top_gainers: sectorRanking.gainers,
                 top_losers: sectorRanking.losers,
@@ -456,12 +477,21 @@ export class TencentSnapshotService {
         indexes: CloseIndexFact[],
         marketBreadth: MarketBreadth | undefined,
         coverage: QuickSnapshotCoverage,
+        previousCoverage: DailyCoverageSummary,
+        previousAmountYuan: number,
         sectors: QuickCloseMarketSnapshot['sectors'],
         mainForce: QuickCloseMarketSnapshot['main_force'],
         quickDataAvailability: QuickSnapshotDataAvailability,
     ): QuickCloseMarketSnapshot {
         // 填充 indexes 的 trade_date
         const filledIndexes = indexes.map((idx) => ({ ...idx, trade_date: tradeDate.replace(/-/g, '') }))
+
+        // 成交额环比：当日为腾讯近似（tencent:quote），前日为 Tushare 精确（tushare:daily）。
+        // source 保留 tencent:quote（当日口径）；previous_amount_yuan 来自 Tushare 前日（编排缺口 #3）。
+        const amountYuan = marketBreadth?.total_amount_yuan ?? 0
+        const changePct = previousAmountYuan > 0
+            ? Number((((amountYuan - previousAmountYuan) / previousAmountYuan) * 100).toFixed(2))
+            : null
 
         return {
             schema_version: '1.0',
@@ -483,8 +513,8 @@ export class TencentSnapshotService {
             turnover: marketBreadth && marketBreadth.total_amount_yuan > 0
                 ? {
                     amount_yuan: marketBreadth.total_amount_yuan,
-                    previous_amount_yuan: null,
-                    change_pct: null,
+                    previous_amount_yuan: previousAmountYuan,
+                    change_pct: changePct,
                     source: 'tencent:quote',
                     approximate: true,
                 }
@@ -499,7 +529,7 @@ export class TencentSnapshotService {
             main_force: mainForce,
             coverage: {
                 current_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
-                previous_daily: { complete: false, reason: 'empty' as const, page_count: 0, row_count: 0 },
+                previous_daily: previousCoverage,
             },
             // quick snapshot 扩展字段
             snapshot_kind: 'quick',
@@ -510,12 +540,14 @@ export class TencentSnapshotService {
     }
 }
 
-/** 依赖注入接口（测试可替换 stock_basic 数据源）。 */
+/** 依赖注入接口（测试可替换 stock_basic / 前日完整日线数据源）。 */
 export interface TencentSnapshotDeps {
     getStockBasicBulk: typeof getStockBasicBulk
+    getCompleteDailyByDate: typeof getCompleteDailyByDate
 }
 
-/** 生产环境默认实现：复用 Tushare 活跃股票列表。 */
+/** 生产环境默认实现：复用 Tushare 活跃股票列表与前日完整日线。 */
 export const __tencentSnapshotDeps: TencentSnapshotDeps = {
     getStockBasicBulk,
+    getCompleteDailyByDate,
 }
