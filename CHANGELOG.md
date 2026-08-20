@@ -2,6 +2,41 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-20 — 收盘复盘改进方案：东财快照源接入 quick 链路（EM 主源 + 腾讯兜底）
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/EmSnapshotService.ts`：封装东方财富实时快照数据源（免逆向）。
+  - `getLimitPools`：push2ex `getTopicZTPool`/`getTopicDTPool`(sort=zdp)/`getTopicZBPool`(sort=zbc)，连板取 ZT 池 `lbc` 最大值；三池独立 `Promise.allSettled`，partial 时字段为 null
+  - `getConceptFlow`：push2 `clist m:90+t:3` 概念资金流，本地按涨跌幅/净额各自独立排序（gainers/losers/inflows/outflows）
+  - `getIndustryMainForce`：push2 `clist m:90+t:2` 行业主力净额求和作为全市场主力净流入（元）
+  - 复用 `eastmoneyThrottler`/`sessionFetch`/`EASTMONEY_UT`（缺失时内置 POC 实测 token `7eea3edca…`）
+
+### 改进
+- `src/modules/quote/TencentSnapshotService.ts` `buildQuickSnapshot` 改为 **EM 主源 + 腾讯近似兜底**：
+  - limits 主源=东财精确池，兜底=腾讯阈值近似
+  - sectors 主源=东财概念资金流（含资金流排序），兜底=腾讯板块排行（仅涨跌）
+  - main_force 主源=东财行业主力净额（`eastmoney:industry_main_force`），兜底=腾讯行业板块求和近似
+  - 并行 `Promise.allSettled` 单项失败不阻断；`coverage.has_limit_pool` 东财非 unavailable 即 true
+- `src/modules/quote/MarketSnapshotService.ts`：`QuickCloseMarketSnapshot.limits.broken_count/highest_board` 放宽为 `number | null`；`main_force.source` 增加 `eastmoney:industry_main_force`
+
+### 之前
+- `TencentSnapshotService.buildQuickSnapshot` 补齐编排缺口 #3：用 Tushare 前日填充 `previous_daily`，缺前日即抛硬门槛（fail-loud，与 full 对齐）
+
+### 测试
+- 新增 `tests/EmSnapshotService.test.ts`（聚合/partial/排序/求和/空行 5 用例）
+- `tests/TencentSnapshotService.test.ts` 新增 EM 主源优先用例 + 既有 build 用例注入 EM 不可用 mock
+- **26/26 passed**，`npx tsc --noEmit` 0 错误；冒烟实测东财 79 涨停/12 跌停/46 炸板/连板 4 + 创新药净流入 62.6 亿
+
+### 文档
+- `docs/superpowers/specs/2026-08-20-ths-snapshot-source-swap-design.md` 新增"落地状态（Phase 2 生产接入完成）"
+
+### 说明
+- 仍为混合方案：指数/宽度/成交额固定腾讯（用户决策），previous_daily 用 Tushare；仅当日 breadth/turnover 为近似
+
+---
+
 ## [junliang] 2026-08-20 — 价格异动触发口径统一相对昨收 + 涨停雷达解析涨停复盘增强
 
 **开发者**: Aria

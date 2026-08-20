@@ -169,13 +169,19 @@ export interface QuickCloseMarketSnapshot extends Omit<
     limits: {
         up_count: number | null;
         down_count: number | null;
-        broken_count: null;
-        highest_board: null;
+        /** 精确炸板数（东财 push2ex getTopicZBPool）；腾讯兜底时仍为 null。 */
+        broken_count: number | null;
+        /** 最高连板数（东财涨停池 lbc 最大值）；腾讯兜底时仍为 null。 */
+        highest_board: number | null;
     };
     main_force: {
         large_and_extra_large_net_yuan: number | null;
-        source: 'tushare:moneyflow_ths' | 'tushare:moneyflow_cnt_ths' | 'tencent:board_main_flow';
-        /** quick 版主力净额为腾讯行业板块主力净流入合计近似（board_main_flow），非个股大单/特大单精确口径。 */
+        source:
+            | 'tushare:moneyflow_ths'
+            | 'tushare:moneyflow_cnt_ths'
+            | 'tencent:board_main_flow'
+            | 'eastmoney:industry_main_force';
+        /** quick 版主力净额为行业板块主力净流入合计近似（board_main_flow / industry_main_force）。 */
         approximate?: boolean;
     };
     coverage_info: QuickSnapshotCoverage;

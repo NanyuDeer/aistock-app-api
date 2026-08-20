@@ -9,6 +9,7 @@
  */
 
 import { TencentQuoteService } from './TencentQuoteService'
+import { EmSnapshotService } from './EmSnapshotService'
 import {
     getStockBasicBulk,
     getCompleteDailyByDate,
@@ -152,32 +153,136 @@ export class TencentSnapshotService {
         // 1. 核心数据：6 大指数（严格失败）
         const indexes = await this.fetchIndexes()
 
-        // 2. 非核心数据：全市场宽度、概念板块、主力资金（宽松失败）
-        // 每项独立 settled，任何单项缺失都必须显式标注，不得用中性数值伪造事实。
-        // sectors/main_force 改用腾讯行情中心板块排行接口（rank/pt/getRank），
-        // 数据实时更新，15:30 收盘后立即可取，不再依赖 Tushare 收盘后分批发布的资金流。
-        const [breadthResult, sectorsResult, mainForceResult] = await Promise.allSettled([
-            this.fetchMarketBreadth(),
-            this.fetchTencentSectors(),
-            this.fetchTencentMainForce(),
-        ])
+        // 2. 非核心数据（宽松失败，每项独立 settled，任何单项缺失都必须显式标注，不得用中性数值伪造事实）。
+        //
+        // 数据源策略（design: 2026-08-20-ths-snapshot-source-swap-design.md）：
+        // - limits 主源=东财 push2ex 涨跌停/炸板池（精确 count + 连板），腾讯阈值近似仅兜底；
+        // - sectors/main_force 主源=东财 push2 板块资金流，腾讯行情中心板块排行（rank/pt/getRank）兜底；
+        // - breadth/turnover（全市场宽度/成交额）固定保留腾讯（无免逆向全市场逐股替代源）。
+        const [breadthResult, emLimitsResult, emSectorsResult, emMainForceResult, tSectorsResult, tMainForceResult] =
+            await Promise.allSettled([
+                this.fetchMarketBreadth(),
+                EmSnapshotService.getLimitPools(tushareTradeDate),
+                EmSnapshotService.getConceptFlow(),
+                EmSnapshotService.getIndustryMainForce(),
+                this.fetchTencentSectors(),
+                this.fetchTencentMainForce(),
+            ])
 
         const marketBreadth: MarketBreadth | undefined =
             breadthResult.status === 'fulfilled' ? breadthResult.value.breadth : undefined
 
-        const sectorRanking: TencentBoardRankingResult = sectorsResult.status === 'fulfilled'
-            ? sectorsResult.value
+        // ---- limits：东财精确池为主，腾讯阈值近似兜底 ----
+        const emLimits = emLimitsResult.status === 'fulfilled' ? emLimitsResult.value : null
+        let limits: QuickCloseMarketSnapshot['limits'] = {
+            up_count: null,
+            down_count: null,
+            broken_count: null,
+            highest_board: null,
+        }
+        let limitsAvailability: QuickDataAvailability
+        if (emLimits && emLimits.availability.state !== 'unavailable') {
+            // 东财池精确 count（含连板 lbc）；任一子池失败时字段保持 null，availability 如实标注 partial
+            limits = {
+                up_count: emLimits.up_count,
+                down_count: emLimits.down_count,
+                broken_count: emLimits.broken_count,
+                highest_board: emLimits.highest_board,
+            }
+            limitsAvailability = emLimits.availability
+        } else if (marketBreadth !== undefined) {
+            // 兜底：腾讯阈值近似（±10%/±20%），炸板/连板无近似值，保持 null
+            limits = {
+                up_count: marketBreadth.limit_up_count,
+                down_count: marketBreadth.limit_down_count,
+                broken_count: null,
+                highest_board: null,
+            }
+            limitsAvailability = {
+                state: 'partial',
+                available_fields: ['up_count', 'down_count'],
+                approximate: true,
+            }
+        } else {
+            limitsAvailability = { state: 'unavailable', reason: 'both eastmoney pools and Tencent breadth unavailable; limit counts cannot be estimated' }
+        }
+
+        // ---- sectors：东财概念资金流为主（含涨跌+净额排序），腾讯板块排行兜底（仅涨跌） ----
+        const emSectors = emSectorsResult.status === 'fulfilled' ? emSectorsResult.value : null
+        const tencentSectors: TencentBoardRankingResult = tSectorsResult.status === 'fulfilled'
+            ? tSectorsResult.value
             : { gainers: [], losers: [], availability: { state: 'unavailable', reason: 'Tencent board rank fetch failed' } }
 
-        const mainForce: TencentMainForceResult = mainForceResult.status === 'fulfilled'
-            ? mainForceResult.value
+        const emSectorsHaveData = emSectors !== null
+            && (emSectors.gainers.length > 0 || emSectors.losers.length > 0
+                || emSectors.inflows.length > 0 || emSectors.outflows.length > 0)
+        const tencentSectorsHaveData = tencentSectors.gainers.length > 0 || tencentSectors.losers.length > 0
+
+        let sectors: QuickCloseMarketSnapshot['sectors'] = {
+            top_gainers: [],
+            top_losers: [],
+            top_inflows: [],
+            top_outflows: [],
+        }
+        let sectorsAvailability: QuickDataAvailability
+        if (emSectorsHaveData) {
+            sectors = {
+                top_gainers: emSectors!.gainers,
+                top_losers: emSectors!.losers,
+                top_inflows: emSectors!.inflows,
+                top_outflows: emSectors!.outflows,
+            }
+            sectorsAvailability = emSectors!.availability
+        } else if (tencentSectorsHaveData) {
+            sectors = {
+                top_gainers: tencentSectors.gainers,
+                top_losers: tencentSectors.losers,
+                top_inflows: [],
+                top_outflows: [],
+            }
+            sectorsAvailability = tencentSectors.availability
+        } else {
+            sectorsAvailability = { state: 'unavailable', reason: 'both eastmoney concept flow and Tencent board rank returned no sectors' }
+        }
+
+        // ---- main_force：东财行业主力净额为主，腾讯行业板块求和近似兜底 ----
+        const emMainForce = emMainForceResult.status === 'fulfilled' ? emMainForceResult.value : null
+        const tencentMainForce: TencentMainForceResult = tMainForceResult.status === 'fulfilled'
+            ? tMainForceResult.value
             : { large_and_extra_large_net_yuan: null, availability: { state: 'unavailable', reason: 'Tencent main-force fetch failed' } }
 
-        const hasSectors = sectorRanking.gainers.length > 0 || sectorRanking.losers.length > 0
+        let mainForce: QuickCloseMarketSnapshot['main_force']
+        let mainForceAvailability: QuickDataAvailability
+        if (emMainForce && emMainForce.large_and_extra_large_net_yuan !== null) {
+            mainForce = {
+                large_and_extra_large_net_yuan: emMainForce.large_and_extra_large_net_yuan,
+                source: 'eastmoney:industry_main_force',
+            }
+            mainForceAvailability = { state: 'available' }
+        } else if (tencentMainForce.large_and_extra_large_net_yuan !== null) {
+            mainForce = {
+                large_and_extra_large_net_yuan: tencentMainForce.large_and_extra_large_net_yuan,
+                source: 'tencent:board_main_flow',
+                approximate: true,
+            }
+            mainForceAvailability = { state: 'available' }
+        } else {
+            // 双源均不可用：值保持 null，source 标记腾讯兜底路由（与旧 quick 一致，null 值无精确口径）。
+            mainForce = {
+                large_and_extra_large_net_yuan: null,
+                source: 'tencent:board_main_flow',
+            }
+            mainForceAvailability = emMainForce?.availability
+                ?? { state: 'unavailable', reason: 'both eastmoney and Tencent main-force unavailable' }
+        }
+
+        const hasSectors = sectors.top_gainers.length > 0 || sectors.top_losers.length > 0
+            || sectors.top_inflows.length > 0 || sectors.top_outflows.length > 0
         const hasMainForce = mainForce.large_and_extra_large_net_yuan !== null
 
         const coverage: QuickSnapshotCoverage = {
-            has_limit_pool: false,
+            // limits 主源为东财精确池；available/partial 均视为已具备涨跌停池（partial 时字段部分为 null）
+            has_limit_pool: emLimits !== null && emLimits.availability.state !== 'unavailable',
             has_moneyflow: hasMainForce,
             has_concept_flow: hasSectors,
         }
@@ -192,19 +297,9 @@ export class TencentSnapshotService {
                 && breadthResult.value.breadth.total_amount_yuan > 0
                 ? { state: 'partial', available_fields: ['amount_yuan'], approximate: true }
                 : { state: 'unavailable', reason: 'Tencent quick rows do not establish a yuan-denominated aggregate turnover amount' },
-            limits: marketBreadth !== undefined
-                ? {
-                    state: 'partial',
-                    available_fields: ['up_count', 'down_count'],
-                    approximate: true,
-                }
-                : { state: 'unavailable', reason: 'Tencent breadth unavailable; limit counts cannot be estimated' },
-            sectors: hasSectors
-                ? sectorRanking.availability
-                : { state: 'unavailable', reason: 'Tencent board rank returned no sector rows' },
-            main_force: hasMainForce
-                ? { state: 'available' }
-                : mainForce.availability,
+            limits: limitsAvailability,
+            sectors: sectorsAvailability,
+            main_force: mainForceAvailability,
         }
 
         // 3. previous_daily：前日完整日线来自 Tushare（前日已收盘就绪，不受 16 点即时性限制）。
@@ -227,20 +322,12 @@ export class TencentSnapshotService {
             capturedAt,
             indexes,
             marketBreadth,
+            limits,
             coverage,
             previousCoverage,
             previousAmountYuan,
-            {
-                top_gainers: sectorRanking.gainers,
-                top_losers: sectorRanking.losers,
-                top_inflows: [],
-                top_outflows: [],
-            },
-            {
-                large_and_extra_large_net_yuan: mainForce.large_and_extra_large_net_yuan,
-                source: 'tencent:board_main_flow',
-                approximate: true,
-            },
+            sectors,
+            mainForce,
             quickDataAvailability,
         )
     }
@@ -476,6 +563,7 @@ export class TencentSnapshotService {
         capturedAt: string,
         indexes: CloseIndexFact[],
         marketBreadth: MarketBreadth | undefined,
+        limits: QuickCloseMarketSnapshot['limits'],
         coverage: QuickSnapshotCoverage,
         previousCoverage: DailyCoverageSummary,
         previousAmountYuan: number,
@@ -519,12 +607,8 @@ export class TencentSnapshotService {
                     approximate: true,
                 }
                 : { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
-            limits: {
-                up_count: marketBreadth?.limit_up_count ?? null,
-                down_count: marketBreadth?.limit_down_count ?? null,
-                broken_count: null,
-                highest_board: null,
-            },
+            // limits 由调用方注入（东财精确池或腾讯近似兜底），不再从 marketBreadth 内部推导
+            limits,
             sectors,
             main_force: mainForce,
             coverage: {

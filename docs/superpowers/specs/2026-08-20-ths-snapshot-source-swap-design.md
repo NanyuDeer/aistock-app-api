@@ -210,6 +210,18 @@ cron 30 20 → review_full 事件 → build_market_trace_snapshot
 3. **口径对齐**：东财含北交所、板块名与 Tushare 板块代码可能不同，需在归一化层对齐 `_normalize_aggregate_facts` 的 up/down/broken/highest_board/资金字段契约。
 4. **逐步收敛**：quick 精度达标 → 评估是否保留 20:30 full 终稿 → 若可删 quick 则简化，写 CHANGELOG / 更新 AGENTS.md。
 
+## 落地状态（2026-08-20 代码层，Phase 2 生产接入完成）
+
+- **新增 `src/modules/quote/EmSnapshotService.ts`**：封装东财 push2ex 涨跌停/炸板池（`getTopicZTPool` / `getTopicDTPool`(sort=zdp) / `getTopicZBPool`(sort=zbc)，连板取 ZT 池 `lbc` 最大值）+ push2 clist 概念(`m:90+t:3`)/行业(`m:90+t:2`)资金流；复用 `eastmoneyThrottler` / `sessionFetch` / `EASTMONEY_UT` 配置（内置兜底 token 为 POC 实测可用的 `7eea3e…`）。各方法宽松失败，返回 `availability`。
+- **接入 `TencentSnapshotService.buildQuickSnapshot`（EM 主源 + 腾讯近似兜底）**：
+  - limits 主源=东财精确池，兜底=腾讯阈值近似（`up/down`，炸板/连板保持 null）；
+  - sectors 主源=东财概念资金流（含 top_in/out 排序），兜底=腾讯板块排行（仅涨跌，资金流排序为空）；
+  - main_force 主源=东财行业主力净额（`eastmoney:industry_main_force`），兜底=腾讯行业板块求和近似（`tencent:board_main_flow`，approximate=true）。
+  并行 `Promise.allSettled`，单项失败不阻断快照；`coverage.has_limit_pool` 在东财池非 unavailable 时为 true。
+- **schema 更新（`MarketSnapshotService.ts`）**：`QuickCloseMarketSnapshot.limits.broken_count/highest_board` 由 `null` 放宽为 `number | null`；`main_force.source` 联合类型增加 `eastmoney:industry_main_force`。
+- **测试（Node）**：新增 `tests/EmSnapshotService.test.ts`（聚合/排序/求和/partial），`tests/TencentSnapshotService.test.ts` 增加 EM 主源优先用例，并为既有 build 用例注入 EM 不可用 mock。`tsc --noEmit` 干净，Node 侧相关用例全绿。
+- **仍为混合方案**：指数/全市场宽度/成交额固定保留腾讯（用户决策，无免逆向全市场逐股替代源）；previous_daily 直接用 Tushare。唯一当日精度短板仍是 breadth/turnover 当日近似值。
+
 ## Constraints
 
 - 不触碰生产调度与成熟 full 链路，先以独立临时测试端点 / POC 脚本验证。
