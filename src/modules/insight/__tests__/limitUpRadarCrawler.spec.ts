@@ -14,6 +14,7 @@ import { upsertSources } from '../InsightSourceService';
 import {
     extractTradeDate,
     parseDetailHtml,
+    parseLimitUpSymbolsFromSummary,
     parseListHtml,
     parseTitleKeywords,
     parseTitleStockName,
@@ -115,6 +116,53 @@ describe('parseListHtml', () => {
 
     it('空 HTML 返回空数组', () => {
         assert.deepStrictEqual(parseListHtml(''), []);
+    });
+});
+
+// ==================== parseLimitUpSymbolsFromSummary ====================
+
+describe('parseLimitUpSymbolsFromSummary', () => {
+    // 模拟 2026-08-20 涨停复盘文章正文（涨停/涨超/触及跌停/跌幅居前 多种语境并存）
+    const content = 'A股三大指数集体上涨。创新药、贵金属板块涨幅居前。'
+        + '创新药（002173）板块高开高走掀涨停潮，沃森生物（300142）、智飞生物（300122）、康泰生物（300601）等20余股涨停，'
+        + '新开源（300109）、华兰股份（301093）等多股涨超10%。'
+        + '贵金属板块表现强势，兴业银钼（000426）、赤峰黄金（600988）涨幅居前。'
+        + '小金属板块震荡下行，长缆集团（603407）盘中触及跌停，华阳新材（600281）跌幅居前。';
+    const mentioned = [
+        { symbol: '002173', name: '创新药' },      // 板块名，先"涨幅居前"后"涨停潮" → 命中
+        { symbol: '300142', name: '沃森生物' },    // 涨停
+        { symbol: '300122', name: '智飞生物' },    // 涨停
+        { symbol: '300601', name: '康泰生物' },    // 涨停
+        { symbol: '300109', name: '新开源' },      // 涨超
+        { symbol: '301093', name: '华兰股份' },    // 涨超
+        { symbol: '000426', name: '兴业银钼' },    // 涨幅居前 → 排除
+        { symbol: '600988', name: '赤峰黄金' },    // 涨幅居前 → 排除
+        { symbol: '603407', name: '长缆集团' },    // 触及跌停 → 排除
+        { symbol: '600281', name: '华阳新材' },    // 跌幅居前 → 排除
+        { symbol: '000001', name: '平安银行' },    // 正文未提及 → 排除
+    ];
+
+    it('提取"涨停/涨超"语境个股，排除跌停/跌幅/涨幅居前/未提及', () => {
+        const result = parseLimitUpSymbolsFromSummary(content, mentioned);
+        assert.deepStrictEqual(result.map(s => s.symbol).sort(), ['002173', '300109', '300122', '300142', '300601', '301093']);
+    });
+
+    it('个股名先以非涨停语境出现、后以涨停语境出现时命中（检查全部出现位置）', () => {
+        // 创新药 开头"涨幅居前"（不命中），后"涨停潮"（命中）
+        const hit = parseLimitUpSymbolsFromSummary(content, [{ symbol: '002173', name: '创新药' }]);
+        assert.equal(hit.length, 1);
+        assert.equal(hit[0].symbol, '002173');
+    });
+
+    it('正文为空或个股列表为空返回空数组', () => {
+        assert.deepStrictEqual(parseLimitUpSymbolsFromSummary('', mentioned), []);
+        assert.deepStrictEqual(parseLimitUpSymbolsFromSummary(content, []), []);
+    });
+
+    it('名称含正则特殊字符时安全匹配（防御转义）', () => {
+        const c = 'ST某某（000001）涨停。';
+        const result = parseLimitUpSymbolsFromSummary(c, [{ symbol: '000001', name: 'ST某某' }]);
+        assert.equal(result.length, 1);
     });
 });
 

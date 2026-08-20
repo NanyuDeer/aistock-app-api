@@ -2,6 +2,34 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-08-20 — 价格异动触发口径统一相对昨收 + 涨停雷达解析涨停复盘增强
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/insight/PriceMoveService.ts`：午/尾盘打点触发口径统一为相对昨收涨跌幅 ≥7%（`THRESHOLD_PCT`，与实时检测链 `PRICE_TRIGGER_PERCENT=7` 一致）；`extractPrices` 解析 昨收价/涨跌幅/今开价；`moveBps`（相对今开）不再参与触发判定，仅入库作辅助展示（区分开盘/盘中异动）；`backfillByKline` 改取前一根日 K 收盘作昨收
+- `src/modules/insight/controller.ts` + `src/db/migrations/017_watchlist_price_move.sql`：快照表新增 `change_pct` 列（含存量表 ALTER IF NOT EXISTS 兼容），列表/详情 SELECT 带出 `snap.change_pct`
+- `src/modules/insight/LimitUpRadarCrawler.ts` + `InsightService.ts`：涨停雷达增强——涨停复盘类汇总文章（标题无主体股票）从正文"涨停/涨超/封板/一字"语境提取个股（`parseLimitUpSymbolsFromSummary`，排除跌停/跌幅语境，`SUMMARY_CONTEXT_RANGE=50`），命中自选股逐只建事件，防"涨停个股过多汇总进复盘文章"导致漏检
+- `src/modules/stock-trace/StockTraceService.ts` / `StockTraceResultService.ts` / `controller.ts` / `types.ts`：列表/最近事件 `analysis_status` 派生（有效 artifact→completed / result rejected|failed→unavailable / 其他→processing）+ `primary_cause` 短语展示；结果表新增 `primary_phrase` 列（LLM 生成 ≤24 字归因短语）；当前版本归因失败时回退最近有效 artifact
+
+### 修复
+- `src/modules/quote/TencentQuoteService.ts`：行情缓存键按 level 区分前缀（`quoteCacheConfig(level)`），修复 activity 打点命中 core 缓存缺"今开价"→ moveBps 恒 null → 异动静默不触发（北方长龙 08-20 -9.8% 案例）
+- `src/modules/stock-trace/PriceTriggerDetector.ts`：实时检测行情从 core 改为 activity 级别——core 字段集无"昨收价"，`previousClose` 恒 undefined，实时检测从未真正触发
+
+### 测试
+- `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts`：`parseLimitUpSymbolsFromSummary` 4 例（涨停/涨超/跌停/跌幅/涨幅居前语境）
+- `src/modules/insight/__tests__/runCycleEnqueue.spec.ts`：涨停复盘汇总文章建事件入队 1 例
+- `src/modules/insight/__tests__/priceMoveService.spec.ts` / `priceEventService.spec.ts`：extractPrices 返回结构（含 prevClose/changePct）、快照新增 changePct
+- `src/modules/stock-trace/__tests__/listAnalysisStatus.spec.ts`：analysis_status 派生（新增）
+
+### 文档
+- `src/modules/insight/AGENTS.md` / `quote/AGENTS.md` / `stock-trace/AGENTS.md`：触发口径统一、缓存键 level 区分、涨停复盘解析增强
+
+### 验证
+- insight 模块 71 用例全过；stocktrace 相关测试通过；`npx tsc --noEmit` 0 错误
+
+---
+
 ## [master] 2026-08-20 — 修复「未识别到语音」根因 2：V3 流式输入多帧响应，必须等最终帧
 
 **开发者**: Aria

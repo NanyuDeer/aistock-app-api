@@ -150,4 +150,59 @@ describe('runCycle → enqueue 接线', () => {
         assert.equal(warn.mock.callCount(), 1, '入队失败应记录告警日志');
         assert.equal(setHighWatermarkCalls(), 1, '高水位仍推进，下轮增量回溯不受影响');
     });
+
+    it('涨停复盘汇总文章：无标题主体，从正文"涨停/涨超"语境提取个股，命中自选股建事件入队（2026-08-20 增强）', async () => {
+        // 列表页返回涨停复盘文章（parseTitleStockName=null），正文含多只涨停/跌停个股
+        const SUMMARY_LIST_PAGE = `<html><body>
+  <a href="https://yuanchuang.10jqka.com.cn/20260805/c678683173.shtml">涨停复盘：创业板指缩量涨0.64% 创新药、贵金属板块涨幅居前</a>
+</body></html>`;
+        // 详情页：沃森生物(300142)涨停、长缆集团(603407)盘中触及跌停、平安银行(000001)未提及
+        const SUMMARY_DETAIL_PAGE = `<html><body>
+  <div class="art_p">创新药板块高开高走掀涨停潮，沃森生物（300142）、智飞生物（300122）等20余股涨停；小金属板块震荡下行，长缆集团（603407）盘中触及跌停。</div>
+  <span class="time">2026-08-05 15:55:28</span>
+  <a href="https://stockpage.10jqka.com.cn/300142/">沃森生物</a>
+  <a href="https://stockpage.10jqka.com.cn/300122/">智飞生物</a>
+  <a href="https://stockpage.10jqka.com.cn/603407/">长缆集团</a>
+</body></html>`;
+
+        const crawlerUtils = req('../../../shared/utils/crawler');
+        const thsCrawlerInstance = crawlerUtils.thsCrawler;
+        mock.method(thsCrawlerInstance, 'fetchHtml', (async (url: string) => {
+            if (url.includes('mrnxgg_list/index')) return EMPTY_PAGE_HTML;
+            if (url.includes('mrnxgg_list')) return SUMMARY_LIST_PAGE;
+            return SUMMARY_DETAIL_PAGE;
+        }) as unknown as typeof thsCrawlerInstance.fetchHtml);
+
+        mock.method(redis, 'get', (async () => '2026-08-04') as unknown as typeof redis.get);
+        const setHighWatermarkMock = mock.method(redis, 'set', (async () => 'OK') as unknown as typeof redis.set);
+        mock.method(redis, 'xadd', (async () => '0-0') as unknown as typeof redis.xadd);
+
+        // 自选股仅含 300142（沃森生物）→ 应只对沃森建事件；智飞不在自选股、长缆为跌停语境均不建
+        const poolQueryMock = (async (text: string) => {
+            if (text.includes('INSERT INTO watchlist_insight_sources')) return { rows: [{ was_inserted: true }] };
+            if (text.includes('FROM watchlist_insight_sources')) return { rows: [] };
+            if (text.includes('FROM user_stocks')) return { rows: [{ symbol: '300142' }] };
+            if (text.includes('INSERT INTO watchlist_insight_events')) return { rows: [{ event_id: 'wi_20260805_300142_limit_up' }] };
+            return { rows: [] };
+        }) as unknown as typeof pool.query;
+        mock.method(pool, 'query', poolQueryMock);
+
+        const jobInserts: { text: string; params: unknown[] }[] = [];
+        const clientQuery = (async (text: string, params?: unknown[]) => {
+            if (text.includes('INSERT INTO watchlist_insight_jobs')) {
+                jobInserts.push({ text, params: params ?? [] });
+                return { rows: [{ job_id: JOB_ID }] };
+            }
+            return { rows: [] };
+        }) as unknown as typeof pool.query;
+        mock.method(pool, 'connect', (async () => ({ query: clientQuery, release: () => {} })) as unknown as typeof pool.connect);
+
+        const result = await runCycle();
+
+        assert.equal(result.collected, 1, '涨停复盘文章应入库');
+        assert.equal(result.events, 1, '仅沃森生物命中自选股且为涨停语境');
+        assert.equal(jobInserts.length, 1, '只产生一条 job INSERT');
+        assert.deepStrictEqual(jobInserts[0].params, ['wi_20260805_300142_limit_up', VERSION]);
+        assert.equal(setHighWatermarkMock.mock.callCount(), 1, '高水位正常推进');
+    });
 });
