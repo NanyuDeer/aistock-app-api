@@ -21,8 +21,10 @@ function toTsCode(symbol: string): string {
     return `${symbol}.${identity.market.toUpperCase()}`;
 }
 
-function getApiName(klt: KLinePeriod): string {
-    if (klt === 101) return 'daily';
+const INDEX_TS_CODES = new Set(['000001.SH', '000300.SH', '000688.SH', '399001.SZ', '399006.SZ'])
+
+function getApiName(klt: KLinePeriod, tsCode: string): string {
+    if (klt === 101) return INDEX_TS_CODES.has(tsCode) ? 'index_daily' : 'daily';
     if (klt === 102) return 'weekly';
     if (klt === 103) return 'monthly';
     return 'min_data';
@@ -43,11 +45,96 @@ function toNumber(value: unknown): number | null {
     return Number.isFinite(num) ? num : null;
 }
 
+const OHLC_FIELDS = 'ts_code,trade_date,open,high,low,close,pre_close,change,pct_chg,vol,amount';
+
+function nextDate(date: string): string {
+    if (!/^\d{8}$/.test(date)) return date;
+    const year = Number(date.slice(0, 4));
+    const month = Number(date.slice(4, 6)) - 1;
+    const day = Number(date.slice(6, 8));
+    const value = new Date(Date.UTC(year, month, day + 1));
+    return [
+        value.getUTCFullYear(),
+        String(value.getUTCMonth() + 1).padStart(2, '0'),
+        String(value.getUTCDate()).padStart(2, '0'),
+    ].join('');
+}
+
+function normalizeRow(row: Record<string, any>): Record<string, any> {
+    const close = toNumber(row.close) ?? 0;
+    const rowPreClose = toNumber(row.pre_close) ?? 0;
+    const high = toNumber(row.high) ?? 0;
+    const low = toNumber(row.low) ?? 0;
+    const vol = toNumber(row.vol) ?? 0;
+    const amount = toNumber(row.amount) ?? 0;
+    const rawChange = toNumber(row.change);
+    const change = rawChange ?? (close - rowPreClose);
+    const inferredPreClose = rawChange !== null ? close - rawChange : rowPreClose;
+    const preClose = inferredPreClose > 0 ? inferredPreClose : rowPreClose;
+    const pctChg = preClose > 0 ? (change / preClose) * 100 : 0;
+
+    return {
+        '时间': String(row.trade_date || ''),
+        '开盘价': toNumber(row.open),
+        '收盘价': close,
+        '最高价': high,
+        '最低价': low,
+        '成交量': vol * 100,
+        '成交额': amount * 1000,
+        '振幅': preClose > 0 ? Math.round(((high - low) / preClose) * 10000) / 100 : 0,
+        '涨跌幅': Math.round(pctChg * 100) / 100,
+        '涨跌额': Math.round(change * 100) / 100,
+        '换手率': toNumber(row.turnover) ?? 0,
+    };
+}
+
+async function appendCurrentPeriodFromDaily(
+    rows: Record<string, any>[],
+    tsCode: string,
+    klt: KLinePeriod,
+): Promise<Record<string, any>[]> {
+    if (klt !== 102 && klt !== 103) return rows;
+    const lastCompleted = rows[rows.length - 1];
+    const lastDate = String(lastCompleted?.trade_date || '');
+    const lastClose = toNumber(lastCompleted?.close) ?? 0;
+    if (!lastDate || lastClose <= 0) return rows;
+
+    const dailyRows = await tushareRequest('daily', {
+        ts_code: tsCode,
+        start_date: nextDate(lastDate),
+    }, OHLC_FIELDS);
+    if (!dailyRows.length) return rows;
+
+    const sortedDaily = dailyRows.sort((a, b) => String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
+    const latestDaily = sortedDaily[sortedDaily.length - 1];
+    const latestDate = String(latestDaily?.trade_date || '');
+    if (!latestDate || latestDate <= lastDate) return rows;
+
+    const close = toNumber(latestDaily.close) ?? 0;
+    if (close <= 0) return rows;
+
+    rows.push({
+        ts_code: tsCode,
+        trade_date: latestDate,
+        open: toNumber(sortedDaily[0].open) ?? 0,
+        high: Math.max(...sortedDaily.map(row => toNumber(row.high) ?? 0)),
+        low: Math.min(...sortedDaily.map(row => toNumber(row.low) ?? Number.POSITIVE_INFINITY)),
+        close,
+        pre_close: lastClose,
+        change: close - lastClose,
+        pct_chg: lastClose > 0 ? ((close - lastClose) / lastClose) * 100 : 0,
+        vol: sortedDaily.reduce((sum, row) => sum + (toNumber(row.vol) ?? 0), 0),
+        amount: sortedDaily.reduce((sum, row) => sum + (toNumber(row.amount) ?? 0), 0),
+    });
+
+    return rows;
+}
+
 export class TushareKlineService {
     static async getKLine(options: KLineOptions): Promise<Record<string, any>[]> {
         const { symbol, klt = 101, fqt = 1, limit = 120, startDate, endDate } = options;
         const tsCode = toTsCode(symbol);
-        const apiName = getApiName(klt);
+        const apiName = getApiName(klt, tsCode);
 
         await tushareKlineThrottler.throttle();
 
@@ -60,12 +147,12 @@ export class TushareKlineService {
             };
             if (startDate) params.start_date = startDate;
             if (endDate) params.end_date = endDate;
-            rows = await tushareRequest(apiName, params);
+            rows = await tushareRequest(apiName, params, OHLC_FIELDS);
         } else {
             const params: Record<string, any> = { ts_code: tsCode };
             if (startDate) params.start_date = startDate;
             if (endDate) params.end_date = endDate;
-            rows = await tushareRequest(apiName, params);
+            rows = await tushareRequest(apiName, params, OHLC_FIELDS);
         }
 
         if (!rows || rows.length === 0) return [];
@@ -76,30 +163,35 @@ export class TushareKlineService {
             return dateA.localeCompare(dateB);
         });
 
-        const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
+        const withCurrentPeriod = await appendCurrentPeriodFromDaily(sorted, tsCode, klt);
+        const sliced = limit > 0 ? withCurrentPeriod.slice(-limit) : withCurrentPeriod;
 
+        return sliced.map(normalizeRow);
+    }
+
+    /** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
+     * 指数必须走 Tushare index_daily（ts_code 显式传，不经 getStockIdentity——
+     * 000001 会被误判为深市个股平安银行 000001.SZ）。 */
+    static async getIndexKLine(tsCode: string, limit = 120): Promise<Record<string, any>[]> {
+        await tushareKlineThrottler.throttle();
+        const rows = await tushareRequest('index_daily', { ts_code: tsCode });
+        if (!rows || rows.length === 0) return [];
+        const sorted = rows.sort((a, b) =>
+            String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
+        const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
         return sliced.map(row => {
             const close = toNumber(row.close) ?? 0;
             const preClose = toNumber(row.pre_close) ?? 0;
             const high = toNumber(row.high) ?? 0;
             const low = toNumber(row.low) ?? 0;
-            const vol = toNumber(row.vol) ?? 0;
-            const amount = toNumber(row.amount) ?? 0;
             const pctChg = toNumber(row.pct_chg) ?? (preClose > 0 ? ((close - preClose) / preClose) * 100 : 0);
-            const change = close - preClose;
-
             return {
                 '时间': String(row.trade_date || ''),
                 '开盘价': toNumber(row.open),
                 '收盘价': close,
                 '最高价': high,
                 '最低价': low,
-                '成交量': vol * 100,
-                '成交额': amount * 1000,
-                '振幅': preClose > 0 ? Math.round(((high - low) / preClose) * 10000) / 100 : 0,
                 '涨跌幅': Math.round(pctChg * 100) / 100,
-                '涨跌额': Math.round(change * 100) / 100,
-                '换手率': toNumber(row.turnover) ?? 0,
             };
         });
     }

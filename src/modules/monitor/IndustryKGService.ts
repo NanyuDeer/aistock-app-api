@@ -138,6 +138,140 @@ interface AIRelation {
     downstream: string[];
 }
 
+/**
+ * 专家人工修正表（权威行业上下游关系，按行业名精确匹配）。
+ * 优先级高于 AI 生成结果：AI 输出与下表冲突时，以本表为准；
+ * AI 生成失败时，本表作为兜底保证热门行业仍有上下游。
+ * 原则：仅收录产业链关系明确的行业；上游=原材料/零部件/设备/能源供应方，下游=应用/渠道/终端；
+ * 不收录并列、细分-父级、服务外包等非上下游关系。
+ */
+const EXPERT_INDUSTRY_RELATIONS: Record<string, AIRelation> = {
+    // ===== 医药生物 =====
+    '生物制品': { upstream: ['化学原料'], downstream: ['医院', '药店', '医药商业', '医疗美容', '体外诊断'] },
+    '化学制药': { upstream: ['化学原料', '原料药'], downstream: ['医院', '药店', '医药商业'] },
+    '中药': { upstream: ['农产品加工', '种植业与林业'], downstream: ['医院', '药店', '医药商业'] },
+    '医疗器械': { upstream: ['半导体', '电子化学品', '金属制品', '塑料制品'], downstream: ['医院', '医疗服务'] },
+    '原料药': { upstream: ['化学原料'], downstream: ['化学制药', '化学制剂'] },
+    '化学制剂': { upstream: ['原料药', '化学原料'], downstream: ['医院', '药店', '医药商业'] },
+    '医疗研发外包': { upstream: ['化学原料'], downstream: ['化学制药', '生物制品'] },
+    '疫苗': { upstream: ['生物制品', '化学原料'], downstream: ['医院', '药店', '医药商业'] },
+    '血液制品': { upstream: ['生物制品'], downstream: ['医院', '医药商业'] },
+    '体外诊断': { upstream: ['生物制品', '电子化学品', '医疗器械'], downstream: ['医院', '医疗服务'] },
+    '医疗美容': { upstream: ['生物制品', '化学制药', '医疗器械'], downstream: ['美容护理'] },
+    '医疗服务': { upstream: ['医疗器械', '生物制品', '化学制药'], downstream: ['医院'] },
+    '医院': { upstream: ['医疗器械', '化学制药', '生物制品'], downstream: [] },
+    '药店': { upstream: ['医药商业', '化学制药', '生物制品', '中药'], downstream: [] },
+    '医药商业': { upstream: ['化学制药', '生物制品', '中药'], downstream: ['药店', '医院'] },
+    '医药流通': { upstream: ['化学制药', '生物制品', '中药'], downstream: ['药店', '医院'] },
+    '动物保健': { upstream: ['化学原料', '生物制品'], downstream: ['养殖业', '生猪养殖', '肉鸡养殖'] },
+    // ===== 金属 =====
+    '贵金属': { upstream: ['工业金属'], downstream: ['饰品', '半导体', '电子化学品', '化学制品', '其他电子', '医疗器械'] },
+    '工业金属': { upstream: ['冶钢原料', '金属新材料'], downstream: ['金属制品', '汽车零部件', '家电零部件', '线缆部件及其他'] },
+    '小金属': { upstream: ['金属新材料'], downstream: ['金属新材料', '半导体材料', '电池'] },
+    '能源金属': { upstream: ['金属新材料'], downstream: ['电池', '锂电池'] },
+    '金属新材料': { upstream: ['工业金属', '小金属', '稀土'], downstream: ['半导体材料', '磁性材料', '军工装备', '其他金属新材料'] },
+    '钢铁': { upstream: ['冶钢原料'], downstream: ['金属制品', '建筑装饰', '汽车零部件', '工程机械', '轨交设备'] },
+    '特钢': { upstream: ['冶钢原料'], downstream: ['金属制品', '汽车零部件', '军工装备'] },
+    '稀土': { upstream: ['金属新材料', '小金属'], downstream: ['磁性材料', '金属新材料'] },
+    '铝': { upstream: ['工业金属', '金属新材料'], downstream: ['金属制品', '汽车零部件', '光伏设备', '家电零部件'] },
+    '铜': { upstream: ['金属新材料', '工业金属'], downstream: ['线缆部件及其他', '印制电路板', '电网设备', '电机'] },
+    '铅锌': { upstream: ['金属新材料'], downstream: ['电池', '金属制品'] },
+    '锂': { upstream: ['金属新材料'], downstream: ['锂电池', '电池化学品'] },
+    '钴': { upstream: ['金属新材料'], downstream: ['电池', '锂电池'] },
+    '镍': { upstream: ['金属新材料'], downstream: ['电池', '锂电池', '钢铁'] },
+    '钨': { upstream: ['金属新材料'], downstream: ['金属制品', '机床工具'] },
+    '钼': { upstream: ['金属新材料'], downstream: ['钢铁', '金属制品'] },
+    '磁性材料': { upstream: ['金属新材料', '稀土'], downstream: ['电机', '元件', '汽车电子电气系统'] },
+    '冶钢原料': { upstream: [], downstream: ['钢铁', '特钢'] },
+    // ===== 半导体/电子 =====
+    '半导体': { upstream: ['半导体材料', '半导体设备', '电子化学品'], downstream: ['消费电子', '计算机设备', '通信设备', '汽车电子电气系统', '其他电子'] },
+    '半导体材料': { upstream: ['电子化学品', '金属新材料'], downstream: ['半导体', '集成电路制造'] },
+    '半导体设备': { upstream: ['通用设备', '自动化设备', '机床工具'], downstream: ['半导体', '集成电路制造'] },
+    '集成电路制造': { upstream: ['半导体材料', '半导体设备', '电子化学品'], downstream: ['集成电路封测', '数字芯片设计', '模拟芯片设计'] },
+    '集成电路封测': { upstream: ['集成电路制造'], downstream: ['半导体', '消费电子'] },
+    '数字芯片设计': { upstream: ['集成电路制造', '集成电路封测'], downstream: ['消费电子', '通信设备', '计算机设备', '汽车电子电气系统'] },
+    '模拟芯片设计': { upstream: ['集成电路制造', '集成电路封测'], downstream: ['消费电子', '通信设备', '汽车电子电气系统'] },
+    '电子化学品': { upstream: ['化学原料'], downstream: ['半导体', '光伏设备', '集成电路制造', '面板'] },
+    '印制电路板': { upstream: ['铜', '电子化学品', '玻璃玻纤'], downstream: ['通信设备', '消费电子', '计算机设备', '汽车电子电气系统'] },
+    '光学光电子': { upstream: ['光学元件', '面板'], downstream: ['消费电子', '通信设备', '汽车电子电气系统'] },
+    '面板': { upstream: ['玻璃玻纤', '电子化学品'], downstream: ['消费电子', '光学光电子'] },
+    'LED': { upstream: ['半导体', '电子化学品'], downstream: ['光学光电子', '其他电子'] },
+    '消费电子': { upstream: ['半导体', '元件', '面板', '光学光电子'], downstream: ['零售', '互联网电商'] },
+    '计算机设备': { upstream: ['半导体', '元件', '印制电路板'], downstream: ['软件开发', 'IT服务', '互联网电商'] },
+    '通信设备': { upstream: ['通信线缆及配套', '印制电路板', '元件'], downstream: ['电信运营商', '通信服务'] },
+    '元件': { upstream: ['被动元件', '分立器件'], downstream: ['消费电子', '通信设备', '计算机设备', '汽车电子电气系统'] },
+    '被动元件': { upstream: ['金属新材料', '电子化学品'], downstream: ['元件', '消费电子'] },
+    '分立器件': { upstream: ['半导体'], downstream: ['元件', '消费电子', '汽车电子电气系统'] },
+    // ===== 新能源 =====
+    '光伏设备': { upstream: ['硅料硅片', '光伏辅材', '光伏加工设备'], downstream: ['新能源发电', '电力'] },
+    '硅料硅片': { upstream: ['化学原料', '金属新材料'], downstream: ['光伏电池组件', '半导体'] },
+    '光伏电池组件': { upstream: ['硅料硅片', '光伏辅材'], downstream: ['光伏设备', '新能源发电'] },
+    '逆变器': { upstream: ['元件', '半导体'], downstream: ['光伏设备', '新能源发电'] },
+    '光伏辅材': { upstream: ['玻璃玻纤', '金属新材料'], downstream: ['光伏电池组件', '光伏设备'] },
+    '风电设备': { upstream: ['风电零部件', '金属新材料'], downstream: ['新能源发电', '电力'] },
+    '风电零部件': { upstream: ['金属制品', '金属新材料'], downstream: ['风电设备'] },
+    '电池': { upstream: ['锂电池', '电池化学品', '锂电专用设备', '能源金属'], downstream: ['汽车整车', '消费电子', '其他电源设备'] },
+    '锂电池': { upstream: ['锂', '电池化学品', '锂电专用设备'], downstream: ['电池', '汽车整车'] },
+    '电池化学品': { upstream: ['化学原料'], downstream: ['锂电池', '电池'] },
+    '锂电专用设备': { upstream: ['通用设备', '自动化设备'], downstream: ['锂电池', '电池'] },
+    '其他电池': { upstream: ['电池化学品'], downstream: ['电池', '消费电子'] },
+    '电网设备': { upstream: ['输变电设备', '线缆部件及其他', '金属制品'], downstream: ['电力', '新能源发电'] },
+    '新能源发电': { upstream: ['光伏设备', '风电设备', '光伏电池组件'], downstream: ['电力'] },
+    // ===== AI/科技/军工 =====
+    '软件开发': { upstream: ['计算机设备'], downstream: ['IT服务', '互联网电商', '游戏', '数字媒体'] },
+    'IT服务': { upstream: ['软件开发', '计算机设备'], downstream: ['银行', '证券', '通信服务'] },
+    '自动化设备': { upstream: ['通用设备', '电机', '工控设备'], downstream: ['汽车整车', '电池', '半导体', '光伏设备'] },
+    '机器人': { upstream: ['自动化设备', '电机', '元件'], downstream: ['汽车整车', '消费电子', '其他专用设备'] },
+    '工控设备': { upstream: ['元件', '半导体'], downstream: ['自动化设备', '机床工具'] },
+    '激光设备': { upstream: ['光学元件', '半导体'], downstream: ['专用设备', '通用设备'] },
+    '军工装备': { upstream: ['军工电子', '金属新材料', '航天装备'], downstream: ['航空装备', '航天装备'] },
+    '军工电子': { upstream: ['半导体', '元件', '印制电路板'], downstream: ['军工装备', '航天装备', '航空装备'] },
+    '航天装备': { upstream: ['军工电子', '金属新材料'], downstream: ['军工装备'] },
+    '航空装备': { upstream: ['军工电子', '金属新材料'], downstream: ['军工装备', '机场航运'] },
+    // ===== 汽车 =====
+    '汽车整车': { upstream: ['汽车零部件', '汽车电子电气系统', '电池', '轮胎轮毂'], downstream: ['汽车服务及其他', '零售'] },
+    '汽车零部件': { upstream: ['金属制品', '橡胶制品', '塑料制品', '钢铁'], downstream: ['汽车整车'] },
+    '汽车电子电气系统': { upstream: ['半导体', '元件', '印制电路板'], downstream: ['汽车整车', '汽车零部件'] },
+    '轮胎轮毂': { upstream: ['橡胶制品', '金属制品'], downstream: ['汽车整车', '汽车零部件'] },
+    // ===== 消费 =====
+    '白酒': { upstream: ['农产品加工'], downstream: ['零售', '贸易'] },
+    '白酒Ⅲ': { upstream: ['农产品加工'], downstream: ['零售', '贸易'] },
+    '饮料制造': { upstream: ['食品加工制造', '农产品加工'], downstream: ['零售', '贸易'] },
+    '食品加工制造': { upstream: ['农产品加工', '养殖业', '种植业与林业'], downstream: ['零售', '贸易'] },
+    '白色家电': { upstream: ['家电零部件', '金属制品'], downstream: ['零售', '互联网电商'] },
+    '家电零部件': { upstream: ['金属制品', '电机', '塑料制品'], downstream: ['白色家电', '黑色家电'] },
+    // ===== 能源/原材料/化工 =====
+    '电力': { upstream: ['煤炭开采加工', '油气开采及服务', '新能源发电', '电网设备'], downstream: ['工业金属', '化学原料', '半导体', '汽车整车'] },
+    '煤炭开采加工': { upstream: ['煤炭开采', '油服工程'], downstream: ['电力', '钢铁', '水泥', '煤化工'] },
+    '油气开采及服务': { upstream: ['油服工程'], downstream: ['石油加工贸易', '石油加工'] },
+    '石油加工贸易': { upstream: ['油气开采及服务'], downstream: ['化学原料', '化学纤维', '物流'] },
+    '化学原料': { upstream: ['石油加工贸易', '煤炭开采加工'], downstream: ['化学制品', '化学制药', '生物制品', '电子化学品', '电池化学品'] },
+    '化学制品': { upstream: ['化学原料'], downstream: ['塑料制品', '橡胶制品', '纺织化学用品'] },
+    '水泥': { upstream: ['煤炭开采加工', '电力'], downstream: ['建筑材料', '建筑装饰', '基础建设'] },
+    '玻璃玻纤': { upstream: ['纯碱', '电力'], downstream: ['建筑材料', '面板', '光伏辅材', '汽车零部件'] },
+    '建筑材料': { upstream: ['水泥', '玻璃玻纤', '耐火材料'], downstream: ['建筑装饰', '基础建设', '房屋建设'] },
+    '建筑装饰': { upstream: ['建筑材料', '装饰园林', '工程咨询服务'], downstream: ['房地产', '房屋建设'] },
+    '工程机械': { upstream: ['钢铁', '金属制品', '电机'], downstream: ['基础建设', '房地产', '建筑装饰'] },
+    '机床工具': { upstream: ['金属制品', '工控设备'], downstream: ['通用设备', '专用设备', '汽车零部件'] },
+    '通用设备': { upstream: ['机床工具', '钢铁', '电机'], downstream: ['专用设备', '自动化设备', '半导体设备', '锂电专用设备'] },
+    '专用设备': { upstream: ['通用设备', '钢铁'], downstream: ['光伏设备', '半导体设备', '煤炭开采加工'] },
+    // ===== 纺织/化工 =====
+    '化学纤维': { upstream: ['石油加工贸易'], downstream: ['纺织制造', '涤纶', '粘胶'] },
+    '涤纶': { upstream: ['化学纤维', '石油加工贸易'], downstream: ['纺织制造'] },
+    '粘胶': { upstream: ['化学纤维', '石油加工贸易'], downstream: ['纺织制造'] },
+    '纺织制造': { upstream: ['化学纤维'], downstream: ['服装家纺', '纺织服装设备'] },
+    '服装家纺': { upstream: ['纺织制造'], downstream: ['零售', '互联网电商'] },
+    '造纸': { upstream: ['林业', '化学原料'], downstream: ['包装印刷', '印刷', '包装'] },
+    '包装印刷': { upstream: ['造纸', '塑料制品'], downstream: ['食品加工制造', '饮料制造', '化妆品'] },
+    // ===== 农/食 =====
+    '种植业与林业': { upstream: [], downstream: ['农产品加工', '食品加工制造', '造纸'] },
+    '农产品加工': { upstream: ['种植业与林业', '养殖业'], downstream: ['食品加工制造', '饮料制造', '中药'] },
+    '养殖业': { upstream: ['畜禽饲料', '水产饲料', '动物保健'], downstream: ['农产品加工', '食品加工制造'] },
+    '生猪养殖': { upstream: ['畜禽饲料', '动物保健'], downstream: ['农产品加工', '肉制品'] },
+    '肉制品': { upstream: ['生猪养殖', '肉鸡养殖', '农产品加工'], downstream: ['零售', '贸易'] },
+    '畜禽饲料': { upstream: ['农产品加工', '化学原料'], downstream: ['养殖业', '生猪养殖', '肉鸡养殖'] },
+};
+
 async function aiGenerateChainBatch(
     batch: string[],
     allNames: string[],
@@ -149,7 +283,9 @@ async function aiGenerateChainBatch(
     const chatUrl = apiBase.includes('/chat/completions') ? apiBase : `${apiBase}/chat/completions`;
     const model = process.env.AI_MODEL || 'gpt-4o-mini';
 
-    const prompt = `你是一位资深A股行业分析师，熟悉同花顺行业分类体系。请为以下行业确定其上游和下游行业。
+    const prompt = `你是一位资深A股行业分析师，熟悉同花顺行业分类体系（881xxx为二级行业，884xxx为三级细分行业）。
+
+请为以下行业确定其上游和下游行业。
 
 参考行业名称列表（请仅使用此列表中的名称，必须精确匹配，包括后缀如"Ⅲ"或"(A股)"）：
 ${allNames.join('、')}
@@ -160,13 +296,22 @@ ${batch.map((n, i) => `${i + 1}. ${n}`).join('\n')}
 返回JSON格式，key为行业名称（必须与参考列表精确一致），value为{"upstream": [...], "downstream": [...]}。
 
 规则：
-1. 上游行业：该行业的原材料、零部件、设备供应商所属行业
-2. 下游行业：该行业产品的应用领域、客户所属行业
-3. 仅使用参考列表中的行业名称，必须精确匹配（包括"Ⅲ"、"(A股)"等后缀），不要省略或改写
-4. 如果某行业无明确上下游，返回空数组
-5. 每个行业的上下游各不超过5个
-6. 只返回JSON，不要其他文字
-7. 确保JSON格式完全正确，不要有多余逗号或注释`;
+1. 上游行业：该行业生产所需的原材料、零部件、设备、能源等供应方所属行业
+2. 下游行业：该行业产品的应用领域、销售渠道、终端客户所属行业
+3. 严禁把以下关系当作上下游：
+   - 并列/同业关系（如"化学制药"与"生物制品"、"铝"与"铜"）
+   - 细分与父级关系（如"疫苗"是"生物制品"的细分，"半导体材料"是"半导体"产业链细分——细分行业不要列为其父级的上下游）
+   - 服务外包关系（如"医疗研发外包"是医药行业的服务商）
+   - 仅因资金/概念同涨跌而相关的行业
+4. 仅使用参考列表中的行业名称，必须精确匹配（包括"Ⅲ"、"(A股)"等后缀），不要省略或改写
+5. 如果某行业无明确上下游，返回空数组
+6. 每个行业的上下游各不超过5个
+7. 只返回JSON，不要其他文字
+8. 确保JSON格式完全正确，不要有多余逗号或注释
+
+参考示例：
+对于"半导体"（二级）：upstream应为["半导体材料","半导体设备","电子化学品"]；downstream应为["消费电子","计算机设备","通信设备","汽车电子电气系统"]
+对于"生物制品"（二级）：upstream应为["化学原料"]；downstream应为["医院","药店","医药商业"]（"疫苗""血液制品"是其细分，不要列为上下游）`;
 
     const resp = await sessionFetch(chatUrl, {
         method: 'POST',
@@ -221,7 +366,29 @@ export class IndustryKGService {
     static async initialize(): Promise<void> {
         const cached = readCacheFile('full_graph.json');
         if (cached) {
+            // 修复：full_graph.json 的文件 mtime 会被 loadLeadingStocksInBackground 重写刷新，
+            // 导致按 mtime 判断的 15 天 TTL 永远不触发、AI 边永不更新。
+            // 改用缓存内部的 updateTime 判断真实数据年龄。
+            const updateTime = typeof cached.updateTime === 'string' ? new Date(cached.updateTime).getTime() : 0;
+            if (Number.isNaN(updateTime) || Date.now() - updateTime > FIFTEEN_DAYS) {
+                console.log(`[IndustryKG] full_graph 数据已过期（updateTime=${cached.updateTime}，超过${FIFTEEN_DAYS / 86400000}天），强制重建图谱`);
+                await this.rebuild(true);
+                return;
+            }
+
             this.fullGraph = cached;
+
+            // 专家表修正：缓存边也统一应用专家覆盖（幂等），保证专家表行业永远正确
+            // （AI 生成/缓存加载都走 applyExpertEdges，避免缓存路径绕过专家表）
+            const industries = cached.industries || [];
+            const fixedEdges = this.applyExpertEdges(cached.edges || [], industries);
+            if (fixedEdges.length !== (cached.edges || []).length) {
+                cached.edges = fixedEdges;
+                cached.edgeCount = fixedEdges.length;
+                writeCacheFile('full_graph.json', cached);
+                console.log(`[IndustryKG] 缓存加载后应用专家修正表: ${cached.edgeCount}条边`);
+            }
+
             console.log(`[IndustryKG] 从缓存加载: ${cached.industryCount}个行业, ${cached.edgeCount}条边, ${cached.conceptCount}个概念`);
 
             // 检查龙头股是否为空，如果为空则后台补充加载（不阻塞启动）
@@ -258,7 +425,7 @@ export class IndustryKGService {
     /**
      * 重建知识图谱（半月更新/手动触发）
      */
-    static async rebuild(): Promise<KGFullGraph> {
+    static async rebuild(force = false): Promise<KGFullGraph> {
         if (this.building) {
             throw new Error('知识图谱正在构建中，请稍后');
         }
@@ -274,10 +441,12 @@ export class IndustryKGService {
             // 2. AI生成上下游关系
             let aiEdges: KGEdge[] = [];
             try {
-                aiEdges = await this.buildAIEdges(industries);
+                aiEdges = await this.buildAIEdges(industries, force);
                 console.log(`[IndustryKG] AI生成${aiEdges.length}条边`);
             } catch (err: any) {
-                console.warn(`[IndustryKG] AI生成上下游关系失败: ${err?.message || err}`);
+                console.warn(`[IndustryKG] AI生成上下游关系失败: ${err?.message || err}，使用专家修正表兜底`);
+                aiEdges = this.applyExpertEdges([], industries);
+                console.log(`[IndustryKG] 专家修正表兜底: ${aiEdges.length}条边`);
             }
 
             // 3. 双向一致性校验
@@ -878,11 +1047,18 @@ export class IndustryKGService {
     /**
      * AI批量生成上下游边
      */
-    private static async buildAIEdges(industries: KGIndustryNode[]): Promise<KGEdge[]> {
-        const cached = readCacheFile('ai_edges.json');
-        if (cached) {
-            console.log(`[IndustryKG] 从缓存加载AI边: ${cached.length}条`);
-            return cached;
+    private static async buildAIEdges(industries: KGIndustryNode[], force = false): Promise<KGEdge[]> {
+        if (!force) {
+            const cached = readCacheFile('ai_edges.json');
+            if (cached) {
+                console.log(`[IndustryKG] 从缓存加载AI边: ${cached.length}条`);
+                const withExpert = this.applyExpertEdges(cached, industries);
+                if (withExpert.length !== cached.length) {
+                    console.log(`[IndustryKG] 专家修正表覆盖后: ${withExpert.length}条边`);
+                    writeCacheFile('ai_edges.json', withExpert);
+                }
+                return withExpert;
+            }
         }
 
         const allNames = industries.map(i => i.name);
@@ -970,8 +1146,52 @@ export class IndustryKGService {
         }
 
         console.log(`[IndustryKG] AI生成完成: ${successCount}个行业有关联, ${edges.length}条边`);
-        writeCacheFile('ai_edges.json', edges);
-        return edges;
+        const withExpert = this.applyExpertEdges(edges, industries);
+        console.log(`[IndustryKG] 专家修正后: ${withExpert.length}条边`);
+        writeCacheFile('ai_edges.json', withExpert);
+        return withExpert;
+    }
+
+    /**
+     * 应用专家人工修正表：覆盖专家表行业的全部 AI 边，替换为权威上下游关系。
+     * 幂等操作：缓存加载与重新生成统一走这里，保证专家表永远生效。
+     */
+    private static applyExpertEdges(edges: KGEdge[], industries: KGIndustryNode[]): KGEdge[] {
+        const nameToId = new Map(industries.map(i => [i.name, i.id]));
+        const coveredIds = new Set<string>();
+        const expertEdges: KGEdge[] = [];
+        const edgeSet = new Set<string>();
+
+        for (const [indName, rel] of Object.entries(EXPERT_INDUSTRY_RELATIONS)) {
+            const indId = nameToId.get(indName);
+            if (!indId) continue;
+            coveredIds.add(indId);
+
+            for (const upName of rel.upstream) {
+                const upId = nameToId.get(upName);
+                if (!upId || upId === indId) continue;
+                const key = `${upId}->${indId}`;
+                if (!edgeSet.has(key)) {
+                    edgeSet.add(key);
+                    expertEdges.push({ source: upId, target: indId, confidence: 'ai_strong', direction: 'upstream' });
+                }
+            }
+            for (const downName of rel.downstream) {
+                const downId = nameToId.get(downName);
+                if (!downId || downId === indId) continue;
+                const key = `${indId}->${downId}`;
+                if (!edgeSet.has(key)) {
+                    edgeSet.add(key);
+                    expertEdges.push({ source: indId, target: downId, confidence: 'ai_strong', direction: 'upstream' });
+                }
+            }
+        }
+
+        // 移除被专家覆盖行业的所有 AI 边，替换为专家权威边
+        const keptAiEdges = edges.filter(e => !coveredIds.has(e.source) && !coveredIds.has(e.target));
+
+        // 合并去重（专家边与保留 AI 边不冲突：专家行业已被完全过滤）
+        return [...expertEdges, ...keptAiEdges];
     }
 
     /**

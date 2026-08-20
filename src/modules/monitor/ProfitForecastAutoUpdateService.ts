@@ -218,6 +218,7 @@ export class ProfitForecastAutoUpdateService {
                             summary: summary || '机构业绩预测数据已更新',
                             targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
                             payload: { updateTime },
+                            occurredAt: new Date().toISOString(),
                         });
                     } catch (error) {
                         console.warn('[ProfitForecastAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));

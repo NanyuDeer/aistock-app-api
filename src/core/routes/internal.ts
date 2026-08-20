@@ -23,11 +23,15 @@ import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { verifyJwt } from '../../shared/utils/jwt'
+import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist'
 // MarketSnapshotService 通过 namespace 导入：路由调用 MarketSnapshotService.getTodayCloseSnapshot()，
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
+import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
 const VALID_REPORT_TYPES = [
@@ -91,6 +95,23 @@ function extractChainSummary(content: unknown): ChainSummaryItem[] {
         .sort((a, b) => b.impactStrength - a.impactStrength)
         .slice(0, 5)
 }
+
+/**
+ * 事件卡片展示过滤条件（展示层，仅用于 GET /api/agent/event/list，不删除任何数据）。
+ *
+ * 判断"事件整体结论"而非 chain 是否含 bullish/bearish：
+ * 1. transmission.chain 非空（chain 为空 = 未形成明确行业传导 → 不展示）
+ * 2. event_investment.rating != 'neutral'（rating 为系统定义的"事件整体方向"：
+ *    positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性）
+ *    - rating 缺失（event_investment 为 null，如旧数据/LLM Call4 失败）视为非中性，
+ *      避免误杀 chain 有明确方向的正常事件
+ *    - chain 中存在 neutral/bearish 节点不影响展示，只要整体结论非中性即可
+ * 说明：不通过 investment.focusIndustries 是否为空判断；不影响详情接口与落库数据。
+ */
+const EVENT_LIST_DISPLAY_FILTER_SQL = `
+  AND jsonb_typeof(content->'analysis_reports'->'event_transmission'->'chain') = 'array'
+  AND jsonb_array_length(content->'analysis_reports'->'event_transmission'->'chain') > 0
+  AND (content->'analysis_reports'->'event_investment'->>'rating') IS DISTINCT FROM 'neutral'`;
 
 const router: Router = Router()
 
@@ -161,6 +182,74 @@ router.get('/health', (_req: Request, res: Response) => {
 router.use(verifyInternalToken)
 
 /**
+ * GET /internal/ths/index-map
+ * 同花顺 885/886 板块指数全表（板块名 → ts_code 映射，进程缓存 + 6h TTL）。
+ *
+ * 供 Python Agent 预测验证器（M2 roadmap）板块名匹配用。
+ *
+ * - 200: { code: 200, data: { ts_codes: [{ ts_code, name, count, exchange, list_date, type }], updated_at } }
+ * - 502: 取数失败
+ */
+router.get('/ths/index-map', async (_req: Request, res: Response) => {
+    try {
+        const data = await getIndexMap()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/index-map error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/ths/resolve
+ * 板块名 → ts_code 三级匹配（归一化精确 → 归一化双向包含 → 未命中 null）。
+ * 归一化：去空格/全角括号、剥「概念/板块/行业/产业链」后缀、小写。
+ *
+ * - 200: { code: 200, data: { matched: { ts_code, name } | null } }（未命中 matched: null，非 404）
+ * - 400: name 缺失或为空
+ * - 502: 服务异常
+ */
+router.get('/ths/resolve', async (req: Request, res: Response) => {
+    const name = String(req.query.name || '').trim()
+    if (!name) return res.status(400).json({ code: 400, message: 'name 必填' })
+    try {
+        const matched = await resolveBoardName(name)
+        res.json({ code: 200, data: { matched } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/resolve error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+const CODE_RE = /^\d{6}\.TI$/i
+
+/**
+ * GET /internal/ths/:code/daily
+ * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
+ *
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
+ * - 502: 服务异常
+ */
+router.get('/ths/:code/daily', async (req: Request, res: Response) => {
+    const code = String(req.params.code || '').toUpperCase()
+    const start = String(req.query.start || '')
+    const end = String(req.query.end || '')
+    const YM = /^\d{8}$/
+    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    }
+    try {
+        const rows = await getBoardDailyRange(code, start, end)
+        res.json({ code: 200, data: { ts_code: code, days: rows.length, rows } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/${code}/daily error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/quote/:symbol
  * 个股实时行情（腾讯数据源）
  */
@@ -220,6 +309,63 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
         res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
     } catch (err: unknown) {
         console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
+ * 指数必须走 index_daily（Tushare），且不经 getStockIdentity——000001 会被误判为深市个股。
+ * - 200: { code: 200, data: { code, klt: 101, days, rows } }
+ * - 400: code 不在指数映射 / days 非 1-200 整数
+ * - 502: 服务异常
+ */
+const INDEX_CODE_TO_TS: Record<string, string> = {
+    '000001': '000001.SH', // 上证指数
+    '000300': '000300.SH', // 沪深300
+    '000688': '000688.SH', // 科创50
+    '399001': '399001.SZ', // 深证成指
+    '399006': '399006.SZ', // 创业板指
+}
+
+router.get('/index/:code/kline', async (req: Request, res: Response) => {
+    const code = param(req, 'code')
+    const tsCode = INDEX_CODE_TO_TS[code]
+    if (!tsCode) {
+        return res.status(400).json({ code: 400, message: 'Invalid index code — 支持: 000001/000300/000688/399001/399006' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 200) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-200 的整数' })
+    }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（H9 向后兼容）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
+    try {
+        // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
+        const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { code, klt: 101, days: filtered.length, rows: filtered } })
+    } catch (err: unknown) {
+        console.error(`[Internal] index/${code}/kline error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -661,6 +807,37 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/industry/graph
+ * 读取 IndustryKG 全图快照（B-5，裁决书 B 论题）。
+ * 供 Python build_iterate_cases 产片时采集 window_before.industry_graph
+ * （get_industry_graph_full）：返回 chains（上下游边）+ graph_update_time。
+ * 注意：必须在 /industry/:name/chain 之后注册不冲突（路径段数不同）；
+ * 图谱未初始化 → 502，采集侧降级 None 不阻断产片。
+ */
+router.get('/industry/graph', async (_req: Request, res: Response) => {
+    try {
+        const graph = IndustryKGService.getFullGraph()
+        res.json({
+            code: 200,
+            data: {
+                chains: graph.edges.map((edge) => ({
+                    source: edge.source,
+                    target: edge.target,
+                    confidence: edge.confidence,
+                })),
+                graph_update_time: graph.updateTime,
+                industry_count: graph.industryCount,
+                edge_count: graph.edgeCount,
+                concept_count: graph.conceptCount,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industry/graph error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/institution-research/history
  * 机构调研推荐热门股历史记录（从数据库查询，分页）
  *
@@ -711,15 +888,20 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  * GET /internal/market/close-snapshot
  * 当日 A 股大盘收盘事实快照（供 Python Agent 拉取当日收盘事实）
  *
+ * 可选 query 参数：?date=YYYY-MM-DD（历史交易日回补；缺省 = 当日）。
+ *
  * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
  * - 409：服务未就绪，data 含 status 与 reason：
- *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / 指数数据延迟
+ *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / date 格式非法 / 指数数据延迟
  *   - status='incomplete' + reason='incomplete_daily_coverage'：已收盘但 daily 覆盖残缺
  * - 502：其它意外异常（沿用既有 502 约定）
  */
-router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
+router.get('/market/close-snapshot', async (req: Request, res: Response) => {
+    const dateParam = queryStr(req, 'date')
     try {
-        const data = await MarketSnapshotService.getTodayCloseSnapshot()
+        const data = dateParam
+            ? await MarketSnapshotService.getCloseSnapshotByDate(dateParam)
+            : await MarketSnapshotService.getTodayCloseSnapshot()
         res.json({ code: 200, data })
     } catch (err: unknown) {
         if (err instanceof MarketSnapshotUnavailableError) {
@@ -1714,6 +1896,71 @@ publicRouter.get('/broadcast/:briefType/:date', async (req: Request, res: Respon
 })
 
 /**
+ * GET /api/agent/report/chat/:reportId
+ * 深度分析报告详情（公开接口，需 JWT Bearer 鉴权）
+ *
+ * chat_analysis 是私密对话内容（非 alert 等公开数据），report_id 自增主键可枚举，
+ * 必须服务端验签：user_id 取 token 的 openid（绝不信客户端参数，硬约束 6）。
+ * 不存在/非本人/过期（7 天 TTL）→ data: null，不泄露存在性。
+ *
+ * 注意：必须注册在 /report/:intent/:date 通用端点之前（Express 按注册顺序匹配，
+ * 否则 /report/chat/5 会被通用端点捕获 → intent='chat'、date='5' → 400）。
+ */
+publicRouter.get('/report/chat/:reportId', async (req: Request, res: Response) => {
+    // 鉴权：Bearer 优先、Cookie token= 兜底（与 requireAuth 提取逻辑同源，tokenBlacklist.extractTokenFromRequest）
+    const token = extractTokenFromRequest(req)
+    if (!token) {
+        res.status(401).json({ code: 401, message: '未登录' })
+        return
+    }
+    const payload = verifyJwt(token, process.env.JWT_SECRET!)
+    if (!payload) {
+        res.status(401).json({ code: 401, message: 'token 无效或已过期' })
+        return
+    }
+    // token-revocation Step 2：验签通过后查黑名单（命中即拒绝）
+    if (await isTokenRevoked(payload.jti)) {
+        res.status(401).json({ code: 401, message: REVOKED_MESSAGE })
+        return
+    }
+
+    const reportId = param(req, 'reportId')
+    if (!/^\d+$/.test(reportId)) {
+        res.status(400).json({ code: -1, message: `Invalid report_id: ${reportId}` })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                    generation_time_ms, model_version,
+                    created_at AT TIME ZONE 'UTC' AS created_at
+             FROM agent_analysis_reports
+             WHERE id = $1
+               AND report_type = 'chat_analysis'
+               AND user_id = $2
+               AND (expires_at IS NULL OR expires_at > NOW())
+             LIMIT 1`,
+            [reportId, payload.openid]
+        )
+        const row = result.rows.length > 0 ? result.rows[0] : null
+        // 不存在/非本人/过期 → data: null（不泄露存在性）
+        let data: unknown = null
+        if (row) {
+            if (row.content) {
+                row.content = cleanReportContent(row.content as Record<string, unknown>)
+            }
+            // id 为 BIGSERIAL，pg 返回 string，归一为 Number（repo 既有约定，见 usage 聚合注释）
+            data = { ...row, id: Number(row.id) }
+        }
+        res.json({ code: 0, data })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report/chat GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
  * GET /api/agent/report/:intent/:date
  * 获取 Agent 分析报告（公开接口，供前端调用）
  *
@@ -1963,6 +2210,13 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
     const page = Math.max(1, queryInt(req, 'page', 1))
     const pageSize = Math.min(Math.max(1, queryInt(req, 'pageSize', 10)), 100)
     const offset = (page - 1) * pageSize
+    // 可选事件类型筛选（2026-08-14，方案A：服务端筛选 + 服务端分页）：
+    // eventType 有值时在 WHERE 增加 content->>'event_type' = eventType，
+    // 先筛选再 ORDER BY / LIMIT / OFFSET；SELECT 与 COUNT 使用同一条件。
+    // 不传 eventType 时保持原行为（不追加条件、不追加参数）。
+    const eventType = (queryStr(req, 'eventType') || '').trim()
+    const eventTypeCond = (placeholder: string): string =>
+        eventType ? ` AND content->>'event_type' = ${placeholder}` : ''
 
     try {
         const [dataResult, countResult, giResult] = await Promise.all([
@@ -1972,17 +2226,18 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                    SELECT DISTINCT ON (user_id)
                      id, report_date, user_id, content, created_at
                    FROM agent_analysis_reports
-                   WHERE report_type = 'event_conduction'
+                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$3')}
                    ORDER BY user_id, created_at DESC
                  ) AS deduped
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2`,
-                [pageSize, offset]
+                eventType ? [pageSize, offset, eventType] : [pageSize, offset]
             ),
             pool.query(
                 `SELECT COUNT(DISTINCT user_id) AS total
                  FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'`
+                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$1')}`,
+                eventType ? [eventType] : []
             ),
             // 查询最新的 global_importance 报告
             pool.query(
@@ -2130,6 +2385,146 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
         })
     } catch (err: unknown) {
         console.error('[Public] agent/event/:eventId error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+// =============================================================================
+// 交易日历查询（公开）
+// 供前端在"前一天/后一天"跳档时跳过非交易日，以及首页"市场洞见"取最近交易日。
+// 工作日历以服务端 TradingCalendarService 为权威（周末 + 官方休市日历），
+// 避免前端各自维护节假日表导致不一致。挂 /api/agent/*，与报告查询等公开接口同源。
+// =============================================================================
+
+function tradingCalendarDateParam(req: Request): string | undefined {
+    const date = queryStr(req, 'date')
+    return date && isCalendarDate(date) ? date : undefined
+}
+
+/** GET /api/agent/trading-calendar/previous?date=YYYY-MM-DD → 严格早于 date 的前一个交易日 */
+publicRouter.get('/trading-calendar/previous', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const prev = TradingCalendarService.getPreviousTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: prev.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/previous error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/next?date=YYYY-MM-DD → 严格晚于 date 的下一个交易日 */
+publicRouter.get('/trading-calendar/next', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const next = TradingCalendarService.getNextTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: next.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/next error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/recent?date=YYYY-MM-DD&count=N → 截至 date 最近 N 个交易日（含当天，若当天为交易日） */
+publicRouter.get('/trading-calendar/recent', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    const count = Math.min(Math.max(queryInt(req, 'count', 3), 1), 10)
+    try {
+        const days = TradingCalendarService.getRecentTradingDays(new Date(`${date}T00:00:00.000Z`), count)
+        res.json({ code: 0, data: days.map(d => d.toISOString().slice(0, 10)) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/recent error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/**
+ * GET /api/agent/event/:eventId/article
+ * 事件原文 — 前端 APP 内展示的源网页正文。
+ *
+ * 逻辑：
+ *   1. 按 eventId 查询 event_conduction 报告，取 content.source（原文 URL）。
+ *   2. 从 source 解析财联社 newsId（https://www.cls.cn/detail/{id}）。
+ *   3. 调 ClsStockNewsService.getNewsFulltext(id) 拉正文。
+ *   返回 { title, source, publishTime, content, sourceUrl }。
+ *
+ * 异常友好降级：无 source / 无 newsId / 正文获取失败。
+ */
+publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT content, report_date, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'event_conduction' AND user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [eventId]
+        )
+
+        if (result.rows.length === 0) {
+            res.status(404).json({ code: -1, message: 'Event not found' })
+            return
+        }
+
+        const content = (result.rows[0]['content'] as Record<string, unknown>) || {}
+        const source = String(content['source'] || '').trim()
+
+        // 无原文 URL → 友好错误
+        if (!source) {
+            res.status(422).json({ code: -1, message: '该事件暂无可展示的原文链接' })
+            return
+        }
+
+        // 从财联社详情 URL 解析 newsId：https://www.cls.cn/detail/{newsId}
+        const newsIdMatch = source.match(/cls\.cn\/detail\/(\d+)/)
+        if (!newsIdMatch?.[1]) {
+            // 非财联社来源：先尝试把整个 URL 当 newsId 数字源（非数字则判为无正文）
+            res.status(422).json({ code: -1, message: '暂不支持该来源的原文正文展示' })
+            return
+        }
+        const newsId = newsIdMatch[1]
+
+        try {
+            const fulltext = await ClsStockNewsService.getNewsFulltext(newsId)
+            if (!fulltext || !fulltext.content) {
+                res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
+                return
+            }
+
+            res.json({
+                code: 0,
+                data: {
+                    title: fulltext.title || content['title'] || '',
+                    source: content['source_name'] || source,
+                    publishTime: content['publishTime'] || result.rows[0]['report_date'] || '',
+                    content: fulltext.content,
+                    sourceUrl: source,
+                },
+            })
+        } catch (err: unknown) {
+            console.error(`[Public] agent/event/:eventId/article fulltext error:`, errMsg(err))
+            res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
+        }
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/:eventId/article error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
     }
 })

@@ -55,11 +55,11 @@ export class UserController {
         const user = userResult.rows[0];
 
         const stocksResult = await pool.query(
-            `SELECT us.symbol, s.name, s.market, us.created_at
+            `SELECT us.symbol, s.name, s.market, us.created_at, us.sort_order
              FROM user_stocks us
              LEFT JOIN stocks s ON us.symbol = s.symbol
              WHERE us.openid = $1
-             ORDER BY us.created_at DESC`,
+             ORDER BY us.sort_order ASC, us.created_at DESC`,
             [openid],
         );
 
@@ -73,6 +73,7 @@ export class UserController {
                 股票简称: s.name || null,
                 市场代码: s.market || null,
                 添加时间: s.created_at || null,
+                排序: s.sort_order ?? 0,
             })),
         });
     }
@@ -100,11 +101,11 @@ export class UserController {
         }
 
         const stocksResult = await pool.query(
-            `SELECT us.symbol, s.name, s.market, us.created_at
+            `SELECT us.symbol, s.name, s.market, us.created_at, us.sort_order
              FROM user_stocks us
              LEFT JOIN stocks s ON us.symbol = s.symbol
              WHERE us.openid = $1
-             ORDER BY us.created_at DESC`,
+             ORDER BY us.sort_order ASC, us.created_at DESC`,
             [openid],
         );
 
@@ -118,6 +119,7 @@ export class UserController {
                 股票简称: s.name || null,
                 市场代码: s.market || null,
                 添加时间: s.created_at || null,
+                排序: s.sort_order ?? 0,
             })),
         });
     }
@@ -144,10 +146,18 @@ export class UserController {
             return;
         }
 
+        // 新加入的自选股放到列表末尾：sort_order = 当前最大 +1（老数据未迁移时为 0，天然靠前）
+        const maxOrderResult = await pool.query(
+            'SELECT COALESCE(MAX(sort_order), 0)::int AS max_order FROM user_stocks WHERE openid = $1',
+            [openid],
+        );
+        let nextOrder = (maxOrderResult.rows[0]?.max_order ?? 0) + 1;
         for (const sym of validSymbols) {
+            // 已存在的自选股不改变其顺序，仅新增的按序分配
             await pool.query(
-                'INSERT INTO user_stocks (openid, symbol) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-                [openid, sym],
+                `INSERT INTO user_stocks (openid, symbol, sort_order) VALUES ($1, $2, $3)
+                 ON CONFLICT (openid, symbol) DO NOTHING`,
+                [openid, sym, nextOrder++],
             );
         }
 
@@ -186,6 +196,35 @@ export class UserController {
         }
 
         UserController.log('removeFavorites', '✅ 删除完成', { openid, count: validSymbols.length });
+        await UserController.buildFavoritesResponse(res, openid);
+    }
+
+    /** 保存自选股拖拽排序：body { symbols: string[] }，按数组顺序写入 sort_order（0 起） */
+    static async saveFavoritesOrder(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        UserController.log('saveFavoritesOrder', '收到保存自选股排序请求');
+
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const { openid } = auth;
+
+        const symbols = UserController.extractSymbols(req);
+        if (symbols.length === 0) {
+            createResponse(res, 400, '缺少 symbols 参数');
+            return;
+        }
+
+        // 只更新该用户自选内的 symbol；不在自选中的忽略（防篡改/越权）
+        for (let i = 0; i < symbols.length; i++) {
+            await pool.query(
+                'UPDATE user_stocks SET sort_order = $1 WHERE openid = $2 AND symbol = $3',
+                [i, openid, symbols[i]],
+            );
+        }
+
+        UserController.log('saveFavoritesOrder', '✅ 排序保存完成', { openid, count: symbols.length });
         await UserController.buildFavoritesResponse(res, openid);
     }
 

@@ -120,10 +120,13 @@ export function initChatBridge(server: Server, options: ChatBridgeOptions): WebS
       }
     });
 
-    // 4. 上游 → 前端：字节流原样透传（intermediate/tool_start/text/done/reasoning/cards 一字不改）
-    upstream.on('message', (data: Buffer) => {
+    // 4. 上游 → 前端：字节流原样透传（intermediate/tool_start/text/done/reasoning/cards 一字不改）。
+    //    必须显式保留帧类型 { binary: isBinary }——ws 库 message 回调的 data 恒为 Buffer，
+    //    若直接 clientWs.send(data) 会默认按二进制帧发送，把上游文本帧（send_json）转成二进制帧，
+    //    浏览器端 JSON.parse(Blob) 失败 → 对话回答为空（2026-08-16 线上故障根因）。
+    upstream.on('message', (data: Buffer, isBinary: boolean) => {
       if (clientWs.readyState === WebSocket.OPEN) {
-        clientWs.send(data);
+        clientWs.send(data, { binary: isBinary });
       }
     });
 

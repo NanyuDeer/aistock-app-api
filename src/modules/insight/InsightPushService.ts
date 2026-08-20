@@ -7,6 +7,7 @@
 //   默认开启（未配置或 enabled != 0），与旧推送模块 isPushEnabled 语义一致。
 import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
+import { NotificationService } from '../../core/notification/NotificationService';
 
 /** 置信度数字化映射（用于 isSubstantiveChange 升级判定） */
 const CONF_LEVEL: Record<string, number> = { low: 0, medium: 1, high: 2, unconfirmed: -1 };
@@ -19,6 +20,7 @@ interface InsightPushRow {
     primary_driver: { label?: string } | null;
     attribution_status: string;
     confidence: string;
+    created_at: Date | string;
     /** 飞书 open_id（user_subscriptions 解析，未绑定/非订阅为 null），飞书通道仅对非空值下发 */
     feishu_open_id: string | null;
 }
@@ -54,7 +56,7 @@ export async function isSubstantiveChange(
  */
 export async function pushWithKind(eventId: string, kind: string): Promise<number> {
     const { rows } = await pool.query(
-        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
+        `SELECT DISTINCT u.openid, e.symbol, e.stock_name, e.created_at, r.primary_driver, r.attribution_status, r.confidence, fs.feishu_open_id
          FROM watchlist_insight_events e
          JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
          JOIN user_stocks us ON us.symbol = e.symbol
@@ -72,6 +74,26 @@ export async function pushWithKind(eventId: string, kind: string): Promise<numbe
         const content = `【自选股洞察】${r.stock_name}(${r.symbol}) ${label} · 置信度 ${r.confidence}`;
         // WS 定向推送（WebSocket 无持久化去重，连接关闭时自然收不到）
         pushAlertToUser(r.openid, { type: 'insight.created', eventId, content, symbol: r.symbol });
+        try {
+            await NotificationService.createForUser(r.openid, {
+                category: 'insight',
+                sourceKey: `insight:${eventId}:${kind}`,
+                symbol: r.symbol,
+                stockName: r.stock_name,
+                title: `${r.stock_name}：${kind === 'updated' ? '自选股洞察更新' : '自选股洞察'}`,
+                summary: content,
+                targetPath: `/modules/favorites/pages/insight-detail?event_id=${encodeURIComponent(eventId)}`,
+                payload: {
+                    eventId,
+                    kind,
+                    confidence: r.confidence,
+                    attributionStatus: r.attribution_status,
+                },
+                occurredAt: new Date(r.created_at).toISOString(),
+            });
+        } catch (error) {
+            console.warn('[Insight] App notification failed:', error instanceof Error ? error.message : String(error));
+        }
         // 微信 + 飞书（复用现有推送基础设施，幂等去重走 push_records，kind 区分 push_kind）
         const wx = await sendWechat(r.openid, content, eventId, kind);
         // 飞书通道：仅已绑定飞书（feishu_open_id 非空）的用户下发；未绑定者跳过，微信/WS 不受影响

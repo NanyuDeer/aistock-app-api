@@ -4,7 +4,8 @@ import { CacheService } from '../../shared/utils/CacheService';
 import { createResponse } from '../../shared/utils/response';
 import { getAShareAdaptiveCacheTtlSeconds } from '../../shared/utils/tradingTime';
 
-const CAPITAL_FLOW_CACHE_KEY_PREFIX = 'capital_flow:';
+// v2：资金流响应新增 tenDay/twentyDay 字段，升级 key 使旧缓存（无新字段）立即失效
+const CAPITAL_FLOW_CACHE_KEY_PREFIX = 'capital_flow:v2:';
 const CAPITAL_FLOW_TRADING_TTL_SECONDS = 3 * 60;
 const CAPITAL_FLOW_CLOSE_UPDATE_TIME = { hour: 19, minute: 5 };
 const CAPITAL_FLOW_BATCH_CACHE_KEY = 'capital_flow:batch_status';

@@ -3,7 +3,17 @@ import { sessionFetch } from '../../shared/utils/httpAgent';
 
 export class EmTagLeaderService {
     private static readonly BASE_URL = 'https://push2.eastmoney.com/api/qt/clist/get';
-    private static readonly UT = '8dec03ba335b81bf4ebdf7b29ec27d15';
+    /**
+     * D5（2026-08-17 数据源裁决）：UT token 配置化——优先读环境变量 EASTMONEY_UT，
+     * 缺失时回退内置默认值并打 warning（防整服务宕机；token 失效仅改配置不动代码）。
+     * push2 为无文档网页接口，ut 参数可能被东财轮换，配置化便于免发版刷新。
+     */
+    private static readonly UT: string = (() => {
+        const fromEnv = process.env.EASTMONEY_UT;
+        if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+        console.warn('[EmTagLeader] EASTMONEY_UT 未配置，使用内置默认 UT token（建议配置环境变量以便失效时免改代码刷新）');
+        return '8dec03ba335b81bf4ebdf7b29ec27d15';
+    })();
 
     private static toNumberOrNull(value: unknown): number | null {
         if (typeof value !== 'number') return null;

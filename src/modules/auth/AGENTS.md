@@ -8,6 +8,8 @@
 - `GET /api/auth/wechat/callback` — 微信回调
 - `GET /api/auth/wechat/login/scan` — 生成扫码登录二维码
 - `GET /api/auth/wechat/login/scan/poll` — 扫码轮询
+- `POST /api/auth/oauth/store` — 「分享到微信再授权」：H5 网页授权成功后按 state 回传 token（OAuthBridgeController）
+- `GET /api/auth/oauth/result` — 「分享到微信再授权」：App 轮询领取 token（OAuthBridgeController）
 - `POST /api/auth/logout` — 登出
 - `GET /api/auth/feishu/callback` — 飞书 OAuth 回调
 - `GET /api/users/me/subscription` — 查询订阅状态
@@ -19,6 +21,7 @@
 ## 核心文件
 - `controller.ts` — AuthController（微信登录/登出）
 - `scanLoginController.ts` — ScanLoginController（扫码登录）
+- `oauthBridgeController.ts` — OAuthBridgeController（「分享到微信再授权」桥接，复用 scan_login_states 表 + 内存 fallback）
 - `feishuAuthController.ts` — FeishuAuthController（飞书授权/订阅）
 - `userController.ts` — UserController（用户管理）
 - `feishuMessageController.ts` — FeishuMessageController（飞书消息、OCR及AI处理状态入库）

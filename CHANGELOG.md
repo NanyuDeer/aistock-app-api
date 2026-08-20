@@ -30,25 +30,348 @@
 
 ---
 
-## [junliang] 2026-08-15 — 自选股午尾盘价格异动归因迁移至 stocktrace 完整链路
+## [master] 2026-08-20 — 修复「未识别到语音」根因 2：V3 流式输入多帧响应，必须等最终帧
 
 **开发者**: Aria
 
-### 重构
-- `src/modules/insight/PriceMoveService.ts`：11:30/15:05 触发从 insight 内存推送改接 stocktrace 事件层（`PriceMoveService.run()` 触发分支调用 `StockTraceService.processPriceFact(security, fact)`），使用 `mv` 事件类型、`isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值改为 `changePct`（原 `moveBps` 映射，changePct=moveBps/100，previousClose=今开）
-- `src/modules/stock-trace/StockTraceSnapshotService.ts`：五域证据采集——capital（资金流向）、technical（技术指标，含 T-72h 窗口）新增，company（统一事件库优先，回落同花顺/财联社，T-72h 窗口）新增 domain 枚举
+### 修复
+- 根因（线上真实语音抓包实证）：V3 `bigmodel_nostream` 流式输入对 3s 语音返回 13 个 full server response 帧——前 12 帧是中间结果（`text:""`、duration 递增），第 13 帧才是最终结果（text 非空 + `result.utterances`）。原代码收到第一个 0x9 帧即 resolve → 取到空文本 → App「未识别到语音」。
+- `src/modules/agent/VolcAsrService.ts`：onmessage 改为「聚合文本 + 等最终帧」——中间帧不结算；最终帧标记 = `result.utterances` 存在 或 text 非空；onclose 兜底用已聚合文本。
+- 测试：新增「流式多帧」+「仅中间帧后关闭」2 用例；23/23 通过。
+- 服务器：真实中文语音端到端复测识别成功（`{"text":"晚上好，欢迎收看收盘播报。今日沪深核心指数同步下跌。"} ms=1392`）。纯后端修复，App 无需重新打包。
+
+---
+
+## [master] 2026-08-19 — 修复 App「未识别到语音」：App 假 pcm（实为 AMR-WB）→ 后端转码接入
+
+**开发者**: Aria
 
 ### 修复
-- `src/modules/insight/PriceMoveService.ts`：今开字段——改用 activity 行情快照（`GetSnapshot`）的 `'今开价'` 键，修复原 `open` 字段恒 null 导致 moveBps 失真的 bug
+- 根因（线上诊断日志取证）：App 端 `format:'pcm'` 在 HTML5+ Android 产出「假 .pcm 实为 AMR-WB」（`magic=#!AMR-WB`；HTML5+ Android 只原生支持 amr/aac/3gp），V3 只支持 pcm/opus/mp3，按 pcm 解析 amr 数据 → 空文本 →「未识别到语音」。
+- 新增 `src/modules/agent/audioTranscode.ts`：`isAmr`（#!AMR 头判断）+ `transcodeToPcm16k`（ffmpeg-static stdin→stdout 转 PCM s16le 16k 单声道）。
+- `src/modules/agent/asrController.ts`：Deps 新增 `transcodeAmrToPcm`；recognize 对 amr 输入先转码再识别（转码失败 502 透出 stderr）。
+- 依赖：新增 `ffmpeg-static@5.3.0`；新增 `pnpm-workspace.yaml`（pnpm 11 `allowBuilds.ffmpeg-static: true`，保证 install 自动下载 ffmpeg 二进制；pnpm 11 不再读 package.json 的 `pnpm.onlyBuiltDependencies`）。
+- 测试：audioTranscode.spec.ts（isAmr 6 用例）+ asrController.spec.ts 新增 2 用例；21/21 通过。
+- 服务器：ffmpeg 7.0.2 就位；端到端冒烟 `SMOKE PASS`（amr→pcm 转码 8ms → V3 识别返回）。
+- 配套前端（aistock-app-frontend）：App 录音改回 `amr+8k`。
+
+---
+
+## [master] 2026-08-19 — 火山 ASR 升级 V3「豆包流式语音识别大模型」
+
+**开发者**: Aria
+
+### 变更
+- `src/modules/agent/VolcAsrService.ts` 整体重写为 V3（账号开通的是「豆包流式语音识别模型 2.0-小时版」，旧 V2 `/api/v2/asr` 未开通 → 403）：
+  - 接口 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream`；鉴权 `X-Api-App-Key`/`X-Api-Access-Key`/`X-Api-Resource-Id`/`X-Api-Request-Id`/`X-Api-Sequence(-1)`（移除 V2 的 Authorization header）
+  - 选项 `cluster` → `resourceId`（默认 `volc.seedasr.sauc.duration`）；请求体必填 `request.model_name='bigmodel'`
+  - 音频仅支持 pcm/wav/ogg/mp3（不支持 amr）、rate 必须 16000；响应帧 `[header][seq][size][payload]`（size@8、payload@12），`result` 为对象 `{text}`
+- `src/modules/agent/asrController.ts`：`AsrCredentials.cluster` → `resourceId`；`createDefaultAsrDeps` 读 `VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'`（默认值兜底，无需改 .env）
+- 测试：VolcAsrService.spec.ts 重写为 V3（parseFrame 按发送帧布局、audio sequence 从 payload 读）、asrController.spec.ts 改 credentials；13/13 通过
+- 配套前端（aistock-app-frontend）：App 录音格式 amr+8k → pcm+16k
+
+---
+
+## [master] 2026-08-19 — 火山 ASR V2 鉴权与错误帧解析修复（线上诊断驱动）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：
+  - WebSocket 建连补 `Authorization: Bearer; {token}` header（**分号**分隔，官方 Token 鉴权格式；不加 → 401 missing Authorization，`Bearer ` 空格 → invalid auth token）
+  - onmessage 处理 `SERVER_ERROR_RESPONSE(0xF)` 错误帧（原只认 0x9 成功帧，403 错误帧被丢弃 → 识别等到 10s 超时，App 显示「语音识别超时」）
+  - 帧 size 偏移按类型区分：成功帧 0x9 size@4；错误帧 0xF 实测 `[header 4B][backend_code 4B][size 4B][payload]` size@8（曾统一读 offset4 读到 backend_code 45000030 误判粘包跳过）
+- 根因：火山账号未开通「流式语音识别」资源，返回 403 type=15 错误帧；错误帧被忽略 → 超时。代码修复后错误毫秒级透出：`[resource_id=volc.streamingasr.common.cn] requested resource not granted`（剩余 403 需火山控制台开通资源）
+- 测试：VolcAsrService.spec.ts 新增「错误帧 type=0xF 透出 message」用例（按实测帧布局构造），7/7 通过
+
+---
+
+## [master] 2026-08-19 — 修复火山 ASR 在服务器 Node20 下 502（全局 WebSocket 缺失）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：默认 WS 客户端由「Node 22+ 内置全局 `new WebSocket(url)`」改为 npm `ws` 包（与 volcenginePodcast.service.ts TTS 同库，规避 Node 版本依赖）；新增最小接口 `VolcAsrWsLike`（onopen/onmessage/onclose/onerror/send/close），`wsFactory` 类型对齐。
+- 根因：服务器 pm2 将 aistock-app-api 跑在 Node v20.20.2（全局 WebSocket=undefined），每次识别抛 ReferenceError → 502「语音识别服务异常」（前端未 parse res.data 吞成笼统文案，配套前端修复见 aistock-app-frontend）。
+
+---
+
+## [master] 2026-08-19 — /api/agent/asr 改 multer multipart（配合 App 端 uni.uploadFile 直传根治）
+
+**开发者**: Aria
 
 ### 改进
-- 11:50 补抓 cron 停用（`refetchMiddayEvidence` 不再触发，数据一致性由 stocktrace 事件层保证）
+- `src/index.ts`：`/api/agent/asr` 由 `express.raw(audio/amr)` 改为 `multer.memoryStorage().single('file')`（multipart 字段 `file`，5mb）。
+- `src/modules/agent/asrController.ts`：`recognize` 从 `req.file.buffer` 取音频（替代 req.body Buffer）。
+- 依赖：新增 multer@2.2.0、@types/multer@2.2.0。
+
+---
+
+## [master] 2026-08-19 — 趋势股评分 K 线改用腾讯前复权，消除除权除息假跳变
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/TrendScoreService.ts`：新增 `parseTencentKlineToTrendKline`（兼容 TencentKlineService.getKLine 对象格式与原始行数组，日期转 YYYYMMDD、OHLC 与 Tushare 一致）与 `fetchAdjustedTrendKline`（腾讯日K fqt=1 前复权，近120日）；`calcTechnicalDim` 新增 klineOverride 参数，评分 K 线展示优先用前复权数据，获取失败回退 Tushare 不复权；修复源杰科技等除权股不复权价格断裂假跳变（2026-05-18 除权后 40% → 前复权 -1.6%）。
+- `tests/TrendScoreKlineAdjusted.test.ts`：新增 3 个测试用例（含除权标记行数组格式、非法行处理、getKLine 对象格式）。
 
 ### 文档
-- `docs/stocktrace-rollback.md`：回滚手册（含 SHA 对照、回滚顺序、验证命令）
+- `src/modules/monitor/AGENTS.md`：补充趋势股评分 K 线前复权说明。
+
+---
+
+## [master] 2026-08-19 — 风口龙头板块净流入彻底下线，改用同花顺实时成交额
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：删除东财派生板块资金流（getMoneyflowCntThs/getMoneyflowIndDc 及导入、相关类型）；板块级别 net_inflow 字段、AI prompt 的「板块净流入」行、ruleBasedAnalysis 的 amountTrend 全部移除；板块资金评分回退为「频次60%+平均涨幅25%+最新涨幅15%」。保留个股级资金流不受影响。
+- `src/modules/monitor/WindLeaderService.ts`：板块类型移除 net_inflow，新增 amount（板块当日成交额·元）；getAnalysis 实时增强：经 RotationBoardStore.fetchBoardRealtime（同花顺 d.10jqka.com.cn/v6/line/bk_<code>/01/last.js）以盘中实时涨幅/成交额覆盖静态快照。
+- `src/modules/monitor/RotationBoardStore.ts`：新增 fetchBoardRealtime 板块实时盘口读取（30s 内存缓存 TTL）。
+
+---
+
+## [master] 2026-08-19 — 自选股排序：sort_order 字段 + 排序保存接口
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/auth/userController.ts`：
+  - `user_stocks` 幂等迁移新增 `sort_order` 字段；列表查询改按 `sort_order ASC, created_at DESC` 排序。
+  - `addFavorites` 新添加股票 `sort_order` 置为当前最大值 +1。
+  - 新增 `saveFavoritesOrder`：按传入 symbols 顺序批量更新 `sort_order`，仅更新该用户自选内的代码。
+- `src/index.ts`：注册 `PUT /api/users/me/favorites/order` 路由。
+
+---
+
+## [feat/fear-greed-node] 2026-08-18 — 恐贪指数服务：Python FastAPI 迁移为 Node/TS 并入 app-api
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/indicators.ts`：恐贪指数纯函数（clamp / percentileRank / pctRankOrNeutral / labelOf / levelOf / sparkline）
+- `src/modules/fear-greed/calculator.ts`：韭圈儿 6 指标计算（波动率 / 北向资金偏离 / 上涨占比 / IF 升贴水 / 股债回报差 / 融资买入），前 5 等权合成综合指数
+- `src/modules/fear-greed/FearGreedService.ts`：编排服务（内存 30 分钟缓存 + PG 快照表 fear_greed_snapshot / breadth_daily + Redis 缓存 + 上证指数序列对齐）
+- `src/modules/fear-greed/controller.ts`：dashboard / indexes / history / refresh 四个路由处理器
+- `tests/fear-greed.indicators.test.ts`、`tests/fear-greed.calculator.test.ts`：单元测试（node --import tsx --test）
+- `src/index.ts`：注册 `/api/fear-greed/*` 路由、每日 16:30 cron 自动刷新、启动时幂等建表
+
+### 重构
+- 原独立 Python FastAPI 服务（aistock-fear-greed）迁移为 Node/TS 模块并入 app-api，路由契约保持 `/api/fear-greed/*` 不变；Web demo 与 agent-py services/ 已清理
+
+---
+
+## [master] 2026-08-17 — 交易日历公开接口（非交易日过滤支撑）
+
+**开发者**: Aria
+
+### 新增
+- `src/shared/utils/TradingCalendarService.ts`：
+  - 新增 `getNextTradingDay(date)`：返回严格晚于指定日期的下一个交易日，与既有 `getPreviousTradingDay` 对称
+  - 新增 `getRecentTradingDays(date, count)`：返回截至指定日期（含当天）最近 count 个交易日，供首页"市场洞见"取日期标签
+- `src/core/routes/internal.ts`：`publicRouter`（挂 `/api/agent`）新增 3 个公开接口——
+  - `GET /api/agent/trading-calendar/previous?date=YYYY-MM-DD` → 前一交易日
+  - `GET /api/agent/trading-calendar/next?date=YYYY-MM-DD` → 下一交易日
+  - `GET /api/agent/trading-calendar/recent?date=YYYY-MM-DD&count=N` → 最近 N 个交易日数组
+  - 以服务端休市日历（周末 + 官方节假日）为权威，供 App 前端"前一天/后一天"跳档跳过非交易日、市场洞见取最近交易日
+
+### 同批随带
+- `src/modules/monitor/WindLeaderService.ts`、`src/modules/monitor/IndustryKGService.ts`、`src/modules/monitor/AGENTS.md`：风口龙头批次遗留随带改动
 
 ### 验证
-- 定向测试 All passed；`npx tsc --noEmit` 0 错误
+- `npx tsc --noEmit` 0 错误；休市日历覆盖 2024–2026 年，超范围接口返回 500
+
+## [changer] 2026-08-17 — ASR 音频格式 wav → amr（对齐 App 端录音格式契约）
+
+**开发者**: 37588
+
+### 背景
+App Android 真机语音输入失败根因定位为：uni-app App 端 Android 不真正支持 `wav` 录音（HTML5+ `plus.audio.getRecorder` 生成无效文件），故前端录音改为 `amr`。后端火山 V2 ASR 需同步把音频协议 `format`/`rate` 对齐才能识别。
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：全量请求 `audio: { format:'wav', rate:16000 }` → `{ format:'amr', rate:8000 }`（AMR-NB 窄带固定 8k）；注释「mp3/wav 均可」→「amr/mp3/wav 均可」
+- `src/index.ts`：`express.raw` 消费 `type:'audio/wav'` → `'audio/amr'`；注释同步
+- `src/modules/agent/asrController.ts`：头注释 body 描述 `wav` → `amr`
+- 测试同步期望：`volcAsrService.spec.ts` 断言 `format:'amr'`/`rate:8000`；`asrController.spec.ts` 请求 `Content-Type: audio/amr`
+
+### 验证
+- `volcAsrService.spec.ts` + `asrController.spec.ts` 定向 12/12 通过（RED→GREEN）
+- `npx tsc --noEmit` 无报错
+
+### 配套（前端 app-frontend，同批）
+- `speechInput.ts` 录音启动 `format:'amr',sampleRate:8000`，上传 `Content-Type: audio/amr`（见 frontend changelog）
+
+### 待真机验证
+- 部署后端后 App 真机语音输入，确认 `/agent/asr` 收到 amr 并返回 `{ text }`
+
+---
+
+## [master] 2026-08-17 — 风口龙头：短线榜排序口径（上榜次数-热度）+ 最近交易日窗口修复
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  - `applyDualRankings` 短线榜排序由 `short_term_days → freq20` 改为**上榜次数 freq20 → 热度 short_heat（存于 ai_analysis）** 降序。原 `short_term_days` 是 HotSectorAnalysis 顶层不存在字段（实际在 ai_analysis 内），比较恒为 0，短线榜实际只按 freq20 排序且与前端口径不一致；现显式读 `ai_analysis.short_heat`，与前端 leaders 页"上榜次数-热度"口径统一
+  - `getLatestDailyMap` 最近交易日回溯窗口 3 天 → **10 天**：分析在凌晨运行，周一/长假后首个交易日可能位于 3 个日历日之外（如 2026-08-17 周一凌晨只回溯 17/16/15 均非交易日），导致 moneyflow 日期回退到当天返回空 → 所有板块 net_inflow=0、MA60 缺失（日志：`资金流向数据获取成功: 0条`）。10 天可覆盖周末 + 长假
+- `tests/WindLeaderCycle.test.ts`：短线榜测试改为断言 freq20→short_heat 降序；顺带修正 `deriveCycle({})` 陈旧断言（四态化后兜底为 none 非 short）
+
+### 验证
+- WindLeaderCycle 8/8 通过；`npx tsc --noEmit` 0 错误；用线上数据模拟新排序验证顺序符合"上榜次数-热度"
+
+---
+
+## [changer] 2026-08-16 — 修复 Chat WS 桥接帧类型：文本帧被转成二进制帧导致对话回答为空
+
+**开发者**: 37588
+
+### 背景
+H5 对话页 AI 回答为空。定位到 chat-bridge 上游文本帧（agent-py `send_json`）经 `clientWs.send(data)` 转发时，因 `ws` 库 message 回调 data 恒为 Buffer，被默认按二进制帧发送 → 浏览器端 `JSON.parse(Blob)` 失败，所有 WS 事件被静默丢弃。
+
+### 修复
+- `src/core/ws/chat-bridge.ts`：上游 → 前端转发显式保留帧类型 `clientWs.send(data, { binary: isBinary })`（文本帧保持文本帧、二进制帧保持二进制帧）
+- 测试：`chat-bridge.spec.ts` 新增 2 个帧类型回归用例（上游文本帧 → 客户端 `isBinary=false`；上游二进制帧 → 客户端 `isBinary=true`），断言失败时 finally 关闭连接防 afterEach 挂起
+
+### 验证
+- `chat-bridge.spec.ts` 定向 8/8 通过（修复前文本帧用例 RED 失败：`true !== false`）
+- `npx tsc --noEmit` 无报错
+
+---
+
+## [changer] 2026-08-15 — 预测验证 v2 支撑端点（指数日 K + 游标分页）
+
+**开发者**: changer-collab
+
+### 新增
+- `GET /internal/index/:code/kline`：指数日 K 端点（Tushare index_daily，显式 ts_code 不经 getStockIdentity——`000001` 会被误判为深市个股），预测验证 v2 窗口判定的历史数据源；支持 `days`（1-200）参数，指数映射 000001/000300/000688/399001/399006
+- `TushareKlineService.getIndexKLine`：指数日线拉取（index_daily + 统一字段映射，经 tushare 节流器）
+- `GET /internal/predictions` 游标分页：`before_id` 参数（pending/listByStatus 均支持，按 id 倒序），防全量扫描
+
+### 改进
+- `PredictionRecordService.listPending`/`listByStatus` 支持 `beforeId` 游标参数；非法游标忽略回退全量
+
+---
+
+## [changer] 2026-08-15 — ASR 录音格式 mp3 → wav（对齐前端录音 + 火山识别）
+
+**开发者**: 37588
+
+### 背景
+App 真机录音 mp3 不可靠（部分 Android ROM 缺编码器 start 抛错），前端录音改 wav + 16kHz；后端 ASR 链路同步对齐。
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：火山 full request `audio.format` 'mp3' → 'wav'（rate 16000/bits 16/channel 1 不变，wav 需 pcm_s16le 与 16k 匹配）
+- `src/index.ts`：`/api/agent/asr` express.raw type 'audio/mpeg' → 'audio/wav'
+- `src/modules/agent/asrController.ts`：接口注释同步
+- 测试：`volcAsrService.spec.ts`（format 断言 wav）、`asrController.spec.ts`（Content-Type audio/wav）
+
+### 验证
+- `tsx --test` 定向 12/12 通过、`tsc --noEmit` 无报错
+
+---
+
+## [changer] 2026-08-14 — 预测记录支持越年近似档标记
+
+**开发者**: changelog
+
+### 新增
+- `POST /internal/predictions` 接受可选 `due_dates_approximate`（string[]，越年近似档名列表），合并进 prediction jsonb（skip_reason 先例，免 DB 迁移）
+- 公开统计新增 `approximateHorizonCount`：越年近似档照常验证但 hit/miss 不计入命中率分母（分桶避免统计失真）
+
+### 改进
+- internalRouter 校验 `due_dates_approximate` 类型（非数组 / 含非 string 元素 → 400）
+
+---
+
+## [changer] 2026-08-14 — 大盘溯源影响持续性预判记录支持状态追踪与按需补偿
+
+**开发者**: changelog
+
+### 新增
+- 预判记录支持"已跳过"状态与原因（无效/无法生成的预判显式落库，不再混入进行中）
+- 公开列表支持按溯源报告定向查询（`source_id=review:YYYY-MM-DD`），大盘溯源页预判卡片数据源切换为预判记录
+- 按需补偿接口：手动触发当日预判生成（仅限当日 + 频率限制 + 已验证记录拒绝覆盖 + 90s 超时，转发至推理服务）
+
+### 改进
+- 统计口径：已跳过记录单独计数（skippedCount），不计入进行中/已结束
+
+---
+
+## [master] 2026-08-14 — 修复风口龙头接口 long_leader 恒为 null（getAnalysis 读时枚举字段遗漏）
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/WindLeaderService.ts`：
+  1. `getAnalysis` 返回对象补充 `long_leader: sector.long_leader || null`——此前读数据时显式枚举字段构造返回对象，遗漏新增的 long_leader，导致接口返回恒为 null（数据文件 hot-sectors.json 中实际已有值）
+  2. `WindLeaderSector` 接口补充 `long_leader?: WindLeaderStock | null`
+
+### 测试
+- `src/modules/monitor/__tests__/windLeaderLongLeader.spec.ts` 追加 `getAnalysis preserves long_leader field in response sectors` 用例（mock fs 读文件），现 5/5 通过
+
+---
+
+## [master] 2026-08-14 — 风口龙头板块新增 long_leader（长期趋势龙头）字段
+**开发者**: Aria
+
+### 新增
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  1. 新增导出函数 `queryTopTrendScore(codes)`：查 `trend_scores` 表最新评分日中成分股代码集合内 score 最高、非 D 评级、未被 60 日均线剔除（ma60_excluded != true）的股票；返回 `SelectedStock`（reason_tag=评级、source='trend_score'），DB 错误/无命中返回 null（回退路径）
+  2. `HotSectorAnalysis` 接口新增 `long_leader: SelectedStock | null`
+  3. 主循环板块分析新增第 10 步：行业板块（881xxx）用 `getBoardTopStocks(20,'industry')` 成分股代码、概念板块用概念成分股代码，调 `queryTopTrendScore` 取趋势龙头；无命中回退 `finalMainStocks` 评分最高者
+
+### 测试
+- 新增 `src/modules/monitor/__tests__/windLeaderLongLeader.spec.ts`：4 用例覆盖空数组/DB 命中/SQL 过滤条件（MAX(score_date)、排除 D、ma60_excluded）/无命中/DB 错误回退
+
+---
+
+## [changer] 2026-08-13 — 深度分析报告详情查询接口
+**开发者**: 37588
+
+### 新增
+- 深度分析报告详情查询接口（`/report/chat/:reportId`）：登录用户按报告编号查询本人的深度分析报告；服务端验签 + 归属校验 + 有效期过滤，不存在/非本人/已过期返回空数据，不泄露报告存在性
+
+### 测试
+- 鉴权（无/非法令牌 401）、归属与过期过滤、空数据语义、路由优先级（不被通用报告端点抢占）、异常降级用例
+
+> 代码验收通过（待生产验证）。
+
+---
+
+## [master] 2026-08-14 — 修复风口龙头股爬取把新闻链接当龙头（玻璃基板"概念细分|…"）+ 行业板块龙头股缺失
+**开发者**: 37588
+
+### 修复
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：
+  1. 新增 `isValidStockCode()`（仅接受 A 股代码段 60/68/00/30/43/83/87/92，排除日期型 2026xx 与同花顺板块代码 881/884/885/886xxx）、`isValidStockName()`（长度 2~12，排除 | 分隔符与"概念/细分/新增"等描述词）、`extractStockCodeFromHref()`（排除 news. 域名链接后提取合法代码）
+  2. 龙头股爬取策略 1/3/4 全部改用严格校验：同花顺概念页新闻链接 `news.10jqka.com.cn/20260805/c678696112.shtml` 的日期 `202608` 不再被误当股票代码、新闻标题不再被当股票名（此前污染 leading_stock，如玻璃基板显示"概念细分|玻璃基板新增…细分方向"）
+  3. `extractLeadingStock` fallback 回退到 main_stocks 评分最高者补全 code/价格/涨幅（行业板块 881xxx 无概念页龙头结构时必走此分支）
+  4. 行业板块（881xxx）主循环补充自身成分股进 main_stocks（此前 strongly_related 为空导致 main_stocks 恒空）
+  5. `identifyHotConcepts` 领涨股补充按板块类型分流（行业板块用 industry 成分股接口）
+
+### 测试
+- 新增 `src/modules/monitor/__tests__/windLeaderStockValidation.spec.ts` 6 用例（合法代码/日期误判/板块代码误判/新闻标题拒收/新闻链接提取）全过
+
+> 验证：`npx tsc --noEmit` 0 错误；新增 6 测试全过；`npm run build` 成功。
+
+---
+
+## [master] 2026-08-14 — 知识图谱修复：专家修正表 + AI prompt 改进 + 缓存 TTL 修复 + 风口行业板块修复
+**开发者**: 37588
+
+### 修复
+- `src/modules/monitor/IndustryKGService.ts`：
+  1. 新增 `EXPERT_INDUSTRY_RELATIONS` 专家人工修正表（约 90 个热门行业权威上下游，按行业名精确匹配；上游=原材料/零部件/设备/能源供应方，下游=应用/渠道/终端；不收录并列、细分-父级、服务外包关系）
+  2. 新增 `applyExpertEdges()`：覆盖专家表行业的全部 AI 边，替换为权威上下游；幂等，缓存加载与重新生成统一走这里
+  3. `buildAIEdges(industries, force?)`：force 时跳过 ai_edges 缓存；AI 边生成/加载后统一过专家表
+  4. `rebuild(force?)`：AI 生成失败时用专家表兜底
+  5. `initialize()`：修复缓存 TTL bug——full_graph.json 过期判断改用缓存内部 `updateTime`（此前文件 mtime 被龙头股后台加载重写刷新，15 天 TTL 永不触发）
+  6. `aiGenerateChainBatch` prompt 大改：明确 881xxx 二级/884xxx 三级行业概念、严禁把并列/细分-父级/服务外包当上下游、增加半导体/生物制品正确示例
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：风口榜单行业板块（881xxx）新增 `isIndustryBoardCode()` + `mapIndustryToChain()`——行业板块不走"概念→行业"映射（此前找不到概念 fallback 随机行业排名导致 related 错乱、上下游为空），改从知识图谱直接取该行业上下游（`getUpstreamDownstreamByName`，失败容错返回空）；主循环两处调用点按板块类型分流
+
+### 文档
+- `src/modules/monitor/AGENTS.md`：补充 IndustryKGService 专家修正表/TTL 修复/AI prompt 层级约束，以及风口行业板块 mapIndustryToChain 说明
+
+> 验证：`npx tsc --noEmit` 0 错误；专家表覆盖逻辑本地脚本断言 6/6 通过（贵金属错误边电力/民爆移除、新增上游工业金属+下游饰品/半导体等；生物制品错误边动物保健/原料药移除、保留医院等下游）。
 
 ---
 
