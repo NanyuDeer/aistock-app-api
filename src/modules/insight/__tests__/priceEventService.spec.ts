@@ -10,7 +10,7 @@ afterEach(() => { mock.restoreAll(); });
 
 const snap = (over: Partial<PriceSnapshotRow> = {}): PriceSnapshotRow => ({
     symbol: '000962', tradeDate: '2026-08-07', snapshotType: 'midday',
-    openPrice: 10, latestPrice: 10.7, moveBps: 700, direction: 'up',
+    openPrice: 10, latestPrice: 10.7, changePct: 7, moveBps: 700, direction: 'up',
     priceSource: 'realtime_snapshot', ...over,
 });
 
@@ -36,7 +36,7 @@ describe('createOrUpdatePriceEvent', () => {
             sql.includes('SELECT event_id')
                 ? { rows: [] }
                 : { rows: [{ event_id: 'wi_20260807_000962_pm_down' }] });
-        const id = await createOrUpdatePriceEvent(snap({ snapshotType: 'close', latestPrice: 9.3, moveBps: -700, direction: 'down' }));
+        const id = await createOrUpdatePriceEvent(snap({ snapshotType: 'close', latestPrice: 9.3, changePct: -7, moveBps: -700, direction: 'down' }));
         assert.equal(id, 'wi_20260807_000962_pm_down');
     });
 });

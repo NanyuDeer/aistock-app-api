@@ -8,6 +8,8 @@ CREATE TABLE IF NOT EXISTS watchlist_price_snapshots (
     snapshot_time TIMESTAMPTZ NOT NULL,
     open_price NUMERIC(10,2) NOT NULL,
     latest_price NUMERIC(10,2) NOT NULL,
+    -- 相对昨收涨跌幅（百分比，2026-08-20 主判定口径；move_bps 保留为相对今开辅助字段）
+    change_pct NUMERIC(10,2) NOT NULL DEFAULT 0,
     move_bps INT NOT NULL,
     direction VARCHAR(8) NOT NULL CHECK (direction IN ('up','down')),
     price_source VARCHAR(32) NOT NULL DEFAULT 'realtime_snapshot'
@@ -15,6 +17,8 @@ CREATE TABLE IF NOT EXISTS watchlist_price_snapshots (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (symbol, trade_date, snapshot_type)
 );
+-- 存量表（017 已建表但缺 change_pct）兼容：幂等补列
+ALTER TABLE watchlist_price_snapshots ADD COLUMN IF NOT EXISTS change_pct NUMERIC(10,2) NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_price_snapshots_trade_date ON watchlist_price_snapshots (trade_date);
 
 -- 证据包（冻结 + 补抓版本化：frozen_seq 递增，同一事件多次冻结）

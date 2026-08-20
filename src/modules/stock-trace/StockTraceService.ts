@@ -497,11 +497,33 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
             FROM stock_trace_user_events ue
             INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
             WHERE ue.openid = $1 ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $2
@@ -523,7 +545,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: row.read_at,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
@@ -542,10 +567,32 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
             FROM stock_trace_events e
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
             WHERE e.event_status = 'active' ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $1
@@ -567,7 +614,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: null,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
