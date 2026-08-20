@@ -1,5 +1,7 @@
 // src/modules/insight/PriceMoveService.ts
-// 午盘 11:30 / 尾盘 15:05 打点：腾讯实时行情 → move_bps → 阈值触发 → 快照入库
+// 午盘 11:30 / 尾盘 15:05 打点：腾讯实时行情 → 相对昨收涨跌幅 → 阈值触发 → 快照入库
+// 2026-08-20 口径统一：触发判定从"相对今开 moveBps"改为"相对昨收涨跌幅"（与实时检测链一致），
+// move_bps 仍计算并入库作为辅助展示字段（区分开盘异动/盘中异动）。
 import pool from '../../core/db';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { TencentKlineService } from '../quote/TencentKlineService';
@@ -7,7 +9,8 @@ import { TradingCalendarService } from '../../shared/utils/TradingCalendarServic
 import { getWatchlistSymbols } from './InsightService';
 import { isEligiblePriceSecurity } from '../stock-trace/types';
 
-const THRESHOLD_BPS = 700;
+/** 触发阈值：相对昨收涨跌幅 ≥ 7%（与 PriceTriggerDetector 一致，百分比口径） */
+const THRESHOLD_PCT = 7;
 
 export interface PriceSnapshotRow {
     symbol: string;
@@ -15,6 +18,9 @@ export interface PriceSnapshotRow {
     snapshotType: 'midday' | 'close';
     openPrice: number;
     latestPrice: number;
+    /** 相对昨收涨跌幅（百分比，主判定口径） */
+    changePct: number;
+    /** 相对今开 bps（辅助展示：区分开盘异动/盘中异动） */
     moveBps: number;
     direction: 'up' | 'down';
     priceSource: 'realtime_snapshot' | 'kline_backfill';
@@ -32,23 +38,30 @@ function shanghaiDate(d: Date = new Date()): string {
     return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
-/** 腾讯行情行 → 取"最新价"与"今开价"（键名以 TencentQuoteService 解析输出为准；兼容中/英文键）
- *  注意：今开字段键是"今开价"（FIELD_INDEX '今开价':5），活动级(activity)字段集才包含它。 */
-export function extractPrices(row: Record<string, any>): { latest: number | null; open: number | null } {
+/** 腾讯行情行 → 取"最新价/今开价/昨收价/涨跌幅"（键名以 TencentQuoteService 解析输出为准；兼容中/英文键）
+ *  注意：今开字段键是"今开价"（FIELD_INDEX '今开价':5），昨收键是"昨收价"（index 4），
+ *  涨跌幅键是"涨跌幅"（index 32），活动级(activity)字段集才包含它们。 */
+export function extractPrices(row: Record<string, any>): {
+    latest: number | null;
+    open: number | null;
+    prevClose: number | null;
+    changePct: number | null;
+} {
     const latest = Number(row['最新价'] ?? row.latest ?? NaN);
     const open = Number(row['今开价'] ?? row['今开'] ?? row.open ?? NaN);
-    return { latest: Number.isFinite(latest) ? latest : null, open: Number.isFinite(open) ? open : null };
-}
-
-/** 相对今开 moveBps 转 changePct（stocktrace PriceFact 使用：bps / 100 = 百分比值）
- * 如 moveBps=750 表示 7.5%，返回 changePct=7.5 */
-export function moveBpsToChangePct(moveBps: number): number {
-    return moveBps / 100;
+    const prevClose = Number(row['昨收价'] ?? row['昨收'] ?? row.prevClose ?? NaN);
+    const changePct = Number(row['涨跌幅'] ?? row.changePct ?? NaN);
+    return {
+        latest: Number.isFinite(latest) ? latest : null,
+        open: Number.isFinite(open) ? open : null,
+        prevClose: Number.isFinite(prevClose) ? prevClose : null,
+        changePct: Number.isFinite(changePct) ? changePct : null,
+    };
 }
 
 export class PriceMoveService {
     /**
-     * 执行一轮打点：拉全自选股实时行情 → 计算 move_bps → 达到阈值者写快照并触发。
+     * 执行一轮打点：拉全自选股实时行情 → 相对昨收涨跌幅 → 达到阈值者写快照并触发。
      * @param snapshotType midday=11:30 午盘 / close=15:05 尾盘
      */
     static async run(snapshotType: 'midday' | 'close'): Promise<{ scanned: number; triggered: number }> {
@@ -59,8 +72,8 @@ export class PriceMoveService {
         }
         const symbols = [...(await getWatchlistSymbols())];
         if (symbols.length === 0) return { scanned: 0, triggered: 0 };
-        // 必须用 activity 级别：今开价仅在该字段集返回，core 只有代码/名称/最新价/涨跌幅，
-        // 缺今开会令 computeMoveBps 恒返回 null，异动永不触发（2026-08-15 实测定位）
+        // 必须用 activity 级别：涨跌幅/今开价/昨收价仅在该字段集返回，core 只有代码/名称/最新价/涨跌幅，
+        // 缺字段会导致触发判定无法计算（2026-08-15/08-20 实测定位）
         const quotes = await TencentQuoteService.getCachedBatchQuotes(symbols, 'activity');
         const { StockTraceService } = await import('../stock-trace/StockTraceService');
         const securities = await StockTraceService.getFavoriteSecurities();
@@ -68,14 +81,15 @@ export class PriceMoveService {
         for (const row of quotes) {
             const symbol = String(row['股票代码'] ?? row.symbol ?? '');
             if (!symbol) continue;
-            const { latest, open } = extractPrices(row);
-            if (latest === null || open === null) continue;      // 无今开（停牌/新股）不触发
-            const moveBps = computeMoveBps(open, latest);
-            if (moveBps === null || Math.abs(moveBps) < THRESHOLD_BPS) continue;
-            const direction: 'up' | 'down' = moveBps >= THRESHOLD_BPS ? 'up' : 'down';
+            const { latest, open, prevClose, changePct } = extractPrices(row);
+            // 主判定：相对昨收涨跌幅；昨收/涨跌幅缺失（停牌/新股/数据异常）不触发
+            if (latest === null || prevClose === null || prevClose <= 0 || changePct === null) continue;
+            if (Math.abs(changePct) < THRESHOLD_PCT) continue;
+            const direction: 'up' | 'down' = changePct >= THRESHOLD_PCT ? 'up' : 'down';
+            const moveBps = open !== null ? computeMoveBps(open, latest) : null;
             const snapshot: PriceSnapshotRow = {
-                symbol, tradeDate, snapshotType, openPrice: open, latestPrice: latest,
-                moveBps, direction, priceSource: 'realtime_snapshot',
+                symbol, tradeDate, snapshotType, openPrice: open ?? prevClose, latestPrice: latest,
+                changePct, moveBps: moveBps ?? 0, direction, priceSource: 'realtime_snapshot',
             };
             // --- 事件层切换：stocktrace 接管 ---
             const security = securities.find((s) => s.symbol === symbol);
@@ -84,8 +98,8 @@ export class PriceMoveService {
                     symbol,
                     stockName: security.stockName,
                     latestPrice: latest,
-                    previousClose: open,          // 保留相对今开语义：以今开为基准
-                    changePct: moveBpsToChangePct(moveBps),
+                    previousClose: prevClose,          // 相对昨收口径：以昨收为基准
+                    changePct,                          // 相对昨收涨跌幅（百分比）
                     observedAt: new Date(),
                 });
                 triggered++;
@@ -101,12 +115,13 @@ export class PriceMoveService {
     static async persistSnapshot(s: PriceSnapshotRow): Promise<void> {
         await pool.query(
             `INSERT INTO watchlist_price_snapshots
-               (symbol, trade_date, snapshot_type, snapshot_time, open_price, latest_price, move_bps, direction, price_source)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+               (symbol, trade_date, snapshot_type, snapshot_time, open_price, latest_price, change_pct, move_bps, direction, price_source)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
              ON CONFLICT (symbol, trade_date, snapshot_type) DO UPDATE SET
-               latest_price=EXCLUDED.latest_price, move_bps=EXCLUDED.move_bps,
+               latest_price=EXCLUDED.latest_price, change_pct=EXCLUDED.change_pct,
+               move_bps=EXCLUDED.move_bps,
                direction=EXCLUDED.direction, price_source=EXCLUDED.price_source`,
-            [s.symbol, s.tradeDate, s.snapshotType, new Date(), s.openPrice, s.latestPrice, s.moveBps, s.direction, s.priceSource],
+            [s.symbol, s.tradeDate, s.snapshotType, new Date(), s.openPrice, s.latestPrice, s.changePct, s.moveBps, s.direction, s.priceSource],
         );
     }
 
@@ -121,20 +136,25 @@ export class PriceMoveService {
         await enqueue(eventId);
     }
 
-    /** 打点失败补偿：腾讯 K 线回溯（日 K 取当日收盘；klt=101 日线、limit=1 最近一根；返回字段为中文键） */
+    /** 打点失败补偿：腾讯 K 线回溯（日 K 取最近两根，前一根收盘作昨收；klt=101 日线；返回字段为中文键） */
     static async backfillByKline(symbol: string, snapshotType: 'midday' | 'close'): Promise<PriceSnapshotRow | null> {
         const tradeDate = shanghaiDate();
-        const rows = await TencentKlineService.getKLine({ symbol, klt: 101, fqt: 0, limit: 1 });
+        const rows = await TencentKlineService.getKLine({ symbol, klt: 101, fqt: 0, limit: 2 });
         const bar = rows[rows.length - 1];
+        const prevBar = rows[rows.length - 2];
         if (!bar) return null;
-        const open = Number(bar['开盘价'] ?? NaN);
         const close = Number(bar['收盘价'] ?? NaN);
-        if (!Number.isFinite(open) || !Number.isFinite(close) || open <= 0) return null;
-        const moveBps = computeMoveBps(open, close);
-        if (moveBps === null || Math.abs(moveBps) < THRESHOLD_BPS) return null;
+        const open = Number(bar['开盘价'] ?? NaN);
+        // 相对昨收口径：前一根日 K 收盘价作为昨收；拿不到昨收（新股/数据不足）不触发
+        const prevClose = prevBar ? Number(prevBar['收盘价'] ?? NaN) : NaN;
+        if (!Number.isFinite(close) || !Number.isFinite(prevClose) || prevClose <= 0) return null;
+        const changePct = Math.round(((close - prevClose) / prevClose) * 10000) / 100;
+        if (Math.abs(changePct) < THRESHOLD_PCT) return null;
+        const moveBps = Number.isFinite(open) && open > 0 ? computeMoveBps(open, close) : null;
         return {
-            symbol, tradeDate, snapshotType, openPrice: open, latestPrice: close, moveBps,
-            direction: moveBps >= THRESHOLD_BPS ? 'up' : 'down', priceSource: 'kline_backfill',
+            symbol, tradeDate, snapshotType, openPrice: Number.isFinite(open) ? open : prevClose,
+            latestPrice: close, changePct, moveBps: moveBps ?? 0,
+            direction: changePct >= THRESHOLD_PCT ? 'up' : 'down', priceSource: 'kline_backfill',
         };
     }
 

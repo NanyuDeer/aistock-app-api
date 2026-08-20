@@ -54,7 +54,9 @@ export class PriceTriggerDetector {
                 .filter((security) => isEligiblePriceSecurity(security, now));
             if (securities.length === 0) return;
 
-            const quotes = await TencentQuoteService.getBatchQuotes(securities.map((security) => security.symbol), 'core');
+            // 必须用 activity 级别：core 字段集不含"昨收价"，previousClose 恒为 undefined，
+            // 所有股票都会被阈值分支跳过（2026-08-20 实测定位：实时检测链路从未真正触发过）
+            const quotes = await TencentQuoteService.getBatchQuotes(securities.map((security) => security.symbol), 'activity');
             const quoteBySymbol = new Map<string, Record<string, unknown>>();
             for (const quote of quotes) {
                 const symbol = typeof quote[SYMBOL_FIELD] === 'string' ? quote[SYMBOL_FIELD] : '';

@@ -22,8 +22,9 @@ interface InsightListRow {
     primary_driver: unknown;
     secondary_drivers: unknown;
     display_report: unknown;
-    /** 价格异动字段（LATERAL join watchlist_price_snapshots，列表卡片展示方向/相对开盘涨跌幅） */
+    /** 价格异动字段（LATERAL join watchlist_price_snapshots，列表卡片展示方向/相对昨收涨跌幅） */
     move_bps: number | null;
+    change_pct: number | null;
     open_price: number | null;
     latest_price: number | null;
     price_source: string | null;
@@ -52,6 +53,8 @@ interface InsightDetailRow {
     published_at: Date | null;
     /** 价格异动字段（LATERAL join watchlist_price_snapshots） */
     move_bps: number | null;
+    /** 相对昨收涨跌幅（百分比，主判定口径，2026-08-20 统一） */
+    change_pct: number | null;
     snap_direction: string | null;
     open_price: number | null;
     latest_price: number | null;
@@ -84,12 +87,12 @@ export class InsightController {
             const { rows } = await pool.query<InsightListRow>(
                 `SELECT e.event_id, e.symbol, e.stock_name, e.trade_date, e.event_type, e.direction, e.created_at,
                         r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers, r.display_report,
-                        snap.move_bps, snap.open_price, snap.latest_price, snap.price_source
+                        snap.move_bps, snap.change_pct, snap.open_price, snap.latest_price, snap.price_source
                  FROM watchlist_insight_events e
                  JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
                  LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
                  LEFT JOIN LATERAL (
-                     SELECT move_bps, open_price, latest_price, price_source
+                     SELECT move_bps, change_pct, open_price, latest_price, price_source
                      FROM watchlist_price_snapshots ps
                      WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
                      ORDER BY ps.snapshot_time DESC LIMIT 1
@@ -127,7 +130,7 @@ export class InsightController {
                  LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
                  LEFT JOIN watchlist_insight_sources s ON s.source_id = e.source_id
                  LEFT JOIN LATERAL (
-                     SELECT move_bps, direction AS snap_direction, open_price, latest_price, price_source
+                     SELECT move_bps, change_pct, direction AS snap_direction, open_price, latest_price, price_source
                      FROM watchlist_price_snapshots ps
                      WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
                      ORDER BY ps.snapshot_time DESC LIMIT 1

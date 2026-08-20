@@ -145,6 +145,8 @@ export interface StockTraceResult {
     suggestedActions: string[];
     validationStatus: 'pending' | 'passed' | 'rejected';
     validationErrors: string[];
+    /** 简短主因短语（≤20 字，LLM 生成），供列表/卡片展示 */
+    primaryPhrase?: string;
     candidates: TraceCandidate[];
     chains: TraceChain[];
 }

@@ -42,6 +42,12 @@ async function presentEventAnalysis(eventId: string, event: Record<string, unkno
     const latestResult = revision > 0
         ? await StockTraceResultService.getLatestForEventRevision(eventId, revision)
         : null;
+    // 当前版本归因失败（无 artifact 且最新 result 被拒/失败）时，回退到该事件最近的有效归因，
+    // 避免"有异动却看不到归因"（如重新归因失败会覆盖原本有效的旧版本归因）。
+    if (!artifact && latestResult && (latestResult.validationStatus === 'rejected' || latestResult.processingStatus === 'failed')) {
+        const fallback = await StockTraceArtifactService.getEffectiveArtifact(eventId);
+        if (fallback) return presentStockTraceAnalysis(event, fallback, latestResult);
+    }
     return presentStockTraceAnalysis(event, artifact, latestResult);
 }
 

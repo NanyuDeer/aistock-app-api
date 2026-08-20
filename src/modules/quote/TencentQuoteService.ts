@@ -3,7 +3,11 @@ import { eastmoneyThrottler } from '../../shared/utils/throttlers';
 import { CacheService } from '../../shared/utils/CacheService';
 import {
     STOCK_QUOTE_CORE_CACHE_KEY_PREFIX,
+    STOCK_QUOTE_ACTIVITY_CACHE_KEY_PREFIX,
+    STOCK_QUOTE_FUNDAMENTAL_CACHE_KEY_PREFIX,
     STOCK_QUOTE_CORE_TRADING_TTL_SECONDS,
+    STOCK_QUOTE_ACTIVITY_TRADING_TTL_SECONDS,
+    STOCK_QUOTE_FUNDAMENTAL_TRADING_TTL_SECONDS,
     buildTimestampedCachePayload,
     isValidStockInfoCachePayload,
     type StockInfoCachePayload,
@@ -12,6 +16,17 @@ import { getAShareAdaptiveCacheTtlSeconds } from '../../shared/utils/tradingTime
 import { sessionFetch } from '../../shared/utils/httpAgent';
 
 export type QuoteLevel = 'core' | 'activity' | 'fundamental';
+
+/**
+ * level → 缓存键前缀与交易时段 TTL（与 controller 的 getQuoteCacheConfig 保持一致；
+ * 2026-08-20 修复：此前 getCachedQuote/getCachedBatchQuotes 固定用 core 前缀，
+ * 导致 activity 打点命中 core 缓存（缺"今开价"）→ moveBps 恒 null → 价格异动永不触发）。
+ */
+function quoteCacheConfig(level: QuoteLevel): { keyPrefix: string; tradingTtlSeconds: number } {
+    if (level === 'activity') return { keyPrefix: STOCK_QUOTE_ACTIVITY_CACHE_KEY_PREFIX, tradingTtlSeconds: STOCK_QUOTE_ACTIVITY_TRADING_TTL_SECONDS };
+    if (level === 'fundamental') return { keyPrefix: STOCK_QUOTE_FUNDAMENTAL_CACHE_KEY_PREFIX, tradingTtlSeconds: STOCK_QUOTE_FUNDAMENTAL_TRADING_TTL_SECONDS };
+    return { keyPrefix: STOCK_QUOTE_CORE_CACHE_KEY_PREFIX, tradingTtlSeconds: STOCK_QUOTE_CORE_TRADING_TTL_SECONDS };
+}
 
 /**
  * 腾讯行情接口字段索引映射
@@ -222,7 +237,8 @@ export class TencentQuoteService {
 
     /** 带缓存的行情获取（先查缓存，未命中再从接口获取并写入缓存） */
     static async getCachedQuote(symbol: string, level: QuoteLevel = 'core'): Promise<Record<string, any>> {
-        const cacheKey = `${STOCK_QUOTE_CORE_CACHE_KEY_PREFIX}${symbol}`;
+        const { keyPrefix, tradingTtlSeconds } = quoteCacheConfig(level);
+        const cacheKey = `${keyPrefix}${symbol}`;
         try {
             const cached = await CacheService.get<StockInfoCachePayload>(cacheKey);
             if (isValidStockInfoCachePayload(cached) && cached.data['涨跌幅'] !== undefined) {
@@ -233,7 +249,7 @@ export class TencentQuoteService {
         const quote = await this.getQuote(symbol, level);
 
         try {
-            const ttl = await getAShareAdaptiveCacheTtlSeconds(STOCK_QUOTE_CORE_TRADING_TTL_SECONDS);
+            const ttl = await getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds);
             await CacheService.set(cacheKey, buildTimestampedCachePayload(quote), ttl);
         } catch { /* cache write fail */ }
 
@@ -242,13 +258,14 @@ export class TencentQuoteService {
 
     /** 带缓存的批量行情获取 */
     static async getCachedBatchQuotes(symbols: string[], level: QuoteLevel = 'core'): Promise<Record<string, any>[]> {
+        const { keyPrefix, tradingTtlSeconds } = quoteCacheConfig(level);
         const results: Record<string, any>[] = [];
         const missedSymbols: string[] = [];
         const missedIndices: number[] = [];
 
         // 先批量查缓存
         for (let i = 0; i < symbols.length; i++) {
-            const cacheKey = `${STOCK_QUOTE_CORE_CACHE_KEY_PREFIX}${symbols[i]}`;
+            const cacheKey = `${keyPrefix}${symbols[i]}`;
             try {
                 const cached = await CacheService.get<StockInfoCachePayload>(cacheKey);
                 if (isValidStockInfoCachePayload(cached) && cached.data['涨跌幅'] !== undefined) {
@@ -262,7 +279,7 @@ export class TencentQuoteService {
 
         if (missedSymbols.length > 0) {
             const fetched = await this.getBatchQuotes(missedSymbols, level);
-            const ttl = await getAShareAdaptiveCacheTtlSeconds(STOCK_QUOTE_CORE_TRADING_TTL_SECONDS);
+            const ttl = await getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds);
 
             for (let j = 0; j < fetched.length; j++) {
                 const quote = fetched[j];
@@ -270,7 +287,7 @@ export class TencentQuoteService {
                 results[idx] = quote;
 
                 if (!('错误' in quote)) {
-                    const cacheKey = `${STOCK_QUOTE_CORE_CACHE_KEY_PREFIX}${missedSymbols[j]}`;
+                    const cacheKey = `${keyPrefix}${missedSymbols[j]}`;
                     CacheService.set(cacheKey, buildTimestampedCachePayload(quote), ttl).catch(() => {});
                 }
             }

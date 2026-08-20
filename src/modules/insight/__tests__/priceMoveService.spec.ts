@@ -2,7 +2,7 @@
 // 仓库惯例：node:test + assert（非 jest），运行 node --import tsx --test
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeMoveBps, extractPrices, moveBpsToChangePct } from '../PriceMoveService';
+import { computeMoveBps, extractPrices } from '../PriceMoveService';
 
 describe('computeMoveBps', () => {
     it('700 bps 触发（+7%）', () => {
@@ -20,34 +20,28 @@ describe('computeMoveBps', () => {
 });
 
 describe('extractPrices', () => {
-    it('解析 TencentQuoteService 键名：最新价/今开价（activity 字段集）', () => {
+    it('解析 TencentQuoteService 键名：最新价/今开价/昨收价/涨跌幅（activity 字段集）', () => {
         assert.deepEqual(
-            extractPrices({ '股票代码': 'sh600519', '最新价': 685, '今开价': 680 }),
-            { latest: 685, open: 680 },
+            extractPrices({ '股票代码': 'sh600519', '最新价': 685, '今开价': 680, '昨收价': 660, '涨跌幅': 3.79 }),
+            { latest: 685, open: 680, prevClose: 660, changePct: 3.79 },
         );
     });
-    it('兼容英文键 latest/open', () => {
+    it('兼容英文键 latest/open/prevClose/changePct', () => {
         assert.deepEqual(
-            extractPrices({ symbol: '600519', latest: 10.5, open: 10 }),
-            { latest: 10.5, open: 10 },
+            extractPrices({ symbol: '600519', latest: 10.5, open: 10, prevClose: 9.8, changePct: 7.14 }),
+            { latest: 10.5, open: 10, prevClose: 9.8, changePct: 7.14 },
         );
     });
-    it('今开缺失返回 null（停牌/新股不触发）', () => {
-        assert.deepEqual(extractPrices({ '股票代码': '600519', '最新价': 685 }), { latest: 685, open: null });
+    it('昨收/涨跌幅缺失返回 null（无法按相对昨收判定则不触发）', () => {
+        assert.deepEqual(
+            extractPrices({ '股票代码': '600519', '最新价': 685, '今开价': 680 }),
+            { latest: 685, open: 680, prevClose: null, changePct: null },
+        );
     });
-    it('今开价/最新价非数字返回 null', () => {
-        assert.deepEqual(extractPrices({ '股票代码': '600519' }), { latest: null, open: null });
-    });
-});
-
-describe('moveBpsToChangePct（触发适配换算）', () => {
-    it('moveBps 750 → changePct 7.5（相对今开 +7.5%）', () => {
-        assert.equal(moveBpsToChangePct(750), 7.5);
-    });
-    it('moveBps -820 → changePct -8.2', () => {
-        assert.equal(moveBpsToChangePct(-820), -8.2);
-    });
-    it('moveBps 0 → 0', () => {
-        assert.equal(moveBpsToChangePct(0), 0);
+    it('字段缺失返回 null', () => {
+        assert.deepEqual(
+            extractPrices({ '股票代码': '600519' }),
+            { latest: null, open: null, prevClose: null, changePct: null },
+        );
     });
 });
