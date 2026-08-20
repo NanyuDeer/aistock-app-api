@@ -3,7 +3,9 @@
  *
  * POST /api/agent/asr
  *  - 鉴权：JWT（Bearer/Cookie，复用 extractTokenFromRequest + isTokenRevoked，对齐 profileController.requireAuth）
- *  - body：amr 二进制（express.raw 消费 audio/amr；前端录音 amr + 8kHz 与火山 ASR format/rate 对齐）
+ *  - body：multipart/form-data 文件字段 `file`（multer 内存存储；前端 uni.uploadFile 直传录音
+ *    amr + 8kHz 文件路径——2026-08-19 由 express.raw(audio/amr 二进制) 改为 multipart，
+ *    对齐 App 端绕开 readFile 引擎缺陷的直传方案）
  *  - 返回：200 { text }（空文本表示静音，前端复用"未识别到语音"）
  *
  * 错误矩阵：401 无/非法 token；400 请求体超限（raw limit 前置）；503 火山凭证缺失；
@@ -13,11 +15,13 @@ import { Request, Response, NextFunction } from 'express'
 import { verifyJwt } from '../../shared/utils/jwt'
 import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist'
 import { VolcAsrService } from './VolcAsrService'
+import { isAmr, transcodeToPcm16k } from './audioTranscode'
 
 export interface AsrCredentials {
   appid: string
   token: string
-  cluster: string
+  /** 资源 ID（V3 大模型，豆包流式语音识别 2.0 小时版 = volc.seedasr.sauc.duration） */
+  resourceId: string
 }
 
 export interface AsrControllerDeps {
@@ -27,6 +31,12 @@ export interface AsrControllerDeps {
   getCredentials: () => AsrCredentials | null
   /** 识别音频（生产注入 VolcAsrService.recognize；测试 mock） */
   recognizeAudio: (audio: Buffer) => Promise<{ text: string }>
+  /**
+   * amr → PCM 16kHz 转码（生产用 ffmpeg-static；测试 mock）。
+   * 2026-08-19：App 端 HTML5+ Android 录音 format:'pcm' 产出假 pcm（实为 AMR-WB，
+   * 线上魔数取证），而 V3 只支持 pcm/opus/mp3 → 必须先转码再识别。
+   */
+  transcodeAmrToPcm: (audio: Buffer) => Promise<Buffer>
 }
 
 /** 生产依赖工厂：从 env 读取火山凭证 */
@@ -36,17 +46,18 @@ export function createDefaultAsrDeps(): AsrControllerDeps {
     getCredentials: () => {
       const appid = process.env.VOLC_ASR_APPID
       const token = process.env.VOLC_ASR_TOKEN
-      const cluster = process.env.VOLC_ASR_CLUSTER
-      if (!appid || !token || !cluster) return null
-      return { appid, token, cluster }
+      const resourceId = process.env.VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'
+      if (!appid || !token) return null
+      return { appid, token, resourceId }
     },
     recognizeAudio: async (audio: Buffer) => {
       const appid = process.env.VOLC_ASR_APPID!
       const token = process.env.VOLC_ASR_TOKEN!
-      const cluster = process.env.VOLC_ASR_CLUSTER!
-      const service = new VolcAsrService({ appid, token, cluster })
+      const resourceId = process.env.VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'
+      const service = new VolcAsrService({ appid, token, resourceId })
       return service.recognize(audio)
     },
+    transcodeAmrToPcm: (audio: Buffer) => transcodeToPcm16k(audio),
   }
 }
 
@@ -73,12 +84,20 @@ export class AsrController {
       return
     }
 
-    // 2. 请求体校验（raw body 已由 express.raw 消费；非 Buffer → 400）
-    const audio = req.body
-    if (!Buffer.isBuffer(audio) || audio.length === 0) {
+    // 2. 请求体校验（multipart 文件由 multer 解析为 req.file；非文件 → 400）
+    const audio = (req as Request & { file?: Express.Multer.File }).file?.buffer
+    if (!audio || audio.length === 0) {
       res.status(400).json({ code: 400, message: '音频数据无效' })
       return
     }
+    // 诊断日志（2026-08-19 排查「未识别到语音」）：记录上传音频大小与文件头魔数，
+    // 确认 App 端 format:'pcm' 在 HTML5+ Android 上实际产出格式（amr 头 #!AMR=23 21 41 4d 52 0a、
+    // aac 帧同步 FFFx、真 pcm 无魔数）——验证完根因后按需移除。
+    const fileMeta = (req as Request & { file?: Express.Multer.File }).file
+    console.log(
+      `[asr] upload audio: size=${audio.length} magic=${audio.subarray(0, 8).toString('hex')}` +
+        ` name=${fileMeta?.originalname ?? '?'} type=${fileMeta?.mimetype ?? '?'}`,
+    )
 
     // 3. 凭证检查
     const credentials = deps.getCredentials()
@@ -87,9 +106,24 @@ export class AsrController {
       return
     }
 
-    // 4. 识别
+    // 4. 音频转码（2026-08-19「未识别到语音」根因修复）：App 端 HTML5+ 录音
+    //    format:'pcm' 实际产出 AMR-WB（假 pcm，线上魔数取证 #!AMR-WB），V3 只支持
+    //    pcm/opus/mp3 → 先转成 PCM 16kHz 再识别；非 amr（如测试/纯 pcm）直传。
+    let pcm = audio
+    if (isAmr(audio)) {
+      try {
+        pcm = await deps.transcodeAmrToPcm(audio)
+        console.log(`[asr] amr→pcm transcode: ${audio.length}B -> ${pcm.length}B`)
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : '音频转码失败'
+        res.status(502).json({ code: 502, message: reason })
+        return
+      }
+    }
+
+    // 5. 识别
     try {
-      const result = await deps.recognizeAudio(audio)
+      const result = await deps.recognizeAudio(pcm)
       res.status(200).json({ code: 200, message: 'success', text: result.text })
     } catch (err) {
       const message = err instanceof Error ? err.message : '语音识别服务异常'

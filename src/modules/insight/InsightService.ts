@@ -7,10 +7,11 @@
 //   → enqueue 接入任务队列（outbox → Redis Stream）→ 推进高水位
 import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
-import { fetchLatest, fetchDetail, parseTitleKeywords, parseTitleStockName } from './LimitUpRadarCrawler';
+import { fetchLatest, fetchDetail, parseTitleKeywords, parseTitleStockName, parseLimitUpSymbolsFromSummary } from './LimitUpRadarCrawler';
 import { upsertSources, getHighWatermark, setHighWatermark } from './InsightSourceService';
 import { enqueue } from './InsightJobService';
 import type { SourceArticle } from './InsightSourceService';
+import type { MentionedSymbol } from './types';
 
 /**
  * 执行一轮采集：
@@ -58,23 +59,34 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
     const watchlist = await getWatchlistSymbols();
     let events = 0;
     for (const a of enriched) {
+        // 命中自选股 → 建事件 + 入队（createEvent/enqueue 均幂等，重复调用安全且具自愈能力）
+        const handleHit = async (s: MentionedSymbol): Promise<void> => {
+            if (!watchlist.has(s.symbol)) return;
+            const created = await createEvent(s.symbol, s.name, a.articleId, a.tradeDate);
+            const eventId = buildEventId(s.symbol, a.tradeDate, 'limit_up');
+            try {
+                await enqueue(eventId);
+            } catch (e) {
+                // 单事件入队失败（如 DB 抖动）只记日志后跳过，不中断整轮循环：
+                // 一旦中断，该事件已建但 job 缺失成为孤儿（文章已入 known 集合，下轮不会重建），
+                // 且高水位不推进；本轮其余事件仍正常入队，孤儿可经下轮幂等路径补入队
+                console.warn('[insight] enqueue failed:', e instanceof Error ? e.message : String(e));
+            }
+            if (created) events++;
+        };
         const titleStock = parseTitleStockName(a.title);
-        if (!titleStock) continue;
-        const hit = a.mentionedSymbols.find(s => s.name === titleStock && watchlist.has(s.symbol));
-        if (!hit) continue;
-        const created = await createEvent(hit.symbol, hit.name, a.articleId, a.tradeDate);
-        // 每个命中事件都接入任务队列：enqueue 幂等（(event_id, analysis_version) 唯一键 DO NOTHING），
-        // 事件已存在时重复调用安全且具备自愈能力，保证 watchlist-insight.jobs Stream 必有消息
-        const eventId = buildEventId(hit.symbol, a.tradeDate, 'limit_up');
-        try {
-            await enqueue(eventId);
-        } catch (e) {
-            // 单事件入队失败（如 DB 抖动）只记日志后跳过，不中断整轮循环：
-            // 一旦中断，该事件已建但 job 缺失成为孤儿（文章已入 known 集合，下轮不会重建），
-            // 且高水位不推进；本轮其余事件仍正常入队，孤儿可经下轮幂等路径补入队
-            console.warn('[insight] enqueue failed:', e instanceof Error ? e.message : String(e));
+        if (titleStock) {
+            const hit = a.mentionedSymbols.find(s => s.name === titleStock && watchlist.has(s.symbol));
+            if (hit) await handleHit(hit);
+            continue;
         }
-        if (created) events++;
+        // 涨停复盘汇总文章（无标题主体）：从正文"涨停/涨超"语境提取个股，命中自选股逐只建事件
+        // （2026-08-20 增强：防"涨停个股过多汇总进复盘文章"导致漏检，如近岸蛋白 08-20 案例）
+        if (/涨停复盘/.test(a.title)) {
+            for (const s of parseLimitUpSymbolsFromSummary(a.content, a.mentionedSymbols)) {
+                await handleHit(s);
+            }
+        }
     }
     await setHighWatermark(todayStr());
     return { collected: inserted, events };

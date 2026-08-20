@@ -2,6 +2,220 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-20 — 收盘复盘改进方案：东财快照源接入 quick 链路（EM 主源 + 腾讯兜底）
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/EmSnapshotService.ts`：封装东方财富实时快照数据源（免逆向）。
+  - `getLimitPools`：push2ex `getTopicZTPool`/`getTopicDTPool`(sort=zdp)/`getTopicZBPool`(sort=zbc)，连板取 ZT 池 `lbc` 最大值；三池独立 `Promise.allSettled`，partial 时字段为 null
+  - `getConceptFlow`：push2 `clist m:90+t:3` 概念资金流，本地按涨跌幅/净额各自独立排序（gainers/losers/inflows/outflows）
+  - `getIndustryMainForce`：push2 `clist m:90+t:2` 行业主力净额求和作为全市场主力净流入（元）
+  - 复用 `eastmoneyThrottler`/`sessionFetch`/`EASTMONEY_UT`（缺失时内置 POC 实测 token `7eea3edca…`）
+
+### 改进
+- `src/modules/quote/TencentSnapshotService.ts` `buildQuickSnapshot` 改为 **EM 主源 + 腾讯近似兜底**：
+  - limits 主源=东财精确池，兜底=腾讯阈值近似
+  - sectors 主源=东财概念资金流（含资金流排序），兜底=腾讯板块排行（仅涨跌）
+  - main_force 主源=东财行业主力净额（`eastmoney:industry_main_force`），兜底=腾讯行业板块求和近似
+  - 并行 `Promise.allSettled` 单项失败不阻断；`coverage.has_limit_pool` 东财非 unavailable 即 true
+- `src/modules/quote/MarketSnapshotService.ts`：`QuickCloseMarketSnapshot.limits.broken_count/highest_board` 放宽为 `number | null`；`main_force.source` 增加 `eastmoney:industry_main_force`
+
+### 之前
+- `TencentSnapshotService.buildQuickSnapshot` 补齐编排缺口 #3：用 Tushare 前日填充 `previous_daily`，缺前日即抛硬门槛（fail-loud，与 full 对齐）
+
+### 测试
+- 新增 `tests/EmSnapshotService.test.ts`（聚合/partial/排序/求和/空行 5 用例）
+- `tests/TencentSnapshotService.test.ts` 新增 EM 主源优先用例 + 既有 build 用例注入 EM 不可用 mock
+- **26/26 passed**，`npx tsc --noEmit` 0 错误；冒烟实测东财 79 涨停/12 跌停/46 炸板/连板 4 + 创新药净流入 62.6 亿
+
+### 文档
+- `docs/superpowers/specs/2026-08-20-ths-snapshot-source-swap-design.md` 新增"落地状态（Phase 2 生产接入完成）"
+
+### 说明
+- 仍为混合方案：指数/宽度/成交额固定腾讯（用户决策），previous_daily 用 Tushare；仅当日 breadth/turnover 为近似
+
+---
+
+## [junliang] 2026-08-20 — 价格异动触发口径统一相对昨收 + 涨停雷达解析涨停复盘增强
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/insight/PriceMoveService.ts`：午/尾盘打点触发口径统一为相对昨收涨跌幅 ≥7%（`THRESHOLD_PCT`，与实时检测链 `PRICE_TRIGGER_PERCENT=7` 一致）；`extractPrices` 解析 昨收价/涨跌幅/今开价；`moveBps`（相对今开）不再参与触发判定，仅入库作辅助展示（区分开盘/盘中异动）；`backfillByKline` 改取前一根日 K 收盘作昨收
+- `src/modules/insight/controller.ts` + `src/db/migrations/017_watchlist_price_move.sql`：快照表新增 `change_pct` 列（含存量表 ALTER IF NOT EXISTS 兼容），列表/详情 SELECT 带出 `snap.change_pct`
+- `src/modules/insight/LimitUpRadarCrawler.ts` + `InsightService.ts`：涨停雷达增强——涨停复盘类汇总文章（标题无主体股票）从正文"涨停/涨超/封板/一字"语境提取个股（`parseLimitUpSymbolsFromSummary`，排除跌停/跌幅语境，`SUMMARY_CONTEXT_RANGE=50`），命中自选股逐只建事件，防"涨停个股过多汇总进复盘文章"导致漏检
+- `src/modules/stock-trace/StockTraceService.ts` / `StockTraceResultService.ts` / `controller.ts` / `types.ts`：列表/最近事件 `analysis_status` 派生（有效 artifact→completed / result rejected|failed→unavailable / 其他→processing）+ `primary_cause` 短语展示；结果表新增 `primary_phrase` 列（LLM 生成 ≤24 字归因短语）；当前版本归因失败时回退最近有效 artifact
+
+### 修复
+- `src/modules/quote/TencentQuoteService.ts`：行情缓存键按 level 区分前缀（`quoteCacheConfig(level)`），修复 activity 打点命中 core 缓存缺"今开价"→ moveBps 恒 null → 异动静默不触发（北方长龙 08-20 -9.8% 案例）
+- `src/modules/stock-trace/PriceTriggerDetector.ts`：实时检测行情从 core 改为 activity 级别——core 字段集无"昨收价"，`previousClose` 恒 undefined，实时检测从未真正触发
+
+### 测试
+- `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts`：`parseLimitUpSymbolsFromSummary` 4 例（涨停/涨超/跌停/跌幅/涨幅居前语境）
+- `src/modules/insight/__tests__/runCycleEnqueue.spec.ts`：涨停复盘汇总文章建事件入队 1 例
+- `src/modules/insight/__tests__/priceMoveService.spec.ts` / `priceEventService.spec.ts`：extractPrices 返回结构（含 prevClose/changePct）、快照新增 changePct
+- `src/modules/stock-trace/__tests__/listAnalysisStatus.spec.ts`：analysis_status 派生（新增）
+
+### 文档
+- `src/modules/insight/AGENTS.md` / `quote/AGENTS.md` / `stock-trace/AGENTS.md`：触发口径统一、缓存键 level 区分、涨停复盘解析增强
+
+### 验证
+- insight 模块 71 用例全过；stocktrace 相关测试通过；`npx tsc --noEmit` 0 错误
+
+---
+
+## [master] 2026-08-20 — 修复「未识别到语音」根因 2：V3 流式输入多帧响应，必须等最终帧
+
+**开发者**: Aria
+
+### 修复
+- 根因（线上真实语音抓包实证）：V3 `bigmodel_nostream` 流式输入对 3s 语音返回 13 个 full server response 帧——前 12 帧是中间结果（`text:""`、duration 递增），第 13 帧才是最终结果（text 非空 + `result.utterances`）。原代码收到第一个 0x9 帧即 resolve → 取到空文本 → App「未识别到语音」。
+- `src/modules/agent/VolcAsrService.ts`：onmessage 改为「聚合文本 + 等最终帧」——中间帧不结算；最终帧标记 = `result.utterances` 存在 或 text 非空；onclose 兜底用已聚合文本。
+- 测试：新增「流式多帧」+「仅中间帧后关闭」2 用例；23/23 通过。
+- 服务器：真实中文语音端到端复测识别成功（`{"text":"晚上好，欢迎收看收盘播报。今日沪深核心指数同步下跌。"} ms=1392`）。纯后端修复，App 无需重新打包。
+
+---
+
+## [master] 2026-08-19 — 修复 App「未识别到语音」：App 假 pcm（实为 AMR-WB）→ 后端转码接入
+
+**开发者**: Aria
+
+### 修复
+- 根因（线上诊断日志取证）：App 端 `format:'pcm'` 在 HTML5+ Android 产出「假 .pcm 实为 AMR-WB」（`magic=#!AMR-WB`；HTML5+ Android 只原生支持 amr/aac/3gp），V3 只支持 pcm/opus/mp3，按 pcm 解析 amr 数据 → 空文本 →「未识别到语音」。
+- 新增 `src/modules/agent/audioTranscode.ts`：`isAmr`（#!AMR 头判断）+ `transcodeToPcm16k`（ffmpeg-static stdin→stdout 转 PCM s16le 16k 单声道）。
+- `src/modules/agent/asrController.ts`：Deps 新增 `transcodeAmrToPcm`；recognize 对 amr 输入先转码再识别（转码失败 502 透出 stderr）。
+- 依赖：新增 `ffmpeg-static@5.3.0`；新增 `pnpm-workspace.yaml`（pnpm 11 `allowBuilds.ffmpeg-static: true`，保证 install 自动下载 ffmpeg 二进制；pnpm 11 不再读 package.json 的 `pnpm.onlyBuiltDependencies`）。
+- 测试：audioTranscode.spec.ts（isAmr 6 用例）+ asrController.spec.ts 新增 2 用例；21/21 通过。
+- 服务器：ffmpeg 7.0.2 就位；端到端冒烟 `SMOKE PASS`（amr→pcm 转码 8ms → V3 识别返回）。
+- 配套前端（aistock-app-frontend）：App 录音改回 `amr+8k`。
+
+---
+
+## [master] 2026-08-19 — 火山 ASR 升级 V3「豆包流式语音识别大模型」
+
+**开发者**: Aria
+
+### 变更
+- `src/modules/agent/VolcAsrService.ts` 整体重写为 V3（账号开通的是「豆包流式语音识别模型 2.0-小时版」，旧 V2 `/api/v2/asr` 未开通 → 403）：
+  - 接口 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream`；鉴权 `X-Api-App-Key`/`X-Api-Access-Key`/`X-Api-Resource-Id`/`X-Api-Request-Id`/`X-Api-Sequence(-1)`（移除 V2 的 Authorization header）
+  - 选项 `cluster` → `resourceId`（默认 `volc.seedasr.sauc.duration`）；请求体必填 `request.model_name='bigmodel'`
+  - 音频仅支持 pcm/wav/ogg/mp3（不支持 amr）、rate 必须 16000；响应帧 `[header][seq][size][payload]`（size@8、payload@12），`result` 为对象 `{text}`
+- `src/modules/agent/asrController.ts`：`AsrCredentials.cluster` → `resourceId`；`createDefaultAsrDeps` 读 `VOLC_ASR_RESOURCE_ID || 'volc.seedasr.sauc.duration'`（默认值兜底，无需改 .env）
+- 测试：VolcAsrService.spec.ts 重写为 V3（parseFrame 按发送帧布局、audio sequence 从 payload 读）、asrController.spec.ts 改 credentials；13/13 通过
+- 配套前端（aistock-app-frontend）：App 录音格式 amr+8k → pcm+16k
+
+---
+
+## [master] 2026-08-19 — 火山 ASR V2 鉴权与错误帧解析修复（线上诊断驱动）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：
+  - WebSocket 建连补 `Authorization: Bearer; {token}` header（**分号**分隔，官方 Token 鉴权格式；不加 → 401 missing Authorization，`Bearer ` 空格 → invalid auth token）
+  - onmessage 处理 `SERVER_ERROR_RESPONSE(0xF)` 错误帧（原只认 0x9 成功帧，403 错误帧被丢弃 → 识别等到 10s 超时，App 显示「语音识别超时」）
+  - 帧 size 偏移按类型区分：成功帧 0x9 size@4；错误帧 0xF 实测 `[header 4B][backend_code 4B][size 4B][payload]` size@8（曾统一读 offset4 读到 backend_code 45000030 误判粘包跳过）
+- 根因：火山账号未开通「流式语音识别」资源，返回 403 type=15 错误帧；错误帧被忽略 → 超时。代码修复后错误毫秒级透出：`[resource_id=volc.streamingasr.common.cn] requested resource not granted`（剩余 403 需火山控制台开通资源）
+- 测试：VolcAsrService.spec.ts 新增「错误帧 type=0xF 透出 message」用例（按实测帧布局构造），7/7 通过
+
+---
+
+## [master] 2026-08-19 — 修复火山 ASR 在服务器 Node20 下 502（全局 WebSocket 缺失）
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/agent/VolcAsrService.ts`：默认 WS 客户端由「Node 22+ 内置全局 `new WebSocket(url)`」改为 npm `ws` 包（与 volcenginePodcast.service.ts TTS 同库，规避 Node 版本依赖）；新增最小接口 `VolcAsrWsLike`（onopen/onmessage/onclose/onerror/send/close），`wsFactory` 类型对齐。
+- 根因：服务器 pm2 将 aistock-app-api 跑在 Node v20.20.2（全局 WebSocket=undefined），每次识别抛 ReferenceError → 502「语音识别服务异常」（前端未 parse res.data 吞成笼统文案，配套前端修复见 aistock-app-frontend）。
+
+---
+
+## [master] 2026-08-19 — /api/agent/asr 改 multer multipart（配合 App 端 uni.uploadFile 直传根治）
+
+**开发者**: Aria
+
+### 改进
+- `src/index.ts`：`/api/agent/asr` 由 `express.raw(audio/amr)` 改为 `multer.memoryStorage().single('file')`（multipart 字段 `file`，5mb）。
+- `src/modules/agent/asrController.ts`：`recognize` 从 `req.file.buffer` 取音频（替代 req.body Buffer）。
+- 依赖：新增 multer@2.2.0、@types/multer@2.2.0。
+
+---
+
+## [master] 2026-08-19 — 趋势股评分 K 线改用腾讯前复权，消除除权除息假跳变
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/TrendScoreService.ts`：新增 `parseTencentKlineToTrendKline`（兼容 TencentKlineService.getKLine 对象格式与原始行数组，日期转 YYYYMMDD、OHLC 与 Tushare 一致）与 `fetchAdjustedTrendKline`（腾讯日K fqt=1 前复权，近120日）；`calcTechnicalDim` 新增 klineOverride 参数，评分 K 线展示优先用前复权数据，获取失败回退 Tushare 不复权；修复源杰科技等除权股不复权价格断裂假跳变（2026-05-18 除权后 40% → 前复权 -1.6%）。
+- `tests/TrendScoreKlineAdjusted.test.ts`：新增 3 个测试用例（含除权标记行数组格式、非法行处理、getKLine 对象格式）。
+
+### 文档
+- `src/modules/monitor/AGENTS.md`：补充趋势股评分 K 线前复权说明。
+
+---
+
+## [master] 2026-08-19 — 风口龙头板块净流入彻底下线，改用同花顺实时成交额
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/monitor/WindLeaderAnalyzerService.ts`：删除东财派生板块资金流（getMoneyflowCntThs/getMoneyflowIndDc 及导入、相关类型）；板块级别 net_inflow 字段、AI prompt 的「板块净流入」行、ruleBasedAnalysis 的 amountTrend 全部移除；板块资金评分回退为「频次60%+平均涨幅25%+最新涨幅15%」。保留个股级资金流不受影响。
+- `src/modules/monitor/WindLeaderService.ts`：板块类型移除 net_inflow，新增 amount（板块当日成交额·元）；getAnalysis 实时增强：经 RotationBoardStore.fetchBoardRealtime（同花顺 d.10jqka.com.cn/v6/line/bk_<code>/01/last.js）以盘中实时涨幅/成交额覆盖静态快照。
+- `src/modules/monitor/RotationBoardStore.ts`：新增 fetchBoardRealtime 板块实时盘口读取（30s 内存缓存 TTL）。
+
+---
+
+## [master] 2026-08-19 — 自选股排序：sort_order 字段 + 排序保存接口
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/auth/userController.ts`：
+  - `user_stocks` 幂等迁移新增 `sort_order` 字段；列表查询改按 `sort_order ASC, created_at DESC` 排序。
+  - `addFavorites` 新添加股票 `sort_order` 置为当前最大值 +1。
+  - 新增 `saveFavoritesOrder`：按传入 symbols 顺序批量更新 `sort_order`，仅更新该用户自选内的代码。
+- `src/index.ts`：注册 `PUT /api/users/me/favorites/order` 路由。
+
+---
+
+## [feat/fear-greed-node] 2026-08-18 — 恐贪指数服务：Python FastAPI 迁移为 Node/TS 并入 app-api
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/indicators.ts`：恐贪指数纯函数（clamp / percentileRank / pctRankOrNeutral / labelOf / levelOf / sparkline）
+- `src/modules/fear-greed/calculator.ts`：韭圈儿 6 指标计算（波动率 / 北向资金偏离 / 上涨占比 / IF 升贴水 / 股债回报差 / 融资买入），前 5 等权合成综合指数
+- `src/modules/fear-greed/FearGreedService.ts`：编排服务（内存 30 分钟缓存 + PG 快照表 fear_greed_snapshot / breadth_daily + Redis 缓存 + 上证指数序列对齐）
+- `src/modules/fear-greed/controller.ts`：dashboard / indexes / history / refresh 四个路由处理器
+- `tests/fear-greed.indicators.test.ts`、`tests/fear-greed.calculator.test.ts`：单元测试（node --import tsx --test）
+- `src/index.ts`：注册 `/api/fear-greed/*` 路由、每日 16:30 cron 自动刷新、启动时幂等建表
+
+### 重构
+- 原独立 Python FastAPI 服务（aistock-fear-greed）迁移为 Node/TS 模块并入 app-api，路由契约保持 `/api/fear-greed/*` 不变；Web demo 与 agent-py services/ 已清理
+
+---
+
+## [master] 2026-08-17 — 交易日历公开接口（非交易日过滤支撑）
+
+**开发者**: Aria
+
+### 新增
+- `src/shared/utils/TradingCalendarService.ts`：
+  - 新增 `getNextTradingDay(date)`：返回严格晚于指定日期的下一个交易日，与既有 `getPreviousTradingDay` 对称
+  - 新增 `getRecentTradingDays(date, count)`：返回截至指定日期（含当天）最近 count 个交易日，供首页"市场洞见"取日期标签
+- `src/core/routes/internal.ts`：`publicRouter`（挂 `/api/agent`）新增 3 个公开接口——
+  - `GET /api/agent/trading-calendar/previous?date=YYYY-MM-DD` → 前一交易日
+  - `GET /api/agent/trading-calendar/next?date=YYYY-MM-DD` → 下一交易日
+  - `GET /api/agent/trading-calendar/recent?date=YYYY-MM-DD&count=N` → 最近 N 个交易日数组
+  - 以服务端休市日历（周末 + 官方节假日）为权威，供 App 前端"前一天/后一天"跳档跳过非交易日、市场洞见取最近交易日
+
+### 同批随带
+- `src/modules/monitor/WindLeaderService.ts`、`src/modules/monitor/IndustryKGService.ts`、`src/modules/monitor/AGENTS.md`：风口龙头批次遗留随带改动
+
+### 验证
+- `npx tsc --noEmit` 0 错误；休市日历覆盖 2024–2026 年，超范围接口返回 500
+
 ## [changer] 2026-08-17 — ASR 音频格式 wav → amr（对齐 App 端录音格式契约）
 
 **开发者**: 37588

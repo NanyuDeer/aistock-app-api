@@ -9,13 +9,55 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import https = require('node:https')
 import test from 'node:test'
-import { mock } from 'node:test'
+import { before, after, mock } from 'node:test'
 
 import {
     TencentSnapshotService,
     __tencentSnapshotDeps,
 } from '../src/modules/quote/TencentSnapshotService'
+import { EmSnapshotService } from '../src/modules/quote/EmSnapshotService'
 import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
+import type { CompleteDailyResult, DailyPriceRow } from '../src/modules/quote/TushareService'
+
+// 前日完整日线 mock（编排缺口 #3：quick 改进版需满足 coverage.previous_daily.complete==True）
+// 所有 buildQuickSnapshot 测试共用同一桩，覆盖 toCoverageSummary/sumAmountYuan 依赖。
+const PREVIOUS_DAILY_ROW: DailyPriceRow = {
+    ts_code: '000001.SZ', trade_date: '20260729',
+    open: 10, high: 10.5, low: 9.8, close: 10.2,
+    pre_close: 10, change: 0.2, pct_chg: 2, vol: 1000000, amount: 20000000,
+}
+const PREVIOUS_DAILY_RESULT: CompleteDailyResult = {
+    rows: [PREVIOUS_DAILY_ROW],
+    complete: true,
+    reason: 'complete',
+    page_count: 1,
+}
+
+before(() => {
+    __tencentSnapshotDeps.getCompleteDailyByDate = async () => PREVIOUS_DAILY_RESULT
+})
+after(() => {
+    // 恢复为默认实现（指向真实 Tushare），避免影响后续测试
+    __tencentSnapshotDeps.getCompleteDailyByDate = require('../src/modules/quote/TushareService').getCompleteDailyByDate
+})
+
+// 东财数据源 mock 辅助：buildQuickSnapshot 会并行调用 EM 三个方法（getLimitPools/getConceptFlow/
+// getIndustryMainForce），默认全部不可用，避免测试走真实网络；需测东财主源/兜底的用例再单独覆盖。
+function mockEmUnavailable() {
+    const pools = mock.method(EmSnapshotService, 'getLimitPools', async () => ({
+        up_count: null, down_count: null, broken_count: null, highest_board: null,
+        availability: { state: 'unavailable' as const, reason: 'mock' },
+    }))
+    const concepts = mock.method(EmSnapshotService, 'getConceptFlow', async () => ({
+        gainers: [], losers: [], inflows: [], outflows: [],
+        availability: { state: 'unavailable' as const, reason: 'mock' },
+    }))
+    const main = mock.method(EmSnapshotService, 'getIndustryMainForce', async () => ({
+        large_and_extra_large_net_yuan: null,
+        availability: { state: 'unavailable' as const, reason: 'mock' },
+    }))
+    return [pools, concepts, main]
+}
 
 // 6 大指数 mock 数据
 const INDEX_FACTS = [
@@ -123,6 +165,7 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         large_and_extra_large_net_yuan: null,
         availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
     }))
+    const emMocks = mockEmUnavailable()
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -152,6 +195,9 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.equal(snapshot.turnover.amount_yuan, 29000000)
         assert.equal(snapshot.turnover.source, 'tencent:quote')
         assert.equal(snapshot.turnover.approximate, true)
+        // 编排缺口 #3：quick 改进版前日必须完整（Node 用 Tushare 前日填充）并回填 prior 成交额
+        assert.equal(snapshot.coverage.previous_daily.complete, true)
+        assert.equal(snapshot.turnover.previous_amount_yuan, 20000000000)
         assert.equal(snapshot.limits.broken_count, null)
         assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, null)
         assert.equal(snapshot.main_force.source, 'tencent:board_main_flow')
@@ -165,17 +211,18 @@ test('buildQuickSnapshot exposes truthful availability for its quick facts', asy
         assert.equal(snapshot.coverage_info!.has_concept_flow, false)
         assert.deepEqual(snapshot.quick_data_availability.sectors, {
             state: 'unavailable',
-            reason: 'Tencent board rank returned no sector rows',
+            reason: 'both eastmoney concept flow and Tencent board rank returned no sectors',
         })
         assert.deepEqual(snapshot.quick_data_availability.main_force, {
             state: 'unavailable',
-            reason: 'Tencent industry board rank returned no rows',
+            reason: 'mock',
         })
     } finally {
         fetchIndexesMock.mock.restore()
         fetchBreadthMock.mock.restore()
         fetchSectorsMock.mock.restore()
         fetchMainForceMock.mock.restore()
+        emMocks.forEach((m) => m.mock.restore())
     }
 })
 
@@ -200,6 +247,7 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
         large_and_extra_large_net_yuan: null,
         availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
     }))
+    const emMocks = mockEmUnavailable()
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -212,6 +260,7 @@ test('buildQuickSnapshot still succeeds when market breadth fetch fails', async 
         fetchBreadthMock.mock.restore()
         fetchSectorsMock.mock.restore()
         fetchMainForceMock.mock.restore()
+        emMocks.forEach((m) => m.mock.restore())
     }
 })
 
@@ -234,6 +283,7 @@ test('buildQuickSnapshot keeps a malformed breadth partial and null', async () =
         large_and_extra_large_net_yuan: null,
         availability: { state: 'unavailable' as const, reason: 'Tencent industry board rank returned no rows' },
     }))
+    const emMocks = mockEmUnavailable()
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -250,6 +300,7 @@ test('buildQuickSnapshot keeps a malformed breadth partial and null', async () =
         fetchBreadthMock.mock.restore()
         fetchSectorsMock.mock.restore()
         fetchMainForceMock.mock.restore()
+        emMocks.forEach((m) => m.mock.restore())
     }
 })
 
@@ -510,6 +561,8 @@ test('sectors and main_force come from Tencent board rank API', async () => {
         large_and_extra_large_net_yuan: 37585796000, // 3758579.6 万 × 1e4
         availability: { state: 'available' as const },
     }))
+    // 东财不可用 → sectors/main_force 回落到腾讯板块排行（本用例即为腾讯兜底路径验证）
+    const emMocks = mockEmUnavailable()
 
     try {
         const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
@@ -531,6 +584,67 @@ test('sectors and main_force come from Tencent board rank API', async () => {
         fetchBreadthMock.mock.restore()
         fetchSectorsMock.mock.restore()
         fetchMainForceMock.mock.restore()
+        emMocks.forEach((m) => m.mock.restore())
+    }
+})
+
+test('buildQuickSnapshot prefers eastmoney limits/sectors/main_force over Tencent fallback', async () => {
+    // 东财主源全部可用时应优先生效（限额精确池 + 概念资金排序 + 行业主力净额），腾讯仅兜底。
+    const afterClose = new Date('2026-07-30T07:30:00.000Z')
+    const fetchIndexesMock = mock.method(TencentSnapshotService, 'fetchIndexes', async () => INDEX_FACTS)
+    const fetchBreadthMock = mock.method(TencentSnapshotService, 'fetchMarketBreadth', async () => AVAILABLE_BREADTH_RESULT)
+    const poolsMock = mock.method(EmSnapshotService, 'getLimitPools', async () => ({
+        up_count: 10, down_count: 3, broken_count: 2, highest_board: 5,
+        availability: { state: 'available' as const },
+    }))
+    const conceptsMock = mock.method(EmSnapshotService, 'getConceptFlow', async () => ({
+        gainers: [{ ts_code: 'BK0001', name: '创新药', pct_change: 8.0, net_amount: 6260000000, lead_stock: '', company_num: 0, trade_date: '' }],
+        losers: [{ ts_code: 'BK0002', name: '稳定币概念', pct_change: -3.0, net_amount: -100000000, lead_stock: '', company_num: 0, trade_date: '' }],
+        inflows: [{ ts_code: 'BK0003', name: '医药', pct_change: 5.0, net_amount: 9000000000, lead_stock: '', company_num: 0, trade_date: '' }],
+        outflows: [{ ts_code: 'BK0004', name: '银行', pct_change: -1.0, net_amount: -8000000000, lead_stock: '', company_num: 0, trade_date: '' }],
+        availability: { state: 'available' as const },
+    }))
+    const mainMock = mock.method(EmSnapshotService, 'getIndustryMainForce', async () => ({
+        large_and_extra_large_net_yuan: 123456789,
+        availability: { state: 'available' as const },
+    }))
+    // 腾讯兜底也可用，但应被东财主源覆盖（验证优先级）
+    const fetchSectorsMock = mock.method(TencentSnapshotService, 'fetchTencentSectors', async () => ({
+        gainers: [{ ts_code: 'gn1', name: 'TencentFallback', pct_change: 10, net_amount: 0, lead_stock: '', company_num: 0, trade_date: '' }],
+        losers: [],
+        availability: { state: 'available' as const },
+    }))
+    const fetchMainForceMock = mock.method(TencentSnapshotService, 'fetchTencentMainForce', async () => ({
+        large_and_extra_large_net_yuan: 999,
+        availability: { state: 'available' as const },
+    }))
+
+    try {
+        const snapshot = await TencentSnapshotService.buildQuickSnapshot(afterClose)
+        // limits 用东财精确池（含炸板/连板）
+        assert.deepEqual(snapshot.limits, { up_count: 10, down_count: 3, broken_count: 2, highest_board: 5 })
+        assert.equal(snapshot.quick_data_availability.limits.state, 'available')
+        assert.equal(snapshot.coverage_info!.has_limit_pool, true)
+        // sectors 用东财（含资金流排序，top_in/out 非空）
+        assert.equal(snapshot.sectors.top_gainers[0].name, '创新药')
+        assert.equal(snapshot.sectors.top_inflows[0].name, '医药')
+        assert.equal(snapshot.sectors.top_outflows[0].name, '银行')
+        assert.equal(snapshot.quick_data_availability.sectors.state, 'available')
+        assert.equal(snapshot.coverage_info!.has_concept_flow, true)
+        // main_force 用东财行业主力净额（不标记 approximate）
+        assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, 123456789)
+        assert.equal(snapshot.main_force.source, 'eastmoney:industry_main_force')
+        assert.equal(snapshot.main_force.approximate, undefined)
+        assert.equal(snapshot.quick_data_availability.main_force.state, 'available')
+        assert.equal(snapshot.coverage_info!.has_moneyflow, true)
+    } finally {
+        fetchIndexesMock.mock.restore()
+        fetchBreadthMock.mock.restore()
+        fetchSectorsMock.mock.restore()
+        fetchMainForceMock.mock.restore()
+        poolsMock.mock.restore()
+        conceptsMock.mock.restore()
+        mainMock.mock.restore()
     }
 })
 

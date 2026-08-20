@@ -191,12 +191,25 @@ export class StockTraceService {
                 event_id VARCHAR(128) NOT NULL REFERENCES stock_trace_events(event_id),
                 openid VARCHAR(128) NOT NULL,
                 push_kind VARCHAR(32) NOT NULL,
+                trigger_reason VARCHAR(64) NOT NULL DEFAULT '',
+                artifact_id UUID,
+                channel VARCHAR(24) NOT NULL DEFAULT 'websocket',
                 status VARCHAR(16) NOT NULL,
                 payload JSONB NOT NULL,
                 sent_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (event_id, openid, push_kind)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+        `);
+
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(64) NOT NULL DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS artifact_id UUID');
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS channel VARCHAR(24) NOT NULL DEFAULT 'websocket'");
+        await pool.query("UPDATE stock_trace_push_records SET trigger_reason = '' WHERE trigger_reason IS NULL");
+        await pool.query("ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET NOT NULL');
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_trace_push_records_delivery
+            ON stock_trace_push_records (event_id, openid, push_kind, trigger_reason)
         `);
         await StockTraceJobService.ensureSchema();
     }
@@ -419,7 +432,7 @@ export class StockTraceService {
             await pool.query(`
                 INSERT INTO stock_trace_push_records (id, event_id, openid, push_kind, trigger_reason, status, payload, sent_at)
                 VALUES ($1, $2, $3, 'initial', 'event_created', 'sent', $4::jsonb, CURRENT_TIMESTAMP)
-                ON CONFLICT (event_id, openid, push_kind) DO NOTHING
+                ON CONFLICT (event_id, openid, push_kind, trigger_reason) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
             try {
@@ -432,6 +445,7 @@ export class StockTraceService {
                     summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
                     targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
                     payload,
+                    occurredAt: event.triggeredAt ? new Date(event.triggeredAt).toISOString() : undefined,
                 });
             } catch (error) {
                 console.warn('[StockTrace] App notification failed:', error instanceof Error ? error.message : String(error));
@@ -483,11 +497,33 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
             FROM stock_trace_user_events ue
             INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
             WHERE ue.openid = $1 ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $2
@@ -509,7 +545,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: row.read_at,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
@@ -528,10 +567,32 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
             FROM stock_trace_events e
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
             WHERE e.event_status = 'active' ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $1
@@ -553,7 +614,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: null,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };

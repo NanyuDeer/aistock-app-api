@@ -53,9 +53,13 @@ export type SnapshotStage = 'initial' | 'enriched' | 'corrected';
 export type SourceLevel = 'A' | 'B' | 'C' | 'D';
 export type DataReadiness = 'complete' | 'partial' | 'missing';
 
+export type SourceKind =
+    | 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'market_fact'
+    | 'announcement' | 'news' | 'capital_fact' | 'technical_fact';
+
 export interface StockSourceRecord {
     sourceId: string;
-    kind: 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'market_fact' | 'announcement' | 'news';
+    kind: SourceKind;
     provider: string;
     sourceLevel: SourceLevel;
     title: string;
@@ -80,15 +84,16 @@ export interface StockTraceSnapshot {
     sourceRevisionHash: string;
     triggerEvent: TriggerEvent;
     missingFields: string[];
-    dataReadiness: Record<'company' | 'sector' | 'market', DataReadiness>;
+    dataReadiness: Record<DataReadinessDomains, DataReadiness>;
     collectorVersions: Record<string, string>;
     capturedAt: Date;
     supersedesSnapshotId?: string;
     sourceRecords: StockSourceRecord[];
 }
 
+export type DataReadinessDomains = 'company' | 'sector' | 'market' | 'capital' | 'technical';
 export type AttributionStatus = 'confirmed' | 'hypothesis' | 'insufficient' | 'not_applicable';
-export type CandidateLayer = 'company' | 'sector' | 'market';
+export type CandidateLayer = 'company' | 'sector' | 'market' | 'capital' | 'technical';
 export type CandidateStatus = 'supported' | 'weak' | 'rejected' | 'insufficient';
 export type ChainStage = 'structural_root' | 'trigger' | 'transmission' | 'exposure' | 'repricing' | 'observable_result';
 export type EpistemicType = 'fact' | 'inference' | 'hypothesis';
@@ -140,6 +145,8 @@ export interface StockTraceResult {
     suggestedActions: string[];
     validationStatus: 'pending' | 'passed' | 'rejected';
     validationErrors: string[];
+    /** 简短主因短语（≤20 字，LLM 生成），供列表/卡片展示 */
+    primaryPhrase?: string;
     candidates: TraceCandidate[];
     chains: TraceChain[];
 }

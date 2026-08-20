@@ -32,9 +32,6 @@ import internalRouter, { publicRouter } from './core/routes/internal';
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
-// ASR 语音识别（批次 3a：火山流式，App 端语音输入）
-import { AsrController, createDefaultAsrDeps } from './modules/agent/asrController';
-
 // push 推送模块
 import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
@@ -132,13 +129,6 @@ app.use(cors({
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
-
-// ASR 语音识别：二进制 amr 上传 → 火山流式识别 → { text }
-// 必须挂在反代之前（/api/agent/* 默认全部转发 Python）；express.raw 仅消费 audio/amr
-const asrDeps = createDefaultAsrDeps();
-app.post('/api/agent/asr', express.raw({ type: 'audio/amr', limit: '5mb' }), (req, res, next) => {
-    AsrController.recognize(req, res, next, asrDeps);
-});
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -691,16 +681,16 @@ const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
 cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
 
-// 午盘触发后 20 分钟补抓：仅处理当日 event_type='midday_price_move' 的事件
-cron.schedule('50 11 * * 1-5', async () => {
-    try {
-        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
-        const r = await PriceMoveService.refetchMiddayEvidence();
-        console.log(`[PriceMoveCron] refetch 完成 events=${r.events}`);
-    } catch (err) {
-        console.error('[PriceMoveCron] refetch 失败:', err instanceof Error ? err.message : String(err));
-    }
-}, { timezone: 'Asia/Shanghai' });
+// 11:50 补抓停用：stocktrace 以 revision 机制处理盘中变化，2026-08-15 迁移决策
+// cron.schedule('50 11 * * 1-5', async () => {
+//     try {
+//         const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+//         const r = await PriceMoveService.refetchMiddayEvidence();
+//         console.log(`[PriceMoveCron] refetch 完成 events=${r.events}`);
+//     } catch (err) {
+//         console.error('[PriceMoveCron] refetch 失败:', err instanceof Error ? err.message : String(err));
+//     }
+// }, { timezone: 'Asia/Shanghai' });
 
 // 飞书消息千问分析：每分钟串行处理少量待分析记录。
 cron.schedule('* * * * *', async () => {
