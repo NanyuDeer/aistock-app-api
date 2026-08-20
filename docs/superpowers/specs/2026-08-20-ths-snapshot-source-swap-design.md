@@ -229,3 +229,15 @@ cron 30 20 → review_full 事件 → build_market_trace_snapshot
 - 遵守 `validate_trace_against_snapshot` 对 missing_fields 的严格校验，避免降级。
 - cron.schedule 显式 `timezone=Asia/Shanghai` 的现有约束不变。
 - 不暴露或记录任何内部 token；东财 UT 走 `EASTMONEY_UT` 环境变量（已有 EmTagLeader 实现），不硬编码新 token。
+
+## 补精度记录（2026-08-20 部署后）
+
+部署后发现生产服务器（以及本机）到默认 `push2.eastmoney.com` 的 TLS 连接被东财按出口 IP 重置（`UND_ERR_SOCKET`），
+导致 `main_force` 落回腾讯行业求和近似、概念资金流 `sectors` 缺净额。
+实测同簇 **`push2delay.eastmoney.com`**（约 15 分钟延迟，盘后快照无影响）与 **`push2his.eastmoney.com`** 可达且为精确镜像：
+
+- 行业 `m:90+t:2` f62 首位医药生物 **109.2 亿**，与 `push2` POC 完全一致。
+- 概念 `m:90+t:3` 净额创新药 **62 亿**，与 POC 一致。
+
+**修复**：`EmSnapshotService.fetchBoardRows` 改为对 clist 主机轮询 `push2 → push2delay → push2his`，命中即用。
+生产环境自动切 `push2delay`，恢复东财 f62 精度（`main_force` 707.6 亿，非腾讯近似）。tsc 干净，冒烟通过。
