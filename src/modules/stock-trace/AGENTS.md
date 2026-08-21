@@ -36,6 +36,15 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - `processPriceFact` 的 create/revision 分支**不再**调用 `StockTraceJobService.enqueue`，仅保留快照采集、实时推送、`triggerEventScrape`；`publishPending` 仍保留用于刷新 outbox。
 - Python consumer 的 `SNAPSHOT_NOT_READY` 重试（pending reclaim）天然适配：落定即入队、enriched 快照就绪后消费。
 
+### 2026-08-21 更新：movements 列表/详情实时跟随当前自选
+
+- `listUserEvents` / `getUserEvent` 的归属判定从 `stock_trace_user_events` 快照关联（事件创建时记录当时的持有者）改为**实时 `INNER JOIN user_stocks`**：
+  - 列表可见性完全跟随当前自选——移出自选立即消失、之后加入自选可见历史事件，与 insights（`JOIN user_stocks`）行为一致；
+  - 详情归属同样实时校验（当前自选无该股即 404），避免"列表可见但详情 404"的不一致。
+- `read_at` 仍从 `stock_trace_user_events`（`LEFT JOIN ... ON ue.openid = $1`）读取；`markRead` 由 `UPDATE` 改为 `INSERT ... ON CONFLICT (event_id, openid) DO UPDATE`，支持"之后加入自选"的用户标记已读。
+- `stock_trace_user_events` 保留用途：事件创建时的推送对象（`createUserEvents`/`sendInitialPush`）、已读状态落点、归因完成二次推送（`StockTraceAlertOrchestrator.pushSecondary`）。
+- 未登录降级 `listRecentEvents`/`getRecentEvent` 不变。
+
 ### 2026-08-21 更新：优化实施（发布 gate / 并发检测 / 抓取重试 / 增量采集）
 
 - **发布 gate**：`StockTraceJobService.publishPending` 发布前检查 `(event_id, trigger_revision)` 的 enriched 快照是否就绪；未就绪置 `held_until`（5s 重查、60s 硬超时后强制发布交由 consumer 兜底）。outbox 新增 `held_until` 列。`scheduleEnriched` 完成后自动冲刷 outbox。

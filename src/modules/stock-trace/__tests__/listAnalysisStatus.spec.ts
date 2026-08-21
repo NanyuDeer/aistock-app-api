@@ -40,7 +40,8 @@ function row(analysisStatus?: string): Record<string, unknown> {
 
 function mockMainQuery(rows: Record<string, unknown>[]): void {
     mock.method(pool, 'query', (async (text: string, _params?: unknown[]) => {
-        if (String(text).includes('FROM stock_trace_user_events')) return { rows };
+        // listUserEvents 主查询含 JOIN user_stocks（实时跟随自选）；listRecentEvents 不含，先匹配前者
+        if (String(text).includes('JOIN user_stocks')) return { rows };
         if (String(text).includes('FROM stock_trace_events e')) return { rows };
         return { rows: [] };
     }) as unknown as typeof pool.query);
