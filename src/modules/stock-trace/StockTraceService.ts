@@ -484,6 +484,9 @@ export class StockTraceService {
             await StockTraceJobService.enqueue(client, { eventId, triggerRevision });
             return;
         }
+        // 无 client 路径：入队前确保 enriched 快照就绪（缺失则同步采集一次兜底），
+        // 避免 job 发布后 consumer 反复拿 SNAPSHOT_NOT_READY 空转。事务外执行。
+        await this.ensureEnrichedReady(eventId, triggerRevision);
         const conn = await pool.connect();
         try {
             await conn.query('BEGIN');
@@ -495,6 +498,14 @@ export class StockTraceService {
         } finally {
             conn.release();
         }
+    }
+
+    private static async ensureEnrichedReady(eventId: string, triggerRevision: number): Promise<void> {
+        const context = await StockTraceSnapshotService.getAnalysisContext(eventId, triggerRevision);
+        if (context) return;
+        const event = await this.getTriggerEvent(eventId, triggerRevision);
+        if (!event) return; // 事件不存在：交由 consumer 超时兜底
+        await StockTraceSnapshotService.captureEnriched(event);
     }
 
     /** 对一批已落定事件统一触发最终归因：入队后发布 outbox。 */

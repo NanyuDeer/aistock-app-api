@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import pool from '../../core/db';
 import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
+import { StockTraceJobService } from './StockTraceJobService';
 import { getThsDaily, getThsIndex } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
 import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
@@ -340,14 +341,18 @@ export class StockTraceSnapshotService {
             dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing' } });
     }
 
-    static scheduleEnriched(event: TriggerEvent): void {
-        const timer = setTimeout(() => void this.captureEnriched(event).catch((error: unknown) => {
-            console.error('[StockTraceSnapshot] enriched capture failed:', error instanceof Error ? error.message : error);
-        }), 1_000);
+    static scheduleEnriched(event: TriggerEvent, incremental = false): void {
+        const timer = setTimeout(() => {
+            void this.captureEnriched(event, incremental).then(() =>
+                StockTraceJobService.publishPending(),
+            ).catch((error: unknown) => {
+                console.error('[StockTraceSnapshot] enriched capture failed:', error instanceof Error ? error.message : error);
+            });
+        }, 1_000);
         timer.unref();
     }
 
-    static async captureEnriched(event: TriggerEvent): Promise<StockTraceSnapshot> {
+    static async captureEnriched(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
         const [company, sector, market, capital, technical] = await Promise.allSettled([
             withinEnrichedBudget(this.collectCompanySources(event, capturedAt)),

@@ -7,6 +7,9 @@ export const STOCK_TRACE_JOB_STREAM = 'stock-trace.jobs';
 export const STOCK_TRACE_ANALYSIS_VERSION = 'llm-stock-trace-v1';
 const JOB_KIND = 'analyze';
 
+const HELD_RECHECK_INTERVAL_MS = 5_000; // 未就绪重查间隔（5s）
+const MAX_HOLD_SECONDS = 60;             // 硬超时：超过后不再 hold，直接发布交由 consumer 兜底
+
 export interface StockTraceJobInput {
     eventId: string;
     triggerRevision: number;
@@ -55,6 +58,7 @@ export class StockTraceJobService {
         `);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_trace_jobs_status_created ON stock_trace_jobs(status, created_at)');
         await pool.query("CREATE INDEX IF NOT EXISTS idx_stock_trace_outbox_pending ON stock_trace_outbox(status, created_at) WHERE status = 'pending'");
+        await pool.query('ALTER TABLE stock_trace_outbox ADD COLUMN IF NOT EXISTS held_until TIMESTAMPTZ');
     }
 
     static async enqueue(client: PoolClient, input: StockTraceJobInput): Promise<string> {
@@ -88,6 +92,8 @@ export class StockTraceJobService {
         const rows = await pool.query<PendingOutboxRow>(`
             SELECT outbox_id, job_id, payload FROM stock_trace_outbox
             WHERE status = 'pending'
+              AND (held_until IS NULL OR held_until <= CURRENT_TIMESTAMP
+                   OR created_at <= CURRENT_TIMESTAMP - interval '60 seconds')
             ORDER BY created_at
             LIMIT $1
         `, [Math.min(Math.max(limit, 1), 200)]);
@@ -95,6 +101,20 @@ export class StockTraceJobService {
         let failed = 0;
         for (const row of rows.rows) {
             try {
+                // 快照 gate：enriched 未就绪则不发布，置 held_until 5s 后重查；
+                // 超过 MAX_HOLD_SECONDS 的 job 不再 hold，直接发布（由 consumer SNAPSHOT_TIMEOUT 兜底）。
+                const ready = await this.checkEnrichedSnapshotReady(row.payload.eventId, row.payload.triggerRevision);
+                if (!ready) {
+                    await pool.query(`
+                        UPDATE stock_trace_outbox
+                        SET held_until = CASE WHEN created_at > CURRENT_TIMESTAMP - interval '60 seconds'
+                                              THEN CURRENT_TIMESTAMP + interval '5 seconds'
+                                              ELSE NULL END,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE outbox_id = $1 AND status = 'pending'
+                    `, [row.outbox_id]);
+                    continue;
+                }
                 const streamMessageId = await redis.xadd(
                     STOCK_TRACE_JOB_STREAM,
                     '*',
@@ -136,6 +156,15 @@ export class StockTraceJobService {
             }
         }
         return { published, failed };
+    }
+
+    private static async checkEnrichedSnapshotReady(eventId: string, triggerRevision: number): Promise<boolean> {
+        const result = await pool.query<{ snapshot_id: string }>(`
+            SELECT snapshot_id FROM stock_trace_snapshots
+            WHERE event_id = $1 AND trigger_revision = $2 AND snapshot_stage = 'enriched'
+            ORDER BY captured_at DESC LIMIT 1
+        `, [eventId, triggerRevision]);
+        return result.rows.length > 0;
     }
 
     static async reportStatus(
