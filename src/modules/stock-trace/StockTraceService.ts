@@ -400,10 +400,11 @@ export class StockTraceService {
     }
 
     private static captureSnapshots(event: TriggerEvent, mutation: 'created' | 'revised'): void {
+        const incremental = mutation === 'revised';
         const capture = mutation === 'created'
             ? StockTraceSnapshotService.captureInitial(event)
-            : StockTraceSnapshotService.captureCorrected(event);
-        void capture.then(() => StockTraceSnapshotService.scheduleEnriched(event)).catch((error: unknown) => {
+            : StockTraceSnapshotService.captureCorrected(event, incremental);
+        void capture.then(() => StockTraceSnapshotService.scheduleEnriched(event, incremental)).catch((error: unknown) => {
             console.error('[StockTrace] snapshot capture failed:', error instanceof Error ? error.message : error);
         });
     }
