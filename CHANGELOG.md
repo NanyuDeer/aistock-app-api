@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-21 — 修复风口龙头板块实时行情显示昨日数据
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/RotationBoardStore.ts`：
+  - 根因：`fetchBoardRealtime` 用 `last.js` 的"最后两根"推导，但 `last.js` 盘中最后 bar 是**昨日**（`today` 字段仅标注日期，不含当根实时 bar），导致板块一直显示昨日的涨跌幅/成交额。
+  - 新增 `TODAY_URL`（同花顺 `bk_<code>/01/today.js` 当日实时 JSONP）与 `parseTodayRealtime`（解析 `{"1":日期,"11":现价,"19":成交额(元)}`）。
+  - 重写 `fetchBoardRealtime`：并行拉 `last.js`（昨收=日期严格早于今日的最后一条 close）与 `today.js`（今日实时价 + 成交额），`change_pct=(现价-昨收)/昨收*100`。
+- 验证：881175 医疗服务 today.js 解析得 date=20260821、现价 20597.772、成交额 46533482000、当日涨跌幅 -3.87%；`npx tsc --noEmit` 无错误。
+
+---
+
 ## [master] 2026-08-21 — 异动归因改为落定后触发一次
 
 **开发者**: Aria
