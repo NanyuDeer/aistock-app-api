@@ -2,6 +2,26 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-21 — 异动归因改为落定后触发一次
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/stock-trace/StockTraceService.ts`：
+  - `processPriceFact` create/revision 分支**移除即时 `StockTraceJobService.enqueue`**（盘中只采集快照 + 实时推送，不再每次 revision 都跑 LLM 归因）；
+  - 反向落定：关闭相反方向 active 事件的 UPDATE 加 `RETURNING`，在同一事务内对落定事件 `enqueueFinalAnalysis`；
+  - `startRecovery` close UPDATE 加 `RETURNING`，恢复窗口到期落定后触发一次最终归因；
+  - 新增私有 `enqueueFinalAnalysis`（无 client 时自建短事务保证 job+outbox 原子）与 `triggerFinalAttribution`（入队后 `publishPending`）；
+  - 新增公开 `settleActiveEvents()`：强制落定当日仍 active 的事件并触发最终归因，返回落定数。
+- `src/index.ts`：新增 15:05 工作日 cron 调用 `StockTraceService.settleActiveEvents()` 作收盘兜底（防 5 分钟恢复窗口在收盘前未到期而漏归因）。
+- 幂等：`UNIQUE(event_id, trigger_revision, analysis_version, job_kind)` + `SELECT FOR UPDATE`，同一事件只入队一个最终归因 job；Python consumer `SNAPSHOT_NOT_READY` pending reclaim 适配落定即入队。
+
+### 测试
+- 新增 `__tests__/final-attribution.spec.ts`（5 例：落定归因一次 / 无落定不入队 / 收盘兜底 / 兜底空跑 / enqueue 幂等）。
+- 验证：`npx tsc --noEmit` 通过；stock-trace 39 例全绿。
+
+---
+
 ## [master] 2026-08-21 — 恐贪指数接口漏挂修复（温度计恒为默认值12、点击无页面）
 
 **开发者**: Aria

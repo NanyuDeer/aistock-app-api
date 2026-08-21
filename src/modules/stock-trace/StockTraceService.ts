@@ -242,11 +242,17 @@ export class StockTraceService {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            await client.query(`
+            // 反向落定：关闭相反方向的 active 事件，并在同一事务内入队其最终归因 job。
+            // 数据已冻结只归因一次；入队幂等由 UNIQUE(event_id, trigger_revision, analysis_version, job_kind) 保证。
+            const reversed = await client.query<{ event_id: string; current_trigger_revision: number }>(`
                 UPDATE stock_trace_events
                 SET event_status = 'closed', updated_at = CURRENT_TIMESTAMP
                 WHERE symbol = $1 AND event_status = 'active' AND direction <> $2
+                RETURNING event_id, current_trigger_revision
             `, [security.symbol, direction]);
+            for (const row of reversed.rows) {
+                await this.enqueueFinalAnalysis(row.event_id, Number(row.current_trigger_revision), client);
+            }
 
             const current = await client.query<EventRow>(`
                 SELECT event_id, symbol, stock_name, trading_date, direction, first_triggered_at,
@@ -289,10 +295,7 @@ export class StockTraceService {
                     SET current_trigger_revision = $2, current_severity = $3, updated_at = CURRENT_TIMESTAMP
                     WHERE event_id = $1
                 `, [eventRow.event_id, revision, nextSeverity]);
-                await StockTraceJobService.enqueue(client, {
-                    eventId: eventRow.event_id,
-                    triggerRevision: revision,
-                });
+                // 不再即时入队归因：盘中 revision 仅采集快照，最终归因留到事件落定后统一触发一次（降 token / 数据更全）
                 await client.query('COMMIT');
                 void triggerEventScrape(eventRow).catch((error: unknown) => {
                     console.error('[StockTrace] event scrape trigger (revision) failed:', error instanceof Error ? error.message : error);
@@ -350,7 +353,7 @@ export class StockTraceService {
             `, [eventId, security.symbol, eventRow.stock_name, tradingDate, direction, fact.observedAt, severity, previousClosed.rows[0]?.event_id || null]);
             await this.insertRevision(client, eventId, 1, direction, fact, severity, 'initial_trigger');
             const recipients = await this.createUserEvents(client, eventId, security.symbol);
-            await StockTraceJobService.enqueue(client, { eventId, triggerRevision: 1 });
+            // 不再即时入队归因：实时推送保留，最终归因等事件落定后统一触发一次
             await client.query('COMMIT');
             void triggerEventScrape(eventRow).catch((error: unknown) => {
                 console.error('[StockTrace] event scrape trigger (create) failed:', error instanceof Error ? error.message : error);
@@ -460,12 +463,68 @@ export class StockTraceService {
             SET recovery_started_at = COALESCE(recovery_started_at, $2), last_seen_at = $2, updated_at = CURRENT_TIMESTAMP
             WHERE symbol = $1 AND event_status = 'active'
         `, [symbol, observedAt]);
-        await pool.query(`
+        const settled = await pool.query<{ event_id: string; current_trigger_revision: number }>(`
             UPDATE stock_trace_events
             SET event_status = 'closed', updated_at = CURRENT_TIMESTAMP
             WHERE symbol = $1 AND event_status = 'active'
               AND recovery_started_at IS NOT NULL AND recovery_started_at <= $2
+            RETURNING event_id, current_trigger_revision
         `, [symbol, new Date(observedAt.getTime() - PRICE_RESET_WINDOW_MS)]);
+        if (settled.rows.length > 0) {
+            await this.triggerFinalAttribution(settled.rows);
+        }
+    }
+
+    /** 事件落定（恢复窗口到期 / 反向落定 / 收盘兜底）后触发一次最终归因。
+     * 幂等：enqueue 的 UNIQUE(event_id, trigger_revision, analysis_version, job_kind) + SELECT FOR UPDATE
+     * 保证同一事件只入队一个最终归因 job。无 client 时自建短事务保证 job+outbox 原子落库。 */
+    private static async enqueueFinalAnalysis(eventId: string, triggerRevision: number, client?: PoolClient): Promise<void> {
+        await this.ensureSchema();
+        if (client) {
+            await StockTraceJobService.enqueue(client, { eventId, triggerRevision });
+            return;
+        }
+        const conn = await pool.connect();
+        try {
+            await conn.query('BEGIN');
+            await StockTraceJobService.enqueue(conn, { eventId, triggerRevision });
+            await conn.query('COMMIT');
+        } catch (error) {
+            await conn.query('ROLLBACK');
+            throw error;
+        } finally {
+            conn.release();
+        }
+    }
+
+    /** 对一批已落定事件统一触发最终归因：入队后发布 outbox。 */
+    private static async triggerFinalAttribution(
+        rows: Array<{ event_id: string; current_trigger_revision: number }>,
+    ): Promise<void> {
+        for (const row of rows) {
+            await this.enqueueFinalAnalysis(row.event_id, Number(row.current_trigger_revision));
+        }
+        await StockTraceJobService.publishPending().catch((error: unknown) => {
+            console.error('[StockTrace] final attribution outbox publish failed:', error instanceof Error ? error.message : error);
+        });
+    }
+
+    /** 收盘兜底（15:05 cron 调用）：强制落定当日所有 active 事件并触发最终归因。返回落定事件数。 */
+    static async settleActiveEvents(): Promise<number> {
+        await this.ensureSchema();
+        const tradingDate = formatChinaTradingDate(new Date());
+        const settled = await pool.query<{ event_id: string; current_trigger_revision: number }>(`
+            UPDATE stock_trace_events
+            SET event_status = 'closed',
+                recovery_started_at = COALESCE(recovery_started_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE event_status = 'active' AND trading_date = $1::date
+            RETURNING event_id, current_trigger_revision
+        `, [tradingDate]);
+        if (settled.rows.length > 0) {
+            await this.triggerFinalAttribution(settled.rows);
+        }
+        return settled.rows.length;
     }
 
     static toPublicEvent(event: TriggerEvent): Record<string, unknown> {
