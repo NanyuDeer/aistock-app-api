@@ -86,6 +86,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
 
+// fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
+import { fearGreedRouter } from './modules/fear-greed/controller';
+import { ensureFearGreedSchema } from './modules/fear-greed/FearGreedService';
+
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
 import { StockInfoJudgementController } from './modules/crawler/judgementController';
@@ -575,6 +579,8 @@ app.use('/internal/predictions', predictionInternalRouter);
 
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
+app.use('/api/fear-greed', fearGreedRouter); // 恐贪指数：公开查询（温度计 + 主面板）
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -680,6 +686,18 @@ const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
 };
 cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+
+// 异动监控收盘兜底（15:05）：强制落定当日仍 active 的事件并触发一次最终归因。
+// 盘中不再即时归因（降 token / 数据更全），此 cron 保证 5 分钟恢复窗口在收盘前未到期的事件也不漏归因。
+cron.schedule('5 15 * * 1-5', async () => {
+    try {
+        const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
+        const settled = await StockTraceService.settleActiveEvents();
+        console.log(`[StockTraceCron] 收盘落定完成 settled=${settled}`);
+    } catch (err: unknown) {
+        console.error('[StockTraceCron] 收盘落定失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 
 // 11:50 补抓停用：stocktrace 以 revision 机制处理盘中变化，2026-08-15 迁移决策
 // cron.schedule('50 11 * * 1-5', async () => {
@@ -902,6 +920,14 @@ async function start() {
         console.log('[DB] feishu_messages AI columns ready');
     } catch (err: unknown) {
         console.warn('[DB] feishu_messages schema check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 恐贪指数快照表 + 市场宽度表（此前未建表，dashboard 查询会失败）
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear_greed schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {

@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-21 — 恐贪指数接口漏挂修复（温度计恒为默认值12、点击无页面）
+
+**开发者**: Aria
+
+### 修复
+- 根因：`/api/fear-greed` 路由在 `src/index.ts` **从未挂载**，`ensureFearGreedSchema()` 也从未调用——controller 已实现但未接线，前端请求 404 退化为默认值12。
+- `src/modules/fear-greed/controller.ts`：新增导出 `fearGreedRouter`（GET `/dashboard`、`/indexes`、`/history`、POST `/refresh` 公开路由）。
+- `src/index.ts`：挂载 `app.use('/api/fear-greed', fearGreedRouter)`（publicRouter 之后）；`start()` 建表块新增 `ensureFearGreedSchema()` 调用（仿 feishu 模式，失败仅 warn 不阻断启动）。
+- 验证：`npx tsc --noEmit` 退出码 0。
+
+---
+
 ## [master] 2026-08-20 — 收盘复盘改进方案：东财快照源接入 quick 链路（EM 主源 + 腾讯兜底）
 
 **开发者**: Aria
