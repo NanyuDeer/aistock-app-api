@@ -41,6 +41,8 @@ interface RevisionRow {
     severity: TraceSeverity;
 }
 
+const EVENT_SCRAPE_RETRY_DELAYS_MS = [500, 2000]; // 指数退避：500ms → 2s
+
 let schemaPromise: Promise<void> | null = null;
 
 function toNumber(value: string | number): number {
@@ -75,29 +77,48 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
  * fire-and-forget；失败仅告警，不阻断 stock_trace 主流程。baseUrl 与鉴权
  * 头对齐 StockTraceSnapshotService 读库调用（同款 env 变量与 token）。
  * E-3 加固（2026-08-14）：占位/缺失 token 不发请求（对齐 StockTraceTriggerService
- * 语义，避免 Python 侧 403 徒增无效请求）；显式 5s 超时防悬空。 */
-export async function triggerEventScrape(event: EventRow): Promise<void> {
+ * 语义，避免 Python 侧 403 徒增无效请求）；显式 5s 超时防悬空。
+ * 2026-08-21：内置最多 2 次指数退避重试（500ms→2s），仍失败仅告警不抛异常。 */
+export async function triggerEventScrape(
+    event: EventRow,
+    options: { retryDelaysMs?: number[] } = {},
+): Promise<void> {
     const baseUrl = (process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '').replace(/\/+$/, '');
     if (!baseUrl) return;
     const token = process.env.INTERNAL_API_TOKEN || '';
     if (!token || token === 'change-me-in-production') return;
-    await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Token': token,
-        },
-        signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({
-            scrape_mode: 'event_triggered',
-            event: {
-                symbol: event.symbol,
-                score_date: event.trading_date,
-                windowStartAt: event.window_start_at,
-                windowEndAt: event.window_end_at,
-            },
-        }),
-    });
+    const delays = options.retryDelaysMs ?? EVENT_SCRAPE_RETRY_DELAYS_MS;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        try {
+            const response = await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Internal-Token': token,
+                },
+                signal: AbortSignal.timeout(5000),
+                body: JSON.stringify({
+                    scrape_mode: 'event_triggered',
+                    event: {
+                        symbol: event.symbol,
+                        score_date: event.trading_date,
+                        windowStartAt: event.window_start_at,
+                        windowEndAt: event.window_end_at,
+                    },
+                }),
+            });
+            if (response.ok) return;
+            lastError = new Error(`event scrape HTTP ${response.status}`);
+        } catch (error: unknown) {
+            lastError = error;
+        }
+        if (attempt < delays.length) {
+            await new Promise((resolve) => setTimeout(resolve, delays[attempt] as number));
+        }
+    }
+    // 仍失败：告警日志，不阻断 stock_trace 主流程（快照采集有缺库降级路径兜底）
+    console.error('[StockTrace] event scrape trigger failed after retries:', lastError instanceof Error ? lastError.message : String(lastError));
 }
 
 export class StockTraceService {
