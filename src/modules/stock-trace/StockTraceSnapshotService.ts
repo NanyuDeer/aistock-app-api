@@ -56,6 +56,20 @@ export function pickReusableSources(records: StockSourceRecord[]): StockSourceRe
     return records.filter((record) => INCREMENTAL_REUSE_KINDS.has(record.kind));
 }
 
+/**
+ * 增量采集读数：被复用的 record 映射到数据就绪层，配合 buildDataReadiness
+ * 让 company/sector/market 反映真实可用性（而非缺失），否则缺失报告会误伤
+ * 已复用证据，让 downstream 误以为该类上下文不存在。
+ */
+export function reusedDomainAvailability(reused: StockSourceRecord[]): Array<{ layer: DataReadinessDomains; count: number }> {
+    const kinds = new Set(reused.map((record) => record.kind));
+    const counts: Array<{ layer: DataReadinessDomains; count: number }> = [];
+    if (kinds.has('news') || kinds.has('announcement')) counts.push({ layer: 'company', count: 1 });
+    if (kinds.has('sector_fact')) counts.push({ layer: 'sector', count: 1 });
+    if (kinds.has('market_fact')) counts.push({ layer: 'market', count: 1 });
+    return counts;
+}
+
 function withinEnrichedBudget<T>(operation: Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => reject(new Error('collector_timeout')), ENRICHED_COLLECTION_TIMEOUT_MS);
@@ -340,6 +354,7 @@ export class StockTraceSnapshotService {
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
+                    ...reusedDomainAvailability(reused),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
@@ -401,6 +416,7 @@ export class StockTraceSnapshotService {
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
+                    ...reusedDomainAvailability(reused),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);

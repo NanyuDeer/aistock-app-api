@@ -3,7 +3,7 @@
 // 运行：node --import tsx --test src/modules/stock-trace/__tests__/snapshot-incremental.spec.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { pickReusableSources } from '../StockTraceSnapshotService';
+import { pickReusableSources, reusedDomainAvailability } from '../StockTraceSnapshotService';
 import type { StockSourceRecord } from '../types';
 
 function rec(sourceId: string, kind: string): StockSourceRecord {
@@ -23,5 +23,21 @@ describe('pickReusableSources（增量采集复用域判定）', () => {
         ];
         const reused = pickReusableSources(input).map((r) => r.kind);
         assert.deepEqual(reused, ['news', 'announcement', 'sector_fact', 'market_fact']);
+    });
+});
+
+describe('reusedDomainAvailability（增量就绪读数）', () => {
+    it('公司域 news/announcement 任一存在即映射 company 层', () => {
+        const counts = reusedDomainAvailability([
+            rec('a1', 'announcement'), rec('s1', 'sector_fact'), rec('m1', 'market_fact'),
+        ]);
+        assert.deepEqual(counts, [
+            { layer: 'company', count: 1 },
+            { layer: 'sector', count: 1 },
+            { layer: 'market', count: 1 },
+        ]);
+    });
+    it('无复用 record 时返回空数组', () => {
+        assert.deepEqual(reusedDomainAvailability([]), []);
     });
 });
