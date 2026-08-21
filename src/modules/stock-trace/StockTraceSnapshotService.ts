@@ -420,6 +420,9 @@ export class StockTraceSnapshotService {
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
+                // 增量路径的 missingFields 由读数层（reusedDomainAvailability + 重采结果）派生：
+                // 被复用域已按 source 存在性读为 complete，避免把已复用证据误报为缺失；此为完整度近似
+                //（"部分复用"仍计 complete），如需严格反映上一快照原始缺口，应在此合并上一快照 missing_fields。
                 const missingFields = Object.entries(readiness).filter(([, value]) => value !== 'complete').map(([key]) => `${key}_context`);
                 return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
@@ -632,6 +635,9 @@ export class StockTraceSnapshotService {
     // 增量采集：取该事件最近一次 enriched 快照的 source_records，作为修订时复用域的数据源；无则返回 null
     private static async getLatestEnrichedForEvent(eventId: string): Promise<StockSourceRecord[] | null> {
         await this.ensureSchema();
+        // 取"该事件最近一条 enriched"（不限定 trigger_revision）：盘面基本不变域在 revision 快速连发
+        // 时可能复用上一 revision 的 company/sector/market。对绝大多数异动可接受（news 重度异动最坏滞后
+        // 1~2s），换取实现简单；若未来需要严格按版本复用，改为限定 trigger_revision < 当前值即可。
         const result = await pool.query<{ snapshot_id: string }>(`
             SELECT snapshot_id FROM stock_trace_snapshots
             WHERE event_id = $1 AND snapshot_stage = 'enriched'
