@@ -279,6 +279,115 @@ async function equityBond(client: TushareClient): Promise<JqIndicator> {
     };
 }
 
+// ===== 涨跌停微观结构指标 =====
+
+/** 每日涨跌停聚合数据 */
+interface DailyLimit {
+    date: string;
+    sealCount: number;   // 涨停封板数
+    breakCount: number;  // 炸板数
+    downCount: number;   // 跌停数
+    maxStreak: number;   // 最高连板数
+}
+
+/** 获取涨跌停数据（按日期分批，limit_list_d API） */
+async function fetchLimitData(client: TushareClient, dates: string[]): Promise<Map<string, { status: string; times: number }[]>> {
+    const result = new Map<string, { status: string; times: number }[]>();
+    const BATCH = 25; // 每 25 个交易日一批（~5000 行上限）
+    for (let i = 0; i < dates.length; i += BATCH) {
+        const batch = dates.slice(i, i + BATCH);
+        const rows = await client.request(
+            'limit_list_d',
+            { start_date: batch[0], end_date: batch[batch.length - 1] },
+            'trade_date,limit_status,limit_times',
+        );
+        for (const r of rows) {
+            const d = String(r.trade_date);
+            if (!result.has(d)) result.set(d, []);
+            result.get(d)!.push({
+                status: String(r.limit_status ?? ''),
+                times: Number(r.limit_times ?? 0),
+            });
+        }
+    }
+    return result;
+}
+
+/** 将涨跌停原始数据聚合为每日指标 */
+function aggregateDaily(limitData: Map<string, { status: string; times: number }[]>, dates: string[]): DailyLimit[] {
+    const out: DailyLimit[] = [];
+    for (const d of dates) {
+        const stocks = limitData.get(d);
+        if (!stocks || stocks.length === 0) continue;
+        let seal = 0, broken = 0, down = 0, maxS = 0;
+        for (const s of stocks) {
+            if (s.status === 'U') { seal++; if (s.times > maxS) maxS = s.times; }
+            else if (s.status === 'Z') broken++;
+            else if (s.status === 'D') down++;
+        }
+        out.push({ date: d, sealCount: seal, breakCount: broken, downCount: down, maxStreak: maxS });
+    }
+    return out;
+}
+
+/** 涨停封板率：封板数 / (封板+炸板)；高=贪婪 */
+function sealRateIndicator(daily: DailyLimit[]): JqIndicator {
+    const raws = daily.map(d => d.sealCount + d.breakCount > 0
+        ? (d.sealCount / (d.sealCount + d.breakCount)) * 100 : 50);
+    if (raws.length < 30) return { key: 'seal_rate', name: '封板率', desc: '涨停封板数占触板总数比，反映买盘强度', ...NEUTRAL };
+    const current = raws[raws.length - 1];
+    const score = Math.round(pctRankOrNeutral(raws.slice(0, -1), current) * 100) / 100;
+    return {
+        key: 'seal_rate', name: '封板率', desc: '涨停封板数占触板总数比，反映买盘强度',
+        score, raw: Math.round(current * 100) / 100, label: levelOf(score),
+        history: { dates: daily.map(d => d.date).reverse(), scores: raws.slice().reverse() },
+    };
+}
+
+/** 炸板率：炸板数 / (封板+炸板)；高=恐惧（反向） */
+function breakRateIndicator(daily: DailyLimit[]): JqIndicator {
+    const raws = daily.map(d => d.sealCount + d.breakCount > 0
+        ? (d.breakCount / (d.sealCount + d.breakCount)) * 100 : 50);
+    if (raws.length < 30) return { key: 'break_rate', name: '炸板率', desc: '炸板数占触板总数比，反映抛压强度', ...NEUTRAL };
+    const current = raws[raws.length - 1];
+    const score = Math.round((100 - pctRankOrNeutral(raws.slice(0, -1), current)) * 100) / 100;
+    return {
+        key: 'break_rate', name: '炸板率', desc: '炸板数占触板总数比，反映抛压强度',
+        score, raw: Math.round(current * 100) / 100, label: levelOf(score),
+        history: { dates: daily.map(d => d.date).reverse(), scores: raws.slice().reverse() },
+    };
+}
+
+/** 涨跌停数量比：(涨停-跌停)/(涨停+跌停) × 50+50；涨停多=贪婪 */
+function limitRatioIndicator(daily: DailyLimit[]): JqIndicator {
+    const raws = daily.map(d => {
+        const up = d.sealCount + d.breakCount;
+        const total = up + d.downCount;
+        return total > 0 ? ((up - d.downCount) / total) * 50 + 50 : 50;
+    });
+    if (raws.length < 30) return { key: 'limit_ratio', name: '涨跌停比', desc: '涨停与跌停数量比，反映多空力量对比', ...NEUTRAL };
+    const current = raws[raws.length - 1];
+    const score = Math.round(pctRankOrNeutral(raws.slice(0, -1), current) * 100) / 100;
+    return {
+        key: 'limit_ratio', name: '涨跌停比', desc: '涨停与跌停数量比，反映多空力量对比',
+        score, raw: Math.round(current * 100) / 100, label: levelOf(score),
+        history: { dates: daily.map(d => d.date).reverse(), scores: raws.slice().reverse() },
+    };
+}
+
+/** 连板高度：当日最高连板数；高=投机情绪旺盛（贪婪） */
+function streakIndicator(daily: DailyLimit[]): JqIndicator {
+    const raws = daily.map(d => d.maxStreak);
+    if (raws.length < 30) return { key: 'streak', name: '连板高度', desc: '当日最高连续涨停天数，反映投机热度', ...NEUTRAL };
+    const current = raws[raws.length - 1];
+    const score = Math.round(pctRankOrNeutral(raws.slice(0, -1), current) * 100) / 100;
+    return {
+        key: 'streak', name: '连板高度', desc: '当日最高连续涨停天数，反映投机热度',
+        score, raw: current, label: levelOf(score),
+        history: { dates: daily.map(d => d.date).reverse(), scores: raws.slice().reverse() },
+    };
+}
+
 /** 融资买入额 250 日百分位（杠杆水平代理，不计入综合指数） */
 async function margin(client: TushareClient): Promise<JqIndicator> {
     const dates = await tradeDates(client, HIST);
@@ -320,25 +429,56 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         margin: await margin(client),
     };
 
-    // 综合指数 = 前 5 个指标等权（杠杆水平不计入，与韭圈儿一致）
+    // 涨跌停微观指标（共享一次数据拉取；API 不可用时降级为中性）
+    const micro = await (async () => {
+        try {
+            const limitDates = await tradeDates(client, HIST);
+            const limitData = await fetchLimitData(client, limitDates);
+            const daily = aggregateDaily(limitData, limitDates);
+            return {
+                seal_rate: sealRateIndicator(daily),
+                break_rate: breakRateIndicator(daily),
+                limit_ratio: limitRatioIndicator(daily),
+                streak: streakIndicator(daily),
+            };
+        } catch (err) {
+            console.error('[FearGreed] limit_list_d unavailable, micro indicators neutral:', err instanceof Error ? err.message : String(err));
+            const neutral = { ...NEUTRAL };
+            return {
+                seal_rate: { key: 'seal_rate', name: '封板率', desc: '涨停封板数占触板总数比，反映买盘强度', ...neutral },
+                break_rate: { key: 'break_rate', name: '炸板率', desc: '炸板数占触板总数比，反映抛压强度', ...neutral },
+                limit_ratio: { key: 'limit_ratio', name: '涨跌停比', desc: '涨停与跌停数量比，反映多空力量对比', ...neutral },
+                streak: { key: 'streak', name: '连板高度', desc: '当日最高连续涨停天数，反映投机热度', ...neutral },
+            };
+        }
+    })();
+
+    // 综合指数 = 9 个指标等权（杠杆水平不计入，与韭圈儿口径扩展）
+    const compositeInds = [
+        inds.volatility, inds.north_flow, inds.breadth,
+        inds.futures, inds.equity_bond,
+        micro.seal_rate, micro.break_rate, micro.limit_ratio, micro.streak,
+    ];
     const composite = Math.round(
-        (inds.volatility.score + inds.north_flow.score + inds.breadth.score
-            + inds.futures.score + inds.equity_bond.score) / 5 * 100,
+        compositeInds.reduce((s, k) => s + k.score, 0) / compositeInds.length * 100,
     ) / 100;
 
     const indicators: JqIndicator[] = [
-        inds.volatility, inds.north_flow, inds.breadth, inds.futures, inds.equity_bond, inds.margin,
+        inds.volatility, inds.north_flow, inds.breadth, inds.futures, inds.equity_bond,
+        micro.seal_rate, micro.break_rate, micro.limit_ratio, micro.streak,
+        inds.margin,
     ];
 
-    // 综合指数历史（前 5 指标等权，日期用 breadth 的交易日倒序）
-    const histKeys: JqIndicator[] = [inds.volatility, inds.north_flow, inds.breadth, inds.futures, inds.equity_bond];
+    // 综合指数历史（9 指标等权）
+    const histKeys = compositeInds;
     const histLen = Math.min(...histKeys.map((k) => k.history.scores.length));
     const histScores: number[] = [];
     for (let i = 0; i < histLen; i++) {
         const avg = histKeys.reduce((s, k) => s + k.history.scores[i], 0) / histKeys.length;
         histScores.push(Math.round(avg * 100) / 100);
     }
-    const histDates = inds.breadth.history.dates.slice(0, histLen);
+    // 以涨跌停指标的历史日期为基准（倒序）
+    const histDates = micro.seal_rate.history.dates.slice(0, histLen);
 
     return {
         key: 'jq',

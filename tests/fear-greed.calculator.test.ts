@@ -58,6 +58,14 @@ function makeClient(): TushareClient {
                 }
                 case 'margin':
                     return DATES.map((trade_date, i) => ({ trade_date, rzmre: 5e9 + i * 1e8 }));
+                case 'limit_list_d':
+                    // 涨跌停数据：每日若干只涨停/炸板/跌停
+                    return DATES.flatMap((trade_date, i) => [
+                        { trade_date, limit_status: 'U', limit_times: i >= 40 ? 2 : 1 },
+                        { trade_date, limit_status: 'U', limit_times: 1 },
+                        { trade_date, limit_status: 'Z', limit_times: 0 },
+                        ...(i >= 40 ? [] : [{ trade_date, limit_status: 'D', limit_times: 0 }]),
+                    ]);
                 default:
                     throw new Error(`unexpected api: ${apiName} ${JSON.stringify(params)} ${fields}`);
             }
@@ -81,13 +89,13 @@ function makeCache(): BreadthCache & { upserted: number } {
     };
 }
 
-test('computeJq 返回完整结构（key/name/6 指标/合成指数）', async () => {
+test('computeJq 返回完整结构（key/name/10 指标/合成指数）', async () => {
     const cache = makeCache();
     const result = await computeJq(makeClient(), cache);
 
     assert.equal(result.key, 'jq');
     assert.equal(result.name, '韭圈儿恐贪指数');
-    assert.equal(result.indicators.length, 6);
+    assert.equal(result.indicators.length, 10);
     assert.ok(result.composite >= 0 && result.composite <= 100);
     assert.ok(typeof result.label === 'string' && result.label.length > 0);
     // 综合指数历史存在

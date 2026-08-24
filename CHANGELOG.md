@@ -2,6 +2,17 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-micro] 2026-08-24 — 恐贪算法增强：新增涨跌停微观结构指标
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/calculator.ts`：新增 4 个涨跌停微观结构指标（封板率 seal_rate / 炸板率 break_rate / 涨跌停比 limit_ratio / 连板高度 streak），数据源 Tushare `limit_list_d`；合成指数由 5 宏观指标扩展为 9 指标（5 宏观 + 4 微观）等权平均
+- `tests/fear-greed.calculator.test.ts`：mock `limit_list_d` API 响应，断言更新为 10 指标
+
+### 变更
+- `src/modules/fear-greed/calculator.ts`：`limit_list_d` 不可用时 4 个微观指标降级为中性值（score=50），不影响主流程；composite 合成改为 9 指标平均
+
 ## [feat/fear-greed-node] 2026-08-18 — 恐贪指数服务：Python FastAPI 迁移为 Node/TS 并入 app-api
 
 **开发者**: 林晓研
