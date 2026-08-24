@@ -66,6 +66,14 @@
 ### 变更
 - `src/modules/fear-greed/calculator.ts`：`limit_list_d` 不可用时 4 个微观指标降级为中性值（score=50），不影响主流程；composite 合成改为 9 指标平均
 
+## [master] 2026-08-24 — 报告导出会员解锁 + 分时 K 线数据源修复
+
+**开发者**: NanyuDeer
+
+### 新增
+- `users` 表与 `GET /api/users/me` 新增 `is_vip` 会员标记（默认 false，反向兼容），供报告导出会员解锁；新增 `src/modules/auth/__tests__/me-is-vip.spec.ts`。
+- 分钟级（klt<100）K 线改走腾讯 `kline/mkline` 接口：`TencentKlineService.buildMinuteUrl/arrayRowsToKLine`，controller 分时路由切腾讯，保证 mini 分时图数据非空；新增 `src/modules/quote/__tests__/tencent-kline-minute.spec.ts`。
+
 ---
 
 ## [master] 2026-08-21 — 修复风口龙头板块实时行情显示昨日数据

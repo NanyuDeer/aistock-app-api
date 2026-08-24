@@ -1105,6 +1105,14 @@ async function start() {
         console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // is_vip 会员标记（2026-08-24 报告导出会员解锁用；默认 false）
+    try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_vip BOOLEAN NOT NULL DEFAULT false`);
+        console.log('[DB] users.is_vip ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
     // 业绩预测表
     try {
         await pool.query(`
