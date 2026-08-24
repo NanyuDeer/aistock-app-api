@@ -34,11 +34,11 @@ import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = [
+export const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
-    'chat_analysis', 'event_scrape',
+    'chat_analysis', 'event_scrape', 'midday',
 ]
 
 interface ChainSummaryItem {
