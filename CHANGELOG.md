@@ -15,6 +15,160 @@
 
 ---
 
+## [master] 2026-08-24 — 涨跌停微观指标改为 daily 自行推导（替代 limit_list_d）
+
+**开发者**: 林晓研
+
+### 重构
+- `src/modules/fear-greed/calculator.ts`：涨跌停微观数据源从 `limit_list_d`（limit_status 字段需 2000 积分，当前账号被置空）改为 **Tushare `daily` 全市场按日推导**：
+  - 涨停封板 = 收盘价达涨停价（按板块 10%/20%/30% 阈值，不含 ST 5%）
+  - 炸板 = 盘中触涨停价但收盘未封
+  - 跌停 = 收盘价达跌停价
+  - 连板高度 = 按全窗口封板序列回放（连续封板累加、断板归 1）
+- `src/modules/fear-greed/calculator.ts`：新增 `LimitCache` 接口与 `deriveDailyLimit`/`fetchLimitData`（增量缓存 + 连板回放）；`computeJq` 增加 `limitCache` 参数
+- `src/modules/fear-greed/FearGreedService.ts`：新增 `limit_daily` 表（seal_count/break_count/down_count/seal_codes JSONB，供连板回放）+ `limitCache` 实现
+- `src/index.ts`：启动时后台预热恐贪指数（首跑需逐日拉取全市场 daily ~500 交易日，避免首个 HTTP 请求超时）
+
+### 验证
+- 真实数据推导数量合理：涨停 42-89 只/日、炸板 19-61、跌停 13-143（8/19 大跌日 143 跌停）
+- `tests/fear-greed.calculator.test.ts`：mock daily 增加按日分支、新增 limit 缓存用例（5/5 通过）
+
+---
+
+## [master] 2026-08-24 — 修复恐贪指数被中性兜底指标稀释导致数值虚高
+
+**开发者**: 林晓研
+
+### 修复
+- `src/modules/fear-greed/calculator.ts`：综合指数等权平均前先过滤**无真实数据**的指标（`history.scores` 为空的兜底中性项）。此前 `limit_list_d` 权限缺失时 4 个微观指标（封板率/炸板率/涨跌停比/连板高度）恒为中性 50，会把恐惧市（宏观指标约 15 分）的综合指数稀释到 ~30，与市场实际恐贪水平（7-8）偏差过大
+- 过滤后综合指数仅由有数据的指标构成（如微观不可用时退化为 5 个宏观指标等权），与历史序列已有的过滤逻辑保持一致；全数据缺失时兜底 50
+
+---
+
+## [feat/fear-greed-micro] 2026-08-24 — 恐贪指数支持每日3次 intraday 快照 + 历史快照接口
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/FearGreedService.ts`：`getHistory(days)` 返回结构扩展为 `{ index_key, dates, composite, snapshots }`，其中 `snapshots` 为每日 3 次（pre/noon/post）intraday 快照，供前端绘制盘中粒度短热度线
+- `src/modules/fear-greed/FearGreedService.ts`：`buildDashboard()` 新增 `historySnapshots` 字段，调用 `getHistory(60)` 返回近 3 个月快照集合，供前端图表直接消费（无需额外 API 调用）
+
+### 变更
+- `src/modules/fear-greed/FearGreedService.ts`：`refreshJq(timeSlot)` 接受 `'pre' | 'noon' | 'post'` 参数并透传到 `getLatestJq(true, timeSlot)`，确保各时段 cron 落库到对应 `time_slot`
+- `src/index.ts`：`runFearGreedRefresh(label, timeSlot)` 接受 timeSlot 参数，3 个 cron 任务分别传入 `'pre'` / `'noon'` / `'post'`，使盘前/正午/盘后快照正确分桶存储
+
+---
+
+## [feat/fear-greed-micro] 2026-08-24 — 恐贪指数盘前/正午/盘后三次定时刷新
+
+**开发者**: 林晓研
+
+### 新增
+- `src/index.ts`：新增 3 个 cron 定时任务（周一至周五，跳过节假日）——盘前 09:15、正午 11:30、盘后 15:30 各调用 `refreshJq()` 重新采集 + 计算 + 落库 + 更新缓存，替代原仅按需计算的模式
+
+---
+
+## [feat/fear-greed-micro] 2026-08-24 — 恐贪算法增强：新增涨跌停微观结构指标
+
+**开发者**: 林晓研
+
+### 新增
+- `src/modules/fear-greed/calculator.ts`：新增 4 个涨跌停微观结构指标（封板率 seal_rate / 炸板率 break_rate / 涨跌停比 limit_ratio / 连板高度 streak），数据源 Tushare `limit_list_d`；合成指数由 5 宏观指标扩展为 9 指标（5 宏观 + 4 微观）等权平均
+- `tests/fear-greed.calculator.test.ts`：mock `limit_list_d` API 响应，断言更新为 10 指标
+
+### 变更
+- `src/modules/fear-greed/calculator.ts`：`limit_list_d` 不可用时 4 个微观指标降级为中性值（score=50），不影响主流程；composite 合成改为 9 指标平均
+
+## [master] 2026-08-24 — 报告导出会员解锁 + 分时 K 线数据源修复
+
+**开发者**: NanyuDeer
+
+### 新增
+- `users` 表与 `GET /api/users/me` 新增 `is_vip` 会员标记（默认 false，反向兼容），供报告导出会员解锁；新增 `src/modules/auth/__tests__/me-is-vip.spec.ts`。
+- 分钟级（klt<100）K 线改走腾讯 `kline/mkline` 接口：`TencentKlineService.buildMinuteUrl/arrayRowsToKLine`，controller 分时路由切腾讯，保证 mini 分时图数据非空；新增 `src/modules/quote/__tests__/tencent-kline-minute.spec.ts`。
+
+---
+
+## [master] 2026-08-21 — 修复风口龙头板块实时行情显示昨日数据
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/RotationBoardStore.ts`：
+  - 根因：`fetchBoardRealtime` 用 `last.js` 的"最后两根"推导，但 `last.js` 盘中最后 bar 是**昨日**（`today` 字段仅标注日期，不含当根实时 bar），导致板块一直显示昨日的涨跌幅/成交额。
+  - 新增 `TODAY_URL`（同花顺 `bk_<code>/01/today.js` 当日实时 JSONP）与 `parseTodayRealtime`（解析 `{"1":日期,"11":现价,"19":成交额(元)}`）。
+  - 重写 `fetchBoardRealtime`：并行拉 `last.js`（昨收=日期严格早于今日的最后一条 close）与 `today.js`（今日实时价 + 成交额），`change_pct=(现价-昨收)/昨收*100`。
+- 验证：881175 医疗服务 today.js 解析得 date=20260821、现价 20597.772、成交额 46533482000、当日涨跌幅 -3.87%；`npx tsc --noEmit` 无错误。
+
+---
+
+## [master] 2026-08-21 — 异动归因改为落定后触发一次
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/stock-trace/StockTraceService.ts`：
+  - `processPriceFact` create/revision 分支**移除即时 `StockTraceJobService.enqueue`**（盘中只采集快照 + 实时推送，不再每次 revision 都跑 LLM 归因）；
+  - 反向落定：关闭相反方向 active 事件的 UPDATE 加 `RETURNING`，在同一事务内对落定事件 `enqueueFinalAnalysis`；
+  - `startRecovery` close UPDATE 加 `RETURNING`，恢复窗口到期落定后触发一次最终归因；
+  - 新增私有 `enqueueFinalAnalysis`（无 client 时自建短事务保证 job+outbox 原子）与 `triggerFinalAttribution`（入队后 `publishPending`）；
+  - 新增公开 `settleActiveEvents()`：强制落定当日仍 active 的事件并触发最终归因，返回落定数。
+- `src/index.ts`：新增 15:05 工作日 cron 调用 `StockTraceService.settleActiveEvents()` 作收盘兜底（防 5 分钟恢复窗口在收盘前未到期而漏归因）。
+- 幂等：`UNIQUE(event_id, trigger_revision, analysis_version, job_kind)` + `SELECT FOR UPDATE`，同一事件只入队一个最终归因 job；Python consumer `SNAPSHOT_NOT_READY` pending reclaim 适配落定即入队。
+
+### 测试
+- 新增 `__tests__/final-attribution.spec.ts`（5 例：落定归因一次 / 无落定不入队 / 收盘兜底 / 兜底空跑 / enqueue 幂等）。
+- 验证：`npx tsc --noEmit` 通过；stock-trace 39 例全绿。
+
+---
+
+## [master] 2026-08-21 — 恐贪指数接口漏挂修复（温度计恒为默认值12、点击无页面）
+
+**开发者**: Aria
+
+### 修复
+- 根因：`/api/fear-greed` 路由在 `src/index.ts` **从未挂载**，`ensureFearGreedSchema()` 也从未调用——controller 已实现但未接线，前端请求 404 退化为默认值12。
+- `src/modules/fear-greed/controller.ts`：新增导出 `fearGreedRouter`（GET `/dashboard`、`/indexes`、`/history`、POST `/refresh` 公开路由）。
+- `src/index.ts`：挂载 `app.use('/api/fear-greed', fearGreedRouter)`（publicRouter 之后）；`start()` 建表块新增 `ensureFearGreedSchema()` 调用（仿 feishu 模式，失败仅 warn 不阻断启动）。
+- 验证：`npx tsc --noEmit` 退出码 0。
+
+---
+
+## [master] 2026-08-20 — 收盘复盘改进方案：东财快照源接入 quick 链路（EM 主源 + 腾讯兜底）
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/quote/EmSnapshotService.ts`：封装东方财富实时快照数据源（免逆向）。
+  - `getLimitPools`：push2ex `getTopicZTPool`/`getTopicDTPool`(sort=zdp)/`getTopicZBPool`(sort=zbc)，连板取 ZT 池 `lbc` 最大值；三池独立 `Promise.allSettled`，partial 时字段为 null
+  - `getConceptFlow`：push2 `clist m:90+t:3` 概念资金流，本地按涨跌幅/净额各自独立排序（gainers/losers/inflows/outflows）
+  - `getIndustryMainForce`：push2 `clist m:90+t:2` 行业主力净额求和作为全市场主力净流入（元）
+  - 复用 `eastmoneyThrottler`/`sessionFetch`/`EASTMONEY_UT`（缺失时内置 POC 实测 token `7eea3edca…`）
+
+### 改进
+- `src/modules/quote/TencentSnapshotService.ts` `buildQuickSnapshot` 改为 **EM 主源 + 腾讯近似兜底**：
+  - limits 主源=东财精确池，兜底=腾讯阈值近似
+  - sectors 主源=东财概念资金流（含资金流排序），兜底=腾讯板块排行（仅涨跌）
+  - main_force 主源=东财行业主力净额（`eastmoney:industry_main_force`），兜底=腾讯行业板块求和近似
+  - 并行 `Promise.allSettled` 单项失败不阻断；`coverage.has_limit_pool` 东财非 unavailable 即 true
+- `src/modules/quote/MarketSnapshotService.ts`：`QuickCloseMarketSnapshot.limits.broken_count/highest_board` 放宽为 `number | null`；`main_force.source` 增加 `eastmoney:industry_main_force`
+
+### 之前
+- `TencentSnapshotService.buildQuickSnapshot` 补齐编排缺口 #3：用 Tushare 前日填充 `previous_daily`，缺前日即抛硬门槛（fail-loud，与 full 对齐）
+
+### 测试
+- 新增 `tests/EmSnapshotService.test.ts`（聚合/partial/排序/求和/空行 5 用例）
+- `tests/TencentSnapshotService.test.ts` 新增 EM 主源优先用例 + 既有 build 用例注入 EM 不可用 mock
+- **26/26 passed**，`npx tsc --noEmit` 0 错误；冒烟实测东财 79 涨停/12 跌停/46 炸板/连板 4 + 创新药净流入 62.6 亿
+
+### 文档
+- `docs/superpowers/specs/2026-08-20-ths-snapshot-source-swap-design.md` 新增"落地状态（Phase 2 生产接入完成）"
+
+### 说明
+- 仍为混合方案：指数/宽度/成交额固定腾讯（用户决策），previous_daily 用 Tushare；仅当日 breadth/turnover 为近似
+
+---
+
 ## [junliang] 2026-08-20 — 价格异动触发口径统一相对昨收 + 涨停雷达解析涨停复盘增强
 
 **开发者**: Aria
