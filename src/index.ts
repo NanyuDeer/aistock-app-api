@@ -786,6 +786,28 @@ cron.schedule('35 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 恐贪指数：盘前 09:15 / 正午 11:30 / 盘后 15:30（周一至周五，跳过节假日）
+// 盘前用前日收盘数据预计算，正午更新盘中实时，盘后用最终收盘数据定版
+// 各时段落库到 fear_greed_snapshot.time_slot，供前端绘制 intraday 短热度线
+const runFearGreedRefresh = async (label: string, timeSlot: 'pre' | 'noon' | 'post') => {
+    console.log(`[FearGreedCron] ${label}刷新恐贪指数 (time_slot=${timeSlot})`);
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log(`[FearGreedCron] 非交易日，跳过${label}刷新`);
+            return;
+        }
+        await refreshJq(timeSlot);
+        console.log(`[FearGreedCron] ${label}刷新完成`);
+    } catch (err: unknown) {
+        console.error(`[FearGreedCron] ${label}刷新失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('15 9 * * 1-5', () => runFearGreedRefresh('盘前', 'pre'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runFearGreedRefresh('正午', 'noon'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 15 * * 1-5', () => runFearGreedRefresh('盘后', 'post'), { timezone: 'Asia/Shanghai' });
+
 // App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
 cron.schedule('*/5 * * * *', async () => {
     try {
@@ -940,6 +962,12 @@ async function start() {
     } catch (err: unknown) {
         console.warn('[DB] fear_greed schema check:', err instanceof Error ? err.message : String(err));
     }
+
+    // 恐贪指数启动预热（非阻塞）：首跑需逐日拉取全市场 daily（500 交易日 × ~5400 只），
+    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存
+    refreshJq('post')
+        .then((r) => console.log(`[FearGreedCron] 启动预热完成: 恐贪指数=${r.composite}`))
+        .catch((err: unknown) => console.error('[FearGreedCron] 启动预热失败:', err instanceof Error ? err.message : String(err)));
 
     try {
         await pool.query(`

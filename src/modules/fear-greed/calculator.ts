@@ -281,53 +281,97 @@ async function equityBond(client: TushareClient): Promise<JqIndicator> {
 
 // ===== 涨跌停微观结构指标 =====
 
-/** 每日涨跌停聚合数据 */
-interface DailyLimit {
+/**
+ * 每日涨跌停聚合数据。
+ * 数据来源：Tushare `daily` 全市场按日推导（涨停=收盘达涨停价、炸板=触板未封、跌停=收盘达跌停价），
+ * 替代 `limit_list_d`（该接口的 limit_status 字段需 2000 积分，当前账号被置空）。
+ */
+export interface DailyLimit {
     date: string;
     sealCount: number;   // 涨停封板数
     breakCount: number;  // 炸板数
     downCount: number;   // 跌停数
-    maxStreak: number;   // 最高连板数
+    maxStreak: number;   // 最高连板数（由封板序列回放计算）
+    sealCodes: string[]; // 当日封板 ts_code 列表（连板回放用，落库缓存字段）
 }
 
-/** 获取涨跌停数据（按日期分批，limit_list_d API） */
-async function fetchLimitData(client: TushareClient, dates: string[]): Promise<Map<string, { status: string; times: number }[]>> {
-    const result = new Map<string, { status: string; times: number }[]>();
-    const BATCH = 25; // 每 25 个交易日一批（~5000 行上限）
-    for (let i = 0; i < dates.length; i += BATCH) {
-        const batch = dates.slice(i, i + BATCH);
-        const rows = await client.request(
-            'limit_list_d',
-            { start_date: batch[0], end_date: batch[batch.length - 1] },
-            'trade_date,limit_status,limit_times',
-        );
-        for (const r of rows) {
-            const d = String(r.trade_date);
-            if (!result.has(d)) result.set(d, []);
-            result.get(d)!.push({
-                status: String(r.limit_status ?? ''),
-                times: Number(r.limit_times ?? 0),
-            });
-        }
-    }
-    return result;
+/** limit 指标逐日缓存（PG 表 limit_daily） */
+export interface LimitCache {
+    getAll(): Promise<Map<string, DailyLimit>>;
+    upsert(rows: DailyLimit[]): Promise<void>;
 }
 
-/** 将涨跌停原始数据聚合为每日指标 */
-function aggregateDaily(limitData: Map<string, { status: string; times: number }[]>, dates: string[]): DailyLimit[] {
-    const out: DailyLimit[] = [];
-    for (const d of dates) {
-        const stocks = limitData.get(d);
-        if (!stocks || stocks.length === 0) continue;
-        let seal = 0, broken = 0, down = 0, maxS = 0;
-        for (const s of stocks) {
-            if (s.status === 'U') { seal++; if (s.times > maxS) maxS = s.times; }
-            else if (s.status === 'Z') broken++;
-            else if (s.status === 'D') down++;
-        }
-        out.push({ date: d, sealCount: seal, breakCount: broken, downCount: down, maxStreak: maxS });
+/** 板块涨跌停幅度（不含 ST 的 5%，近似处理：ST 涨停会被漏计，占比小可接受） */
+function limitCapOf(tsCode: string): number {
+    // 创业板 300/301、科创板 688/689 → 20%
+    if (tsCode.startsWith('300') || tsCode.startsWith('301')
+        || tsCode.startsWith('688') || tsCode.startsWith('689')) return 0.2;
+    // 北交所 43/83/87/88/92 → 30%
+    if (tsCode.startsWith('8') || tsCode.startsWith('4')) return 0.3;
+    return 0.1;
+}
+
+function round2(v: number): number {
+    return Math.round(v * 100) / 100;
+}
+
+/** 从 daily 全市场数据推导某交易日的涨跌停聚合 */
+async function deriveDailyLimit(client: TushareClient, date: string): Promise<DailyLimit> {
+    const rows = await client.request(
+        'daily',
+        { trade_date: date },
+        'ts_code,pre_close,close,high',
+    );
+    let seal = 0, broken = 0, down = 0;
+    const sealCodes: string[] = [];
+    for (const r of rows) {
+        const tsCode = String(r.ts_code);
+        const pre = Number(r.pre_close ?? 0);
+        const close = Number(r.close ?? 0);
+        const high = Number(r.high ?? 0);
+        if (pre <= 0) continue;
+        const cap = limitCapOf(tsCode);
+        const limitUp = round2(pre * (1 + cap));
+        const limitDown = round2(pre * (1 - cap));
+        // 收盘达涨停价 → 封板；盘中触板但未封 → 炸板；收盘达跌停价 → 跌停
+        if (close >= limitUp - 0.005) { seal++; sealCodes.push(tsCode); }
+        else if (high >= limitUp - 0.005) broken++;
+        if (close <= limitDown + 0.005) down++;
     }
-    return out;
+    return { date, sealCount: seal, breakCount: broken, downCount: down, maxStreak: 0, sealCodes };
+}
+
+/**
+ * 获取涨跌停聚合数据（daily 推导 + 增量缓存）。
+ * 只拉取缺失日期，其余从 limit_daily 缓存读取；
+ * 连板高度按全窗口封板序列回放（某股连续封板则连板数累加，断板归 1）。
+ */
+async function fetchLimitData(client: TushareClient, dates: string[], cache: LimitCache): Promise<DailyLimit[]> {
+    const cached = await cache.getAll();
+    const missing = dates.filter((d) => !cached.has(d));
+    for (const d of missing) {
+        cached.set(d, await deriveDailyLimit(client, d));
+    }
+    if (missing.length) {
+        await cache.upsert(missing.map((d) => cached.get(d)!));
+    }
+
+    // 按日期升序回放连板
+    const ordered = dates.map((d) => cached.get(d)).filter((x): x is DailyLimit => !!x);
+    const streakInfo = new Map<string, { s: number; d: string }>();
+    for (let i = 0; i < ordered.length; i++) {
+        const agg = ordered[i];
+        const prevDate = i > 0 ? ordered[i - 1].date : '';
+        let maxS = 0;
+        for (const code of agg.sealCodes) {
+            const info = streakInfo.get(code);
+            const s = info && info.d === prevDate ? info.s + 1 : 1;
+            streakInfo.set(code, { s, d: agg.date });
+            if (s > maxS) maxS = s;
+        }
+        agg.maxStreak = maxS;
+    }
+    return ordered;
 }
 
 /** 涨停封板率：封板数 / (封板+炸板)；高=贪婪 */
@@ -419,7 +463,7 @@ async function margin(client: TushareClient): Promise<JqIndicator> {
 }
 
 /** 计算韭圈儿恐贪指数（完整结构，含各指标历史序列） */
-export async function computeJq(client: TushareClient, breadthCache: BreadthCache): Promise<JqResult> {
+export async function computeJq(client: TushareClient, breadthCache: BreadthCache, limitCache: LimitCache): Promise<JqResult> {
     const inds = {
         volatility: await volatility(client),
         north_flow: await northFlow(client),
@@ -429,12 +473,11 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         margin: await margin(client),
     };
 
-    // 涨跌停微观指标（共享一次数据拉取；API 不可用时降级为中性）
+    // 涨跌停微观指标（daily 推导 + 增量缓存；数据源不可用时降级为中性）
     const micro = await (async () => {
         try {
             const limitDates = await tradeDates(client, HIST);
-            const limitData = await fetchLimitData(client, limitDates);
-            const daily = aggregateDaily(limitData, limitDates);
+            const daily = await fetchLimitData(client, limitDates, limitCache);
             return {
                 seal_rate: sealRateIndicator(daily),
                 break_rate: breakRateIndicator(daily),
@@ -442,7 +485,7 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
                 streak: streakIndicator(daily),
             };
         } catch (err) {
-            console.error('[FearGreed] limit_list_d unavailable, micro indicators neutral:', err instanceof Error ? err.message : String(err));
+            console.error('[FearGreed] daily limit derivation failed, micro indicators neutral:', err instanceof Error ? err.message : String(err));
             const neutral = { ...NEUTRAL };
             return {
                 seal_rate: { key: 'seal_rate', name: '封板率', desc: '涨停封板数占触板总数比，反映买盘强度', ...neutral },
@@ -453,15 +496,19 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         }
     })();
 
-    // 综合指数 = 9 个指标等权（杠杆水平不计入，与韭圈儿口径扩展）
+    // 综合指数 = 有真实数据的指标等权（杠杆水平不计入，与韭圈儿口径扩展）
+    // 中性兜底指标（数据源不可用/样本不足，history 为空）不参与平均，
+    // 否则缺失的微观指标恒为 50 会把指数往中性拉，掩盖真实恐惧/贪婪
     const compositeInds = [
         inds.volatility, inds.north_flow, inds.breadth,
         inds.futures, inds.equity_bond,
         micro.seal_rate, micro.break_rate, micro.limit_ratio, micro.streak,
-    ];
-    const composite = Math.round(
-        compositeInds.reduce((s, k) => s + k.score, 0) / compositeInds.length * 100,
-    ) / 100;
+    ].filter((k) => k.history.scores.length > 0);
+    const composite = compositeInds.length > 0
+        ? Math.round(
+            compositeInds.reduce((s, k) => s + k.score, 0) / compositeInds.length * 100,
+        ) / 100
+        : 50;
 
     const indicators: JqIndicator[] = [
         inds.volatility, inds.north_flow, inds.breadth, inds.futures, inds.equity_bond,
