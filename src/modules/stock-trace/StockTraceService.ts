@@ -468,7 +468,7 @@ export class StockTraceService {
                     stockName: event.stockName,
                     title: `${event.stockName}：价格异动`,
                     summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
-                    targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                    targetPath: `/modules/favorites/pages/insight-detail-move?event_id=${encodeURIComponent(event.eventId)}`,
                     payload,
                     occurredAt: event.triggeredAt ? new Date(event.triggeredAt).toISOString() : undefined,
                 });
