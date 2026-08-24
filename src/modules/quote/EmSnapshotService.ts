@@ -9,7 +9,8 @@
  * 设计要点：
  * - 复用 eastmoneyThrottler（限速）+ sessionFetch（keepAlive 连接池）+ EASTMONEY_UT 配置化，
  *   与项目既有 EmTagLeaderService（push2 clist）同源。
- * - 涨跌停/炸板/连板来自 push2ex getTopicZ*Pool；概念/行业资金流来自 push2 clist。
+ * - 涨跌停/炸板/连板来自 push2ex getTopicZ*Pool；概念/行业资金流来自 push2 clist
+ *   （clist 主机按 push2 → push2delay → push2his 轮询，规避东财对部分出口的 TLS 风控）。
  * - 每个方法宽松失败：返回数据 + availability 标注，由调用方 allSettled 兜底，不因单项缺失阻断快照。
  * - 只聚事实，禁止导入任何 LLM、新闻或 Agent 模块（与 MarketSnapshotService 一致）。
  */
@@ -49,8 +50,18 @@ const EASTMONEY_UT: string = (() => {
 
 /** 东财 push2ex 涨跌停/炸板池基址。 */
 const PUSH2EX_BASE = 'https://push2ex.eastmoney.com';
-/** 东财 push2 板块资金流 clist 接口。 */
-const PUSH2_CLIST = 'https://push2.eastmoney.com/api/qt/clist/get';
+
+/**
+ * 东财 push2 clist 板块资金流主机列表（按顺序轮询，命中即用）。
+ * - `push2` 为默认实时主机，但东财会对部分出口 IPv4 做 TLS 重置（UND_ERR_SOCKET，本机与生产服务器均已验证）；
+ * - `push2delay`（约 15 分钟延迟）与 `push2his` 为同簇免翻墙镜像，数据字段一致（实测行业 f62 与 push2 POC 完全吻合，如医药生物 109.2 亿），
+ *   对 15:30 盘后快照延迟无影响，作为兜底主机。
+ */
+const PUSH2_CLIST_HOSTS = [
+    'push2.eastmoney.com',
+    'push2delay.eastmoney.com',
+    'push2his.eastmoney.com',
+];
 
 /** 涨跌停池某一条记录的原始字段（仅声明用到的最小字段，字段名以东财返回为准）。 */
 interface EmPoolItem {
@@ -256,35 +267,46 @@ export class EmSnapshotService {
         return pool;
     }
 
-    /** 拉取 push2 板块 clist 行。失败返回 null（宽松失败，由调用方判定 availability）。 */
+    /** 拉取 push2 板块 clist 行。依 PUSH2_CLIST_HOSTS 顺序轮询，任一主机返回合法 diff（数组）即用；全失败返回 null（宽松失败）。 */
     private static async fetchBoardRows(
         fs: string,
         pageSize: number,
         fid: string,
     ): Promise<EmBoardRow[] | null> {
-        try {
-            const url = new URL(PUSH2_CLIST);
-            url.searchParams.set('pn', '1');
-            url.searchParams.set('pz', String(pageSize));
-            url.searchParams.set('po', '1');
-            url.searchParams.set('np', '1');
-            url.searchParams.set('fltt', '2');
-            url.searchParams.set('invt', '2');
-            url.searchParams.set('fid', fid);
-            url.searchParams.set('fs', fs);
-            url.searchParams.set('fields', 'f12,f14,f3,f62');
-            url.searchParams.set('ut', EASTMONEY_UT);
+        for (const host of PUSH2_CLIST_HOSTS) {
+            try {
+                const url = new URL(`https://${host}/api/qt/clist/get`);
+                url.searchParams.set('pn', '1');
+                url.searchParams.set('pz', String(pageSize));
+                url.searchParams.set('po', '1');
+                url.searchParams.set('np', '1');
+                url.searchParams.set('fltt', '2');
+                url.searchParams.set('invt', '2');
+                url.searchParams.set('fid', fid);
+                url.searchParams.set('fs', fs);
+                url.searchParams.set('fields', 'f12,f14,f3,f62');
+                url.searchParams.set('ut', EASTMONEY_UT);
 
-            await eastmoneyThrottler.throttle();
-            const res = await sessionFetch(url.toString(), { headers: EASTMONEY_HEADERS });
-            if (!res.ok) throw new Error(`eastmoney clist HTTP ${res.status}`);
-            const json = (await res.json()) as { data?: { diff?: EmBoardRow[] } };
-            const diff = json?.data?.diff;
-            if (!Array.isArray(diff)) return null;
-            return diff;
-        } catch (e) {
-            console.warn('[EmSnapshot] 东财板块 clist 获取失败:', e instanceof Error ? e.message : String(e));
-            return null;
+                await eastmoneyThrottler.throttle();
+                const res = await sessionFetch(url.toString(), { headers: EASTMONEY_HEADERS });
+                if (!res.ok) {
+                    console.warn(`[EmSnapshot] clist ${host} HTTP ${res.status}，尝试下一主机`);
+                    continue;
+                }
+                const json = (await res.json()) as { data?: { diff?: EmBoardRow[] } };
+                const diff = json?.data?.diff;
+                if (!Array.isArray(diff)) {
+                    console.warn(`[EmSnapshot] clist ${host} 返回无合法 diff，尝试下一主机`);
+                    continue;
+                }
+                if (host !== 'push2.eastmoney.com') {
+                    console.info(`[EmSnapshot] clist 使用备用主机 ${host}（默认 push2 被东财风控时自动切换）`);
+                }
+                return diff;
+            } catch (e) {
+                console.warn(`[EmSnapshot] clist ${host} 获取失败:`, e instanceof Error ? e.message : String(e));
+            }
         }
+        return null;
     }
 }

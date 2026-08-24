@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import pool from '../../core/db';
 import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
+import { StockTraceJobService } from './StockTraceJobService';
 import { getThsDaily, getThsIndex } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
 import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
@@ -46,6 +47,27 @@ export function stockTraceStableHash(value: unknown): string {
 
 function hash(value: unknown): string {
     return stockTraceStableHash(value);
+}
+
+// 增量采集复用域：盘中基本不变，修订时复用上一版本 enriched 快照；价格相关域重采
+const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'market_fact']);
+
+export function pickReusableSources(records: StockSourceRecord[]): StockSourceRecord[] {
+    return records.filter((record) => INCREMENTAL_REUSE_KINDS.has(record.kind));
+}
+
+/**
+ * 增量采集读数：被复用的 record 映射到数据就绪层，配合 buildDataReadiness
+ * 让 company/sector/market 反映真实可用性（而非缺失），否则缺失报告会误伤
+ * 已复用证据，让 downstream 误以为该类上下文不存在。
+ */
+export function reusedDomainAvailability(reused: StockSourceRecord[]): Array<{ layer: DataReadinessDomains; count: number }> {
+    const kinds = new Set(reused.map((record) => record.kind));
+    const counts: Array<{ layer: DataReadinessDomains; count: number }> = [];
+    if (kinds.has('news') || kinds.has('announcement')) counts.push({ layer: 'company', count: 1 });
+    if (kinds.has('sector_fact')) counts.push({ layer: 'sector', count: 1 });
+    if (kinds.has('market_fact')) counts.push({ layer: 'market', count: 1 });
+    return counts;
 }
 
 function withinEnrichedBudget<T>(operation: Promise<T>): Promise<T> {
@@ -314,7 +336,32 @@ export class StockTraceSnapshotService {
         });
     }
 
-    static async captureCorrected(event: TriggerEvent): Promise<StockTraceSnapshot> {
+    static async captureCorrected(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
+        const capturedAt = new Date();
+        // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
+        if (incremental) {
+            const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
+            if (previousRecords && previousRecords.length > 0) {
+                const reused = pickReusableSources(previousRecords);
+                const [capital, technical] = await Promise.allSettled([
+                    withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
+                    withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
+                ]);
+                const sourceRecords = [
+                    ...this.baseSources(event, capturedAt),
+                    ...reused,
+                    ...(capital.status === 'fulfilled' ? capital.value : []),
+                    ...(technical.status === 'fulfilled' ? technical.value : []),
+                ];
+                const readiness = buildDataReadiness([
+                    ...reusedDomainAvailability(reused),
+                    { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
+                    { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
+                ]);
+                const missingFields = Object.entries(readiness).filter(([, value]) => value !== 'complete').map(([key]) => `${key}_context`);
+                return this.persist({ event, stage: 'corrected', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
+            }
+        }
         const initial = await this.captureInitialForStage(event, 'corrected');
         return initial;
     }
@@ -340,15 +387,46 @@ export class StockTraceSnapshotService {
             dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing' } });
     }
 
-    static scheduleEnriched(event: TriggerEvent): void {
-        const timer = setTimeout(() => void this.captureEnriched(event).catch((error: unknown) => {
-            console.error('[StockTraceSnapshot] enriched capture failed:', error instanceof Error ? error.message : error);
-        }), 1_000);
+    static scheduleEnriched(event: TriggerEvent, incremental = false): void {
+        const timer = setTimeout(() => {
+            void this.captureEnriched(event, incremental).then(() =>
+                StockTraceJobService.publishPending(),
+            ).catch((error: unknown) => {
+                console.error('[StockTraceSnapshot] enriched capture failed:', error instanceof Error ? error.message : error);
+            });
+        }, 1_000);
         timer.unref();
     }
 
-    static async captureEnriched(event: TriggerEvent): Promise<StockTraceSnapshot> {
+    static async captureEnriched(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
+        // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
+        if (incremental) {
+            const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
+            if (previousRecords && previousRecords.length > 0) {
+                const reused = pickReusableSources(previousRecords);
+                const [capital, technical] = await Promise.allSettled([
+                    withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
+                    withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
+                ]);
+                const sourceRecords = [
+                    ...this.baseSources(event, capturedAt),
+                    ...reused,
+                    ...(capital.status === 'fulfilled' ? capital.value : []),
+                    ...(technical.status === 'fulfilled' ? technical.value : []),
+                ];
+                const readiness = buildDataReadiness([
+                    ...reusedDomainAvailability(reused),
+                    { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
+                    { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
+                ]);
+                // 增量路径的 missingFields 由读数层（reusedDomainAvailability + 重采结果）派生：
+                // 被复用域已按 source 存在性读为 complete，避免把已复用证据误报为缺失；此为完整度近似
+                //（"部分复用"仍计 complete），如需严格反映上一快照原始缺口，应在此合并上一快照 missing_fields。
+                const missingFields = Object.entries(readiness).filter(([, value]) => value !== 'complete').map(([key]) => `${key}_context`);
+                return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
+            }
+        }
         const [company, sector, market, capital, technical] = await Promise.allSettled([
             withinEnrichedBudget(this.collectCompanySources(event, capturedAt)),
             withinEnrichedBudget(this.collectSectorSources(event, capturedAt)),
@@ -552,6 +630,23 @@ export class StockTraceSnapshotService {
         if (!snapshot.rows[0]) return null;
         const sources = await pool.query(`SELECT source_id, kind, provider, source_level, title, content_excerpt, canonical_url, source_ref, symbol, window_start, window_end, occurred_at, captured_at, freshness_seconds, payload, content_hash FROM stock_trace_source_records WHERE snapshot_id = $1 ORDER BY occurred_at NULLS LAST, source_id`, [snapshotId]);
         return { ...snapshot.rows[0], source_records: sources.rows };
+    }
+
+    // 增量采集：取该事件最近一次 enriched 快照的 source_records，作为修订时复用域的数据源；无则返回 null
+    private static async getLatestEnrichedForEvent(eventId: string): Promise<StockSourceRecord[] | null> {
+        await this.ensureSchema();
+        // 取"该事件最近一条 enriched"（不限定 trigger_revision）：盘面基本不变域在 revision 快速连发
+        // 时可能复用上一 revision 的 company/sector/market。对绝大多数异动可接受（news 重度异动最坏滞后
+        // 1~2s），换取实现简单；若未来需要严格按版本复用，改为限定 trigger_revision < 当前值即可。
+        const result = await pool.query<{ snapshot_id: string }>(`
+            SELECT snapshot_id FROM stock_trace_snapshots
+            WHERE event_id = $1 AND snapshot_stage = 'enriched'
+            ORDER BY captured_at DESC LIMIT 1
+        `, [eventId]);
+        if (!result.rows[0]) return null;
+        const snapshot = await this.getSnapshot(result.rows[0].snapshot_id);
+        if (!snapshot) return null;
+        return snapshot.source_records as unknown as StockSourceRecord[];
     }
 
     static async getAnalysisContext(eventId: string, triggerRevision: number): Promise<Record<string, unknown> | null> {

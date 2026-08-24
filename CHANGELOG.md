@@ -2,6 +2,51 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-21 — 修复风口龙头板块实时行情显示昨日数据
+
+**开发者**: Aria
+
+### 修复
+- `src/modules/monitor/RotationBoardStore.ts`：
+  - 根因：`fetchBoardRealtime` 用 `last.js` 的"最后两根"推导，但 `last.js` 盘中最后 bar 是**昨日**（`today` 字段仅标注日期，不含当根实时 bar），导致板块一直显示昨日的涨跌幅/成交额。
+  - 新增 `TODAY_URL`（同花顺 `bk_<code>/01/today.js` 当日实时 JSONP）与 `parseTodayRealtime`（解析 `{"1":日期,"11":现价,"19":成交额(元)}`）。
+  - 重写 `fetchBoardRealtime`：并行拉 `last.js`（昨收=日期严格早于今日的最后一条 close）与 `today.js`（今日实时价 + 成交额），`change_pct=(现价-昨收)/昨收*100`。
+- 验证：881175 医疗服务 today.js 解析得 date=20260821、现价 20597.772、成交额 46533482000、当日涨跌幅 -3.87%；`npx tsc --noEmit` 无错误。
+
+---
+
+## [master] 2026-08-21 — 异动归因改为落定后触发一次
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/stock-trace/StockTraceService.ts`：
+  - `processPriceFact` create/revision 分支**移除即时 `StockTraceJobService.enqueue`**（盘中只采集快照 + 实时推送，不再每次 revision 都跑 LLM 归因）；
+  - 反向落定：关闭相反方向 active 事件的 UPDATE 加 `RETURNING`，在同一事务内对落定事件 `enqueueFinalAnalysis`；
+  - `startRecovery` close UPDATE 加 `RETURNING`，恢复窗口到期落定后触发一次最终归因；
+  - 新增私有 `enqueueFinalAnalysis`（无 client 时自建短事务保证 job+outbox 原子）与 `triggerFinalAttribution`（入队后 `publishPending`）；
+  - 新增公开 `settleActiveEvents()`：强制落定当日仍 active 的事件并触发最终归因，返回落定数。
+- `src/index.ts`：新增 15:05 工作日 cron 调用 `StockTraceService.settleActiveEvents()` 作收盘兜底（防 5 分钟恢复窗口在收盘前未到期而漏归因）。
+- 幂等：`UNIQUE(event_id, trigger_revision, analysis_version, job_kind)` + `SELECT FOR UPDATE`，同一事件只入队一个最终归因 job；Python consumer `SNAPSHOT_NOT_READY` pending reclaim 适配落定即入队。
+
+### 测试
+- 新增 `__tests__/final-attribution.spec.ts`（5 例：落定归因一次 / 无落定不入队 / 收盘兜底 / 兜底空跑 / enqueue 幂等）。
+- 验证：`npx tsc --noEmit` 通过；stock-trace 39 例全绿。
+
+---
+
+## [master] 2026-08-21 — 恐贪指数接口漏挂修复（温度计恒为默认值12、点击无页面）
+
+**开发者**: Aria
+
+### 修复
+- 根因：`/api/fear-greed` 路由在 `src/index.ts` **从未挂载**，`ensureFearGreedSchema()` 也从未调用——controller 已实现但未接线，前端请求 404 退化为默认值12。
+- `src/modules/fear-greed/controller.ts`：新增导出 `fearGreedRouter`（GET `/dashboard`、`/indexes`、`/history`、POST `/refresh` 公开路由）。
+- `src/index.ts`：挂载 `app.use('/api/fear-greed', fearGreedRouter)`（publicRouter 之后）；`start()` 建表块新增 `ensureFearGreedSchema()` 调用（仿 feishu 模式，失败仅 warn 不阻断启动）。
+- 验证：`npx tsc --noEmit` 退出码 0。
+
+---
+
 ## [master] 2026-08-20 — 收盘复盘改进方案：东财快照源接入 quick 链路（EM 主源 + 腾讯兜底）
 
 **开发者**: Aria
