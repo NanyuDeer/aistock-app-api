@@ -16,6 +16,7 @@ export interface NotificationInput {
     summary: string;
     targetPath: string;
     payload?: Record<string, unknown>;
+    occurredAt?: string;
 }
 
 export interface UserNotification extends NotificationSocketPayload {
@@ -39,6 +40,7 @@ interface NotificationRow {
     target_path: string;
     payload: Record<string, unknown> | null;
     created_at: Date | string;
+    occurred_at: Date | string | null;
     read_at: Date | string | null;
 }
 
@@ -81,10 +83,13 @@ export class NotificationService {
                         target_path TEXT NOT NULL DEFAULT '',
                         payload JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        occurred_at TIMESTAMPTZ,
                         read_at TIMESTAMPTZ,
                         UNIQUE (openid, source_key)
                     )
                 `);
+                // 兼容已存在的旧表
+                await pool.query('ALTER TABLE user_notifications ADD COLUMN IF NOT EXISTS occurred_at TIMESTAMPTZ');
                 await pool.query('CREATE INDEX IF NOT EXISTS idx_user_notifications_openid_created ON user_notifications (openid, created_at DESC, id DESC)');
                 await pool.query('CREATE INDEX IF NOT EXISTS idx_user_notifications_openid_unread ON user_notifications (openid, created_at DESC, id DESC) WHERE read_at IS NULL');
                 // 通知写失败后的待补投队列。不加 openid 外键：用户被删时补投失败即可，
@@ -151,14 +156,15 @@ export class NotificationService {
         await this.ensureSchema();
         const result = await pool.query<NotificationRow>(`
             INSERT INTO user_notifications
-                (id, openid, category, source_key, symbol, stock_name, title, summary, target_path, payload)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                (id, openid, category, source_key, symbol, stock_name, title, summary, target_path, payload, occurred_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
             ON CONFLICT (openid, source_key) DO NOTHING
-            RETURNING id, category, symbol, stock_name, title, summary, target_path, payload, created_at, read_at
+            RETURNING id, category, symbol, stock_name, title, summary, target_path, payload, created_at, occurred_at, read_at
         `, [
             randomUUID(), openid, input.category, input.sourceKey, input.symbol || null,
             input.stockName || null, input.title, input.summary, input.targetPath,
             JSON.stringify(input.payload || {}),
+            input.occurredAt || null,
         ]);
         const row = result.rows[0];
         if (!row) return null;
@@ -181,15 +187,16 @@ export class NotificationService {
         const ids = openids.map(() => randomUUID());
         const result = await pool.query<NotificationRow>(`
             INSERT INTO user_notifications
-                (id, openid, category, source_key, symbol, stock_name, title, summary, target_path, payload)
-            SELECT target.id, target.openid, $3, $4, $5, $6, $7, $8, $9, $10::jsonb
+                (id, openid, category, source_key, symbol, stock_name, title, summary, target_path, payload, occurred_at)
+            SELECT target.id, target.openid, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11
             FROM unnest($1::uuid[], $2::text[]) AS target(id, openid)
             ON CONFLICT (openid, source_key) DO NOTHING
-            RETURNING id, openid, category, symbol, stock_name, title, summary, target_path, payload, created_at, read_at
+            RETURNING id, openid, category, symbol, stock_name, title, summary, target_path, payload, created_at, occurred_at, read_at
         `, [
             ids, openids, input.category, input.sourceKey, input.symbol,
             input.stockName || null, input.title, input.summary, input.targetPath,
             JSON.stringify(input.payload || {}),
+            input.occurredAt || null,
         ]);
 
         for (const row of result.rows) {
@@ -258,7 +265,7 @@ export class NotificationService {
         params.push(limit + 1);
         const [listResult, unreadResult] = await Promise.all([
             pool.query<NotificationRow>(`
-                SELECT id, category, symbol, stock_name, title, summary, target_path, payload, created_at, read_at
+                SELECT id, category, symbol, stock_name, title, summary, target_path, payload, created_at, occurred_at, read_at
                 FROM user_notifications
                 ${where}
                 ORDER BY created_at DESC, id DESC
@@ -296,6 +303,7 @@ export class NotificationService {
             targetPath: row.target_path,
             payload: row.payload || {},
             createdAt: new Date(row.created_at).toISOString(),
+            occurredAt: row.occurred_at ? new Date(row.occurred_at).toISOString() : undefined,
             readAt: row.read_at ? new Date(row.read_at).toISOString() : null,
         };
     }

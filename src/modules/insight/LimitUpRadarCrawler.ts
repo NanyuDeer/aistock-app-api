@@ -38,8 +38,7 @@ export function parseTitleKeywords(title: string): string[] {
     return m[1].split(/[+＋]/).map(s => s.trim()).filter(Boolean);
 }
 
-/**
- * 提取标题中的主体股票名（"触及涨停/触及跌停"前的最后一段，可带括号代码）。
+/** 提取标题中的主体股票名（"触及涨停/触及跌停"前的最后一段，可带括号代码）。
  * 涨停雷达标题格式：'涨停雷达：关键词+关键词 股票名触及涨停'。
  * 事件归属锚定主体股票（而非详情页推荐链接里的任意股票），避免事件挂错标的。
  * 非涨停雷达类标题（如"涨停复盘：…"）或无主体股票返回 null。
@@ -49,6 +48,41 @@ export function parseTitleStockName(title: string): string | null {
     if (!m) return null;
     const name = m[1].replace(/[（(]\d{6}[)）]/g, '').trim();
     return name || null;
+}
+
+/** 涨停复盘正文个股语境判定：个股名后取该长度覆盖"（300142）、智飞生物（300122）、康泰生物（300601）等20余股涨停"
+ * （实测 4 股并列约 45 字符，50 覆盖含"涨停"收尾，2026-08-20 测试暴露 40 不足） */
+const SUMMARY_CONTEXT_RANGE = 50;
+const SUMMARY_LIMIT_UP_CONTEXT = /涨停|涨超|封板|一字/;
+const SUMMARY_LIMIT_DOWN_CONTEXT = /跌停|跌幅/;
+
+/**
+ * 涨停复盘汇总文章提取"涨停/涨超"语境个股（2026-08-20 增强）。
+ * 涨停复盘标题无单一主体（parseTitleStockName=null），正文并列列出多只涨停/涨超个股，
+ * 详情页 mentionedSymbols 为正文链接提取的全部股票（含指数/跌幅居前/触及跌停个股）。
+ * 对每个个股检查其在正文中每次出现处的上下文，任一命中"涨停/涨超/封板/一字"且非"跌停/跌幅"语境即保留；
+ * 命中个股供 runCycle 与用户自选股取交集建事件，解决"涨停复盘汇总文章漏检"。
+ * @param content 文章正文
+ * @param mentionedSymbols 详情页提取的个股列表（含非涨停语境个股，会被过滤）
+ * @returns 涨停语境个股（symbol+name）
+ */
+export function parseLimitUpSymbolsFromSummary(
+    content: string,
+    mentionedSymbols: MentionedSymbol[],
+): MentionedSymbol[] {
+    if (!content || mentionedSymbols.length === 0) return [];
+    return mentionedSymbols.filter(({ name }) => {
+        if (!name) return false;
+        // name 全部出现位置逐一检查：板块名可能先以非涨停语境出现（如"创新药、贵金属板块涨幅居前"）
+        const re = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+        let m: RegExpExecArray | null;
+        while ((m = re.exec(content)) !== null) {
+            const ctx = content.slice(m.index, m.index + name.length + SUMMARY_CONTEXT_RANGE);
+            if (SUMMARY_LIMIT_UP_CONTEXT.test(ctx) && !SUMMARY_LIMIT_DOWN_CONTEXT.test(ctx)) return true;
+            re.lastIndex = m.index + 1; // 防御 0 宽匹配
+        }
+        return false;
+    });
 }
 
 /** 从详情 URL 提取文章日期：/20260805/c678683171.shtml → '2026-08-05'；无法提取返回空串 */

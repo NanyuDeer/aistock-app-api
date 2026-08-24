@@ -1,7 +1,7 @@
 /**
  * 恐贪指数 REST 路由 handlers（对齐原 Python FastAPI /api/fear-greed/*）。
  */
-import type { Request, Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { createResponse } from '../../shared/utils/response';
 import { buildDashboard, getHistory, getLatestJq, refreshJq } from './FearGreedService';
 
@@ -59,3 +59,13 @@ export async function refresh(_req: Request, res: Response): Promise<void> {
         createResponse(res, 500, `刷新失败: ${err instanceof Error ? err.message : String(err)}`);
     }
 }
+
+/**
+ * 恐贪指数公开路由（无需鉴权，前端温度计/主面板调用）。
+ * 需在 index.ts 挂载到 /api/fear-greed（此前漏挂，导致前端恒 404、退化为默认值）。
+ */
+export const fearGreedRouter: Router = Router();
+fearGreedRouter.get('/dashboard', dashboard);
+fearGreedRouter.get('/indexes', indexes);
+fearGreedRouter.get('/history', history);
+fearGreedRouter.post('/refresh', refresh);

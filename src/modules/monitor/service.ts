@@ -71,13 +71,15 @@ async function enrichIndustry(events: MonitorEventItem[]): Promise<MonitorEventI
     try {
         // 从 stocks 表获取行业板块名称（Tushare stock_basic.industry），与个股详情页"行业板块"一致
         const result = await pool.query(
-            `SELECT symbol, industry FROM stocks WHERE symbol = ANY($1)`,
+            `SELECT symbol, name, industry FROM stocks WHERE symbol = ANY($1)`,
             [symbols],
         );
 
         const industryMap = new Map<string, string>();
+        const nameMap = new Map<string, string>();
         for (const row of result.rows) {
             if (row.industry) industryMap.set(row.symbol, row.industry);
+            if (row.name) nameMap.set(row.symbol, row.name);
         }
 
         // 回退：对 stocks 表中没有 industry 的 symbol，从 stock_concept_mapping 取第一条
@@ -97,6 +99,10 @@ async function enrichIndustry(events: MonitorEventItem[]): Promise<MonitorEventI
 
         for (const event of events) {
             event.industry = industryMap.get(event.symbol) || '';
+            // 展示名以 stocks 表权威名为准：聚合类新闻（机构评级/定增汇总等）的 stock_name
+            // 存在错配（如 symbol=688981 被标成"贵州茅台"），覆盖后避免自选股情报显示无关股票
+            const authoritativeName = nameMap.get(event.symbol);
+            if (authoritativeName) event.stock_name = authoritativeName;
         }
     } catch (err) {
         console.error('enrichIndustry failed:', err);

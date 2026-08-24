@@ -19,6 +19,8 @@ import { CacheService } from '../../shared/utils/CacheService';
 
 /** 板块指数日线 JSONP 接口（返回近 140 个交易日） */
 const KLINE_URL = (code: string) => `https://d.10jqka.com.cn/v6/line/bk_${code}/01/last.js`;
+/** 板块指数当日实时 JSONP 接口（盘中实时价/成交额；last.js 盘中不含当根 bar） */
+const TODAY_URL = (code: string) => `https://d.10jqka.com.cn/v6/line/bk_${code}/01/today.js`;
 const KLINE_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
     'Referer': 'https://q.10jqka.com.cn/',
@@ -438,4 +440,101 @@ export async function fetchBoardKline(code: string, days = 120): Promise<BoardKl
         console.warn(`[RotationBoardStore] fetchBoardKline(${code}) 失败:`, (err as Error).message);
         return null;
     }
+}
+
+// ==================== 板块实时盘口（风口龙头板块行情实时增强） ====================
+
+/** 板块实时盘口快照（同花顺 bk_ 板块指数当日实时今日行情） */
+export interface BoardRealtime {
+    date: string;        // 最新交易日期 'YYYYMMDD'
+    change_pct: number;  // 当日涨跌幅(%)：盘中=当日实时价涨跌幅
+    amount: number;      // 当日成交额（元，today.js 实时字段）
+}
+
+/** 板块实时盘口内存缓存（TTL 30s，避免每次请求打爆同花顺上游） */
+const boardRealtimeCache = new Map<string, { at: number; data: BoardRealtime }>();
+const BOARD_REALTIME_TTL = 30_000;
+
+/**
+ * 解析 today.js JSONP → 当日实时行情
+ * 结构：quotebridge_...( {"bk_<code>": {"1":"20260821","7":今开,"8":最高,"9":最低,"11":现价,"13":成交量,"19":成交额(元)}, ...} )
+ * 注意：last.js 盘中最后 bar 是昨日，今日实时价/成交额只存在于 today.js。
+ */
+function parseTodayRealtime(jsonpText: string): { date: string; price: number; amount: number } | null {
+    const start = jsonpText.indexOf('(');
+    const end = jsonpText.lastIndexOf(')');
+    if (start < 0 || end <= start) return null;
+    let body: string;
+    try {
+        body = jsonpText.slice(start + 1, end);
+    } catch {
+        return null;
+    }
+    let parsed: Record<string, unknown>;
+    try {
+        parsed = JSON.parse(body) as Record<string, unknown>;
+    } catch {
+        return null;
+    }
+    // 板块数据对象是形如 bk_881175 的字段，取第一个包含整数键的对象
+    for (const val of Object.values(parsed)) {
+        if (!val || typeof val !== 'object') continue;
+        const rec = val as Record<string, unknown>;
+        const date = String(rec['1'] ?? '');
+        const price = parseFloat(String(rec['11'] ?? ''));
+        const amount = parseFloat(String(rec['19'] ?? ''));
+        if (date.length === 8 && Number.isFinite(price) && price > 0) {
+            return { date, price, amount: Number.isFinite(amount) ? amount : 0 };
+        }
+    }
+    return null;
+}
+
+/**
+ * 读取单板块当日实时行情（today.js）复用昨收（last.js）计算涨跌幅
+ * @param code 6 位同花顺板块代码（881xxx 行业 / 885xxx 886xxx 概念）
+ * @returns null 表示抓取/解析失败（如 time.js 无实时数据）
+ */
+export async function fetchBoardRealtime(code: string): Promise<BoardRealtime | null> {
+    const cached = boardRealtimeCache.get(code);
+    if (cached && Date.now() - cached.at < BOARD_REALTIME_TTL) return cached.data;
+    try {
+        // 并行拉取：last.js 昨收 + today.js 当日实时
+        const [dailyResp, todayResp] = await Promise.all([
+            sessionFetch(KLINE_URL(code), { headers: KLINE_HEADERS }),
+            sessionFetch(TODAY_URL(code), { headers: KLINE_HEADERS }),
+        ]);
+        if (!todayResp.ok) return null;
+        const today = parseTodayRealtime(await todayResp.text());
+        if (!today) return null;
+
+        // 昨收口径：取 last.js 中日期严格早于今日的所有 bar 的最后一条 close
+        let prevClose = Number.NaN;
+        if (dailyResp.ok) {
+            const klines = parseKlineFull(await dailyResp.text());
+            const dates = [...klines.keys()].filter(d => d < today.date).sort();
+            const prevDate = dates[dates.length - 1];
+            if (prevDate) {
+                const prev = klines.get(prevDate);
+                if (prev && Number.isFinite(prev.close) && prev.close > 0) prevClose = prev.close;
+            }
+        }
+        if (!Number.isFinite(prevClose) || prevClose <= 0) return null;
+
+        const data: BoardRealtime = {
+            date: today.date,
+            change_pct: (today.price - prevClose) / prevClose * 100,
+            amount: today.amount,
+        };
+        boardRealtimeCache.set(code, { at: Date.now(), data });
+        return data;
+    } catch (err) {
+        console.warn(`[RotationBoardStore] fetchBoardRealtime(${code}) 失败:`, (err as Error).message);
+        return null;
+    }
+}
+
+/** 清空板块实时盘口缓存（测试用） */
+export function clearBoardRealtimeCache(): void {
+    boardRealtimeCache.clear();
 }

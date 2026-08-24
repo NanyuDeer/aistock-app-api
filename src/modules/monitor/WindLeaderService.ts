@@ -17,6 +17,7 @@ import {
     needsCloseSettlement,
 } from './pushHistorySettlement';
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
+import { fetchBoardRealtime } from './RotationBoardStore';
 
 // ==================== 类型定义 ====================
 
@@ -36,7 +37,7 @@ interface WindLeaderSector {
     freq_delta?: number;
     avg_change?: number;
     today_change?: number;
-    net_inflow?: number;
+    amount?: number;       // 板块当日成交额（元，同花顺 bk_ 实时；净流入已下线）
     driver_type?: string;
     ma60_status?: string;
     vol_trend?: string;
@@ -544,7 +545,7 @@ export class WindLeaderService {
             freq_delta: sector.freq_delta,
             avg_change: sector.avg_change,
             today_change: sector.today_change,
-            net_inflow: sector.net_inflow || 0,
+            amount: sector.amount || 0,
             driver_type: sector.driver_type,
             ma60_status: sector.ma60_status,
             vol_trend: sector.vol_trend,
@@ -602,6 +603,23 @@ export class WindLeaderService {
                                 if (q['涨跌幅'] !== undefined && q['涨跌幅'] !== null) s.change_pct = Number(q['涨跌幅']);
                             }
                         }
+                    }
+                }
+            }
+
+            // 板块行情实时增强：净流入已下线，板块「今日涨幅」以同花顺 bk_ 实时为准（盘中即当日实时），
+            // 并填充当日成交额 amount（元）。实时盘口 30s 缓存由 RotationBoardStore 控制。
+            const uniqueBoardCodes = [...new Set(sectors.map(s => s.code).filter(Boolean))];
+            if (uniqueBoardCodes.length > 0) {
+                const realtimeList = await Promise.all(uniqueBoardCodes.map(c => fetchBoardRealtime(c)));
+                const realtimeByCode = new Map<string, Awaited<ReturnType<typeof fetchBoardRealtime>>>();
+                uniqueBoardCodes.forEach((c, i) => realtimeByCode.set(c, realtimeList[i]));
+                for (const sector of sectors) {
+                    if (!sector.code) continue;
+                    const rt = realtimeByCode.get(sector.code);
+                    if (rt) {
+                        if (Number.isFinite(rt.change_pct)) sector.today_change = rt.change_pct;
+                        if (rt.amount > 0) sector.amount = rt.amount;
                     }
                 }
             }

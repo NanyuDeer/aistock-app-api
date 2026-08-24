@@ -41,6 +41,8 @@ interface RevisionRow {
     severity: TraceSeverity;
 }
 
+const EVENT_SCRAPE_RETRY_DELAYS_MS = [500, 2000]; // 指数退避：500ms → 2s
+
 let schemaPromise: Promise<void> | null = null;
 
 function toNumber(value: string | number): number {
@@ -75,29 +77,48 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
  * fire-and-forget；失败仅告警，不阻断 stock_trace 主流程。baseUrl 与鉴权
  * 头对齐 StockTraceSnapshotService 读库调用（同款 env 变量与 token）。
  * E-3 加固（2026-08-14）：占位/缺失 token 不发请求（对齐 StockTraceTriggerService
- * 语义，避免 Python 侧 403 徒增无效请求）；显式 5s 超时防悬空。 */
-export async function triggerEventScrape(event: EventRow): Promise<void> {
+ * 语义，避免 Python 侧 403 徒增无效请求）；显式 5s 超时防悬空。
+ * 2026-08-21：内置最多 2 次指数退避重试（500ms→2s），仍失败仅告警不抛异常。 */
+export async function triggerEventScrape(
+    event: EventRow,
+    options: { retryDelaysMs?: number[] } = {},
+): Promise<void> {
     const baseUrl = (process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '').replace(/\/+$/, '');
     if (!baseUrl) return;
     const token = process.env.INTERNAL_API_TOKEN || '';
     if (!token || token === 'change-me-in-production') return;
-    await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Token': token,
-        },
-        signal: AbortSignal.timeout(5000),
-        body: JSON.stringify({
-            scrape_mode: 'event_triggered',
-            event: {
-                symbol: event.symbol,
-                score_date: event.trading_date,
-                windowStartAt: event.window_start_at,
-                windowEndAt: event.window_end_at,
-            },
-        }),
-    });
+    const delays = options.retryDelaysMs ?? EVENT_SCRAPE_RETRY_DELAYS_MS;
+    let lastError: unknown = null;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        try {
+            const response = await fetch(`${baseUrl}/api/agent/briefing/event-scrape/trigger`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Internal-Token': token,
+                },
+                signal: AbortSignal.timeout(5000),
+                body: JSON.stringify({
+                    scrape_mode: 'event_triggered',
+                    event: {
+                        symbol: event.symbol,
+                        score_date: event.trading_date,
+                        windowStartAt: event.window_start_at,
+                        windowEndAt: event.window_end_at,
+                    },
+                }),
+            });
+            if (response.ok) return;
+            lastError = new Error(`event scrape HTTP ${response.status}`);
+        } catch (error: unknown) {
+            lastError = error;
+        }
+        if (attempt < delays.length) {
+            await new Promise((resolve) => setTimeout(resolve, delays[attempt] as number));
+        }
+    }
+    // 仍失败：告警日志，不阻断 stock_trace 主流程（快照采集有缺库降级路径兜底）
+    console.error('[StockTrace] event scrape trigger failed after retries:', lastError instanceof Error ? lastError.message : String(lastError));
 }
 
 export class StockTraceService {
@@ -191,12 +212,25 @@ export class StockTraceService {
                 event_id VARCHAR(128) NOT NULL REFERENCES stock_trace_events(event_id),
                 openid VARCHAR(128) NOT NULL,
                 push_kind VARCHAR(32) NOT NULL,
+                trigger_reason VARCHAR(64) NOT NULL DEFAULT '',
+                artifact_id UUID,
+                channel VARCHAR(24) NOT NULL DEFAULT 'websocket',
                 status VARCHAR(16) NOT NULL,
                 payload JSONB NOT NULL,
                 sent_at TIMESTAMPTZ,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE (event_id, openid, push_kind)
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
+        `);
+
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS trigger_reason VARCHAR(64) NOT NULL DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS artifact_id UUID');
+        await pool.query("ALTER TABLE stock_trace_push_records ADD COLUMN IF NOT EXISTS channel VARCHAR(24) NOT NULL DEFAULT 'websocket'");
+        await pool.query("UPDATE stock_trace_push_records SET trigger_reason = '' WHERE trigger_reason IS NULL");
+        await pool.query("ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET DEFAULT ''");
+        await pool.query('ALTER TABLE stock_trace_push_records ALTER COLUMN trigger_reason SET NOT NULL');
+        await pool.query(`
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_stock_trace_push_records_delivery
+            ON stock_trace_push_records (event_id, openid, push_kind, trigger_reason)
         `);
         await StockTraceJobService.ensureSchema();
     }
@@ -229,11 +263,17 @@ export class StockTraceService {
         const client = await pool.connect();
         try {
             await client.query('BEGIN');
-            await client.query(`
+            // 反向落定：关闭相反方向的 active 事件，并在同一事务内入队其最终归因 job。
+            // 数据已冻结只归因一次；入队幂等由 UNIQUE(event_id, trigger_revision, analysis_version, job_kind) 保证。
+            const reversed = await client.query<{ event_id: string; current_trigger_revision: number }>(`
                 UPDATE stock_trace_events
                 SET event_status = 'closed', updated_at = CURRENT_TIMESTAMP
                 WHERE symbol = $1 AND event_status = 'active' AND direction <> $2
+                RETURNING event_id, current_trigger_revision
             `, [security.symbol, direction]);
+            for (const row of reversed.rows) {
+                await this.enqueueFinalAnalysis(row.event_id, Number(row.current_trigger_revision), client);
+            }
 
             const current = await client.query<EventRow>(`
                 SELECT event_id, symbol, stock_name, trading_date, direction, first_triggered_at,
@@ -276,10 +316,7 @@ export class StockTraceService {
                     SET current_trigger_revision = $2, current_severity = $3, updated_at = CURRENT_TIMESTAMP
                     WHERE event_id = $1
                 `, [eventRow.event_id, revision, nextSeverity]);
-                await StockTraceJobService.enqueue(client, {
-                    eventId: eventRow.event_id,
-                    triggerRevision: revision,
-                });
+                // 不再即时入队归因：盘中 revision 仅采集快照，最终归因留到事件落定后统一触发一次（降 token / 数据更全）
                 await client.query('COMMIT');
                 void triggerEventScrape(eventRow).catch((error: unknown) => {
                     console.error('[StockTrace] event scrape trigger (revision) failed:', error instanceof Error ? error.message : error);
@@ -337,7 +374,7 @@ export class StockTraceService {
             `, [eventId, security.symbol, eventRow.stock_name, tradingDate, direction, fact.observedAt, severity, previousClosed.rows[0]?.event_id || null]);
             await this.insertRevision(client, eventId, 1, direction, fact, severity, 'initial_trigger');
             const recipients = await this.createUserEvents(client, eventId, security.symbol);
-            await StockTraceJobService.enqueue(client, { eventId, triggerRevision: 1 });
+            // 不再即时入队归因：实时推送保留，最终归因等事件落定后统一触发一次
             await client.query('COMMIT');
             void triggerEventScrape(eventRow).catch((error: unknown) => {
                 console.error('[StockTrace] event scrape trigger (create) failed:', error instanceof Error ? error.message : error);
@@ -363,10 +400,11 @@ export class StockTraceService {
     }
 
     private static captureSnapshots(event: TriggerEvent, mutation: 'created' | 'revised'): void {
+        const incremental = mutation === 'revised';
         const capture = mutation === 'created'
             ? StockTraceSnapshotService.captureInitial(event)
-            : StockTraceSnapshotService.captureCorrected(event);
-        void capture.then(() => StockTraceSnapshotService.scheduleEnriched(event)).catch((error: unknown) => {
+            : StockTraceSnapshotService.captureCorrected(event, incremental);
+        void capture.then(() => StockTraceSnapshotService.scheduleEnriched(event, incremental)).catch((error: unknown) => {
             console.error('[StockTrace] snapshot capture failed:', error instanceof Error ? error.message : error);
         });
     }
@@ -419,7 +457,7 @@ export class StockTraceService {
             await pool.query(`
                 INSERT INTO stock_trace_push_records (id, event_id, openid, push_kind, trigger_reason, status, payload, sent_at)
                 VALUES ($1, $2, $3, 'initial', 'event_created', 'sent', $4::jsonb, CURRENT_TIMESTAMP)
-                ON CONFLICT (event_id, openid, push_kind) DO NOTHING
+                ON CONFLICT (event_id, openid, push_kind, trigger_reason) DO NOTHING
             `, [randomUUID(), event.eventId, openid, JSON.stringify(payload)]);
             pushAlertToUser(openid, { type: 'movement.created', ...payload });
             try {
@@ -432,6 +470,7 @@ export class StockTraceService {
                     summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
                     targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
                     payload,
+                    occurredAt: event.triggeredAt ? new Date(event.triggeredAt).toISOString() : undefined,
                 });
             } catch (error) {
                 console.warn('[StockTrace] App notification failed:', error instanceof Error ? error.message : String(error));
@@ -446,12 +485,79 @@ export class StockTraceService {
             SET recovery_started_at = COALESCE(recovery_started_at, $2), last_seen_at = $2, updated_at = CURRENT_TIMESTAMP
             WHERE symbol = $1 AND event_status = 'active'
         `, [symbol, observedAt]);
-        await pool.query(`
+        const settled = await pool.query<{ event_id: string; current_trigger_revision: number }>(`
             UPDATE stock_trace_events
             SET event_status = 'closed', updated_at = CURRENT_TIMESTAMP
             WHERE symbol = $1 AND event_status = 'active'
               AND recovery_started_at IS NOT NULL AND recovery_started_at <= $2
+            RETURNING event_id, current_trigger_revision
         `, [symbol, new Date(observedAt.getTime() - PRICE_RESET_WINDOW_MS)]);
+        if (settled.rows.length > 0) {
+            await this.triggerFinalAttribution(settled.rows);
+        }
+    }
+
+    /** 事件落定（恢复窗口到期 / 反向落定 / 收盘兜底）后触发一次最终归因。
+     * 幂等：enqueue 的 UNIQUE(event_id, trigger_revision, analysis_version, job_kind) + SELECT FOR UPDATE
+     * 保证同一事件只入队一个最终归因 job。无 client 时自建短事务保证 job+outbox 原子落库。 */
+    private static async enqueueFinalAnalysis(eventId: string, triggerRevision: number, client?: PoolClient): Promise<void> {
+        await this.ensureSchema();
+        if (client) {
+            await StockTraceJobService.enqueue(client, { eventId, triggerRevision });
+            return;
+        }
+        // 无 client 路径：入队前确保 enriched 快照就绪（缺失则同步采集一次兜底），
+        // 避免 job 发布后 consumer 反复拿 SNAPSHOT_NOT_READY 空转。事务外执行。
+        await this.ensureEnrichedReady(eventId, triggerRevision);
+        const conn = await pool.connect();
+        try {
+            await conn.query('BEGIN');
+            await StockTraceJobService.enqueue(conn, { eventId, triggerRevision });
+            await conn.query('COMMIT');
+        } catch (error) {
+            await conn.query('ROLLBACK');
+            throw error;
+        } finally {
+            conn.release();
+        }
+    }
+
+    private static async ensureEnrichedReady(eventId: string, triggerRevision: number): Promise<void> {
+        const context = await StockTraceSnapshotService.getAnalysisContext(eventId, triggerRevision);
+        if (context) return;
+        const event = await this.getTriggerEvent(eventId, triggerRevision);
+        if (!event) return; // 事件不存在：交由 consumer 超时兜底
+        await StockTraceSnapshotService.captureEnriched(event);
+    }
+
+    /** 对一批已落定事件统一触发最终归因：入队后发布 outbox。 */
+    private static async triggerFinalAttribution(
+        rows: Array<{ event_id: string; current_trigger_revision: number }>,
+    ): Promise<void> {
+        for (const row of rows) {
+            await this.enqueueFinalAnalysis(row.event_id, Number(row.current_trigger_revision));
+        }
+        await StockTraceJobService.publishPending().catch((error: unknown) => {
+            console.error('[StockTrace] final attribution outbox publish failed:', error instanceof Error ? error.message : error);
+        });
+    }
+
+    /** 收盘兜底（15:05 cron 调用）：强制落定当日所有 active 事件并触发最终归因。返回落定事件数。 */
+    static async settleActiveEvents(): Promise<number> {
+        await this.ensureSchema();
+        const tradingDate = formatChinaTradingDate(new Date());
+        const settled = await pool.query<{ event_id: string; current_trigger_revision: number }>(`
+            UPDATE stock_trace_events
+            SET event_status = 'closed',
+                recovery_started_at = COALESCE(recovery_started_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE event_status = 'active' AND trading_date = $1::date
+            RETURNING event_id, current_trigger_revision
+        `, [tradingDate]);
+        if (settled.rows.length > 0) {
+            await this.triggerFinalAttribution(settled.rows);
+        }
+        return settled.rows.length;
     }
 
     static toPublicEvent(event: TriggerEvent): Record<string, unknown> {
@@ -483,12 +589,38 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
-            FROM stock_trace_user_events ue
-            INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
+            -- 列表可见性实时跟随当前自选（INNER JOIN user_stocks）：
+            -- 移出自选立即消失、之后加入自选可见历史事件，与 insights 一致。
+            -- stock_trace_user_events 仅作已读状态落点（LEFT JOIN 取 read_at）与推送对象。
+            FROM stock_trace_events e
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
-            WHERE ue.openid = $1 ${cursorClause}
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
+            WHERE us.openid = $1 ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $2
         `, params);
@@ -509,7 +641,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: row.read_at,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
@@ -528,10 +663,32 @@ export class StockTraceService {
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, r.latest_price, r.previous_close, r.actual_value AS change_pct,
-                   r.threshold_value, r.rule_version
+                   r.threshold_value, r.rule_version,
+                   CASE
+                     WHEN a.event_id IS NOT NULL THEN 'completed'
+                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     ELSE 'processing'
+                   END AS analysis_status,
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
             FROM stock_trace_events e
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
+            LEFT JOIN LATERAL (
+                SELECT a.event_id, a.result_id
+                FROM stock_trace_artifacts a
+                WHERE a.event_id = e.event_id
+                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
+                ORDER BY a.artifact_version DESC
+                LIMIT 1
+            ) a ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT r2.result_id, r2.validation_status, r2.processing_status, r2.primary_phrase
+                FROM stock_trace_results r2
+                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
+                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
+                ORDER BY r2.created_at DESC
+                LIMIT 1
+            ) rr ON TRUE
             WHERE e.event_status = 'active' ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $1
@@ -553,7 +710,10 @@ export class StockTraceService {
                 severity: row.current_severity,
                 rule_version: row.rule_version,
                 read_at: null,
-                analysis_status: 'pending',
+                // 与详情接口 presentStockTraceAnalysis 保持一致：artifact→completed / rejected|failed→unavailable / 其他→processing
+                analysis_status: String(row.analysis_status ?? 'processing'),
+                // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
+                primary_cause: row.primary_cause ? String(row.primary_cause) : null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
@@ -566,11 +726,14 @@ export class StockTraceService {
                    e.window_end_at, e.current_trigger_revision, e.current_severity, ue.read_at,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
-            FROM stock_trace_user_events ue
-            INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
+            -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
+            -- 用户当前自选里没有该股票即 404，避免列表可见但详情不可见的不一致。
+            FROM stock_trace_events e
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
-            WHERE ue.openid = $1 AND e.event_id = $2
+            WHERE e.event_id = $2
             LIMIT 1
         `, [openid, eventId]);
         if (!result.rows[0]) return null;
@@ -686,10 +849,14 @@ export class StockTraceService {
 
     static async markRead(openid: string, eventId: string): Promise<boolean> {
         await this.ensureSchema();
+        // upsert：列表可见性已改由 user_stocks 实时决定，用户可能"之后加入自选"而
+        // 关联表里没有既有行，此时也要能标记已读（不再依赖 createUserEvents 预建行）。
         const result = await pool.query(`
-            UPDATE stock_trace_user_events SET read_at = CURRENT_TIMESTAMP
-            WHERE openid = $1 AND event_id = $2
-        `, [openid, eventId]);
+            INSERT INTO stock_trace_user_events (id, event_id, openid, read_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (event_id, openid) DO UPDATE SET read_at = CURRENT_TIMESTAMP
+            RETURNING id
+        `, [randomUUID(), eventId, openid]);
         return (result.rowCount || 0) > 0;
     }
 }

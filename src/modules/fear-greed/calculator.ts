@@ -469,16 +469,15 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         inds.margin,
     ];
 
-    // 综合指数历史（9 指标等权）
-    const histKeys = compositeInds;
+    // 综合指数历史（只用有历史的指标等权，避免 fallback 中性指标的空 history 导致历史断裂）
+    const histKeys = compositeInds.filter(k => k.history.scores.length > 0);
     const histLen = Math.min(...histKeys.map((k) => k.history.scores.length));
     const histScores: number[] = [];
     for (let i = 0; i < histLen; i++) {
         const avg = histKeys.reduce((s, k) => s + k.history.scores[i], 0) / histKeys.length;
         histScores.push(Math.round(avg * 100) / 100);
     }
-    // 以涨跌停指标的历史日期为基准（倒序）
-    const histDates = micro.seal_rate.history.dates.slice(0, histLen);
+    const histDates = inds.breadth.history.dates.slice(0, histLen);
 
     return {
         key: 'jq',

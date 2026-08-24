@@ -11,6 +11,7 @@ export interface NotificationSocketPayload {
     targetPath: string;
     payload: Record<string, unknown>;
     createdAt: string;
+    occurredAt?: string;
     readAt: string | null;
 }
 
