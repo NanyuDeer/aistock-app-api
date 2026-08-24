@@ -89,7 +89,7 @@ export class UserController {
         const { openid } = auth;
 
         const userResult = await pool.query(
-            'SELECT openid, nickname, avatar_url, created_at FROM users WHERE openid = $1',
+            'SELECT openid, nickname, avatar_url, created_at, is_vip FROM users WHERE openid = $1',
             [openid],
         );
         const user = userResult.rows[0];
@@ -114,6 +114,7 @@ export class UserController {
             nickname: user.nickname,
             avatar_url: user.avatar_url,
             created_at: user.created_at,
+            is_vip: !!user.is_vip,
             自选股: stocksResult.rows.map((s: any) => ({
                 股票代码: s.symbol,
                 股票简称: s.name || null,
