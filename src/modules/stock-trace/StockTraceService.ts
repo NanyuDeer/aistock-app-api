@@ -495,7 +495,7 @@ export class StockTraceService {
         const cursorClause = cursor ? `AND e.first_triggered_at < $3::timestamptz` : '';
         if (cursor) params.push(cursor);
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
@@ -538,6 +538,9 @@ export class StockTraceService {
                 event_type: 'price',
                 direction: row.direction,
                 triggered_at: (row.first_triggered_at as Date).toISOString(),
+                // 最近触发/窗口更新时间：事件窗口合并时每次检测都会刷新（不产生新 revision），
+                // 供前端按"最近触发时间"排序展示，避免长窗口事件按首次触发沉底
+                window_end_at: row.window_end_at ? (row.window_end_at as Date).toISOString() : null,
                 latest_price: toNumber(row.latest_price as string | number),
                 previous_close: toNumber(row.previous_close as string | number),
                 change_pct: toNumber(row.change_pct as string | number),
@@ -565,7 +568,7 @@ export class StockTraceService {
         const cursorClause = cursor ? `AND e.first_triggered_at < $2::timestamptz` : '';
         if (cursor) params.push(cursor);
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
@@ -607,6 +610,8 @@ export class StockTraceService {
                 event_type: 'price',
                 direction: row.direction,
                 triggered_at: (row.first_triggered_at as Date).toISOString(),
+                // 最近触发/窗口更新时间：事件窗口合并时每次检测都会刷新（不产生新 revision）
+                window_end_at: row.window_end_at ? (row.window_end_at as Date).toISOString() : null,
                 latest_price: toNumber(row.latest_price as string | number),
                 previous_close: toNumber(row.previous_close as string | number),
                 change_pct: toNumber(row.change_pct as string | number),
