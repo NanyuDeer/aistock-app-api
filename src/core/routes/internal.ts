@@ -2450,6 +2450,85 @@ publicRouter.get('/trading-calendar/recent', (req: Request, res: Response) => {
     }
 })
 
+/**
+ * GET /api/agent/event/:eventId/article
+ * 事件原文 — 前端 APP 内展示的源网页正文。
+ *
+ * 逻辑：
+ *   1. 按 eventId 查询 event_conduction 报告，取 content.source（原文 URL）。
+ *   2. 从 source 解析财联社 newsId（https://www.cls.cn/detail/{id}）。
+ *   3. 调 ClsStockNewsService.getNewsFulltext(id) 拉正文。
+ *   返回 { title, source, publishTime, content, sourceUrl }。
+ *
+ * 异常友好降级：无 source / 无 newsId / 正文获取失败。
+ */
+publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT content, report_date, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'event_conduction' AND user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [eventId]
+        )
+
+        if (result.rows.length === 0) {
+            res.status(404).json({ code: -1, message: 'Event not found' })
+            return
+        }
+
+        const content = (result.rows[0]['content'] as Record<string, unknown>) || {}
+        const source = String(content['source'] || '').trim()
+
+        // 无原文 URL → 友好错误
+        if (!source) {
+            res.status(422).json({ code: -1, message: '该事件暂无可展示的原文链接' })
+            return
+        }
+
+        // 从财联社详情 URL 解析 newsId：https://www.cls.cn/detail/{newsId}
+        const newsIdMatch = source.match(/cls\.cn\/detail\/(\d+)/)
+        if (!newsIdMatch?.[1]) {
+            // 非财联社来源：先尝试把整个 URL 当 newsId 数字源（非数字则判为无正文）
+            res.status(422).json({ code: -1, message: '暂不支持该来源的原文正文展示' })
+            return
+        }
+        const newsId = newsIdMatch[1]
+
+        try {
+            const fulltext = await ClsStockNewsService.getNewsFulltext(newsId)
+            if (!fulltext || !fulltext.content) {
+                res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
+                return
+            }
+
+            res.json({
+                code: 0,
+                data: {
+                    title: fulltext.title || content['title'] || '',
+                    source: content['source_name'] || source,
+                    publishTime: content['publishTime'] || result.rows[0]['report_date'] || '',
+                    content: fulltext.content,
+                    sourceUrl: source,
+                },
+            })
+        } catch (err: unknown) {
+            console.error(`[Public] agent/event/:eventId/article fulltext error:`, errMsg(err))
+            res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
+        }
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/:eventId/article error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
 export { publicRouter }
 
 /**

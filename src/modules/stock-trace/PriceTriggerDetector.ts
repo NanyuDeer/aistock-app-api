@@ -4,6 +4,7 @@ import { StockTraceService } from './StockTraceService';
 import { isEligiblePriceSecurity, type PriceFact } from './types';
 
 const DETECTOR_INTERVAL_MS = 5_000;
+const DETECT_CONCURRENCY = 5; // 并发分批上限：自选股互异，processPriceFact 内部有事务/UNIQUE 保护，可安全并发
 const SYMBOL_FIELD = '股票代码';
 const NAME_FIELD = '股票简称';
 const PRICE_FIELD = '最新价';
@@ -13,6 +14,14 @@ const CHANGE_FIELD = '涨跌幅';
 function numeric(value: unknown): number | null {
     const numberValue = typeof value === 'number' ? value : Number(value);
     return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+export function splitIntoBatches<T>(items: T[], size: number): T[][] {
+    const batches: T[][] = [];
+    for (let index = 0; index < items.length; index += size) {
+        batches.push(items.slice(index, index + size));
+    }
+    return batches;
 }
 
 export class PriceTriggerDetector {
@@ -54,29 +63,34 @@ export class PriceTriggerDetector {
                 .filter((security) => isEligiblePriceSecurity(security, now));
             if (securities.length === 0) return;
 
-            const quotes = await TencentQuoteService.getBatchQuotes(securities.map((security) => security.symbol), 'core');
+            // 必须用 activity 级别：core 字段集不含"昨收价"，previousClose 恒为 undefined，
+            // 所有股票都会被阈值分支跳过（2026-08-20 实测定位：实时检测链路从未真正触发过）
+            const quotes = await TencentQuoteService.getBatchQuotes(securities.map((security) => security.symbol), 'activity');
             const quoteBySymbol = new Map<string, Record<string, unknown>>();
             for (const quote of quotes) {
                 const symbol = typeof quote[SYMBOL_FIELD] === 'string' ? quote[SYMBOL_FIELD] : '';
                 if (symbol) quoteBySymbol.set(symbol, quote);
             }
 
-            for (const security of securities) {
-                const quote = quoteBySymbol.get(security.symbol);
-                if (!quote) continue;
-                const latestPrice = numeric(quote[PRICE_FIELD]);
-                const previousClose = numeric(quote[PREVIOUS_CLOSE_FIELD]);
-                const changePct = numeric(quote[CHANGE_FIELD]);
-                if (latestPrice === null || previousClose === null || previousClose <= 0 || changePct === null) continue;
-                const fact: PriceFact = {
-                    symbol: security.symbol,
-                    stockName: typeof quote[NAME_FIELD] === 'string' ? quote[NAME_FIELD] : security.stockName,
-                    latestPrice,
-                    previousClose,
-                    changePct,
-                    observedAt: now,
-                };
-                await StockTraceService.processPriceFact(security, fact);
+            // 自选股已按 symbol DISTINCT，同股不会并发；不同 symbol 走各自事务与 UNIQUE 约束，安全。
+            for (const batch of splitIntoBatches(securities, DETECT_CONCURRENCY)) {
+                await Promise.all(batch.map(async (security) => {
+                    const quote = quoteBySymbol.get(security.symbol);
+                    if (!quote) return;
+                    const latestPrice = numeric(quote[PRICE_FIELD]);
+                    const previousClose = numeric(quote[PREVIOUS_CLOSE_FIELD]);
+                    const changePct = numeric(quote[CHANGE_FIELD]);
+                    if (latestPrice === null || previousClose === null || previousClose <= 0 || changePct === null) return;
+                    const fact: PriceFact = {
+                        symbol: security.symbol,
+                        stockName: typeof quote[NAME_FIELD] === 'string' ? quote[NAME_FIELD] : security.stockName,
+                        latestPrice,
+                        previousClose,
+                        changePct,
+                        observedAt: now,
+                    };
+                    await StockTraceService.processPriceFact(security, fact);
+                }));
             }
         } finally {
             this.running = false;

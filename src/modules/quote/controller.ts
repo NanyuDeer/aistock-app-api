@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { TushareQuoteService, QuoteLevel as TushareQuoteLevel } from './TushareQuoteService';
 import { TencentQuoteService, QuoteLevel as TencentQuoteLevel } from './TencentQuoteService';
 import { TushareKlineService, KLineFqt, KLinePeriod } from './TushareKlineService';
+import { TencentKlineService } from './TencentKlineService';
 import { CacheService } from '../../shared/utils/CacheService';
 import { createResponse } from '../../shared/utils/response';
 import { isValidAShareSymbol } from '../../shared/utils/validator';
@@ -304,14 +305,22 @@ export class StockQuoteController {
         }
 
         try {
-            const klines = await TushareKlineService.getKLine({
-                symbol, klt, fqt, limit,
-                startDate: startDate || undefined,
-                endDate: endDate || undefined,
-            });
+            // 分时/分钟级（klt<100）走腾讯 mkline（分时数据保证非空），日/周/月走 Tushare
+            const isMinute = klt < 100;
+            const klines = isMinute
+                ? await TencentKlineService.getKLine({
+                    symbol, klt, fqt, limit,
+                    startDate: startDate || undefined,
+                    endDate: endDate || undefined,
+                })
+                : await TushareKlineService.getKLine({
+                    symbol, klt, fqt, limit,
+                    startDate: startDate || undefined,
+                    endDate: endDate || undefined,
+                });
 
             createResponse(res, 200, 'success', {
-                '来源': 'Tushare',
+                '来源': isMinute ? '腾讯财经' : 'Tushare',
                 '股票代码': symbol,
                 'K线周期': this.getKLinePeriodName(klt),
                 '复权类型': this.getFqtName(fqt),
