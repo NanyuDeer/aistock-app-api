@@ -34,6 +34,8 @@ interface ValidationInput {
     sources: StockSourceRecord[];
     windowEndAt: Date;
     direction: TraceDirection;
+    /** 缺失的能力清单（如 capital_flow_disabled）。部分校验规则在能力缺失时放宽。 */
+    missingCapabilities?: string[];
 }
 
 export interface ExternalResultInput {
@@ -161,7 +163,12 @@ export function validateStockTraceResult(input: ValidationInput): string[] {
             && valueDirection(source) !== input.direction,
         );
         const candidate = input.candidates.find((item) => item.layer === layer);
-        if (hasOppositeFact && (!candidate || candidate.counterEvidenceIds.length === 0)) errors.push(`candidate:${layer}:missing_counter_evidence`);
+        // 2026-08-21 决策：sector/market 候选未声称驱动（非 supported）或资金流数据缺失
+        // （capital_flow_disabled，agent 无法完整分析资金面）时不强制反证。
+        // 避免误伤：如板块候选已明确"非主要驱动"仍因窗口内存在反向小板块事实被阻塞。
+        if (hasOppositeFact && candidate?.status === 'supported'
+            && !(input.missingCapabilities ?? []).includes('capital_flow_disabled')
+            && candidate.counterEvidenceIds.length === 0) errors.push(`candidate:${layer}:missing_counter_evidence`);
     }
     for (const chain of input.chains) {
         if (chain.nodes.length !== STAGES.length) errors.push(`chain:${chain.chainId}:invalid_stage_count`);
@@ -246,7 +253,7 @@ export class StockTraceResultService {
         const independentFact = sectorEvidence.length > 0 || marketEvidence.length > 0;
         const attributionStatus: AttributionStatus = companyA || (companyB && independentFact) ? 'confirmed' : primaryCandidate ? 'hypothesis' : 'insufficient';
         const confidenceScore = attributionStatus === 'confirmed' ? 0.78 : attributionStatus === 'hypothesis' ? 0.55 : 0.2;
-        const validationErrors = validateStockTraceResult({ attributionStatus, confidenceScore, candidates, chains, sources: snapshot.sourceRecords, windowEndAt: snapshot.windowEndAt, direction: snapshot.direction });
+        const validationErrors = validateStockTraceResult({ attributionStatus, confidenceScore, candidates, chains, sources: snapshot.sourceRecords, windowEndAt: snapshot.windowEndAt, direction: snapshot.direction, missingCapabilities: ['capital_flow_disabled'] });
         const result: StockTraceResult = {
             resultId: randomUUID(), eventId: snapshot.eventId, snapshotId, analysisVersion,
             processingStatus: validationErrors.length ? 'partial' : 'completed', attributionStatus: validationErrors.length && attributionStatus === 'confirmed' ? 'hypothesis' : attributionStatus,
@@ -295,6 +302,8 @@ export class StockTraceResultService {
             attributionStatus: input.attribution_status, confidenceScore: input.confidence_score,
             candidates, chains, sources: snapshot.sourceRecords, windowEndAt: snapshot.windowEndAt,
             direction: snapshot.direction,
+            // 与下方落库的 missingCapabilities 保持一致：当前所有外部（agent）归因均视为资金流不可用
+            missingCapabilities: ['capital_flow_disabled'],
         });
         const result: StockTraceResult = {
             resultId: randomUUID(), eventId: input.event_id, snapshotId: input.snapshot_id,

@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-08-24 — 归因校验规则放宽 + 异动列表按最近触发时间排序
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/stock-trace/StockTraceResultService.ts`：归因校验放宽（2026-08-21 决策）——sector/market 候选未声称驱动（非 supported）或资金流数据缺失（`capital_flow_disabled`）时不强制反证，避免板块候选已明确"非主要驱动"仍被窗口内反向小板块事实阻塞
+- `src/modules/stock-trace/StockTraceService.ts`：movements 列表（`listUserEvents`/`listRecentEvents`）新增返回 `window_end_at`，供前端按"最近触发时间"排序展示，长窗口事件不再按首次触发沉底
+
+### 测试
+- `src/modules/stock-trace/__tests__/result-validator.spec.ts`：校验单测同步——supported 需反证、非 supported 不阻塞、capital_flow_disabled 跳过反证
+
+---
+
 ## [master] 2026-08-24 — 涨跌停微观指标改为 daily 自行推导（替代 limit_list_d）
 
 **开发者**: 林晓研
