@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-24 — 报告导出会员解锁 + 分时 K 线数据源修复
+
+**开发者**: NanyuDeer
+
+### 新增
+- `users` 表与 `GET /api/users/me` 新增 `is_vip` 会员标记（默认 false，反向兼容），供报告导出会员解锁；新增 `src/modules/auth/__tests__/me-is-vip.spec.ts`。
+- 分钟级（klt<100）K 线改走腾讯 `kline/mkline` 接口：`TencentKlineService.buildMinuteUrl/arrayRowsToKLine`，controller 分时路由切腾讯，保证 mini 分时图数据非空；新增 `src/modules/quote/__tests__/tencent-kline-minute.spec.ts`。
+
+---
+
 ## [master] 2026-08-21 — 修复风口龙头板块实时行情显示昨日数据
 
 **开发者**: Aria
