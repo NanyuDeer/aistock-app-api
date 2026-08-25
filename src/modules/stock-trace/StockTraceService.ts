@@ -468,7 +468,7 @@ export class StockTraceService {
                     stockName: event.stockName,
                     title: `${event.stockName}：价格异动`,
                     summary: `${event.direction === 'up' ? '上涨' : '下跌'} ${Number(event.actualValue).toFixed(2)}%`,
-                    targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                    targetPath: `/modules/favorites/pages/insight-detail-move?event_id=${encodeURIComponent(event.eventId)}`,
                     payload,
                     occurredAt: event.triggeredAt ? new Date(event.triggeredAt).toISOString() : undefined,
                 });
@@ -596,8 +596,12 @@ export class StockTraceService {
                      ELSE 'processing'
                    END AS analysis_status,
                    (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
-            FROM stock_trace_user_events ue
-            INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
+            -- 列表可见性实时跟随当前自选（INNER JOIN user_stocks）：
+            -- 移出自选立即消失、之后加入自选可见历史事件，与 insights 一致。
+            -- stock_trace_user_events 仅作已读状态落点（LEFT JOIN 取 read_at）与推送对象。
+            FROM stock_trace_events e
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
             LEFT JOIN LATERAL (
@@ -616,7 +620,7 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
-            WHERE ue.openid = $1 ${cursorClause}
+            WHERE us.openid = $1 ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $2
         `, params);
@@ -722,11 +726,14 @@ export class StockTraceService {
                    e.window_end_at, e.current_trigger_revision, e.current_severity, ue.read_at,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
-            FROM stock_trace_user_events ue
-            INNER JOIN stock_trace_events e ON e.event_id = ue.event_id
+            -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
+            -- 用户当前自选里没有该股票即 404，避免列表可见但详情不可见的不一致。
+            FROM stock_trace_events e
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
-            WHERE ue.openid = $1 AND e.event_id = $2
+            WHERE e.event_id = $2
             LIMIT 1
         `, [openid, eventId]);
         if (!result.rows[0]) return null;
@@ -842,10 +849,14 @@ export class StockTraceService {
 
     static async markRead(openid: string, eventId: string): Promise<boolean> {
         await this.ensureSchema();
+        // upsert：列表可见性已改由 user_stocks 实时决定，用户可能"之后加入自选"而
+        // 关联表里没有既有行，此时也要能标记已读（不再依赖 createUserEvents 预建行）。
         const result = await pool.query(`
-            UPDATE stock_trace_user_events SET read_at = CURRENT_TIMESTAMP
-            WHERE openid = $1 AND event_id = $2
-        `, [openid, eventId]);
+            INSERT INTO stock_trace_user_events (id, event_id, openid, read_at)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (event_id, openid) DO UPDATE SET read_at = CURRENT_TIMESTAMP
+            RETURNING id
+        `, [randomUUID(), eventId, openid]);
         return (result.rowCount || 0) > 0;
     }
 }

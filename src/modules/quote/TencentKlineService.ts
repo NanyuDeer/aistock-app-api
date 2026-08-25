@@ -69,6 +69,24 @@ export class TencentKlineService {
         return url;
     }
 
+    private static readonly MINUTE_BASE_URL = 'https://ifzq.gtimg.cn/appstock/app/kline/mkline';
+
+    /** 分钟级（m1/m5/...）K 线走 kline/mkline 接口：fqkline/get 不支持分钟周期（param 含 m1 返回 bad params）。
+     *  分钟接口按窗口拉取最近数据，不校验起止日期，limit 作为窗口上限。 */
+    private static buildMinuteUrl(options: KLineOptions): URL {
+        const { symbol, klt = 1, fqt = 1, limit = 800 } = options;
+        const identity = getStockIdentity(symbol);
+        const code = `${identity.tencentPrefix}${symbol}`;
+        const period = PERIOD_MAP[klt] || 'm1';
+        const fqtType = FQT_MAP[fqt] ?? '';
+
+        // param=代码,周期,开始日期,结束日期,数量,复权类型
+        const param = [code, period, '', '', String(limit), fqtType].join(',');
+        const url = new URL(this.MINUTE_BASE_URL);
+        url.searchParams.set('param', param);
+        return url;
+    }
+
     private static async fetchKlineJson(url: URL): Promise<any> {
         let lastError: Error | null = null;
 
@@ -117,8 +135,17 @@ export class TencentKlineService {
         };
     }
 
+    private static arrayRowsToKLine(rows: unknown[]): Record<string, any>[] {
+        if (!Array.isArray(rows)) return [];
+        return rows
+            .map((row: any) => Array.isArray(row) ? this.parseKLineRow(row) : null)
+            .filter((item): item is Record<string, any> => item !== null);
+    }
+
     static async getKLine(options: KLineOptions): Promise<Record<string, any>[]> {
-        const url = this.buildKlineUrl(options);
+        // 分钟级（klt<100，如分时 m1）走 mkline 接口，日/周/月走 fqkline 接口
+        const isMinute = (options.klt ?? 101) < 100;
+        const url = isMinute ? this.buildMinuteUrl(options) : this.buildKlineUrl(options);
         const json: any = await this.fetchKlineJson(url);
 
         const identity = getStockIdentity(options.symbol);
@@ -126,12 +153,15 @@ export class TencentKlineService {
         const stockData = json.data?.[code];
         if (!stockData) return [];
 
+        if (isMinute) {
+            // 分钟数据按周期键存放（m1/m5/...），qfq 前复权也落在同一键上
+            const key = PERIOD_MAP[options.klt ?? 1] || 'm1';
+            const minuteRows: unknown[] = stockData[key] || stockData[`qfq${key}`] || [];
+            return this.arrayRowsToKLine(minuteRows);
+        }
+
         // 前复权数据在 qfqday，不复权在 day
         const klineRows: unknown[] = stockData.qfqday || stockData.day || stockData.hfqday || [];
-        if (!Array.isArray(klineRows)) return [];
-
-        return klineRows
-            .map((row: any) => Array.isArray(row) ? this.parseKLineRow(row) : null)
-            .filter((item): item is Record<string, any> => item !== null);
+        return this.arrayRowsToKLine(klineRows);
     }
 }

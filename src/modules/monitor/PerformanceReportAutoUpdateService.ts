@@ -201,7 +201,7 @@ export class PerformanceReportAutoUpdateService {
                                 stockName: stockName || symbol,
                                 title: `${stockName || symbol}：业绩快报/预告更新`,
                                 summary: row.summary || `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
                                 payload: { reportType: 'express', annDate },
                                 occurredAt: annDateToIso(annDate),
                             });
@@ -245,7 +245,7 @@ export class PerformanceReportAutoUpdateService {
                                 stockName: stockName || symbol,
                                 title: `${stockName || symbol}：财报披露`,
                                 summary: `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
                                 payload: { reportType: 'formal', annDate },
                                 occurredAt: annDateToIso(annDate),
                             });

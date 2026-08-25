@@ -154,7 +154,7 @@ export class StockInfoPushService {
                         stockName: event.stock_name || undefined,
                         title: `${event.stock_name || event.symbol}：资讯异动`,
                         summary: event.ai_summary || event.title || '自选股资讯出现新动态',
-                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}`,
+                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}&anchor=stock-info`,
                         payload: { judgementId: event.id, infoType: event.info_type, url: event.url || '' },
                         occurredAt: normalizeEventTime(event.published_at),
                     });
