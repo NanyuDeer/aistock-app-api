@@ -543,6 +543,56 @@ router.get('/stock/resolve', async (req: Request, res: Response) => {
     }
 })
 
+// ==================== 个股事件识别：股票基础信息接口 ====================
+// GET /internal/stocks/basic — 全量 A 股基础信息，供 Python 股票名称实体匹配
+// （stock_event_detector.company_event_rule）。只读 + verifyInternalToken 鉴权 +
+// 内存 TTL 缓存，避免 Python 侧每次事件归一化重复拉取。数据复用 stocks 表
+// （symbol/name/industry，Tushare stock_basic 同步，与 /api/cn/stocks 同源）。
+
+interface StockBasicItem {
+    symbol: string;
+    name: string;
+    industry: string;
+}
+
+let stockBasicCache: StockBasicItem[] | null = null;
+let stockBasicCacheAt = 0;
+const STOCK_BASIC_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function getStockBasicList(): Promise<StockBasicItem[]> {
+    const now = Date.now();
+    if (stockBasicCache && now - stockBasicCacheAt < STOCK_BASIC_CACHE_TTL_MS) {
+        return stockBasicCache;
+    }
+    const result = await pool.query(
+        `SELECT symbol, name, industry FROM stocks WHERE name IS NOT NULL AND name <> ''`
+    );
+    stockBasicCache = (result.rows as StockBasicItem[]).map((row) => ({
+        symbol: String(row.symbol ?? ''),
+        name: String(row.name ?? ''),
+        industry: String(row.industry ?? ''),
+    }));
+    stockBasicCacheAt = now;
+    return stockBasicCache;
+}
+
+/**
+ * GET /internal/stocks/basic
+ * 全量 A 股基础信息（symbol/name/industry），供 Python 股票名称实体匹配。
+ *
+ * - 200：{ code: 200, data: [{ symbol, name, industry }, ...] }
+ * - 502：服务异常
+ */
+router.get('/stocks/basic', async (req: Request, res: Response) => {
+    try {
+        const data = await getStockBasicList();
+        res.json({ code: 200, data });
+    } catch (err: unknown) {
+        console.error('[Internal] stocks/basic error:', errMsg(err));
+        res.status(502).json({ code: 502, message: errMsg(err) });
+    }
+});
+
 // ==================== Phase 5: 新增 /internal/* 接口（供 Python Agent 调用） ====================
 // 以下 9 个路由对接 monitor 模块现有 Service，全部走 verifyInternalToken 鉴权。
 // Service 失败时返回 502 + 错误信息（区别于现有接口的 500）。
