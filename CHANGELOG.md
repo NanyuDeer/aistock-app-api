@@ -2,6 +2,44 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-25 — 短信服务生产接入骨架（本期不真发）
+
+**开发者**: Aria
+
+### 变更
+- `src/core/sms/SmsService.ts`：生产接入骨架——从环境变量读取并校验短信配置（`SMS_PROVIDER=aliyun|tencent` + 凭证/签名/模板/region），`send` 按 dev（日志回显+测试码）/ 生产（未配置抛明确错误、已配置走渠道分发）分流
+- 阿里云 / 腾讯云渠道接入点（`sendViaAliyun` / `sendViaTencent`）已留 TODO 与官方 SDK 接入注释；本期不真发（需企业签名 + 验证码模板审核，见设计 §9），配置后仍抛"渠道未启用"由前端展示明确错误
+- `.env.example`：补充短信配置项注释说明
+
+---
+
+## [master] 2026-08-25 — 短信验证码登录 + 手机/微信统一账户模型（双向绑定）
+
+**开发者**: Aria
+
+### 背景
+- 此前仅支持微信测试号登录，用户以 openid 为唯一标识；新增「手机号 + 短信验证码登录」，且手机号账户与微信账户可双向绑定，保留原微信登录信息
+
+### 数据库（幂等迁移，启动时执行，index.ts ensureSchema 风格）
+- `users`：主键从 openid 切换为不可变 `id`（UUID，存量行回填 `gen_random_uuid()`）；`openid` 改可空并建非空唯一索引；新增可空唯一 `phone`；预留 `unionid`
+- 迁移前先摘除引用 `users(openid)` 的外键（user_notifications/user_subscriptions/user_stocks），重建主键后按原 ON DELETE 语义还原
+- `user_stocks`：新增可空 `user_id` 列；放宽 `openid` 非空；分别建 `(openid,symbol)` / `(user_id,symbol)` 部分唯一索引；回填老微信自选股到对应 `user_id`
+
+### 新增
+- `src/core/sms/SmsService.ts` + `src/core/sms/smsCodeStore.ts`：验证码生成/存储（Redis 优先 + 内存兜底，5 分钟 TTL、单次消费防重放、60s 同号限流 3 次）、SmsService 发送抽象（dev 日志回显 + 固定测试码 `SMS_DEV_TEST_CODE`=123456，生产预留接入真实服务商）
+- `src/modules/auth/SmsAuthController.ts`：`POST /api/auth/sms/send` 发码、`POST /api/auth/sms/login` 手机号登录（无账户自动创建，`ON CONFLICT (phone)` 原子处理并发首登，Web 端同设 httpOnly Cookie）、`POST /api/auth/bind/phone` 绑手机、`POST /api/auth/bind/wechat` 绑微信（手机+验证码证明归属）
+- `src/modules/auth/__tests__/sms-auth.spec.ts`：8 条用例覆盖发码/限流/登录/绑定/冲突 409/未登录 401
+
+### 变更
+- `src/shared/utils/jwt.ts`：JWT payload 增加 `id`（兼容旧 openid token，鉴权信任 JWT）
+- `src/modules/auth/controller.ts`、`scanLoginController.ts`：微信登录/扫码登录适配统一账户模型（UPSERT 返回 id、JWT 带 id、扫码登录设 httpOnly Cookie）
+- `src/modules/auth/userController.ts`：requireAuth 用 JWT `id` 定位用户（旧 token 回退 openid），`/users/me` 查库返回 id/phone
+
+### 冲突策略（设计 §5）
+- phone/openid 已属其他 id → 409 拒绝 + 引导文案，不做自动合并；老微信用户正路：先微信登录一次再绑手机号，即可保留原微信数据
+
+---
+
 ## [junliang] 2026-08-24 — 归因校验规则放宽 + 异动列表按最近触发时间排序
 
 **开发者**: Aria
