@@ -44,6 +44,7 @@ import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
 import { SmsAuthController } from './modules/auth/SmsAuthController';
+import { EmailAuthController } from './modules/auth/EmailAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
@@ -203,7 +204,12 @@ app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res,
 app.post('/api/auth/sms/send', (req, res, next) => SmsAuthController.sendSms(req, res, next));
 app.post('/api/auth/sms/login', (req, res, next) => SmsAuthController.smsLogin(req, res, next));
 app.post('/api/auth/bind/phone', (req, res, next) => SmsAuthController.bindPhone(req, res, next));
-app.post('/api/auth/bind/wechat', (req, res, next) => SmsAuthController.bindWechat(req, res, next));
+// 邮箱验证码登录（替代短信登录；短信路由保留，仅前端不再暴露短信入口）
+app.post('/api/auth/email/send', (req, res, next) => EmailAuthController.sendEmail(req, res, next));
+app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailLogin(req, res, next));
+app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
+// 微信绑定改走邮箱证明归属（前端仅邮箱入口）
+app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));

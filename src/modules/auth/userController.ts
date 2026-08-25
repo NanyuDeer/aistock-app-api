@@ -99,9 +99,9 @@ export class UserController {
         }
         const { id, openid } = auth;
 
-        // 唯一按 id 查库处：拉取最新绑定状态（手机/微信），供账号安全页展示
+        // 唯一按 id 查库处：拉取最新绑定状态（手机/邮箱/微信），供账号安全页展示
         const userResult = await pool.query(
-            'SELECT id, openid, phone, nickname, avatar_url, created_at, is_vip FROM users WHERE id = $1',
+            'SELECT id, openid, phone, email, nickname, avatar_url, created_at, is_vip FROM users WHERE id = $1',
             [id],
         );
         const user = userResult.rows[0];
@@ -126,12 +126,14 @@ export class UserController {
             id: user.id,
             openid: user.openid ?? null,
             phone: user.phone ?? null,
+            email: user.email ?? null,
             nickname: user.nickname,
             avatar_url: user.avatar_url,
             created_at: user.created_at,
             is_vip: !!user.is_vip,
             wechatBound: !!user.openid,
             phoneBound: !!user.phone,
+            emailBound: !!user.email,
             自选股: stocksResult.rows.map((s: any) => ({
                 股票代码: s.symbol,
                 股票简称: s.name || null,
