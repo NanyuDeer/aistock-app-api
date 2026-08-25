@@ -216,7 +216,7 @@ export class ProfitForecastAutoUpdateService {
                             stockName,
                             title: `${stockName}：业绩预测更新`,
                             summary: summary || '机构业绩预测数据已更新',
-                            targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}`,
+                            targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=forecast`,
                             payload: { updateTime },
                             occurredAt: new Date().toISOString(),
                         });
