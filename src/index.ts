@@ -1189,6 +1189,10 @@ async function start() {
         await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS unionid VARCHAR(128)');
         await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_unionid_key ON users (unionid)');
 
+        // ⑦ email（可空唯一；邮箱验证码登录）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(254)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (email)');
+
         console.log('[DB] users 统一账户模型 ready');
     } catch (err: unknown) {
         console.warn('[DB] users 统一账户模型 migration:', err instanceof Error ? err.message : String(err));
