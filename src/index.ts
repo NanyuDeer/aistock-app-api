@@ -43,6 +43,8 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+import { SmsAuthController } from './modules/auth/SmsAuthController';
+import { EmailAuthController } from './modules/auth/EmailAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
@@ -88,7 +90,7 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
-import { ensureFearGreedSchema } from './modules/fear-greed/FearGreedService';
+import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -198,6 +200,16 @@ app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.g
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
 app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
+// 短信验证码登录 + 双向绑定（统一账户模型，2026-08-25）
+app.post('/api/auth/sms/send', (req, res, next) => SmsAuthController.sendSms(req, res, next));
+app.post('/api/auth/sms/login', (req, res, next) => SmsAuthController.smsLogin(req, res, next));
+app.post('/api/auth/bind/phone', (req, res, next) => SmsAuthController.bindPhone(req, res, next));
+// 邮箱验证码登录（替代短信登录；短信路由保留，仅前端不再暴露短信入口）
+app.post('/api/auth/email/send', (req, res, next) => EmailAuthController.sendEmail(req, res, next));
+app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailLogin(req, res, next));
+app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
+// 微信绑定改走邮箱证明归属（前端仅邮箱入口）
+app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
@@ -786,6 +798,28 @@ cron.schedule('35 15 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 恐贪指数：盘前 09:15 / 正午 11:30 / 盘后 15:30（周一至周五，跳过节假日）
+// 盘前用前日收盘数据预计算，正午更新盘中实时，盘后用最终收盘数据定版
+// 各时段落库到 fear_greed_snapshot.time_slot，供前端绘制 intraday 短热度线
+const runFearGreedRefresh = async (label: string, timeSlot: 'pre' | 'noon' | 'post') => {
+    console.log(`[FearGreedCron] ${label}刷新恐贪指数 (time_slot=${timeSlot})`);
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log(`[FearGreedCron] 非交易日，跳过${label}刷新`);
+            return;
+        }
+        await refreshJq(timeSlot);
+        console.log(`[FearGreedCron] ${label}刷新完成`);
+    } catch (err: unknown) {
+        console.error(`[FearGreedCron] ${label}刷新失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('15 9 * * 1-5', () => runFearGreedRefresh('盘前', 'pre'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runFearGreedRefresh('正午', 'noon'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 15 * * 1-5', () => runFearGreedRefresh('盘后', 'post'), { timezone: 'Asia/Shanghai' });
+
 // App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
 cron.schedule('*/5 * * * *', async () => {
     try {
@@ -883,6 +917,17 @@ cron.schedule('*/10 9-15 * * 1-5', async () => {
         console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
+
+// 恐贪指数：每日 16:30 收盘后自动刷新（幂等，覆盖当日快照）
+cron.schedule('30 16 * * *', async () => {
+    console.log('[FearGreedCron] 开始刷新恐贪指数');
+    try {
+        await refreshJq();
+        console.log('[FearGreedCron] 恐贪指数刷新完成');
+    } catch (err: unknown) {
+        console.error('[FearGreedCron] 刷新失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 }
 
 async function start() {
@@ -929,6 +974,12 @@ async function start() {
     } catch (err: unknown) {
         console.warn('[DB] fear_greed schema check:', err instanceof Error ? err.message : String(err));
     }
+
+    // 恐贪指数启动预热（非阻塞）：首跑需逐日拉取全市场 daily（500 交易日 × ~5400 只），
+    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存
+    refreshJq('post')
+        .then((r) => console.log(`[FearGreedCron] 启动预热完成: 恐贪指数=${r.composite}`))
+        .catch((err: unknown) => console.error('[FearGreedCron] 启动预热失败:', err instanceof Error ? err.message : String(err)));
 
     try {
         await pool.query(`
@@ -1064,6 +1115,114 @@ async function start() {
         console.log('[DB] user_profiles table ready');
     } catch (err: unknown) {
         console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // is_vip 会员标记（2026-08-24 报告导出会员解锁用；默认 false）
+    try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_vip BOOLEAN NOT NULL DEFAULT false`);
+        console.log('[DB] users.is_vip ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
+    // 主键从 openid 切换为不可变 id(UUID)；openid/phone/unionid 均可空唯一。
+    // 切主键前必须摘除所有 REFERENCES users(openid) 的外键（user_notifications/user_subscriptions/user_stocks），
+    // 否则 DROP CONSTRAINT users_pkey 会被依赖拦截；重建后由 openid 非空唯一索引承载，保持既有语义零破坏。
+    try {
+        // ① 摘除引用 users(openid) 的外键（记录定义与 ON DELETE 语义，重建时还原）
+        const fkRows = await pool.query<{ name: string; table_name: string; columns: string[]; on_delete: string }>(`
+            SELECT
+                c.conname AS name,
+                ct.relname AS table_name,
+                c.confdeltype::text AS on_delete,
+                array_agg(att.attname ORDER BY ord.ordinality) AS columns
+            FROM pg_constraint c
+            JOIN pg_class ct ON ct.oid = c.conrelid
+            JOIN pg_class rt ON rt.oid = c.confrelid
+            CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS ord(attnum, ordinality)
+            JOIN pg_attribute att ON att.attrelid = c.conrelid AND att.attnum = ord.attnum
+            WHERE c.contype = 'f'
+              AND rt.relname = 'users'
+              AND (SELECT a.attnum FROM pg_attribute a
+                   WHERE a.attrelid = rt.oid AND a.attname = 'openid') = ANY(c.confkey)
+            GROUP BY c.conname, ct.relname, c.confdeltype::text
+        `);
+        const fks = fkRows.rows;
+        for (const fk of fks) {
+            await pool.query(`ALTER TABLE ${fk.table_name} DROP CONSTRAINT IF EXISTS ${fk.name}`);
+        }
+        if (fks.length > 0) {
+            console.log('[DB] users: 摘除引用 openid 的外键', fks.map(f => `${f.table_name}(${f.columns.join(',')})`).join('; '));
+        }
+
+        // ② users 新增不可变主键 id（UUID）并回填存量行
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS id UUID');
+        await pool.query('UPDATE users SET id = gen_random_uuid() WHERE id IS NULL');
+        await pool.query('ALTER TABLE users ALTER COLUMN id SET NOT NULL');
+
+        // ③ openid 建立非空唯一索引（承载被摘除外键的引用；允许多个 NULL 手机号账户）
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_openid_key ON users (openid)');
+
+        // ④ 主键切换 openid → id（约束名可能非默认，按 pg_constraint 实测名删除）
+        const pkRow = await pool.query<{ conname: string }>(
+            `SELECT conname FROM pg_constraint WHERE conrelid = 'users'::regclass AND contype = 'p' LIMIT 1`,
+        );
+        const pkName = pkRow.rows[0]?.conname;
+        if (pkName) await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS ${pkName}`);
+        await pool.query('ALTER TABLE users ALTER COLUMN openid DROP NOT NULL');
+        await pool.query('ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id)');
+
+        // ⑤ 重建被摘除的外键（仍指向 users(openid)，由 ③ 的唯一索引承载）
+        const odMap: Record<string, string> = { c: 'CASCADE', n: 'SET NULL', r: 'RESTRICT', a: 'NO ACTION', d: 'SET DEFAULT' };
+        for (const fk of fks) {
+            const onDelete = odMap[fk.on_delete] || 'NO ACTION';
+            const cols = fk.columns.join(', ');
+            await pool.query(
+                `ALTER TABLE ${fk.table_name} ADD CONSTRAINT ${fk.name} FOREIGN KEY (${cols}) REFERENCES users(openid) ON DELETE ${onDelete}`,
+            );
+        }
+
+        // ⑥ phone / unionid（可空唯一；unionid 预留跨 appid 合并）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_phone_key ON users (phone)');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS unionid VARCHAR(128)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_unionid_key ON users (unionid)');
+
+        // ⑦ email（可空唯一；邮箱验证码登录）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(254)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (email)');
+
+        console.log('[DB] users 统一账户模型 ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users 统一账户模型 migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // user_stocks：手机号用户自选股（openid 可空 + user_id 双通道）
+    try {
+        const stockTable = await pool.query(
+            `SELECT 1 FROM information_schema.tables WHERE table_name = 'user_stocks' LIMIT 1`,
+        );
+        if (stockTable.rows.length > 0) {
+            await pool.query('ALTER TABLE user_stocks ADD COLUMN IF NOT EXISTS user_id UUID');
+            // 旧主键 (openid, symbol) 强制 openid NOT NULL 且无法承载手机号用户 → 先摘除再放宽
+            const pkRow2 = await pool.query<{ conname: string }>(
+                `SELECT conname FROM pg_constraint WHERE conrelid = 'user_stocks'::regclass AND contype = 'p' LIMIT 1`,
+            );
+            const pkName2 = pkRow2.rows[0]?.conname;
+            if (pkName2) await pool.query(`ALTER TABLE user_stocks DROP CONSTRAINT IF EXISTS ${pkName2}`);
+            await pool.query('ALTER TABLE user_stocks ALTER COLUMN openid DROP NOT NULL');
+            // 微信用户（openid 非空）与手机号用户（user_id 非空）各自去重
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_openid_symbol ON user_stocks (openid, symbol) WHERE openid IS NOT NULL');
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_userid_symbol ON user_stocks (user_id, symbol) WHERE user_id IS NOT NULL');
+            // 回填：老微信自选股挂到对应 user_id，实现按 id 统一读取
+            await pool.query(`UPDATE user_stocks us SET user_id = u.id FROM users u WHERE us.openid = u.openid AND us.user_id IS NULL`);
+            console.log('[DB] user_stocks.user_id ready');
+        } else {
+            console.warn('[DB] user_stocks 表不存在，跳过 user_id 迁移（待手工建表后重跑）');
+        }
+    } catch (err: unknown) {
+        console.warn('[DB] user_stocks.user_id migration:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -1244,6 +1403,14 @@ async function start() {
         console.log('[DB] watchlist_insight_sources table ready');
     } catch (err: unknown) {
         console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
+    }
+
+    // 恐贪指数：建表（fear_greed_snapshot + breadth_daily，幂等）
+    try {
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed_snapshot / breadth_daily tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear-greed schema check:', err instanceof Error ? err.message : String(err));
     }
 
     // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）

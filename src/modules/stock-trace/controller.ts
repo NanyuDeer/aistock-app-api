@@ -7,7 +7,13 @@ import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 
-async function openidFromRequest(req: Request): Promise<string | null> {
+/**
+ * 统一账户模型鉴权（与 InsightController.authFromRequest 同款）：
+ * 信任 JWT 载荷，id 为统一账户主键（邮箱/手机/微信均含），openid 仅兼容老微信数据。
+ * 与 openidFromRequest 的差异：邮箱/手机账户 openid 为空串，不能据此判断登录态，
+ * 必须用 id（payload.id ?? openid 兜底）判断是否登录，避免邮箱用户误走全局降级。
+ */
+async function authFromRequest(req: Request): Promise<{ id: string; openid: string } | null> {
     const bearer = req.headers.authorization;
     const token = typeof bearer === 'string' && bearer.startsWith('Bearer ') ? bearer.slice(7) : '';
     if (!token || !process.env.JWT_SECRET) return null;
@@ -15,7 +21,8 @@ async function openidFromRequest(req: Request): Promise<string | null> {
     if (!payload) return null;
     // token-revocation Step 2：命中黑名单按未登录处理（读侧 fail-open）
     if (await isTokenRevoked(payload.jti)) return null;
-    return payload.openid || null;
+    // 旧 token 无 id 时用 openid 回填，保证老微信用户可用
+    return { id: payload.id ?? payload.openid ?? '', openid: payload.openid ?? '' };
 }
 
 function limitFromRequest(req: Request): number {
@@ -54,13 +61,13 @@ async function presentEventAnalysis(eventId: string, event: Record<string, unkno
 export class StockTraceController {
     static async list(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = await openidFromRequest(req);
+            const auth = await authFromRequest(req);
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
-            // 登录用户仍然按 openid 过滤，只看自己自选股的异动。
-            const result = openid
-                ? await StockTraceService.listUserEvents(openid, limitFromRequest(req), cursorStr)
+            // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动。
+            const result = auth && auth.id
+                ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr)
                 : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr);
             res.json({ code: 200, data: result });
         } catch (error) {
@@ -70,11 +77,11 @@ export class StockTraceController {
 
     static async get(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = await openidFromRequest(req);
+            const auth = await authFromRequest(req);
             const eventId = eventIdFromRequest(req);
             // 未登录降级：返回全局事件详情（与 list 接口一致，符合"登录非必须"约束）
-            const result = openid
-                ? await StockTraceService.getUserEvent(openid, eventId)
+            const result = auth && auth.id
+                ? await StockTraceService.getUserEvent(auth.id, auth.openid, eventId)
                 : await StockTraceService.getRecentEvent(eventId);
             if (!result) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
@@ -97,11 +104,11 @@ export class StockTraceController {
 
     static async analysis(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = await openidFromRequest(req);
+            const auth = await authFromRequest(req);
             const eventId = eventIdFromRequest(req);
             // 未登录降级：返回全局事件分析（与 list/get 接口一致）
-            const event = openid
-                ? await StockTraceService.getUserEvent(openid, eventId)
+            const event = auth && auth.id
+                ? await StockTraceService.getUserEvent(auth.id, auth.openid, eventId)
                 : await StockTraceService.getRecentEvent(eventId);
             if (!event) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
@@ -125,12 +132,12 @@ export class StockTraceController {
 
     static async evidence(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = await openidFromRequest(req);
+            const auth = await authFromRequest(req);
             const eventId = eventIdFromRequest(req);
             const sourceId = Array.isArray(req.params.sourceId) ? req.params.sourceId[0] || '' : req.params.sourceId || '';
             // 未登录降级：查全局事件
-            const event = openid
-                ? await StockTraceService.getUserEvent(openid, eventId)
+            const event = auth && auth.id
+                ? await StockTraceService.getUserEvent(auth.id, auth.openid, eventId)
                 : await StockTraceService.getRecentEvent(eventId);
             if (!event) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
@@ -153,13 +160,16 @@ export class StockTraceController {
 
     static async markRead(req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            const openid = await openidFromRequest(req);
-            // 未登录降级：直接返回成功（未登录无法持久化已读状态，不影响查看）
-            if (!openid) {
+            const auth = await authFromRequest(req);
+            // 已读状态存于 stock_trace_user_events（仅 openid 列），邮箱/手机账户 openid=''
+            // 若写入会与所有此类账户共享同一条空 openid 记录（UNIQUE(event_id, openid) 覆盖），
+            // 造成跨账户已读污染，故对 openid 空串的账户降级返回成功但不持久化（不影响查看事件）。
+            const markOpenid = auth?.openid ?? '';
+            if (!markOpenid) {
                 res.json({ code: 200, data: { event_id: eventIdFromRequest(req), read: true } });
                 return;
             }
-            const updated = await StockTraceService.markRead(openid, eventIdFromRequest(req));
+            const updated = await StockTraceService.markRead(markOpenid, eventIdFromRequest(req));
             if (!updated) {
                 res.status(404).json({ code: 404, message: 'Event not found' });
                 return;
