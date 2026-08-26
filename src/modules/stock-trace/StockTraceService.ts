@@ -581,10 +581,13 @@ export class StockTraceService {
         };
     }
 
-    static async listUserEvents(openid: string, limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+    static async listUserEvents(id: string, openid: string, limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
-        const params: unknown[] = [openid, limit + 1];
-        const cursorClause = cursor ? `AND e.first_triggered_at < $3::timestamptz` : '';
+        // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
+        const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
+        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1), $4=cursor
+        const params: unknown[] = [id, openid, limit + 1];
+        const cursorClause = cursor ? `AND e.first_triggered_at < $4::timestamptz` : '';
         if (cursor) params.push(cursor);
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
@@ -600,8 +603,8 @@ export class StockTraceService {
             -- 移出自选立即消失、之后加入自选可见历史事件，与 insights 一致。
             -- stock_trace_user_events 仅作已读状态落点（LEFT JOIN 取 read_at）与推送对象。
             FROM stock_trace_events e
-            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
-            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND ${scopeWhere}
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $2
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
             LEFT JOIN LATERAL (
@@ -620,9 +623,9 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
-            WHERE us.openid = $1 ${cursorClause}
+            WHERE ${scopeWhere} ${cursorClause}
             ORDER BY e.first_triggered_at DESC
-            LIMIT $2
+            LIMIT $3
         `, params);
         const rows = result.rows.slice(0, limit);
         return {
@@ -719,8 +722,10 @@ export class StockTraceService {
         };
     }
 
-    static async getUserEvent(openid: string, eventId: string): Promise<Record<string, unknown> | null> {
+    static async getUserEvent(id: string, openid: string, eventId: string): Promise<Record<string, unknown> | null> {
         await this.ensureSchema();
+        // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
+        const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
                    e.window_end_at, e.current_trigger_revision, e.current_severity, ue.read_at,
@@ -729,13 +734,13 @@ export class StockTraceService {
             -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
             -- 用户当前自选里没有该股票即 404，避免列表可见但详情不可见的不一致。
             FROM stock_trace_events e
-            INNER JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
-            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $1
+            INNER JOIN user_stocks us ON us.symbol = e.symbol AND ${scopeWhere}
+            LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $2
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
-            WHERE e.event_id = $2
+            WHERE e.event_id = $3
             LIMIT 1
-        `, [openid, eventId]);
+        `, [id, openid, eventId]);
         if (!result.rows[0]) return null;
         const row = result.rows[0] as Record<string, unknown>;
         return {
