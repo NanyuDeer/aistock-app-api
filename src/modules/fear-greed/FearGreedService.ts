@@ -5,7 +5,7 @@
 import pool from '../../core/db';
 import redis from '../../core/redis';
 import { tushareRequest } from '../quote/TushareService';
-import { computeJq, type BreadthCache, type JqResult } from './calculator';
+import { computeJq, type BreadthCache, type DailyLimit, type JqResult, type LimitCache } from './calculator';
 
 const CACHE_TTL_SECONDS = 30 * 60; // 30 分钟（与 Python 版一致）
 
@@ -34,6 +34,48 @@ const breadthCache: BreadthCache = {
     },
 };
 
+/** limit 指标缓存：PG 表 limit_daily（seal_codes JSONB 供连板回放） */
+const limitCache: LimitCache = {
+    async getAll(): Promise<Map<string, DailyLimit>> {
+        const { rows } = await pool.query(
+            `SELECT trade_date, seal_count, break_count, down_count, seal_codes FROM limit_daily`,
+        );
+        const map = new Map<string, DailyLimit>();
+        for (const r of rows as { trade_date: string; seal_count: number; break_count: number; down_count: number; seal_codes: string | string[] }[]) {
+            const date = String(r.trade_date).replace(/-/g, '');
+            map.set(date, {
+                date,
+                sealCount: Number(r.seal_count),
+                breakCount: Number(r.break_count),
+                downCount: Number(r.down_count),
+                maxStreak: 0, // 连板由 calculator 按封板序列回放，不落库
+                sealCodes: typeof r.seal_codes === 'string'
+                    ? JSON.parse(r.seal_codes || '[]')
+                    : (r.seal_codes ?? []),
+            });
+        }
+        return map;
+    },
+    async upsert(rows: DailyLimit[]): Promise<void> {
+        if (!rows.length) return;
+        const values = rows
+            .map((r) => {
+                const d = `${r.date.slice(0, 4)}-${r.date.slice(4, 6)}-${r.date.slice(6, 8)}`;
+                return `('${d}', ${r.sealCount}, ${r.breakCount}, ${r.downCount}, '${JSON.stringify(r.sealCodes)}')`;
+            })
+            .join(',');
+        await pool.query(`
+            INSERT INTO limit_daily (trade_date, seal_count, break_count, down_count, seal_codes)
+            VALUES ${values}
+            ON CONFLICT (trade_date) DO UPDATE SET
+              seal_count = EXCLUDED.seal_count,
+              break_count = EXCLUDED.break_count,
+              down_count = EXCLUDED.down_count,
+              seal_codes = EXCLUDED.seal_codes
+        `);
+    },
+};
+
 /** 建表（幂等，启动时调用） */
 export async function ensureFearGreedSchema(): Promise<void> {
     await pool.query(`
@@ -54,30 +96,50 @@ export async function ensureFearGreedSchema(): Promise<void> {
             up_ratio NUMERIC(6,2) NOT NULL
         )
     `);
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS limit_daily (
+            trade_date DATE PRIMARY KEY,
+            seal_count INT NOT NULL DEFAULT 0,
+            break_count INT NOT NULL DEFAULT 0,
+            down_count INT NOT NULL DEFAULT 0,
+            seal_codes JSONB NOT NULL DEFAULT '[]'
+        )
+    `);
+    // 迁移：添加 time_slot 列 + 改唯一约束（支持每日3次快照）
+    await pool.query(`ALTER TABLE fear_greed_snapshot ADD COLUMN IF NOT EXISTS time_slot VARCHAR(10) DEFAULT 'post'`);
+    await pool.query(`ALTER TABLE fear_greed_snapshot DROP CONSTRAINT IF EXISTS fear_greed_snapshot_index_key_trade_date_key`);
+    await pool.query(`
+        DO $$
+        BEGIN
+            ALTER TABLE fear_greed_snapshot ADD CONSTRAINT fear_greed_snapshot_idx_date_slot_key UNIQUE (index_key, trade_date, time_slot);
+        EXCEPTION WHEN duplicate_object THEN
+            NULL;
+        END $$
+    `);
 }
 
 /** 计算并返回最新结果（优先内存缓存；可选强制刷新） */
-export async function getLatestJq(force = false): Promise<JqResult> {
+export async function getLatestJq(force = false, timeSlot = 'post'): Promise<JqResult> {
     const now = Date.now();
     if (!force) {
         const hit = memoryCache.get('jq');
         if (hit && now - hit.ts < CACHE_TTL_SECONDS * 1000) return hit.result;
     }
 
-    const result = await computeJq({ request: tushareRequest }, breadthCache);
+    const result = await computeJq({ request: tushareRequest }, breadthCache, limitCache);
     memoryCache.set('jq', { ts: now, result });
 
-    // PG 快照落库（按 index_key + trade_date 去重）
+    // PG 快照落库（按 index_key + trade_date + time_slot 去重）
     try {
         const today = new Date().toISOString().slice(0, 10);
         await pool.query(
-            `INSERT INTO fear_greed_snapshot (index_key, trade_date, composite, label, indicators_json)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (index_key, trade_date) DO UPDATE SET
+            `INSERT INTO fear_greed_snapshot (index_key, trade_date, composite, label, indicators_json, time_slot)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             ON CONFLICT (index_key, trade_date, time_slot) DO UPDATE SET
                composite = EXCLUDED.composite,
                label = EXCLUDED.label,
                indicators_json = EXCLUDED.indicators_json`,
-            [result.key, today, result.composite, result.label, JSON.stringify(result.indicators)],
+            [result.key, today, result.composite, result.label, JSON.stringify(result.indicators), timeSlot],
         );
     } catch (err) {
         // 落库失败不影响返回（快照是辅助存储）
@@ -148,6 +210,10 @@ export async function buildDashboard(): Promise<Record<string, unknown>> {
     // 上证指数走势（与恐贪 history.dates 对齐，倒序）
     const stockIdx = await shIndexSeries(history.dates);
 
+    // 历史快照（DB，含 intraday 时段 pre/noon/post）：用于绘制短热度线（每日3点）
+    // history（来自 calculator）仍提供日级 composite 序列，用于中热度线（20日MA）和均线数值
+    const historySnapshots = await getHistory(60);
+
     return {
         updateTime: new Date().toISOString().slice(0, 10),
         indexName: result.name,
@@ -167,28 +233,59 @@ export async function buildDashboard(): Promise<Record<string, unknown>> {
         },
         indicators,
         history,
+        historySnapshots,
         stockIndex: { ...stockIdx, name: '上证指数', tsCode: '000001.SH' },
     };
 }
 
-/** 从数据库读取历史序列（供折线图） */
+/**
+ * 从数据库读取历史序列（供折线图）。
+ * 返回：
+ *   - dates/composite：每日 composite 均值（升序），用于中热度线（20日MA）和均线数值
+ *   - snapshots：每日 3 次快照（pre/noon/post，升序），用于短热度线（intraday 粒度）
+ *     某时段缺失时为 null，前端跳过 null 绘制断点
+ */
 export async function getHistory(days = 60): Promise<Record<string, unknown>> {
     const { rows } = await pool.query(
-        `SELECT trade_date, composite FROM fear_greed_snapshot
+        `SELECT trade_date, composite, time_slot FROM fear_greed_snapshot
          WHERE index_key = 'jq' ORDER BY trade_date DESC LIMIT $1`,
-        [days],
+        [days * 3], // 每日至多 3 条快照
     );
-    const ordered = (rows as { trade_date: Date; composite: string }[]).reverse();
+
+    // 按日期聚合：{ 'YYYY-MM-DD': { pre, noon, post, values: [] } }
+    type SlotVals = { pre: number | null; noon: number | null; post: number | null; vals: number[] };
+    const byDate = new Map<string, SlotVals>();
+    for (const r of rows as { trade_date: Date; composite: string; time_slot: string }[]) {
+        const iso = new Date(r.trade_date).toISOString().slice(0, 10);
+        const slot = (r.time_slot || 'post') as 'pre' | 'noon' | 'post';
+        if (!byDate.has(iso)) byDate.set(iso, { pre: null, noon: null, post: null, vals: [] });
+        const entry = byDate.get(iso)!;
+        entry[slot] = Number(r.composite);
+        entry.vals.push(Number(r.composite));
+    }
+
+    // 升序输出
+    const sortedDates = [...byDate.keys()].sort();
+    const dailyAvg = sortedDates.map((d) => {
+        const v = byDate.get(d)!.vals;
+        return Math.round((v.reduce((s, x) => s + x, 0) / v.length) * 100) / 100;
+    });
+    const snapshots = sortedDates.map((d) => {
+        const e = byDate.get(d)!;
+        return { date: d, pre: e.pre, noon: e.noon, post: e.post };
+    });
+
     return {
         index_key: 'jq',
-        dates: ordered.map((r) => new Date(r.trade_date).toISOString().slice(0, 10)),
-        composite: ordered.map((r) => Number(r.composite)),
+        dates: sortedDates,
+        composite: dailyAvg,
+        snapshots,
     };
 }
 
-/** 强制刷新（重算 + 落库 + 更新缓存） */
-export async function refreshJq(): Promise<JqResult> {
-    return getLatestJq(true);
+/** 强制刷新（重算 + 落库 + 更新缓存）；timeSlot 用于落库区分盘前/正午/盘后 */
+export async function refreshJq(timeSlot: 'pre' | 'noon' | 'post' = 'post'): Promise<JqResult> {
+    return getLatestJq(true, timeSlot);
 }
 
 /** Redis 快捷读取（供 cron 预热后快速访问；当前主缓存为内存，保留接口以兼容未来多实例） */
