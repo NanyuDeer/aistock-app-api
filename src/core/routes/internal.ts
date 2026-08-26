@@ -1669,6 +1669,67 @@ const BRIEF_REPORT_TYPES = {
     evening: 'brief_evening',
 } as const
 
+/**
+ * POST /internal/midday/generate-audio
+ * 请求体: { date: 'YYYY-MM-DD', dialogue: DialogueLine[] }。
+ * 接收午报播报双人对话（midday_broadcast agent 生成），合成完整 MP3，并回填
+ * 到当日 midday 报告 content.audio_path（同一份报告，方案 A）。
+ * 文件名约定 `midday-<date>.mp3`，与前端 parseMiddayReport.isMiddayAudioPath 期望一致。
+ */
+router.post('/midday/generate-audio', json(), async (req: Request, res: Response) => {
+    const date = typeof req.body?.date === 'string' ? req.body.date : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: 400, message: 'date 必须是 YYYY-MM-DD' })
+        return
+    }
+    const rawDialogue: unknown[] = Array.isArray(req.body?.dialogue) ? req.body.dialogue : []
+    if (!rawDialogue.length) {
+        res.status(400).json({ code: 400, message: 'dialogue 必须是非空数组' })
+        return
+    }
+
+    try {
+        const report = await getAnalysisReport('midday', date)
+        if (!report) {
+            res.status(404).json({ code: 404, message: 'midday 报告不存在' })
+            return
+        }
+
+        // 清洗对话行为 DialogueLine[]（仅 host/analyst + 非空 content），复用现有 TTS 合成
+        const lines: DialogueLine[] = rawDialogue.flatMap((item): DialogueLine[] => {
+            if (!item || typeof item !== 'object') return []
+            const { role, content } = item as Record<string, unknown>
+            if ((role !== 'host' && role !== 'analyst') || typeof content !== 'string' || !content.trim()) return []
+            return [{ role, content: content.trim() }]
+        })
+        if (!lines.length) {
+            res.status(400).json({ code: 400, message: 'dialogue 没有有效台词' })
+            return
+        }
+
+        const audio = await synthesizeBroadcast(lines)
+        const filename = `midday-${date}.mp3`
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        const filePath = path.join(audioDir, filename)
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        await fs.promises.writeFile(tempPath, audio)
+        await fs.promises.rename(tempPath, filePath)
+
+        const audioPath = `/api/agent/audio/${filename}`
+        await pool.query(
+            `UPDATE agent_analysis_reports
+             SET content = jsonb_set(content, '{audio_path}', to_jsonb($2::text), true)
+             WHERE id = $1`,
+            [(report as Record<string, unknown>).id, audioPath]
+        )
+        res.json({ code: 0, data: { audio_path: audioPath }, message: '' })
+    } catch (err: unknown) {
+        console.error('[Internal] midday/generate-audio error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 const BROADCAST_REPORT_TYPES = {
     morning: 'broadcast_morning',
     evening: 'broadcast_evening',
