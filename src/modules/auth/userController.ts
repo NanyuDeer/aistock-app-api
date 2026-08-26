@@ -168,8 +168,9 @@ export class UserController {
 
         // 新加入的自选股放到列表末尾：sort_order = 当前最大 +1（老数据未迁移时为 0，天然靠前）
         const scope = UserController.favoritesScope(id, openid);
+        // favoritesScope 的 WHERE 用 us. 前缀，FROM 必须给 user_stocks 起别名 us，否则 "missing FROM-clause entry for table us"
         const maxOrderResult = await pool.query(
-            `SELECT COALESCE(MAX(sort_order), 0)::int AS max_order FROM user_stocks
+            `SELECT COALESCE(MAX(sort_order), 0)::int AS max_order FROM user_stocks us
              WHERE ${scope.where}`,
             scope.params,
         );
