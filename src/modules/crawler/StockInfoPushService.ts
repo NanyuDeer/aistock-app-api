@@ -110,7 +110,28 @@ export class StockInfoPushService {
 
         for (const window of windows) {
             const candidates = await StockInfoService.getPushCandidates(window);
+            const notificationCandidates = await StockInfoService.getAppNotificationCandidates(window);
             summary.candidates += candidates.length;
+
+            // App 通知中心保留该时间窗口内所有资讯研判；外部渠道仍只推重大事件。
+            for (const judgement of notificationCandidates) {
+                try {
+                    await NotificationService.createForWatchers({
+                        category: 'stock_info',
+                        sourceKey: `stock-info:${judgement.id}`,
+                        symbol: judgement.symbol,
+                        stockName: judgement.stock_name || undefined,
+                        title: `${judgement.stock_name || judgement.symbol}：资讯异动`,
+                        // 与个股详情“个股异动”列表保持一致，方便用户跳转后识别同一条资讯。
+                        summary: judgement.title || judgement.ai_summary || '自选股资讯出现新动态',
+                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(judgement.symbol)}&anchor=stock-info`,
+                        payload: { judgementId: judgement.id, infoType: judgement.info_type, url: judgement.url || '' },
+                        occurredAt: normalizeEventTime(judgement.published_at),
+                    });
+                } catch (error) {
+                    console.warn('[StockInfoPush] App notification failed:', error instanceof Error ? error.message : String(error));
+                }
+            }
 
             for (const judgement of candidates) {
                 const event = {
@@ -145,22 +166,6 @@ export class StockInfoPushService {
                     ai_summary: event.ai_summary,
                     published_at: event.published_at instanceof Date ? event.published_at.toISOString() : String(event.published_at),
                 });
-
-                try {
-                    await NotificationService.createForWatchers({
-                        category: 'stock_info',
-                        sourceKey: `stock-info:${event.id}`,
-                        symbol: event.symbol,
-                        stockName: event.stock_name || undefined,
-                        title: `${event.stock_name || event.symbol}：资讯异动`,
-                        summary: event.ai_summary || event.title || '自选股资讯出现新动态',
-                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(event.symbol)}&anchor=stock-info`,
-                        payload: { judgementId: event.id, infoType: event.info_type, url: event.url || '' },
-                        occurredAt: normalizeEventTime(event.published_at),
-                    });
-                } catch (error) {
-                    console.warn('[StockInfoPush] App notification failed:', error instanceof Error ? error.message : String(error));
-                }
 
                 summary.results.push({ id: judgement.id, symbol: judgement.symbol, ...result });
                 allCandidates.push({ id: judgement.id, symbol: judgement.symbol });
