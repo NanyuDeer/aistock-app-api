@@ -108,25 +108,40 @@ interface HotBurstResult {
 // ==================== 同花顺热点掘金验证 ====================
 
 async function fetchThsHotSectors(): Promise<{ name: string; rank: number; change_pct: number }[]> {
-    try {
-        const today = new Date();
-        for (let offset = 0; offset < 3; offset++) {
-            const d = new Date(today);
-            d.setDate(d.getDate() - offset);
-            const dateStr = formatDate(d);
+    const today = new Date();
+    const dateStrs = [0, 1, 2].map(offset => {
+        const d = new Date(today);
+        d.setDate(d.getDate() - offset);
+        return formatDate(d);
+    });
 
-            const hotData: ThsHotRow[] = await getThsHot(dateStr, '概念板块');
-            if (hotData.length > 0) {
-                return hotData.slice(0, 10).map((row, idx) => ({
-                    name: row.ts_name || '',
-                    rank: idx + 1,
-                    change_pct: Number(row.pct_change) || 0,
-                }));
-            }
+    const results = await Promise.all(dateStrs.map(async dateStr => {
+        try {
+            const hotData = await withTimeout<ThsHotRow[]>(
+                getThsHot(dateStr, '概念板块'),
+                10000,
+                [],
+                `同花顺热榜 date=${dateStr}`,
+            );
+            console.log(`[HotBurst] 同花顺热榜 date=${dateStr} rows=${hotData.length}`);
+            return { dateStr, hotData };
+        } catch (err) {
+            console.warn(`[HotBurst] 同花顺热榜 date=${dateStr} 获取失败:`, (err as Error).message);
+            return { dateStr, hotData: [] as ThsHotRow[] };
         }
-    } catch (err) {
-        console.warn('[HotBurst] 同花顺热榜获取失败:', (err as Error).message);
+    }));
+
+    const latestAvailable = results.find(result => result.hotData.length > 0);
+    if (latestAvailable) {
+        console.log(`[HotBurst] 同花顺热榜使用日期 ${latestAvailable.dateStr}`);
+        return latestAvailable.hotData.slice(0, 10).map((row, idx) => ({
+            name: row.ts_name || '',
+            rank: idx + 1,
+            change_pct: Number(row.pct_change) || 0,
+        }));
     }
+
+    console.warn(`[HotBurst] 同花顺热榜最近 ${dateStrs.length} 天均无可用数据: ${dateStrs.join(',')}`);
     return [];
 }
 
@@ -139,15 +154,18 @@ function formatDate(d: Date): string {
 
 /** 带超时的 Promise 包装，超时后返回 fallback 值 */
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
         promise,
         new Promise<T>((resolve) =>
-            setTimeout(() => {
+            timer = setTimeout(() => {
                 console.warn(`[HotBurst] ${label} 超时 (${ms}ms)，使用 fallback`);
                 resolve(fallback);
             }, ms)
         ),
-    ]);
+    ]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
 }
 
 // ==================== 辅助函数 ====================
@@ -425,7 +443,7 @@ export class HotBurstService {
 
         // ===== Step 3: 同花顺热榜验证 =====
         const thsHotSectors = await withTimeout(
-            fetchThsHotSectors(), 15000, [], 'Step3:同花顺热榜'
+            fetchThsHotSectors(), 30000, [], 'Step3:同花顺热榜'
         );
         console.log(`[HotBurst] Step3: 同花顺热榜 ${thsHotSectors.length} 个板块`);
 
