@@ -1027,6 +1027,100 @@ export async function getReportRc(params: { ts_code?: string; report_date?: stri
     return rows as unknown as ReportRcRow[];
 }
 
+/**
+ * 财报披露计划（disclosure_date）
+ *
+ * 这是「披露日历」接口：跟踪每只股票在各报告期（end_date）的计划披露日期、实际披露日期。
+ * 与 forecast/express/income 不同，它**无需 ts_code**，可按 pre_date/actual_date/end_date 全市场批查：
+ * - `actual_date = 昨日` → 昨日实际披露正式财报的股票（替代 report_rc 做正式披露候选主源）
+ * - `pre_date = 今日/未来` → 预计披露提醒（前瞻，天然不迟到）
+ *
+ * 字段异同（同一报告期 end_date 下）：
+ * - `pre_date` 预计披露日期（事先公布、公司会改，修正记 modify_date）
+ * - `actual_date` 实际披露日期（真实披露后回填，≈ income/forecast 的 ann_date）
+ * - `ann_date` 披露计划「排期公告日」（≠ 实际披露日）
+ * 注意：它只覆盖正式定期报告披露日历，**不含**业绩预告/快报这类独立公告。
+ */
+export interface DisclosureDateRow {
+    ts_code: string;
+    ann_date: string;
+    end_date: string;
+    pre_date: string;
+    actual_date: string;
+    modify_date?: string;
+}
+
+export async function getDisclosureDate(params: {
+    ts_code?: string;
+    ann_date?: string;    // 最新披露公告日（排期公告日，按需过滤市场批查）
+    end_date?: string;    // 财报周期（每季度最后一天，如 20260630=中报）
+    pre_date?: string;    // 预计披露日期
+    actual_date?: string; // 实际披露日期
+}): Promise<DisclosureDateRow[]> {
+    const req: Record<string, unknown> = {};
+    if (params.ts_code) req.ts_code = params.ts_code;
+    if (params.ann_date) req.ann_date = params.ann_date;
+    if (params.end_date) req.end_date = params.end_date;
+    if (params.pre_date) req.pre_date = params.pre_date;
+    if (params.actual_date) req.actual_date = params.actual_date;
+    const rows = await tushareRequest(
+        'disclosure_date',
+        req,
+        'ts_code,ann_date,end_date,pre_date,actual_date,modify_date',
+    );
+    return rows as unknown as DisclosureDateRow[];
+}
+
+/**
+ * 业绩预告（forecast）按公告日批量查询全市场
+ *
+ * forecast/express_vip 接口支持不传 ts_code、仅按 ann_date（公告日）批量拉取"当天所有披露的股票"，
+ * 是业绩预告的权威发现源（相比 report_rc 研报，无滞后、全市场、不依赖研报覆盖）。
+ */
+export async function getForecastByAnnDate(annDate: string): Promise<ForecastRow[]> {
+    const rows = await tushareRequest(
+        'forecast',
+        { ann_date: annDate },
+        'ts_code,ann_date,end_date,type,p_change_min,p_change_max,net_profit_min,net_profit_max,summary,change_reason',
+    );
+    return rows as unknown as ForecastRow[];
+}
+
+export interface ExpressVipRow {
+    ts_code: string;
+    ann_date: string;
+    end_date: string;
+    revenue: number | null;
+    operate_profit: number | null;
+    n_income: number | null;
+    total_assets: number | null;
+}
+
+/**
+ * 业绩快报（express_vip）按报告期批量拉取全市场
+ *
+ * express（普通）接口只能按单只 ts_code 取历史快报；express_vip 可一次返回**某报告期全部上市公司**的业绩快报，
+ * 含 ann_date，调用方再按 ann_date 客户端过滤出"昨日新增"。注意 express_vip **不支持按 ann_date 过滤**，
+ * 只能按 end_date/quarter 全量分页拉取（默认 5000/页，offset 翻页）。
+ */
+export async function getExpressVip(endDate: string, maxPages = 20): Promise<ExpressVipRow[]> {
+    const all: ExpressVipRow[] = [];
+    const pageSize = 5000;
+    for (let offset = 0; offset < maxPages * pageSize; offset += pageSize) {
+        const req: Record<string, unknown> = { end_date: endDate, limit: pageSize };
+        if (offset > 0) req.offset = offset;
+        const rows = await tushareRequest(
+            'express_vip',
+            req,
+            'ts_code,ann_date,end_date,revenue,operate_profit,n_income,total_assets',
+        );
+        const typed = rows as unknown as ExpressVipRow[];
+        all.push(...typed);
+        if (typed.length < pageSize) break;
+    }
+    return all;
+}
+
 // ==================== 半年报数据 ====================
 
 export interface SemiAnnualReportRow {
