@@ -180,18 +180,28 @@ async function getStockName(symbol: string): Promise<string> {
     }
 }
 
-/** 查询个股所属板块（通过 stock_concept_mapping 表） */
-async function getStockSector(symbol: string): Promise<string[]> {
+/** 批量查询个股所属板块（通过 stock_concept_mapping 表） */
+async function getStockSectors(symbols: string[]): Promise<Map<string, string[]>> {
+    const sectorsByStock = new Map<string, string[]>();
+    if (symbols.length === 0) return sectorsByStock;
+
     try {
         const result = await pool.query(
-            `SELECT DISTINCT sector_name FROM stock_concept_mapping
-             WHERE symbol = $1 LIMIT 20`,
-            [symbol]
+            `SELECT symbol, sector_name
+             FROM stock_concept_mapping
+             WHERE symbol = ANY($1::text[])
+             GROUP BY symbol, sector_name`,
+            [symbols]
         );
-        return result.rows.map((r: any) => r.sector_name);
+        for (const row of result.rows) {
+            const sectors = sectorsByStock.get(row.symbol) || [];
+            if (sectors.length < 20) sectors.push(row.sector_name);
+            sectorsByStock.set(row.symbol, sectors);
+        }
     } catch {
-        return [];
+        // 板块验证失败时保留空映射，其他三个信号源仍可正常参与共振。
     }
+    return sectorsByStock;
 }
 
 /**
@@ -321,14 +331,14 @@ export class HotBurstService {
 
     /**
      * 执行完整的机构调研推荐热门股检测（四信号源共振模型）：
-     * 1. 个股爆发检测（财联社/格隆汇快讯中提取股票代码）
+     * 1. 财联社/格隆汇热门概念关联股票、QQ/研报提及股票共同构建候选池
      * 2. 同花顺热榜验证（股票所属板块是否上榜）
-     * 3. 研报验证（24h 内是否有研报提及）
+     * 3. 统一计算四类独立信号的共振数
      *
      * 四个信号源任意两个及以上即构成共振
      */
     static async detectHotBurst(): Promise<HotBurstResult> {
-        console.log('[HotBurst] 开始三步机构调研推荐热门股检测（个股驱动）...');
+        console.log('[HotBurst] 开始机构调研推荐热门股检测（三源候选池）...');
 
         const now = new Date().toISOString();
 
@@ -441,6 +451,21 @@ export class HotBurstService {
             console.warn('[HotBurst] Step2.5: 研报预加载失败:', (err as Error).message);
         }
 
+        // 候选池不再受“爆发个股”限制：热门概念关联股票与 QQ/研报提及股票均可参与共振计算。
+        const candidateStocks = new Map<string, string>();
+        for (const concept of hotConcepts) {
+            for (const stock of concept.stockCodes) {
+                candidateStocks.set(stock.symbol, stock.name);
+            }
+        }
+        for (const symbol of reportStockSet.keys()) {
+            if (!candidateStocks.has(symbol)) candidateStocks.set(symbol, '');
+        }
+        console.log(`[HotBurst] 候选池: 热门概念 + QQ/研报，共 ${candidateStocks.size} 只股票`);
+
+        // Step1 仅补充候选股票的快讯强度和关键词，不再作为候选池的准入条件。
+        const hotStockMap = new Map(hotStocks.map(stock => [stock.symbol, stock]));
+
         // ===== Step 3: 同花顺热榜验证 =====
         const thsHotSectors = await withTimeout(
             fetchThsHotSectors(), 30000, [], 'Step3:同花顺热榜'
@@ -449,13 +474,14 @@ export class HotBurstService {
 
         const thsSectorNameSet = new Set(thsHotSectors.map(s => s.name));
         const thsSectorRankMap = new Map(thsHotSectors.map(s => [s.name, s.rank]));
+        const stockSectorsMap = await getStockSectors(Array.from(candidateStocks.keys()));
 
-        // ===== 整合：三个来源按股票代码对齐 =====
+        // ===== 整合：对候选池统一计算四类信号 =====
         const outbreaks: StockResonanceSignal[] = [];
-        let resonanceCount = 0;
 
-        for (const stock of hotStocks) {
-            const feishuData = feishuStockMap.get(stock.symbol);
+        for (const [symbol, candidateName] of candidateStocks) {
+            const hotStock = hotStockMap.get(symbol);
+            const feishuData = feishuStockMap.get(symbol);
             const feishuMsgCount = feishuData?.messageCount || 0;
 
             // 同花顺验证：查该股票所属板块是否在热榜
@@ -463,7 +489,7 @@ export class HotBurstService {
             let thsSectorName = '';
             let thsSectorRank = 0;
 
-            const stockSectors = await getStockSector(stock.symbol);
+            const stockSectors = stockSectorsMap.get(symbol) || [];
             // 精确匹配
             for (const sector of stockSectors) {
                 if (thsSectorNameSet.has(sector)) {
@@ -488,20 +514,7 @@ export class HotBurstService {
                 }
             }
 
-            // 初步评分（共振数量尚未确定，先用保守值做初筛）
-            const { score, level } = calculateResonanceScore(
-                stock.currentCount, stock.surgeRatio,
-                thsSectorRank, thsVerified,
-                false,
-                thsVerified ? 2 : 1,  // 有同花顺至少算二重
-            );
-
-            // 过滤：仅快讯暴增但无板块验证的低分信号
-            if (level === 'low' && !thsVerified) continue;
-
-            resonanceCount++;
-
-            const stockName = stock.stockName || await getStockName(stock.symbol);
+            const stockName = hotStock?.stockName || candidateName || await getStockName(symbol);
 
             // 构建触发标签：概念名 + 板块名 + 维度关键词
             const triggerTagsSet = new Set<string>();
@@ -509,35 +522,35 @@ export class HotBurstService {
                 for (const kw of feishuData.aiKeywords) triggerTagsSet.add(kw);
                 for (const kw of feishuData.keywords) triggerTagsSet.add(kw);
             }
-            const conceptInfo = stockConceptMap.get(stock.symbol);
+            const conceptInfo = stockConceptMap.get(symbol);
             if (conceptInfo?.conceptName) triggerTagsSet.add(conceptInfo.conceptName);
             if (thsVerified && thsSectorName) triggerTagsSet.add(thsSectorName);
-            const dimKws = stockKeywordsMap.get(stock.symbol) || [];
+            const dimKws = stockKeywordsMap.get(symbol) || [];
             for (const kw of dimKws) triggerTagsSet.add(kw);
 
             outbreaks.push({
-                symbol: stock.symbol,
+                symbol,
                 stockName,
-                newsCount: stock.currentCount,
-                newsSurgeRatio: stock.surgeRatio,
+                newsCount: hotStock?.currentCount || 0,
+                newsSurgeRatio: hotStock?.surgeRatio || 0,
                 triggerTags: Array.from(triggerTagsSet),
                 feishuMessageCount: feishuMsgCount,
                 thsVerified,
                 thsSectorName,
                 thsSectorRank,
-                resonanceScore: score,
-                resonanceLevel: level,
+                resonanceScore: 0,
+                resonanceLevel: 'low',
                 price: null,
                 changePct: null,
                 sectorInfo: thsVerified ? thsSectorName : (conceptInfo?.conceptName || ''),
-                conceptResonance: stockConceptMap.has(stock.symbol) ? {
-                    conceptName: stockConceptMap.get(stock.symbol)!.conceptName,
-                    clsCount: stockConceptMap.get(stock.symbol)!.clsCount,
-                    glhCount: stockConceptMap.get(stock.symbol)!.glhCount,
-                    conceptVerified: stockConceptMap.get(stock.symbol)!.crossVerified,
+                conceptResonance: stockConceptMap.has(symbol) ? {
+                    conceptName: stockConceptMap.get(symbol)!.conceptName,
+                    clsCount: stockConceptMap.get(symbol)!.clsCount,
+                    glhCount: stockConceptMap.get(symbol)!.glhCount,
+                    conceptVerified: stockConceptMap.get(symbol)!.crossVerified,
                 } : null,
-                articles: stock.articles,
-                detectedAt: stock.detectedAt,
+                articles: hotStock?.articles || [],
+                detectedAt: hotStock?.detectedAt || now,
                 clsVerified: false,
                 glhVerified: false,
                 reportVerified: false,
@@ -546,9 +559,6 @@ export class HotBurstService {
                 reportDetail: null,
             });
         }
-
-        // 按共振评分降序
-        outbreaks.sort((a, b) => b.resonanceScore - a.resonanceScore);
 
         // 补充共振状态
         for (const signal of outbreaks) {
@@ -595,7 +605,10 @@ export class HotBurstService {
             signal.resonanceLevel = level;
         }
 
-        console.log(`[HotBurst] 检测完成: ${outbreaks.length} 个机构调研热门信号`);
+        const qualifiedOutbreaks = outbreaks
+            .filter(signal => signal.resonanceCount >= 2)
+            .sort((a, b) => b.resonanceScore - a.resonanceScore);
+        console.log(`[HotBurst] 检测完成: ${qualifiedOutbreaks.length} 个二源及以上机构调研热门信号`);
 
         // 批量获取股价（走缓存，避免重复请求接口）
         // 交易时间用实时行情，非交易时间也查询一次获取最新收盘价
@@ -608,10 +621,10 @@ export class HotBurstService {
             return day >= 1 && day <= 5 && ((h === 9 && m >= 15) || (h >= 10 && h < 15) || (h === 15 && m <= 5));
         })();
 
-        const symbols = outbreaks.map(s => s.symbol);
+        const symbols = qualifiedOutbreaks.map(s => s.symbol);
         const quoteResults = await TencentQuoteService.getCachedBatchQuotes(symbols, 'core');
-        for (let i = 0; i < outbreaks.length; i++) {
-            const signal = outbreaks[i];
+        for (let i = 0; i < qualifiedOutbreaks.length; i++) {
+            const signal = qualifiedOutbreaks[i];
             const quote = quoteResults[i];
             if (quote && !('错误' in quote)) {
                 const price = quote['最新价'];
@@ -629,10 +642,10 @@ export class HotBurstService {
 
         const result: HotBurstResult = {
             update_time: now,
-            total_stocks_checked: hotStocks.length,
-            resonance_count: outbreaks.length,
+            total_stocks_checked: candidateStocks.size,
+            resonance_count: qualifiedOutbreaks.length,
             ths_hot_sectors: thsHotSectors,
-            outbreaks,
+            outbreaks: qualifiedOutbreaks,
             hot_concepts: hotConcepts,
         };
 

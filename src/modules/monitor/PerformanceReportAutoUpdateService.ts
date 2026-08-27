@@ -18,6 +18,7 @@
 
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
+import { NotificationService } from '../../core/notification/NotificationService';
 import {
     getExpressVip, getIncome, getDisclosureDate,
     type ExpressVipRow, type DisclosureDateRow,
@@ -27,6 +28,15 @@ import { AiTagService } from './AiTagService';
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
     return tsCode.split('.')[0];
+}
+
+/** YYYYMMDD → ISO 时间（上海时区零点），用于通知 occurredAt */
+function annDateToIso(annDate: string): string | undefined {
+    if (!/^\d{8}$/.test(annDate)) return undefined;
+    const date = new Date(
+        `${annDate.slice(0, 4)}-${annDate.slice(4, 6)}-${annDate.slice(6, 8)}T00:00:00+08:00`,
+    );
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 /** 获取前一天的日期字符串 YYYY-MM-DD */
@@ -233,6 +243,13 @@ export class PerformanceReportAutoUpdateService {
                             row.perf_summary || '',
                         ]
                     );
+                    await PerformanceReportAutoUpdateService.notifyFor(
+                        symbol, stockName || symbol, annDate,
+                        `${stockName || symbol}：业绩快报更新`,
+                        row.perf_summary || `业绩快报，公告日期 ${annDate}`,
+                        'express',
+                        String(row.end_date || '').replace(/-/g, ''),
+                    );
                     updated++;
                     symbolsToTag.add(symbol);
                 } catch (err: any) {
@@ -243,6 +260,37 @@ export class PerformanceReportAutoUpdateService {
         }
 
         return { updated, skipped, errors };
+    }
+
+    /** 统一的入库通知封装（不抛错，失败仅告警，不中断主流程） */
+    private static async notifyFor(
+        symbol: string, stockName: string, annDate: string,
+        title: string, summary: string, reportType: string, endDate = '',
+    ): Promise<void> {
+        try {
+            const encodedSymbol = encodeURIComponent(symbol);
+            const normalizedEndDate = endDate.replace(/-/g, '');
+            const isReportDetail = (reportType === 'formal' || reportType === 'express') && normalizedEndDate;
+            const targetPath = isReportDetail
+                ? `/modules/analytics/pages/report-detail?symbol=${encodedSymbol}&endDate=${encodeURIComponent(normalizedEndDate)}`
+                : `/modules/favorites/pages/detail?symbol=${encodedSymbol}&anchor=performance-report`;
+            const payload = normalizedEndDate
+                ? { reportType, annDate, endDate: normalizedEndDate }
+                : { reportType, annDate };
+            await NotificationService.createForWatchers({
+                category: 'performance_report',
+                sourceKey: `performance-report:${symbol}:${reportType}:${annDate}`,
+                symbol,
+                stockName,
+                title,
+                summary,
+                targetPath,
+                payload,
+                occurredAt: annDateToIso(annDate),
+            });
+        } catch (error) {
+            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+        }
     }
 
     /**
@@ -308,6 +356,13 @@ export class PerformanceReportAutoUpdateService {
                                 row.n_income_attr_p ?? null,
                                 row.basic_eps ?? null,
                             ]
+                        );
+                        await PerformanceReportAutoUpdateService.notifyFor(
+                            symbol, stockName || symbol, annDate,
+                            `${stockName || symbol}：财报披露`,
+                            `公告日期 ${annDate}`,
+                            'formal',
+                            String(row.end_date || '').replace(/-/g, ''),
                         );
                         hasNew = true;
                     }
