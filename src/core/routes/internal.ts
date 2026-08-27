@@ -2566,11 +2566,53 @@ function normArticleTitle(s: unknown): string {
     return String(s ?? '').replace(/\s+/g, '').trim()
 }
 
-/** ISO 日期（YYYY-MM-DD）偏移 n 天。 */
+/** 将多种日期输入统一规范化为 YYYY-MM-DD；无法解析时返回 ''（绝不抛异常）。
+ *
+ * 兼容输入：
+ *   - node-postgres 对 PG DATE 列默认返回的 JS Date 对象
+ *   - "2026-08-25"
+ *   - "2026-08-25T08:49:08.719676+08:00"（ISO / 带时区）
+ *   - String(Date)：如 "Tue Aug 25 2026 08:00:00 GMT+0800 (中国标准时间)"
+ */
+function normalizeArticleDate(value: unknown): string {
+    if (!value) return ''
+
+    // Date 对象：node-postgres 对 PG DATE 列以本地时区构造（new Date(y, m-1, d)），
+    // 必须取本地日期分量，不能用 toISOString()（UTC+8 时区会整体差一天）
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return ''
+        const y = value.getFullYear()
+        const m = String(value.getMonth() + 1).padStart(2, '0')
+        const d = String(value.getDate()).padStart(2, '0')
+        return `${y}-${m}-${d}`
+    }
+
+    const str = String(value).trim()
+    if (!str) return ''
+
+    // 已含 YYYY-MM-DD 前缀（覆盖纯日期 / ISO / 带时区时间戳）
+    const dateMatch = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    if (dateMatch) return dateMatch[1]
+
+    // 兜底：尝试用 Date 解析（覆盖 String(Date) 等实现相关格式）
+    const parsed = new Date(str)
+    if (Number.isNaN(parsed.getTime())) return ''
+    return parsed.toISOString().slice(0, 10)
+}
+
+/**
+ * ISO 日期（YYYY-MM-DD）偏移 n 天。
+ * 入参非法（无法规范化）时返回 ''，绝不生成 Invalid Date、绝不抛异常。
+ */
 function shiftArticleDate(isoDate: string, days: number): string {
-    const [y, m, d] = isoDate.split('-').map(Number)
+    const normalized = normalizeArticleDate(isoDate)
+    if (!normalized) return ''
+
+    const [y, m, d] = normalized.split('-').map(Number)
     const dt = new Date(Date.UTC(y, m - 1, d))
     dt.setUTCDate(dt.getUTCDate() + days)
+
+    if (Number.isNaN(dt.getTime())) return ''
     return dt.toISOString().slice(0, 10)
 }
 
@@ -2616,8 +2658,10 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
 
         const content = (result.rows[0]['content'] as Record<string, unknown>) || {}
         const source = String(content['source'] || '').trim()
-        // report_date 为 event_conduction 落库日期（必填），仅作兜底偏移计算输入
-        const reportDate = String(result.rows[0]['report_date'] || '')
+        // report_date 为 event_conduction 落库日期（必填），仅作兜底偏移计算输入。
+        // node-postgres 对 PG DATE 列默认返回 JS Date 对象，必须统一规范化为 YYYY-MM-DD，
+        // 否则 String(Date) 形如 "Tue Aug 25 2026 ..." 会让 shiftArticleDate 解析失败抛 RangeError。
+        const reportDate = normalizeArticleDate(result.rows[0]['report_date'])
         const hasSource = Boolean(source)
 
         // 统一正文缺失响应（code:0 + hasContent:false → 前端展示"暂无原文内容"）
@@ -2638,18 +2682,28 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
         // ---- 步骤1：匹配 event_scrape 已有正文 ----
         let matched: { title: string; payloadContent: string } | null = null
         if (hasSource && reportDate) {
+            // 日期窗口（report_date ±1 天）；shiftArticleDate 对非法输入返回 ''，需过滤
             const scrapeDates = [
                 reportDate,
                 shiftArticleDate(reportDate, -1),
                 shiftArticleDate(reportDate, 1),
-            ]
-            const scrapeResult = await pool.query(
-                `SELECT content
-                 FROM agent_analysis_reports
-                 WHERE report_type = 'event_scrape' AND report_date = ANY($2)
-                 ORDER BY created_at DESC`,
-                [eventId, scrapeDates]
-            )
+            ].filter((d): d is string => Boolean(d))
+            // 日期窗口为空（report_date 异常无法解析）时不构造非法日期查询，安全跳过 event_scrape 匹配
+            // PostgreSQL 42P18 修复：node-postgres 把 JS 字符串数组作为单个参数传给 `= ANY($n)` 时，
+            // 服务端无法推断参数类型（could not determine data type of parameter），必然抛错导致 500。
+            // 改为 IN 标量参数展开（$1,$2,...）——每个日期是独立标量参数，类型由 date 列推断为 date。
+            // 同时移除无用的 eventId 参数：event_scrape 按 report_date 分区，SQL 仅需 scrapeDates。
+            const placeholders = scrapeDates.map((_, i) => `$${i + 1}`).join(',')
+            const scrapeResult =
+                placeholders.length > 0
+                    ? await pool.query(
+                          `SELECT content
+                           FROM agent_analysis_reports
+                           WHERE report_type = 'event_scrape' AND report_date IN (${placeholders})
+                           ORDER BY created_at DESC`,
+                          scrapeDates
+                      )
+                    : { rows: [] as Array<Record<string, unknown>> }
 
             // 从所有命中行收集 events（不 LIMIT，覆盖跨日窗口内的合并结果）
             const events: Array<Record<string, unknown>> = []
