@@ -1465,10 +1465,12 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        // 旧 stock_trace 事件发现/价格触发：默认停用，仅 STOCK_TRACE_TRIGGER_ENABLED === 'true' 时启动
-        // （保留代码路径便于回滚；新自选股洞察已由 insight 模块替代旧 stock_trace 写入）
-        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
+        // stock_trace 实时价格异动为主链路（保底实时层，不依赖外部新闻源）：
+        // 默认启动，仅显式 STOCK_TRACE_TRIGGER_ENABLED === 'false' 时关闭。
+        // 自选股洞察（insight）只作辅助补充层，不承担主事件源职责。
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED !== 'false') {
             PriceTriggerDetector.start();
+            console.log('[StockTrace] PriceTriggerDetector 已启动（实时价格异动为主链路）');
         }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
