@@ -2,6 +2,24 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-08-27 — 文章接口本地验证测试（42P18 / DATE / 匹配规则）
+
+**开发者**: Siyun
+
+### 测试
+- `src/core/routes/__tests__/event_article.spec.ts`：为 `GET /api/agent/event/:eventId/article` 新增 10 条本地 mock 验证用例（monkey-patch pool.query，不发真实 DB 连接，无需生产部署即可回归）：
+  - 财联社事件命中 event_scrape.payload.content → hasContent=true
+  - 非财联社事件按 url 精确命中 → hasContent=true
+  - event_scrape.payload.content 为空 → hasContent=false 降级（不 500）
+  - event_scrape 无命中 + 实时兜底失败 → hasContent=false（不 500）
+  - report_date 为 Date 对象 / 字符串 → normalizeArticleDate 均正常输出，无 Invalid Date / RangeError
+  - source 为空 → hasContent=false；eventId 不存在 → 404
+  - title 归一化匹配（含空白差异）
+  - SQL 回归：event_scrape 用 IN 标量展开、参数为标量（修复 42P18）
+- 回归确认：`event_conduction.spec.ts` 23 条用例全部通过
+
+---
+
 ## [xusiyun] 2026-08-27 — 事件原文接口修复 PostgreSQL 42P18（event_scrape 匹配参数）
 
 **开发者**: Siyun
