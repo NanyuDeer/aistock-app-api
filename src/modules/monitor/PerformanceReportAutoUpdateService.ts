@@ -189,6 +189,7 @@ export class PerformanceReportAutoUpdateService {
                     `${stockName || symbol}：业绩预告更新`,
                     row.summary || `公告日期 ${annDate}`,
                     'express',
+                    row.end_date?.replace(/-/g, '') || '',
                 );
                 updated++;
                 affectedSymbols.add(symbol);
@@ -232,6 +233,7 @@ export class PerformanceReportAutoUpdateService {
                                 `${stockName || symbol}：财报披露`,
                                 `公告日期 ${annDate}`,
                                 'formal',
+                                row.end_date?.replace(/-/g, '') || '',
                             );
                             updated++;
                             affectedSymbols.add(symbol);
@@ -278,6 +280,7 @@ export class PerformanceReportAutoUpdateService {
                         `${stockName || symbol}：业绩快报更新`,
                         `业绩快报，公告日期 ${annDate}`,
                         'express',
+                        row.end_date?.replace(/-/g, '') || '',
                     );
                     updated++;
                     affectedSymbols.add(symbol);
@@ -336,9 +339,18 @@ export class PerformanceReportAutoUpdateService {
     /** 统一的入库通知封装（不抛错，失败仅告警，不中断主流程） */
     private static async notifyFor(
         symbol: string, stockName: string, annDate: string,
-        title: string, summary: string, reportType: string,
+        title: string, summary: string, reportType: string, endDate = '',
     ): Promise<void> {
         try {
+            const encodedSymbol = encodeURIComponent(symbol);
+            const normalizedEndDate = endDate.replace(/-/g, '');
+            const isReportDetail = (reportType === 'formal' || reportType === 'express') && normalizedEndDate;
+            const targetPath = isReportDetail
+                ? `/modules/analytics/pages/report-detail?symbol=${encodedSymbol}&endDate=${encodeURIComponent(normalizedEndDate)}`
+                : `/modules/favorites/pages/detail?symbol=${encodedSymbol}&anchor=performance-report`;
+            const payload = normalizedEndDate
+                ? { reportType, annDate, endDate: normalizedEndDate }
+                : { reportType, annDate };
             await NotificationService.createForWatchers({
                 category: 'performance_report',
                 sourceKey: `performance-report:${symbol}:${reportType}:${annDate}`,
@@ -346,8 +358,8 @@ export class PerformanceReportAutoUpdateService {
                 stockName,
                 title,
                 summary,
-                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
-                payload: { reportType, annDate },
+                targetPath,
+                payload,
                 occurredAt: annDateToIso(annDate),
             });
         } catch (error) {
