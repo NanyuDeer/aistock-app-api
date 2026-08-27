@@ -11,14 +11,24 @@
  * 不引入 jest/vitest —— 用 Node 内置 node:test + node:assert，零新增依赖（tsx 已是 devDep）。
  * 测试不导入 src/index（会触发 start() 连 DB/Redis），仅用最小 Express app 挂载反代。
  */
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import { createAgentProxy, type AgentProxyOptions } from '../agent.proxy';
+import { signJwt, verifyJwt } from '../../../shared/utils/jwt';
+import { revokeToken } from '../../../shared/utils/tokenBlacklist';
+import redis from '../../../core/redis';
 
 const INTERNAL_TOKEN = 'test-internal-token-xyz';
+const TEST_SECRET = 'test-jwt-secret';
+
+/** 用测试密钥签发一个含 openid 的合法 JWT（iat=now，exp=now+1h） */
+function signOpenid(openid: string): string {
+  const now = Math.floor(Date.now() / 1000);
+  return signJwt({ openid, iat: now, exp: now + 3600 }, TEST_SECRET);
+}
 
 interface UpstreamRequest {
   method: string;
@@ -46,6 +56,12 @@ const trackedServers: http.Server[] = [];
 
 afterEach(async () => {
   await Promise.all(trackedServers.splice(0).map(closeServer));
+});
+
+after(() => {
+  // token-revocation：tokenBlacklist→CacheService 导入链在模块加载时 redis.ping() 建连，
+  // 连接会保活事件循环导致 tsx --test 进程挂起（仓库惯例，见 tokenBlacklist.spec.ts after hook）
+  redis.disconnect();
 });
 
 function closeServer(server: http.Server): Promise<void> {
@@ -83,7 +99,7 @@ function startUpstream(
 // ---------- 被测 Express app（仅挂载反代） ----------
 function buildApp(target: string, onError?: AgentProxyOptions['onError']): Express {
   const app = express();
-  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN, onError }));
+  app.use('/api/agent', createAgentProxy({ target, internalToken: INTERNAL_TOKEN, jwtSecret: TEST_SECRET, onError }));
   return app;
 }
 
@@ -163,7 +179,7 @@ describe('Agent reverse proxy', () => {
     const app = buildApp(upstream.url);
     const res = await call(app, {
       method: 'POST',
-      path: '/api/agent/chat/message?session=1',
+      path: '/api/agent/skills?lang=zh',
       headers: {
         'content-type': 'application/json',
         authorization: 'Bearer user-token',
@@ -179,13 +195,13 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(header(res.headers, 'x-request-id'), 'rid-from-python');
     const body = JSON.parse(res.text) as { ok: boolean; receivedPath: string; receivedBody: string };
     assert.strictEqual(body.ok, true);
-    assert.strictEqual(body.receivedBody, JSON.stringify({ message: 'hello' }));
+    assert.strictEqual(body.receivedBody, JSON.stringify({ message: 'hello' })); // 非 chat 路径 body 原样
 
     // 上游收到的请求：路径保留 /api/agent 前缀 + query（未做路径重写）
     assert.strictEqual(upstream.requests.length, 1);
     const captured = upstream.requests[0];
     assert.strictEqual(captured.method, 'POST');
-    assert.strictEqual(captured.url, '/api/agent/chat/message?session=1');
+    assert.strictEqual(captured.url, '/api/agent/skills?lang=zh');
     // X-Internal-Token 被注入
     assert.strictEqual(header(captured.headers, 'x-internal-token'), INTERNAL_TOKEN);
     // Authorization / X-Request-ID / Content-Type 透传
@@ -319,12 +335,13 @@ describe('Agent reverse proxy', () => {
     });
 
     const app = buildApp(upstream.url);
+    const validJwt = signOpenid('o_py_9');
     const res = await call(app, {
       method: 'POST',
       path: '/api/agent/chat/message',
       headers: {
         'content-type': 'application/json',
-        authorization: 'Bearer user-9',
+        authorization: `Bearer ${validJwt}`,
         'x-request-id': 'client-rid-9',
       },
       body: JSON.stringify({ message: '分析 600519', session_id: 'e2e-stock-9' }),
@@ -341,7 +358,7 @@ describe('Agent reverse proxy', () => {
     // 上游收到完整的 /api/agent 前缀路径 + 注入的内网 token + 透传的客户端头
     assert.strictEqual(upstream.requests[0].url, '/api/agent/chat/message');
     assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
-    assert.strictEqual(header(upstream.requests[0].headers, 'authorization'), 'Bearer user-9');
+    assert.strictEqual(header(upstream.requests[0].headers, 'authorization'), `Bearer ${validJwt}`);
     assert.strictEqual(header(upstream.requests[0].headers, 'x-request-id'), 'client-rid-9');
   });
 
@@ -589,122 +606,129 @@ describe('Agent reverse proxy', () => {
     assert.strictEqual(upstream.requests.length, 1);
   });
 
-  // ── market-trace-qa/message 契约测试：验证反代正确转发新端点 ──
+  // ---------- P0：chat 路径 JWT 校验 + body user_id 覆写 ----------
+  const CHAT_JSON = { message: '600519 今天怎么样', session_id: 's1', user_id: 'forged_user' };
 
-  it('forwards complete market-trace-qa/message trace byte-for-byte', async () => {
-    const reqBody = JSON.stringify({
-      message: '大盘为何涨跌',
-      report_date: '2026-07-22',
-      session_id: 'mtqa_001',
-    });
-    const pythonBody = JSON.stringify({
-      content: '确认的市场现象：主要指数全面下跌，市场广度恶化。',
-      session_id: 'mtqa_001',
-      trace: {
-        artifact_id: 'review_2026-07-22',
-        sources: [
-          {
-            source_id: 'INDEX_000001_SH',
-            title: '上证指数',
-            kind: 'market_fact',
-            provider: 'tushare:index_daily',
-          },
-          {
-            source_id: 'BREADTH_ALL',
-            title: '全市场涨跌家数',
-            kind: 'market_fact',
-            provider: 'tushare:daily',
-          },
-        ],
-        as_of: '2026-07-22T15:10:00+08:00',
-        confidence: 'medium',
-        uncertainty: ['主力资金数据不可用'],
-        degraded: false,
-        degraded_reason: null,
-      },
-    });
+  it('P0: chat 路径合法 token → body user_id 覆写为 openid（伪造值失效）', async () => {
     const upstream = await startUpstream((_req, res, captured) => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(pythonBody);
+      res.end(JSON.stringify({ receivedBody: captured.body }));
     });
 
     const app = buildApp(upstream.url);
+    const token = signOpenid('o_p0_http');
     const res = await call(app, {
       method: 'POST',
-      path: '/api/agent/market-trace-qa/message',
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer user-mtqa',
-      },
-      body: reqBody,
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(CHAT_JSON),
     });
 
-    // HTTP 200 与完整 JSON body（包括来源、截止时间、置信度和不确定性）逐字透传。
     assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.text, pythonBody);
-    // 上游收到完整的请求体（未改）
-    assert.strictEqual(upstream.requests.length, 1);
-    assert.strictEqual(upstream.requests[0].method, 'POST');
-    assert.strictEqual(upstream.requests[0].url, '/api/agent/market-trace-qa/message');
-    assert.strictEqual(upstream.requests[0].body, reqBody);
-    // X-Internal-Token 被注入
-    assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
+    const body = JSON.parse(res.text) as { receivedBody: string };
+    const sent = JSON.parse(body.receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.message, '600519 今天怎么样');
+    assert.strictEqual(sent.session_id, 's1');
+    assert.strictEqual(sent.user_id, 'o_p0_http'); // 客户端伪造值被覆写
   });
 
-  it('forwards technical market-trace-qa degradation byte-for-byte', async () => {
-    const reqBody = JSON.stringify({ message: '海外因素有何影响' });
-    const pythonBody = JSON.stringify({
-      content: '暂时无法回答',
-      session_id: 'mtqa_x',
-      trace: {
-        artifact_id: 'review_2026-07-22',
-        sources: [],
-        as_of: '',
-        confidence: 'low',
-        uncertainty: [],
-        degraded: true,
-        degraded_reason: '当日无市场复盘报告',
-      },
-    });
-    const upstream = await startUpstream((_req, res) => {
+  it('P0: chat 路径无 token → body user_id 覆写为 null（伪造值被擦除，放行不 401）', async () => {
+    const upstream = await startUpstream((_req, res, captured) => {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(pythonBody);
+      res.end(JSON.stringify({ receivedBody: captured.body }));
     });
 
     const app = buildApp(upstream.url);
     const res = await call(app, {
       method: 'POST',
-      path: '/api/agent/market-trace-qa/message',
+      path: '/api/agent/chat/stream/messages',
       headers: { 'content-type': 'application/json' },
-      body: reqBody,
+      body: JSON.stringify(CHAT_JSON),
     });
 
-    // 技术降级仍是 HTTP 200，且不得由代理填充来源或截至时间。
     assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.text, pythonBody);
-    assert.deepStrictEqual(JSON.parse(res.text), JSON.parse(pythonBody));
+    const sent = JSON.parse((JSON.parse(res.text) as { receivedBody: string }).receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.user_id, null);
   });
 
-  it('market-trace-qa/message forges token prevention', async () => {
+  it('P0: chat 路径非法 token → 401，上游零调用', async () => {
     const upstream = await startUpstream((_req, res) => {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end('{}');
     });
 
     const app = buildApp(upstream.url);
-    await call(app, {
+    const res = await call(app, {
       method: 'POST',
-      path: '/api/agent/market-trace-qa/message',
-      headers: {
-        'content-type': 'application/json',
-        // 客户端尝试伪造内网 token
-        'x-internal-token': 'forged-by-client',
-      },
-      body: JSON.stringify({ message: 'test' }),
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer not-a-real-jwt' },
+      body: JSON.stringify({ message: 'hi' }),
     });
 
-    // 代理覆写为配置的 token，伪造值不生效
-    assert.strictEqual(upstream.requests.length, 1);
-    assert.strictEqual(header(upstream.requests[0].headers, 'x-internal-token'), INTERNAL_TOKEN);
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0, '上游不得收到未鉴权请求');
   });
+
+  it('P0: chat 路径过期 token → 401', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const expired = signJwt(
+      { openid: 'o_exp', iat: Math.floor(Date.now() / 1000) - 7200, exp: Math.floor(Date.now() / 1000) - 3600 },
+      TEST_SECRET,
+    );
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${expired}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0);
+  });
+
+  it('P0: 非 chat 路径带伪造 user_id → body 原样透传（不覆写）', async () => {
+    const upstream = await startUpstream((_req, res, captured) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ receivedBody: captured.body }));
+    });
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/skills',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ message: 'hi', user_id: 'whatever' }),
+    });
+
+    assert.strictEqual(res.status, 200);
+    const sent = JSON.parse((JSON.parse(res.text) as { receivedBody: string }).receivedBody) as Record<string, unknown>;
+    assert.strictEqual(sent.user_id, 'whatever'); // 非 chat 路径不受影响
+  });
+
+  it('P0: chat 路径已撤销 token → 401，上游零调用（token-revocation）', async () => {
+    const upstream = await startUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    const now = Math.floor(Date.now() / 1000);
+    const token = signJwt({ openid: 'o_revoked', iat: now, exp: now + 3600 }, TEST_SECRET);
+    const payload = verifyJwt(token, TEST_SECRET)!;
+    await revokeToken(payload);
+
+    const app = buildApp(upstream.url);
+    const res = await call(app, {
+      method: 'POST',
+      path: '/api/agent/chat/message',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ message: 'hi' }),
+    });
+    assert.strictEqual(res.status, 401);
+    assert.strictEqual(upstream.requests.length, 0, '上游不得收到已撤销凭证请求');
+  });
+
 });

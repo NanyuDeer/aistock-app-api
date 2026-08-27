@@ -16,16 +16,19 @@ import {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     type IndexDailyRow,
     type DailyPriceRow,
     type LimitStepRow,
     type MoneyflowCntThsRow,
+    type MoneyflowIndDcRow,
     type MoneyflowThsRow,
     type CompleteDailyResult,
     type DailyCoverageReason,
 } from './TushareService';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
+import { shanghaiDateYyyymmdd, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
 // ============================================================================
 // 对外类型定义
@@ -59,6 +62,43 @@ export interface DailyCoverageSummary {
     reason: DailyCoverageReason;
     page_count: number;
     row_count: number;
+}
+
+/** 全市场宽度（quick snapshot 用，含近似涨跌停）。 */
+export interface MarketBreadth {
+    total_count: number;
+    advance_count: number;
+    decline_count: number;
+    flat_count: number;
+    limit_up_count: number;
+    limit_down_count: number;
+    limit_count_approximate: boolean;
+    total_volume: number;
+    avg_change_pct: number;
+    /** 全市场成交额合计（元），来自腾讯行情行“成交额”（万元→元）。 */
+    total_amount_yuan: number;
+}
+
+/** quick snapshot 数据覆盖标识。 */
+export interface QuickSnapshotCoverage {
+    has_limit_pool: boolean;
+    has_moneyflow: boolean;
+    has_concept_flow: boolean;
+}
+
+/** 一个 quick snapshot 数据域的可用性说明。 */
+export type QuickDataAvailability =
+    | { state: 'available' }
+    | { state: 'partial'; available_fields: string[]; approximate?: boolean; reason?: string }
+    | { state: 'unavailable'; reason: string };
+
+/** quick snapshot 各个数据域的真实可用性。 */
+export interface QuickSnapshotDataAvailability {
+    breadth: QuickDataAvailability;
+    turnover: QuickDataAvailability;
+    limits: QuickDataAvailability;
+    sectors: QuickDataAvailability;
+    main_force: QuickDataAvailability;
 }
 
 /** 当日 A 股大盘收盘事实快照。 */
@@ -102,6 +142,51 @@ export interface CloseMarketSnapshot {
         current_daily: DailyCoverageSummary;
         previous_daily: DailyCoverageSummary;
     };
+}
+
+/** 15:30 后腾讯 quick snapshot 的专用事实契约。 */
+export interface QuickCloseMarketSnapshot extends Omit<
+    CloseMarketSnapshot,
+    'breadth' | 'turnover' | 'limits' | 'main_force'
+> {
+    snapshot_kind: 'quick';
+    breadth: {
+        total_count: number | null;
+        advance_count: number | null;
+        decline_count: number | null;
+        flat_count: number | null;
+        advance_ratio: number | null;
+        source: 'tencent:quote';
+    };
+    turnover: {
+        amount_yuan: number | null;
+        previous_amount_yuan: number | null;
+        change_pct: number | null;
+        source: 'tushare:daily' | 'tencent:quote';
+        /** quick 版成交额为全市场行情行聚合近似（腾讯源），非 Tushare 精确口径。 */
+        approximate?: boolean;
+    };
+    limits: {
+        up_count: number | null;
+        down_count: number | null;
+        /** 精确炸板数（东财 push2ex getTopicZBPool）；腾讯兜底时仍为 null。 */
+        broken_count: number | null;
+        /** 最高连板数（东财涨停池 lbc 最大值）；腾讯兜底时仍为 null。 */
+        highest_board: number | null;
+    };
+    main_force: {
+        large_and_extra_large_net_yuan: number | null;
+        source:
+            | 'tushare:moneyflow_ths'
+            | 'tushare:moneyflow_cnt_ths'
+            | 'tencent:board_main_flow'
+            | 'eastmoney:industry_main_force';
+        /** quick 版主力净额为行业板块主力净流入合计近似（board_main_flow / industry_main_force）。 */
+        approximate?: boolean;
+    };
+    coverage_info: QuickSnapshotCoverage;
+    quick_data_availability: QuickSnapshotDataAvailability;
+    market_breadth?: MarketBreadth;
 }
 
 /** 快照不可用原因。 */
@@ -152,6 +237,9 @@ export interface MarketSnapshotDeps {
     getLimitListThs: typeof getLimitListThs;
     getLimitStep: typeof getLimitStep;
     getMoneyflowCntThs: typeof getMoneyflowCntThs;
+    /** D6（2026-08-17 数据源裁决）：行业板块资金流（doc_id=371 免费族），
+     * 用于快照 sectors 概念板块（cnt_ths）之外的行业板块净流入补漏。 */
+    getMoneyflowIndDc: typeof getMoneyflowIndDc;
     getMoneyflowThsByDate: typeof getMoneyflowThsByDate;
     /**
      * 当前时刻工厂。生产环境默认返回 new Date()；测试可注入固定时间，
@@ -166,6 +254,7 @@ export const __marketSnapshotDependencies: MarketSnapshotDeps = {
     getLimitListThs,
     getLimitStep,
     getMoneyflowCntThs,
+    getMoneyflowIndDc,
     getMoneyflowThsByDate,
     now: () => new Date(),
 };
@@ -206,37 +295,18 @@ const LIMIT_POOL_ARGS: readonly ['涨停池', '跌停池', '炸板池'] = ['涨�
 
 /**
  * 将 Date 转换为 Asia/Shanghai 时区的 YYYYMMDD 字符串。
- * 使用 Intl.DateTimeFormat 而非服务器本地时区，避免 UTC 日期漂移。
+ * 统一走 shared/utils/shanghaiTime 通用函数，避免各模块重复实现。
  */
 function toShanghaiDateYyyymmdd(now: Date): string {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Shanghai',
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-    });
-    const parts = fmt.formatToParts(now);
-    const y = parts.find(p => p.type === 'year')?.value ?? '';
-    const m = parts.find(p => p.type === 'month')?.value ?? '';
-    const d = parts.find(p => p.type === 'day')?.value ?? '';
-    return `${y}${m}${d}`;
+    return shanghaiDateYyyymmdd(now);
 }
 
 /**
  * 取 Asia/Shanghai 时区的 { hour, minute }（用于 15:30 收盘时钟门禁）。
- * 使用 Intl.DateTimeFormat 取 hour/minute，避免服务器本地时区漂移。
+ * 统一走 shared/utils/shanghaiTime 通用函数。
  */
 function toShanghaiHourMinute(now: Date): { hour: number; minute: number } {
-    const fmt = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'Asia/Shanghai',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-    });
-    const parts = fmt.formatToParts(now);
-    const hour = Number(parts.find(p => p.type === 'hour')?.value ?? '0');
-    const minute = Number(parts.find(p => p.type === 'minute')?.value ?? '0');
-    return { hour, minute };
+    return shanghaiHourMinute(now);
 }
 
 /**
@@ -250,7 +320,7 @@ const MARKET_CLOSE_MINUTE = 30;
  * 判断给定时刻是否已过 A 股收盘时刻（Asia/Shanghai 15:30）。
  * 严格语义：hour > 15 或 (hour == 15 且 minute >= 30) 才返回 true。
  */
-function isAtOrAfterClose(now: Date): boolean {
+export function isAtOrAfterClose(now: Date): boolean {
     const { hour, minute } = toShanghaiHourMinute(now);
     return hour > MARKET_CLOSE_HOUR || (hour === MARKET_CLOSE_HOUR && minute >= MARKET_CLOSE_MINUTE);
 }
@@ -282,6 +352,65 @@ function toSectorFact(row: MoneyflowCntThsRow): SectorFact {
 }
 
 /**
+ * 板块名称归一化（D6，2026-08-17 数据源裁决）。
+ * 复用 WindLeaderAnalyzerService.ts:1094-1103 的匹配逻辑（模块解耦禁止跨模块 import，
+ * 此处本地同构实现，后续如需收敛可提取到 shared/utils）。
+ * 去空白/括号后缀/概念指数后缀/连接词/罗马数字分级后缀，小写化。
+ */
+function normalizeBoardName(name: string): string {
+    return String(name || '')
+        .replace(/\s+/g, '')
+        .replace(/[（(](?:概念|指数)[)）]/g, '')
+        .replace(/(概念|指数)$/, '')
+        .replace(/[及与和]/g, '')
+        .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/, '')
+        .toLowerCase();
+}
+
+/**
+ * D6（2026-08-17 数据源裁决）：以 cnt_ths（概念板块）为主，ind_dc（行业板块）
+ * 按名称归一匹配补漏——仅对概念板块中净流入为 0 的行，用同名行业板块的真实净流入补齐。
+ * 单位换算：cnt_ths net_amount 为亿元，ind_dc net_amount 为元 → /1e8 对齐亿元。
+ * 仅展示层（sectors 字段），不进 AI 推理链路。
+ */
+export function mergeIndustryInflow(
+    conceptRows: MoneyflowCntThsRow[],
+    industryRows: MoneyflowIndDcRow[],
+): MoneyflowCntThsRow[] {
+    // ind_dc 按归一化名称索引；同名多个时优先 content_type=行业，仍多个取净额绝对值最大者
+    const indByNorm = new Map<string, MoneyflowIndDcRow>();
+    for (const row of industryRows) {
+        const norm = normalizeBoardName(row.name);
+        if (!norm) continue;
+        const prev = indByNorm.get(norm);
+        if (!prev) {
+            indByNorm.set(norm, row);
+            continue;
+        }
+        const prevIsIndustry = prev.content_type === '行业';
+        const curIsIndustry = row.content_type === '行业';
+        const preferCur = (curIsIndustry && !prevIsIndustry)
+            || (curIsIndustry === prevIsIndustry
+                && Math.abs(row.net_amount || 0) > Math.abs(prev.net_amount || 0));
+        if (preferCur) indByNorm.set(norm, row);
+    }
+    if (indByNorm.size === 0) return conceptRows;
+
+    return conceptRows.map((row) => {
+        // 已有净流入的行不补（概念板块自身数据优先，防覆盖真实值）
+        if ((Number(row.net_amount) || 0) !== 0) return row;
+        const norm = normalizeBoardName(row.name);
+        const ind = norm ? indByNorm.get(norm) : undefined;
+        if (!ind || typeof ind.net_amount !== 'number' || !Number.isFinite(ind.net_amount)) return row;
+        return {
+            ...row,
+            // 元 → 亿元，与 cnt_ths 口径对齐（四舍五入到 4 位，避免浮点噪声）
+            net_amount: Math.round((ind.net_amount / 1e8) * 10000) / 10000,
+        };
+    });
+}
+
+/**
  * 概念板块排序：涨跌（pct_change）与资金流（net_amount）各自独立排序。
  * - top_gainers：pct_change 降序前 5
  * - top_losers：pct_change 升序前 5（最负在前）
@@ -310,27 +439,48 @@ function selectTopSectors(rows: MoneyflowCntThsRow[]): {
  * 大单 + 特大单净额（万元）→ 元。
  * 单只个股：(buy_lg_amount + buy_elg_amount - sell_lg_amount - sell_elg_amount) × 10000
  */
-function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
+export function computeMainForceNetYuan(rows: MoneyflowThsRow[]): number {
     let netWan = 0;
     for (const row of rows) {
-        netWan += row.buy_lg_amount + row.buy_elg_amount - row.sell_lg_amount - row.sell_elg_amount;
+        // Number(x) || 0 防护：Tushare moneyflow_ths 当日数据未完全就绪时，
+        // buy_elg_amount 等字段可能为 undefined，直接相加会得到 NaN，
+        // JSON 序列化后变成 null（曾被误判为数据缺失的根因）。
+        netWan += (Number(row.buy_lg_amount) || 0)
+            + (Number(row.buy_elg_amount) || 0)
+            - (Number(row.sell_lg_amount) || 0)
+            - (Number(row.sell_elg_amount) || 0);
     }
     return Math.round(netWan * 10000);
+}
+
+/**
+ * 判断 moneyflow_ths 行是否包含完整的大单/特大单买卖字段。
+ *
+ * Tushare moneyflow_ths 在收盘后数据分批发回，可能出现 buy_lg_amount 已有值、
+ * 但 buy_elg_amount/sell_lg_amount/sell_elg_amount 仍为 undefined 的部分数据。
+ * 此时 computeMainForceNetYuan 会把缺失字段当 0，得到偏差巨大的结果，
+ * 调用方（如 TencentSnapshotService）应据此降级到概念板块近似或标记 unavailable。
+ */
+export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
+    return rows.every((row) =>
+        [row.buy_lg_amount, row.buy_elg_amount, row.sell_lg_amount, row.sell_elg_amount]
+            .every((v) => typeof v === 'number' && Number.isFinite(v)),
+    );
 }
 
 /** 连板天梯最高板数；无数据返回 0。 */
 function computeHighestBoard(rows: LimitStepRow[]): number {
     let max = 0;
     for (const row of rows) {
-        if (Number.isFinite(row.limit_times) && row.limit_times > max) {
-            max = row.limit_times;
+        if (Number.isFinite(row.nums) && row.nums > max) {
+            max = row.nums;
         }
     }
     return max;
 }
 
 /** amount(千元) → 元，对全市场日线求和。 */
-function sumAmountYuan(rows: DailyPriceRow[]): number {
+export function sumAmountYuan(rows: DailyPriceRow[]): number {
     let total = 0;
     for (const row of rows) {
         total += row.amount;
@@ -339,7 +489,7 @@ function sumAmountYuan(rows: DailyPriceRow[]): number {
 }
 
 /** CompleteDailyResult → DailyCoverageSummary（剥离 rows，仅保留元数据）。 */
-function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
+export function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
     return {
         complete: result.complete,
         reason: result.reason,
@@ -351,6 +501,52 @@ function toCoverageSummary(result: CompleteDailyResult): DailyCoverageSummary {
 // ============================================================================
 // 主入口：getTodayCloseSnapshot
 // ============================================================================
+
+/**
+ * 获取最近一个已完成交易日的收盘快照（跳过 15:30 时钟门禁）。
+ *
+ * 在开盘前（如凌晨 3 点）调用时返回上一交易日的完整收盘数据，
+ * 让 Python review_full 链路能使用昨日数据完成测试/生成。
+ *
+ * 实现：构造一个"伪当前时刻"（最近交易日 15:30），
+ * 复用 getTodayCloseSnapshot 的完整构建逻辑。
+ */
+export async function getLastCloseSnapshot(): Promise<CloseMarketSnapshot> {
+    const now = __marketSnapshotDependencies.now();
+    // 目标 = 严格早于今天的最近交易日（与时刻无关）：盘中/15:00-15:30/非交易日/凌晨
+    // 一律回退上一真实交易日，消除 getRecentTradingDay 以 15:00 为界导致的空窗 409。
+    const lastTradingDay = TradingCalendarService.getPreviousTradingDay(now);
+    // —— 以下保持不变（取 Shanghai YYYYMMDD、构造伪时刻、复用 getTodayCloseSnapshot）——
+
+    // 取最近交易日的 Shanghai YYYYMMDD
+    const lastShanghaiStr = toShanghaiDateYyyymmdd(lastTradingDay);
+    const year = Number(lastShanghaiStr.slice(0, 4));
+    const month = Number(lastShanghaiStr.slice(4, 6)) - 1;
+    const day = Number(lastShanghaiStr.slice(6, 8));
+
+    // 构造伪当前时刻：最近交易日 15:30 CST = 07:30 UTC
+    const fakeNow = new Date(Date.UTC(year, month, day, 7, 30, 0, 0));
+
+    return getTodayCloseSnapshot(fakeNow);
+}
+
+/**
+ * 按目标交易日重建收盘快照（三期：review 历史切片回补）。
+ *
+ * 实现：校验 YYYY-MM-DD 格式 → 构造目标日 15:30 CST 伪时刻（复用
+ * getLastCloseSnapshot 模式）→ getTodayCloseSnapshot(fakeNow) 按需重算。
+ * 历史 daily 数据在库即可；非交易日/数据缺失由构建逻辑抛 market_not_closed /
+ * incomplete_daily_coverage（409 语义不变）。
+ */
+export async function getCloseSnapshotByDate(dateStr: string): Promise<CloseMarketSnapshot> {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr);
+    if (!m) {
+        throw new MarketSnapshotUnavailableError('market_not_closed', `invalid date format: ${dateStr}`);
+    }
+    // 目标日 15:30 CST = 07:30 UTC（与 getLastCloseSnapshot 的伪时刻构造一致）
+    const fakeNow = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 7, 30, 0, 0));
+    return getTodayCloseSnapshot(fakeNow);
+}
 
 /**
  * 构建当日 A 股大盘收盘事实快照。
@@ -506,7 +702,17 @@ export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMa
 
     // ---- 7. 概念板块（涨跌与资金流各自独立排序，前 5 / 后 5） ----
     const sectorRows = await deps.getMoneyflowCntThs(currentTradeDate);
-    const sectors = selectTopSectors(sectorRows);
+    // D6（2026-08-17 数据源裁决）：moneyflow_cnt_ths 只含概念板块(885/886xxx)，
+    // 不含行业板块(881xxx/BKxxxx)。用 moneyflow_ind_dc（doc_id=371 免费族）按名称
+    // 归一匹配，为概念板块中净流入为 0 的行业板块补充真实净流入（仅展示层，不进 AI 链路）。
+    // ind_dc 为补漏源：失败时降级为纯概念板块（保持 D6 前行为），不阻断快照。
+    let industryRows: MoneyflowIndDcRow[] = [];
+    try {
+        industryRows = await deps.getMoneyflowIndDc(currentTradeDate);
+    } catch (err) {
+        console.warn('[MarketSnapshot] moneyflow_ind_dc 获取失败，行业板块净流入保持0:', err instanceof Error ? err.message : String(err));
+    }
+    const sectors = selectTopSectors(mergeIndustryInflow(sectorRows, industryRows));
 
     // ---- 8. 主力资金净额（大单 + 特大单，万元 → 元） ----
     const moneyflowRows = await deps.getMoneyflowThsByDate(currentTradeDate);

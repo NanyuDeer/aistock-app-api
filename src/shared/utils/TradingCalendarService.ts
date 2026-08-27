@@ -5,8 +5,27 @@
  * 收盘快照只信任已覆盖年度；新年度日历未更新时必须失败关闭。
  */
 
+import { shanghaiDateTimeParts, type ShanghaiDateTimeParts } from './shanghaiTime';
+
 /** A 股休市日历，按年度随官方休市安排更新。 */
 const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<string>>>> = {
+    2024: new Set([
+        '2024-01-01', // 元旦
+        '2024-02-09', '2024-02-12', '2024-02-13', '2024-02-14', '2024-02-15', '2024-02-16', // 春节
+        '2024-04-04', '2024-04-05', // 清明
+        '2024-05-01', '2024-05-02', '2024-05-03', // 劳动节
+        '2024-06-10', // 端午
+        '2024-09-16', '2024-09-17', // 中秋
+        '2024-10-01', '2024-10-02', '2024-10-03', '2024-10-04', '2024-10-07', // 国庆
+    ]),
+    2025: new Set([
+        '2025-01-01', // 元旦
+        '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31', '2025-02-03', '2025-02-04', // 春节
+        '2025-04-04', // 清明
+        '2025-05-01', '2025-05-02', // 劳动节
+        '2025-05-31', '2025-06-02', // 端午（5/31 周六覆盖，6/2 周一休市）
+        '2025-10-01', '2025-10-02', '2025-10-03', '2025-10-06', '2025-10-07', '2025-10-08', // 国庆+中秋
+    ]),
     2026: new Set([
         '2026-01-01', '2026-01-02', '2026-01-03', // 元旦
         '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', // 春节
@@ -18,39 +37,12 @@ const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<stri
     ]),
 };
 
-const SHANGHAI_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-});
+/** 上海时区时间分量（类型复用 shanghaiTime 通用定义，避免重复声明） */
+type ShanghaiCalendarDate = ShanghaiDateTimeParts;
 
-interface ShanghaiCalendarDate {
-    year: number;
-    month: number;
-    day: number;
-    hour: number;
-    minute: number;
-    second: number;
-    millisecond: number;
-}
-
+/** 上海时区时间分量，统一走 shared/utils/shanghaiTime 通用函数 */
 function getShanghaiCalendarDate(date: Date): ShanghaiCalendarDate | null {
-    if (Number.isNaN(date.getTime())) return null;
-
-    const values = Object.fromEntries(
-        SHANGHAI_DATE_TIME_FORMATTER.formatToParts(date)
-            .filter(part => part.type !== 'literal')
-            .map(part => [part.type, Number(part.value)]),
-    );
-    const { year, month, day, hour, minute, second } = values;
-    if (![year, month, day, hour, minute, second].every(Number.isFinite)) return null;
-
-    return { year, month, day, hour, minute, second, millisecond: date.getUTCMilliseconds() };
+    return shanghaiDateTimeParts(date);
 }
 
 function toYyyymmdd(date: ShanghaiCalendarDate): string {
@@ -64,6 +56,16 @@ function previousShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalen
         year: previous.getUTCFullYear(),
         month: previous.getUTCMonth() + 1,
         day: previous.getUTCDate(),
+    };
+}
+
+function nextShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalendarDate {
+    const next = new Date(Date.UTC(date.year, date.month - 1, date.day + 1));
+    return {
+        ...date,
+        year: next.getUTCFullYear(),
+        month: next.getUTCMonth() + 1,
+        day: next.getUTCDate(),
     };
 }
 
@@ -135,6 +137,83 @@ export class TradingCalendarService {
             if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) return toDate(result);
             result = previousShanghaiCalendarDate(result);
         }
+    }
+
+    /**
+     * 获取严格早于指定日期的最近一个交易日（与当前时刻无关）。
+     *
+     * 与 getRecentTradingDay 的区别：后者以 15:00 为界（≥15:00 返回当天），
+     * 本方法永远从"昨天"开始回溯，用于 last-close 快照的"最近已完成交易日"语义，
+     * 避免 15:00–15:30 空窗期把尚未发布的"今天"当作目标。
+     */
+    static getPreviousTradingDay(date: Date = new Date()): Date {
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        result = previousShanghaiCalendarDate(result);
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
+                // 归一化墙钟为 08:00 上海（=UTC 午夜）：避免保留输入时刻导致
+                // 上海 0-7 点时 hour-8 为负、UTC 日期回退一天（如 03:00 输入会
+                // 返回前一 UTC 日），保证返回 Date 的 UTC 日期 == 交易日上海日期。
+                return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
+            }
+            result = previousShanghaiCalendarDate(result);
+        }
+    }
+
+    /**
+     * 获取严格晚于指定日期（不含当日）的最近一个下一个交易日。
+     *
+     * 与 getPreviousTradingDay 对称：始终从"明天"开始向后回溯，
+     * 返回的 Date 同样归一化墙钟为 08:00 上海（=UTC 午夜）。
+     * 用于前端"后一天"导航跳档，自动跳过周末与法定节假日。
+     */
+    static getNextTradingDay(date: Date = new Date()): Date {
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        result = nextShanghaiCalendarDate(result);
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
+                return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
+            }
+            result = nextShanghaiCalendarDate(result);
+        }
+    }
+
+    /**
+     * 获取截至指定日期（含当日）最近 count 个交易日的日期列表。
+     *
+     * 若指定日期本身非交易日，先从当日向前回溯到最近交易日作为起点；
+     * 再向上取前 count-1 个交易日。返回的 Date 均归一化墙钟为 08:00 上海。
+     * 用于首页"市场洞见"等需要展示"最近几个交易日"数据的场景，
+     * 避免把周末/法定节假日当日期标签展示。
+     */
+    static getRecentTradingDays(date: Date = new Date(), count: number): Date[] {
+        if (!Number.isInteger(count) || count < 1) count = 1;
+        let result = getShanghaiCalendarDate(date);
+        if (!result) throw new Error('Invalid date');
+        this.assertCalendarCoverage(result.year);
+        // 起点回溯到最近交易日（含当天）
+        while (true) {
+            this.assertCalendarCoverage(result.year);
+            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+            result = previousShanghaiCalendarDate(result);
+        }
+        const days: Date[] = [];
+        for (let i = 0; i < count; i++) {
+            days.push(toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 }));
+            result = previousShanghaiCalendarDate(result);
+            while (true) {
+                this.assertCalendarCoverage(result.year);
+                if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+                result = previousShanghaiCalendarDate(result);
+            }
+        }
+        return days;
     }
 
     private static assertCalendarCoverage(year: number): void {

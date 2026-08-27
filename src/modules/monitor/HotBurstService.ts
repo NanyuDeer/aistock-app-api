@@ -11,6 +11,10 @@
  */
 
 import pool from '../../core/db';
+import {
+    getAiKeywordsForStock,
+    type FeishuAiAnalysis,
+} from './FeishuMessageAiService';
 import { HotKeywordDetectorService, extractStockCodes, type HotConceptResult } from './HotKeywordDetectorService';
 import { getThsHot, type ThsHotRow } from '../quote/TushareService';
 import { findResearchReportMessagesForStock } from '../crawler/FeishuResearchReportService';
@@ -29,6 +33,8 @@ export interface FeishuMessageRow {
     text: string;
     stock_codes: string[];
     keywords: { keyword: string; dimension: string }[];
+    ai_status: string;
+    ai_analysis: FeishuAiAnalysis | null;
     received_at: string;
 }
 
@@ -102,25 +108,40 @@ interface HotBurstResult {
 // ==================== 同花顺热点掘金验证 ====================
 
 async function fetchThsHotSectors(): Promise<{ name: string; rank: number; change_pct: number }[]> {
-    try {
-        const today = new Date();
-        for (let offset = 0; offset < 3; offset++) {
-            const d = new Date(today);
-            d.setDate(d.getDate() - offset);
-            const dateStr = formatDate(d);
+    const today = new Date();
+    const dateStrs = [0, 1, 2].map(offset => {
+        const d = new Date(today);
+        d.setDate(d.getDate() - offset);
+        return formatDate(d);
+    });
 
-            const hotData: ThsHotRow[] = await getThsHot(dateStr, '概念板块');
-            if (hotData.length > 0) {
-                return hotData.slice(0, 10).map((row, idx) => ({
-                    name: row.ts_name || '',
-                    rank: idx + 1,
-                    change_pct: Number(row.pct_change) || 0,
-                }));
-            }
+    const results = await Promise.all(dateStrs.map(async dateStr => {
+        try {
+            const hotData = await withTimeout<ThsHotRow[]>(
+                getThsHot(dateStr, '概念板块'),
+                10000,
+                [],
+                `同花顺热榜 date=${dateStr}`,
+            );
+            console.log(`[HotBurst] 同花顺热榜 date=${dateStr} rows=${hotData.length}`);
+            return { dateStr, hotData };
+        } catch (err) {
+            console.warn(`[HotBurst] 同花顺热榜 date=${dateStr} 获取失败:`, (err as Error).message);
+            return { dateStr, hotData: [] as ThsHotRow[] };
         }
-    } catch (err) {
-        console.warn('[HotBurst] 同花顺热榜获取失败:', (err as Error).message);
+    }));
+
+    const latestAvailable = results.find(result => result.hotData.length > 0);
+    if (latestAvailable) {
+        console.log(`[HotBurst] 同花顺热榜使用日期 ${latestAvailable.dateStr}`);
+        return latestAvailable.hotData.slice(0, 10).map((row, idx) => ({
+            name: row.ts_name || '',
+            rank: idx + 1,
+            change_pct: Number(row.pct_change) || 0,
+        }));
     }
+
+    console.warn(`[HotBurst] 同花顺热榜最近 ${dateStrs.length} 天均无可用数据: ${dateStrs.join(',')}`);
     return [];
 }
 
@@ -133,15 +154,18 @@ function formatDate(d: Date): string {
 
 /** 带超时的 Promise 包装，超时后返回 fallback 值 */
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     return Promise.race([
         promise,
         new Promise<T>((resolve) =>
-            setTimeout(() => {
+            timer = setTimeout(() => {
                 console.warn(`[HotBurst] ${label} 超时 (${ms}ms)，使用 fallback`);
                 resolve(fallback);
             }, ms)
         ),
-    ]);
+    ]).finally(() => {
+        if (timer) clearTimeout(timer);
+    });
 }
 
 // ==================== 辅助函数 ====================
@@ -205,8 +229,9 @@ function calculateResonanceScore(
         else if (thsRank <= 5) thsScore = 60;
         else if (thsRank <= 10) thsScore = 40;
     }
-
-    // 研报加成得分（0-100）
+    
+    
+     // 研报加成得分（0-100）
     const reportScore = reportVerified ? 80 : 0;
 
     const score = Math.round(
@@ -223,6 +248,11 @@ function calculateResonanceScore(
     else level = 'low';
 
     return { score, level };
+}
+
+/** 计算 CLS、格隆汇、同花顺和研报（含 QQ 研报）四类独立信号的共振数量。 */
+export function countResonanceSources(...signals: boolean[]): number {
+    return signals.filter(Boolean).length;
 }
 
 // ==================== 飞书消息查询 ====================
@@ -244,7 +274,8 @@ export function enrichFeishuStockCodes(messages: FeishuMessageRow[]): FeishuMess
 async function getFeishuMessages(hours: number = 6): Promise<FeishuMessageRow[]> {
     try {
         const result = await pool.query(
-            `SELECT id, source, chat_id, chat_name, message_id, message_type, text, stock_codes, keywords, received_at
+            `SELECT id, source, chat_id, chat_name, message_id, message_type,
+                    text, stock_codes, keywords, ai_status, ai_analysis, received_at
              FROM feishu_messages
              WHERE received_at > NOW() - INTERVAL '${hours} hours'
              ORDER BY received_at DESC
@@ -254,6 +285,10 @@ async function getFeishuMessages(hours: number = 6): Promise<FeishuMessageRow[]>
             ...row,
             stock_codes: row.stock_codes || [],
             keywords: typeof row.keywords === 'string' ? JSON.parse(row.keywords) : row.keywords || [],
+            ai_status: String(row.ai_status || 'skipped'),
+            ai_analysis: typeof row.ai_analysis === 'string'
+                ? JSON.parse(row.ai_analysis)
+                : row.ai_analysis || null,
         }));
         // 回退：当 stock_codes 为空时从文本提取
         return enrichFeishuStockCodes(rows);
@@ -347,28 +382,48 @@ export class HotBurstService {
         console.log(`[HotBurst] Step2: 获取到 ${feishuMessages.length} 条飞书群消息`);
 
         // 构建：股票代码 → 飞书消息数 + 关键词
-        const feishuStockMap = new Map<string, { messageCount: number; keywords: Set<string> }>();
+        const feishuStockMap = new Map<string, {
+            messageCount: number;
+            keywords: Set<string>;
+            aiKeywords: Set<string>;
+        }>();
         for (const msg of feishuMessages) {
             for (const code of msg.stock_codes) {
                 const existing = feishuStockMap.get(code);
                 if (existing) {
                     existing.messageCount++;
                     for (const kw of msg.keywords) existing.keywords.add(kw.keyword);
+                    if (msg.ai_status === 'succeeded') {
+                        for (const kw of getAiKeywordsForStock(msg.ai_analysis, code)) {
+                            existing.aiKeywords.add(kw);
+                        }
+                    }
                 } else {
                     const kwSet = new Set<string>();
                     for (const kw of msg.keywords) kwSet.add(kw.keyword);
-                    feishuStockMap.set(code, { messageCount: 1, keywords: kwSet });
+                    const aiKeywordSet = new Set<string>();
+                    if (msg.ai_status === 'succeeded') {
+                        for (const kw of getAiKeywordsForStock(msg.ai_analysis, code)) {
+                            aiKeywordSet.add(kw);
+                        }
+                    }
+                    feishuStockMap.set(code, {
+                        messageCount: 1,
+                        keywords: kwSet,
+                        aiKeywords: aiKeywordSet,
+                    });
                 }
             }
         }
 
         // ===== Step 2.5: 预加载研报数据（批量，避免逐个查询） =====
+        // QQ 已接替原飞书研报群：QQ 群内带股票代码的消息均作为研报信号。
         const reportStockSet = new Map<string, { count: number; latestTime: string }>();
         try {
             const reportMessages = await pool.query(
                 `SELECT stock_codes, received_at FROM feishu_messages
                  WHERE received_at > NOW() - INTERVAL '24 hours'
-                   AND chat_name LIKE '%研报%'
+                   AND (source = 'qq' OR chat_name LIKE '%研报%')
                    AND array_length(stock_codes, 1) IS NOT NULL`
             );
             for (const row of reportMessages.rows) {
@@ -388,7 +443,7 @@ export class HotBurstService {
 
         // ===== Step 3: 同花顺热榜验证 =====
         const thsHotSectors = await withTimeout(
-            fetchThsHotSectors(), 15000, [], 'Step3:同花顺热榜'
+            fetchThsHotSectors(), 30000, [], 'Step3:同花顺热榜'
         );
         console.log(`[HotBurst] Step3: 同花顺热榜 ${thsHotSectors.length} 个板块`);
 
@@ -437,7 +492,7 @@ export class HotBurstService {
             const { score, level } = calculateResonanceScore(
                 stock.currentCount, stock.surgeRatio,
                 thsSectorRank, thsVerified,
-                false,  // 研报暂未知
+                false,
                 thsVerified ? 2 : 1,  // 有同花顺至少算二重
             );
 
@@ -450,6 +505,10 @@ export class HotBurstService {
 
             // 构建触发标签：概念名 + 板块名 + 维度关键词
             const triggerTagsSet = new Set<string>();
+            if (feishuData) {
+                for (const kw of feishuData.aiKeywords) triggerTagsSet.add(kw);
+                for (const kw of feishuData.keywords) triggerTagsSet.add(kw);
+            }
             const conceptInfo = stockConceptMap.get(stock.symbol);
             if (conceptInfo?.conceptName) triggerTagsSet.add(conceptInfo.conceptName);
             if (thsVerified && thsSectorName) triggerTagsSet.add(thsSectorName);
@@ -517,8 +576,13 @@ export class HotBurstService {
                 };
             }
 
-            // 计算共振数量（四个信号源）
-            signal.resonanceCount = [signal.clsVerified, signal.glhVerified, signal.thsVerified, signal.reportVerified].filter(Boolean).length;
+            // 计算共振数量（四个信号源）：CLS、格隆汇、同花顺、研报/QQ 
+            signal.resonanceCount = countResonanceSources(
+                signal.clsVerified,
+                signal.glhVerified,
+                signal.thsVerified,
+                signal.reportVerified,
+            );
 
             // 重新计算评分（使用新算法）
             const { score, level } = calculateResonanceScore(
@@ -632,7 +696,7 @@ export class HotBurstService {
         const safeDays = Math.min(Math.max(days, 1), 365);
 
         if (minResonance !== undefined) {
-            const safeMinResonance = Math.min(Math.max(minResonance, 2), 4);
+            const safeMinResonance = Math.min(Math.max(minResonance, 2), 3);
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= $1
@@ -657,7 +721,7 @@ export class HotBurstService {
         if (minResonanceOnly) {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($1::text || ' days')::interval`,
                 [safeDays]
             );
@@ -667,7 +731,7 @@ export class HotBurstService {
                 `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($3::text || ' days')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
@@ -786,7 +850,7 @@ export class HotBurstService {
                 `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                    AND detected_at >= NOW() - ($1::text || ' hours')::interval
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT 50`,
@@ -832,7 +896,7 @@ export class HotBurstService {
                 await HotBurstService.refreshOutbreaksQuotes(outbreaks);
                 HotBurstService.lastDetectResult = fallbackResult;
                 HotBurstService.lastDetectTime = Date.now();
-                console.log(`[HotBurst] 从 DB 恢复 ${outbreaks.length} 条三源共振记录`);
+                console.log(`[HotBurst] 从 DB 恢复 ${outbreaks.length} 条二源及以上共振记录`);
                 if (minResonanceCount > 0) {
                     return {
                         ...fallbackResult,
@@ -851,7 +915,7 @@ export class HotBurstService {
 
     /**
      * 从 DB 获取最新的机构调研推荐热门股记录（轻量查询，不触发检测）
-     * 首页面板专用：直接返回 DB 中最新的 N 条三源共振记录
+     * 首页面板专用：直接返回 DB 中最新的 N 条二源及以上共振记录
      */
     static async getLatestFromDB(limit: number = 5): Promise<HotBurstResult | null> {
         try {
@@ -859,7 +923,7 @@ export class HotBurstService {
                 `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 3
+                 WHERE resonance_count >= 2
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1`,
                 [limit]

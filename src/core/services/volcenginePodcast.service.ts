@@ -53,6 +53,40 @@ export function readVolcenginePodcastOptions(env: Record<string, string | undefi
     }
 }
 
+/** 单个火山引擎账号（用户提供的 App ID + Access Token + Secret Key） */
+interface VolcenginePodcastAccount {
+    appId: string
+    accessToken: string
+    appKey?: string
+}
+
+/** 从环境变量读取多账号列表，支持 JSON 数组和单账号回退 */
+export function readVolcenginePodcastAccounts(env: Record<string, string | undefined>): VolcenginePodcastAccount[] {
+    const accountsJson = env.VOLC_PODCAST_ACCOUNTS
+    if (accountsJson) {
+        try {
+            const parsed: unknown = JSON.parse(accountsJson)
+            if (Array.isArray(parsed) && parsed.length > 0) {
+                const accounts = parsed
+                    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+                    .map((item) => ({
+                        appId: String(item.appId ?? item.app_id ?? ''),
+                        accessToken: String(item.accessToken ?? item.access_token ?? ''),
+                        appKey: item.appKey ? String(item.appKey) : (item.secret_key ? String(item.secret_key) : undefined),
+                    }))
+                    .filter((a) => a.appId && a.accessToken)
+                if (accounts.length > 0) return accounts
+            }
+            console.warn('[VolcenginePodcast] VOLC_PODCAST_ACCOUNTS 解析为空，回退到单账号')
+        } catch {
+            console.warn('[VolcenginePodcast] VOLC_PODCAST_ACCOUNTS JSON 解析失败，回退到单账号')
+        }
+    }
+
+    const single = readVolcenginePodcastOptions(env)
+    return [{ appId: single.appId, accessToken: single.accessToken, appKey: single.appKey }]
+}
+
 export interface PodcastResponseEvent {
     type: 'event'
     event: number
@@ -151,6 +185,29 @@ function toBuffer(data: unknown): Buffer {
     return Buffer.from(data as ArrayBuffer)
 }
 
+function leadingId3v2TagLength(chunk: Buffer): number | null {
+    if (chunk.length < 10 || chunk.subarray(0, 3).toString('ascii') !== 'ID3') return null
+    const sizeBytes = chunk.subarray(6, 10)
+    if ([...sizeBytes].some((byte) => (byte & 0x80) !== 0)) return null
+    const hasFooter = (chunk[5] & 0x10) !== 0
+    const totalLength = 10
+        + ((sizeBytes[0] << 21) | (sizeBytes[1] << 14) | (sizeBytes[2] << 7) | sizeBytes[3])
+        + (hasFooter ? 10 : 0)
+    return totalLength <= chunk.length ? totalLength : null
+}
+
+/**
+ * 火山播客会为每轮台词返回一段独立 MP3（每段都带 ID3 头）。
+ * 浏览器只接受文件开头的一份 ID3 元数据，后续片段仅拼接其音频帧。
+ */
+export function mergePodcastMp3Chunks(chunks: Buffer[]): Buffer {
+    return Buffer.concat(chunks.map((chunk, index) => {
+        if (index === 0) return chunk
+        const id3Length = leadingId3v2TagLength(chunk)
+        return id3Length === null ? chunk : chunk.subarray(id3Length)
+    }))
+}
+
 export class VolcenginePodcastProvider {
     private readonly options: VolcenginePodcastProviderOptions
 
@@ -226,7 +283,7 @@ export class VolcenginePodcastProvider {
                     completed = true
                     clearTimeout(timer)
                     socket.close()
-                    resolve(Buffer.concat(audioChunks))
+                    resolve(mergePodcastMp3Chunks(audioChunks))
                 }
             })
 
@@ -235,5 +292,50 @@ export class VolcenginePodcastProvider {
                 if (!completed) fail(new Error('火山播客连接提前关闭'))
             })
         })
+    }
+}
+
+/** 多账号轮换池：round-robin 选择账号，失败自动切换下一个 */
+export class VolcenginePodcastPool {
+    private readonly accounts: VolcenginePodcastAccount[]
+    private readonly options: Pick<VolcenginePodcastProviderOptions, 'endpoint' | 'timeoutMs' | 'webSocketFactory'>
+    private nextIndex = 0
+
+    constructor(
+        accounts: VolcenginePodcastAccount[],
+        options?: Pick<VolcenginePodcastProviderOptions, 'endpoint' | 'timeoutMs' | 'webSocketFactory'>,
+    ) {
+        if (accounts.length === 0) throw new Error('火山播客账号池不能为空')
+        this.accounts = accounts
+        this.options = options ?? {}
+    }
+
+    async synthesize(lines: DialogueLine[]): Promise<Buffer> {
+        const maxAttempts = this.accounts.length
+        let lastError: Error | null = null
+
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const account = this.accounts[this.nextIndex % this.accounts.length]
+            this.nextIndex++
+
+            const credentials: VolcenginePodcastCredentials = {
+                appId: account.appId,
+                accessToken: account.accessToken,
+                resourceId: 'volc.service_type.10050',
+                appKey: account.appKey || 'aGjiRDfUWi',
+            }
+
+            try {
+                const provider = new VolcenginePodcastProvider({ ...credentials, ...this.options })
+                const result = await provider.synthesize(lines)
+                console.info(`[VolcenginePodcastPool] 账号 ${account.appId} 合成成功 (attempt ${attempt + 1}/${maxAttempts})`)
+                return result
+            } catch (err) {
+                lastError = err instanceof Error ? err : new Error(String(err))
+                console.warn(`[VolcenginePodcastPool] 账号 ${account.appId} 失败 (attempt ${attempt + 1}/${maxAttempts}): ${lastError.message}`)
+            }
+        }
+
+        throw lastError ?? new Error('所有火山播客账号均失败')
     }
 }

@@ -1,5 +1,6 @@
 import pool from '../../core/db';
 import { ScanLoginController } from '../auth/scanLoginController';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 // 注意：微信 API 调用必须使用原生 fetch，不能用 sessionFetch（自定义 https.Agent keepAlive），
 // 否则微信服务器会返回 HTTP 412 Precondition Failed。详见 project_memory.md。
 
@@ -16,11 +17,35 @@ export interface MonitorEvent {
     detail_url: string;
 }
 
+/** 微信模板消息发送 API 响应体 */
+interface WechatSendResponse {
+    errcode: number;
+    errmsg?: string;
+    msgid?: number;
+}
+
+/** 微信模板消息中单个字段的值对象 */
+interface WechatTemplateValue {
+    value: string;
+    color?: string;
+}
+
+/** user_settings 表行（推送设置查询用） */
+interface UserSettingRow {
+    setting_type: string;
+    enabled: unknown;
+}
+
+/** users 表行（仅需 openid 字段） */
+interface UserOpenidRow {
+    openid: string;
+}
+
 export interface PushLogItem {
     openid: string;
     status: 'sent' | 'skipped' | 'failed';
     reason: string | null;
-    wechat_response?: any;
+    wechat_response?: unknown;
 }
 
 export interface PushResult {
@@ -89,7 +114,7 @@ export class WechatPushService {
     private static queuedEventIds = new Set<string>();
     private static processingQueue = false;
 
-    private static log(stage: string, message: string, data?: any): void {
+    private static log(stage: string, message: string, data?: unknown): void {
         const ts = new Date().toISOString();
         const detail = data !== undefined ? ` | ${JSON.stringify(data)}` : '';
         console.log(`[WechatPush][${stage}] ${ts} ${message}${detail}`);
@@ -138,7 +163,7 @@ export class WechatPushService {
             return true;
         }
 
-        return settings.some((item: any) =>
+        return settings.some((item: UserSettingRow) =>
             item.setting_type === requiredSetting && Number(item.enabled) === 1,
         );
     }
@@ -200,7 +225,7 @@ export class WechatPushService {
         openid: string,
         status: PushLogItem['status'],
         errorMsg: string | null,
-        responseJson: any,
+        responseJson: unknown,
     ): Promise<void> {
         await pool.query(
             `INSERT INTO wechat_push_logs (
@@ -236,7 +261,7 @@ export class WechatPushService {
         );
     }
 
-    private static async sendTemplateMessage(event: MonitorEvent, openid: string): Promise<any> {
+    private static async sendTemplateMessage(event: MonitorEvent, openid: string): Promise<WechatSendResponse> {
         if (!process.env.WECHAT_TEMPLATE_ID) {
             throw new Error('WECHAT_TEMPLATE_ID is not configured');
         }
@@ -262,7 +287,7 @@ export class WechatPushService {
                 }),
             },
         );
-        const data: any = await res.json();
+        const data = await res.json() as WechatSendResponse;
         if (data.errcode && data.errcode !== 0) {
             throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
         }
@@ -322,7 +347,7 @@ export class WechatPushService {
 
         try {
             await WechatPushService.dispatchMonitorEvent(event);
-        } catch (err: any) {
+        } catch (err: unknown) {
             WechatPushService.log('queue', 'dispatch failed', {
                 event_id: event.event_id,
                 error: err instanceof Error ? err.message : String(err),
@@ -404,7 +429,7 @@ export class WechatPushService {
                 await WechatPushService.insertPushLog(event, openid, 'sent', null, wxResponse);
                 pushResult.sent += 1;
                 pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 WechatPushService.log('send', 'template send failed', {
                     openid,
@@ -427,7 +452,7 @@ export class WechatPushService {
         openid: string,
         status: PushLogItem['status'],
         errorMsg: string | null,
-        responseJson: any,
+        responseJson: unknown,
     ): Promise<void> {
         await pool.query(
             `INSERT INTO wechat_push_logs (
@@ -463,7 +488,7 @@ export class WechatPushService {
         );
     }
 
-    private static async sendStockInfoTemplateMessage(event: StockInfoPushEvent, openid: string): Promise<any> {
+    private static async sendStockInfoTemplateMessage(event: StockInfoPushEvent, openid: string): Promise<WechatSendResponse> {
         if (!process.env.WECHAT_TEMPLATE_ID) {
             throw new Error('WECHAT_TEMPLATE_ID is not configured');
         }
@@ -490,7 +515,7 @@ export class WechatPushService {
                 }),
             },
         );
-        const data: any = await res.json();
+        const data = await res.json() as WechatSendResponse;
         if (data.errcode && data.errcode !== 0) {
             throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
         }
@@ -538,7 +563,7 @@ export class WechatPushService {
                 await WechatPushService.insertStockInfoPushLog(event, openid, 'sent', null, wxResponse);
                 pushResult.sent += 1;
                 pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 WechatPushService.log('sendStockInfo', 'template send failed', {
                     openid,
@@ -561,7 +586,7 @@ export class WechatPushService {
         const result = await pool.query(
             `SELECT DISTINCT openid FROM users WHERE openid IS NOT NULL AND openid <> ''`,
         );
-        return result.rows.map((r: any) => String(r.openid));
+        return result.rows.map((r: UserOpenidRow) => String(r.openid));
     }
 
     /** 获取订阅了指定推送类型的微信用户 */
@@ -576,7 +601,7 @@ export class WechatPushService {
                AND COALESCE(us.enabled, 1) != 0`,
             [settingType],
         );
-        return result.rows.map((r: any) => String(r.openid));
+        return result.rows.map((r: UserOpenidRow) => String(r.openid));
     }
 
     private static formatChangePct(pct: number): string {
@@ -587,7 +612,7 @@ export class WechatPushService {
     static async dispatchLeaderStocks(stocks: LeaderStockPushItem[], force: boolean = false): Promise<PushResult> {
         // 只推送给订阅了龙头股推送的用户
         const openids = await WechatPushService.getSubscribedWechatOpenids('leader_push');
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const eventId = `leader:${today}`;
 
         const pushResult: PushResult = {
@@ -610,7 +635,7 @@ export class WechatPushService {
                 await WechatPushService.insertLeaderPushLog(eventId, openid, 'sent', null, wxResponse, stocks);
                 pushResult.sent += 1;
                 pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 WechatPushService.log('leader', 'template send failed', { openid, event_id: eventId, error: errorMsg });
                 await WechatPushService.insertLeaderPushLog(eventId, openid, 'failed', errorMsg, null, stocks);
@@ -622,14 +647,14 @@ export class WechatPushService {
         return pushResult;
     }
 
-    private static async sendLeaderTemplateMessage(stocks: LeaderStockPushItem[], openid: string): Promise<any> {
+    private static async sendLeaderTemplateMessage(stocks: LeaderStockPushItem[], openid: string): Promise<WechatSendResponse> {
         const templateId = process.env.WECHAT_TEMPLATE_LEADER;
         if (!templateId) throw new Error('WECHAT_TEMPLATE_LEADER is not configured');
 
         const accessToken = await ScanLoginController.getServerAccessToken();
         const sectors = [...new Set(stocks.map(s => s.industry))].join(' / ');
 
-        const data: Record<string, any> = {
+        const data: Record<string, WechatTemplateValue> = {
             first: { value: '今日风口板块及龙头股推荐', color: '#173177' },
             sector: { value: sectors },
             remark: { value: '点击查看完整龙头股一览', color: '#009688' },
@@ -656,7 +681,7 @@ export class WechatPushService {
                 body: JSON.stringify({ touser: openid, template_id: templateId, url: 'https://gupiao.yaozhineng.com/', data }),
             },
         );
-        const resData: any = await res.json();
+        const resData = await res.json() as WechatSendResponse;
         if (resData.errcode && resData.errcode !== 0) {
             throw new Error(`wechat template send failed: ${resData.errmsg || resData.errcode}`);
         }
@@ -668,7 +693,7 @@ export class WechatPushService {
         openid: string,
         status: PushLogItem['status'],
         errorMsg: string | null,
-        responseJson: any,
+        responseJson: unknown,
         stocks: LeaderStockPushItem[],
     ): Promise<void> {
         const firstStock = stocks[0] || {} as LeaderStockPushItem;
@@ -702,7 +727,7 @@ export class WechatPushService {
     static async dispatchOutbreakStocks(stocks: OutbreakPushItem[], force: boolean = false): Promise<PushResult> {
         // 只推送给订阅了机构调研推荐热门股推送的用户
         const openids = await WechatPushService.getSubscribedWechatOpenids('outbreak_push');
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
 
         const pushResult: PushResult = {
             matched_users: openids.length,
@@ -731,7 +756,7 @@ export class WechatPushService {
                 await WechatPushService.insertOutbreakPushLog(eventId, openid, 'sent', null, wxResponse, stocks[0], stockSummary, sectorSummary);
                 pushResult.sent += 1;
                 pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 WechatPushService.log('outbreak', 'template send failed', { openid, event_id: eventId, error: errorMsg });
                 await WechatPushService.insertOutbreakPushLog(eventId, openid, 'failed', errorMsg, null, stocks[0], stockSummary, sectorSummary);
@@ -743,7 +768,7 @@ export class WechatPushService {
         return pushResult;
     }
 
-    private static async sendOutbreakTemplateMessage(stocks: OutbreakPushItem[], openid: string): Promise<any> {
+    private static async sendOutbreakTemplateMessage(stocks: OutbreakPushItem[], openid: string): Promise<WechatSendResponse> {
         const templateId = process.env.WECHAT_TEMPLATE_OUTBREAK;
         if (!templateId) throw new Error('WECHAT_TEMPLATE_OUTBREAK is not configured');
 
@@ -774,7 +799,7 @@ export class WechatPushService {
                 }),
             },
         );
-        const resData: any = await res.json();
+        const resData = await res.json() as WechatSendResponse;
         if (resData.errcode && resData.errcode !== 0) {
             throw new Error(`wechat template send failed: ${resData.errmsg || resData.errcode}`);
         }
@@ -786,7 +811,7 @@ export class WechatPushService {
         openid: string,
         status: PushLogItem['status'],
         errorMsg: string | null,
-        responseJson: any,
+        responseJson: unknown,
         stock: OutbreakPushItem,
         stockSummary?: string,
         sectorSummary?: string,
@@ -834,7 +859,7 @@ export class WechatPushService {
     static async dispatchMarketEventPush(payload: typeof WechatPushService.marketEventPayload): Promise<PushResult> {
         // 推送给所有已注册的微信用户（市场事件属重大行情，全量推送）
         const openids = await WechatPushService.getAllWechatOpenids();
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const eventId = `market_event:${today}:${payload?.title?.slice(0, 30) || 'unknown'}`;
 
         const pushResult: PushResult = {
@@ -859,7 +884,7 @@ export class WechatPushService {
                 await WechatPushService.insertMarketEventPushLog(eventId, openid, 'sent', null, wxResponse, payload);
                 pushResult.sent += 1;
                 pushResult.logs.push({ openid, status: 'sent', reason: null, wechat_response: wxResponse });
-            } catch (err: any) {
+            } catch (err: unknown) {
                 const errorMsg = err instanceof Error ? err.message : String(err);
                 WechatPushService.log('market_event', 'template send failed', { openid, event_id: eventId, error: errorMsg });
                 await WechatPushService.insertMarketEventPushLog(eventId, openid, 'failed', errorMsg, null, payload);
@@ -874,7 +899,7 @@ export class WechatPushService {
     private static async sendMarketEventTemplateMessage(
         payload: NonNullable<typeof WechatPushService.marketEventPayload>,
         openid: string,
-    ): Promise<any> {
+    ): Promise<WechatSendResponse> {
         const templateId = process.env.WECHAT_TEMPLATE_MARKET_EVENT || process.env.WECHAT_TEMPLATE_ID;
         if (!templateId) throw new Error('WECHAT_TEMPLATE_MARKET_EVENT or WECHAT_TEMPLATE_ID is not configured');
 
@@ -906,7 +931,7 @@ export class WechatPushService {
                 }),
             },
         );
-        const data: any = await res.json();
+        const data = await res.json() as WechatSendResponse;
         if (data.errcode && data.errcode !== 0) {
             throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
         }
@@ -918,7 +943,7 @@ export class WechatPushService {
         openid: string,
         status: PushLogItem['status'],
         errorMsg: string | null,
-        responseJson: any,
+        responseJson: unknown,
         payload: NonNullable<typeof WechatPushService.marketEventPayload>,
     ): Promise<void> {
         // ON CONFLICT DO UPDATE 允许失败记录在重试成功后升级为 sent
@@ -950,5 +975,51 @@ export class WechatPushService {
                 'market_event',
             ],
         );
+    }
+
+    // ==================== 自选股洞察推送 ====================
+
+    /** 自选股洞察推送：复用 WECHAT_TEMPLATE_ID 模板发送自定义文案（eventId 仅用于日志定位） */
+    static async dispatchInsightPush(openid: string, content: string, eventId: string): Promise<boolean> {
+        try {
+            const wxResponse = await WechatPushService.sendInsightTemplateMessage(openid, content);
+            WechatPushService.log('insight', 'sent', { openid, event_id: eventId, msgid: wxResponse.msgid });
+            return true;
+        } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : String(err);
+            WechatPushService.log('insight', 'template send failed', { openid, event_id: eventId, error: errorMsg });
+            return false;
+        }
+    }
+
+    private static async sendInsightTemplateMessage(openid: string, content: string): Promise<WechatSendResponse> {
+        const templateId = process.env.WECHAT_TEMPLATE_ID;
+        if (!templateId) throw new Error('WECHAT_TEMPLATE_ID is not configured');
+
+        const accessToken = await ScanLoginController.getServerAccessToken();
+        // 复用 stock 模板的既有字段结构（stock/event_type/level/summary/time），仅替换文案
+        const res = await fetch(
+            `https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=${accessToken}`,
+            {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    touser: openid,
+                    template_id: templateId,
+                    data: {
+                        stock: { value: '自选股洞察' },
+                        event_type: { value: 'AI 归因' },
+                        level: { value: '首次生成' },
+                        summary: { value: content },
+                        time: { value: WechatPushService.formatEventTime(new Date().toISOString()) },
+                    },
+                }),
+            },
+        );
+        const data = await res.json() as WechatSendResponse;
+        if (data.errcode && data.errcode !== 0) {
+            throw new Error(`wechat template send failed: ${data.errmsg || data.errcode}`);
+        }
+        return data;
     }
 }

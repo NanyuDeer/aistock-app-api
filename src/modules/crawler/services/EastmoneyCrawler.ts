@@ -12,12 +12,41 @@
 import * as cheerio from 'cheerio';
 import type { EastmoneyAnnouncement, EastmoneyNews } from './types';
 import { sessionFetch } from '../../../shared/utils/httpAgent';
+import { shanghaiDateStr } from '../../../shared/utils/shanghaiTime';
+import { isAShareTradingDay } from '../../../shared/utils/tradingTime';
 
 const EASTMONEY_NOTICE_API = 'https://np-anotice-stock.eastmoney.com/api/security/ann';
 const EASTMONEY_NEWS_API = 'https://search-api-web.eastmoney.com/search/jsonp';
 
 // 中国时区 UTC+8
 const CHINA_TZ_OFFSET = 8 * 60;
+
+// E-2（2026-08-14）：窗口起点缓存——同一轮抓取内所有股票 end 相同（now）、
+// days 相同（默认 30），只回溯一次即可共享。否则 200 只股票 × 30 天会触发
+// 数千次节假日 API 请求（实测被 429 限流，节假日检测失效）。
+const _windowStartCache = new Map<string, Date>();
+
+/**
+ * 从 end 向前回溯 days 个 A 股交易日，返回窗口起点日期（E-2，2026-08-14）。
+ * 跳过周末与法定节假日（复用 tradingTime 的 isAShareTradingDay，节假日 API
+ * 结果按 dateKey 缓存）——替代原"自然日 × 24h"窗口：长假后 30 自然日仅含
+ * ~15 个交易日，公告密度大增时窗口过窄漏抓。
+ * 语义：end 当天若为交易日计入第 1 天。
+ * 结果按 `${end 上海日期}:${days}` 缓存（同轮抓取共享，避免节假日 API 限流）。
+ */
+export async function tradingDayWindowStart(end: Date, days: number): Promise<Date> {
+    const key = `${shanghaiDateStr(end)}:${days}`;
+    const cached = _windowStartCache.get(key);
+    if (cached) return cached;
+    const cursor = new Date(end);
+    let remaining = days;
+    while (remaining > 0) {
+        if (await isAShareTradingDay({ now: cursor })) remaining--;
+        if (remaining > 0) cursor.setDate(cursor.getDate() - 1);
+    }
+    _windowStartCache.set(key, cursor);
+    return cursor;
+}
 
 /** 构建 PDF 下载 URL */
 function buildPdfUrl(artCode: string): string {
@@ -38,8 +67,10 @@ function buildNoticeApiUrl(symbol: string, beginDate: string, endDate: string, p
     );
 }
 
-/** 构建新闻 API URL（JSONP 格式） */
-function buildNewsApiUrl(symbol: string, pageSize = 10): string {
+/** 构建新闻 API URL（JSONP 格式）。
+ * E-2（2026-08-14）：sort 由 'default'（相关性）改为 'time'（时序）——
+ * 最新新闻必须进入第一页，否则相关性排序下最新消息不在前 10 条即漏抓。 */
+export function buildNewsApiUrl(symbol: string, pageSize = 10): string {
     const param = {
         uid: '',
         keyword: symbol,
@@ -50,7 +81,7 @@ function buildNewsApiUrl(symbol: string, pageSize = 10): string {
         param: {
             cmsArticleWebOld: {
                 searchScope: 'default',
-                sort: 'default',
+                sort: 'time',
                 pageIndex: 1,
                 pageSize,
                 preTag: '',
@@ -203,9 +234,11 @@ export class EastmoneyCrawler {
         pageSize = 20,
     ): Promise<EastmoneyAnnouncement[]> {
         const end = new Date();
-        const begin = new Date(end.getTime() - days * 24 * 60 * 60 * 1000);
-        const beginDate = begin.toISOString().slice(0, 10);
-        const endDate = end.toISOString().slice(0, 10);
+        // E-2（2026-08-14）：窗口按 A 股交易日回溯（跳过周末/节假日），
+        // 替代原自然日 × 24h——长假后 30 自然日仅 ~15 个交易日，窗口过窄漏抓。
+        const begin = await tradingDayWindowStart(end, days);
+        const beginDate = shanghaiDateStr(begin);
+        const endDate = shanghaiDateStr(end);
         const url = buildNoticeApiUrl(symbol, beginDate, endDate, pageSize);
 
         const response = await sessionFetch(url, {

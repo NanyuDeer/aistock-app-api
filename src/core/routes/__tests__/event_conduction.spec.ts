@@ -196,6 +196,34 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body.data.report_type, 'event_conduction');
     });
 
+    it('accepts market_snapshot as a valid report_type', async () => {
+        mockCalls = [];
+        mockResponder = () => ({
+            rows: [
+                { id: 1, report_type: 'market_snapshot', report_date: '2026-07-14', created_at: '2026-07-14T10:00:00Z' },
+            ],
+        });
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'POST',
+            path: '/internal/analysis-reports',
+            headers: { 'content-type': 'application/json', 'x-internal-token': INTERNAL_TOKEN },
+            body: {
+                report_type: 'market_snapshot',
+                report_date: '2026-07-14',
+                content: { summary: 'Evening market snapshot' },
+                data_source: 'snapshot_builder',
+                status: 'completed',
+            },
+        });
+
+        assert.strictEqual(res.status, 201);
+        const body = res.json as { code: number; data: { report_type: string } };
+        assert.strictEqual(body.code, 201);
+        assert.strictEqual(body.data.report_type, 'market_snapshot');
+    });
+
     it('rejects unknown report_type', async () => {
         const app = buildApp();
         const res = await call(app, {
@@ -454,6 +482,214 @@ describe('Event Conduction Report API', () => {
         assert.strictEqual(body.data.hasMore, false, 'hasMore should be false on last page');
     });
 
+    // ── 8b. 展示过滤：基于"事件整体结论"（chain 非空 + rating != neutral），
+    //     不使用 chain 是否含 bullish/bearish 作为条件 ──
+
+    const DISPLAY_FILTER_MARKERS = ['jsonb_typeof', 'jsonb_array_length', "IS DISTINCT FROM 'neutral'"];
+
+    /** 模拟 PostgreSQL JSONB 过滤语义（与 internal.ts EVENT_LIST_DISPLAY_FILTER_SQL 对齐） */
+    function simulateDisplayFilter(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+        return rows.filter((row) => {
+            const content = (row['content'] as Record<string, unknown> | undefined) ?? {};
+            const ar = content['analysis_reports'] as Record<string, unknown> | undefined;
+            const transmission = ar?.['event_transmission'] as Record<string, unknown> | undefined;
+            const chain = transmission?.['chain'];
+            // 条件 1：transmission.chain 非空
+            if (!Array.isArray(chain) || chain.length === 0) return false;
+            // 条件 2：事件整体方向（event_investment.rating）非 neutral；
+            // 与 SQL `IS DISTINCT FROM 'neutral'` 一致——仅显式 neutral 隐藏，缺失视为非中性
+            const investment = ar?.['event_investment'] as Record<string, unknown> | undefined;
+            const rating = typeof investment?.rating === 'string' ? investment.rating : undefined;
+            return rating !== 'neutral';
+        });
+    }
+
+    function buildFilteredResponder(dataset: Array<Record<string, unknown>>) {
+        return (sql: string, params: unknown[]) => {
+            const filtered = simulateDisplayFilter(dataset);
+            if (sql.includes('COUNT')) {
+                return { rows: [{ total: filtered.length }] };
+            }
+            const limit = Number(params[0]) || 10;
+            const offset = Number(params[1]) || 0;
+            const sorted = [...filtered].sort((a, b) =>
+                String(b['created_at']).localeCompare(String(a['created_at'])),
+            );
+            return { rows: sorted.slice(offset, offset + limit) };
+        };
+    }
+
+    /** 构造事件行：rating 传 undefined 表示 event_investment 缺失（MISSING） */
+    function eventRow(id: string, createdAt: string, chain: unknown, rating?: string): Record<string, unknown> {
+        const investment = rating === undefined
+            ? undefined
+            : { rating, conclusion: 'conclusion' };
+        return {
+            id: 1,
+            report_date: '2026-08-14',
+            user_id: id,
+            content: {
+                eventId: id,
+                title: `Event ${id}`,
+                source: 'cls',
+                publishTime: createdAt,
+                analysis_reports: {
+                    event_understanding: { summary: 's' },
+                    event_transmission: { chain },
+                    event_investment: investment,
+                },
+            },
+            created_at: createdAt,
+        };
+    }
+
+    it('event/list 展示过滤：chain=[] 与整体 neutral 不展示，SELECT/COUNT SQL 均含一致过滤条件', async () => {
+        mockCalls = [];
+        const dataset = [
+            eventRow('evt_empty', '2026-08-14T12:00:00Z', [], 'positive'), // chain=[] → 隐藏
+            eventRow('evt_neutral', '2026-08-14T11:00:00Z', [{ industry: 'A', direction: 'bullish' }], 'neutral'), // chain 非空但整体 neutral → 隐藏
+            eventRow('evt_pos', '2026-08-14T10:00:00Z',
+                [{ industry: 'A', direction: 'bullish' }, { industry: 'B', direction: 'neutral' }], 'positive'), // 整体偏积极 + chain 含 neutral 节点 → 展示
+            eventRow('evt_neg', '2026-08-14T09:00:00Z', [{ industry: 'C', direction: 'bearish' }], 'negative'), // 整体偏谨慎 → 展示
+            eventRow('evt_missing', '2026-08-14T08:00:00Z', [{ industry: 'D', direction: 'bullish' }]), // rating 缺失 → 展示（非中性）
+        ];
+        mockResponder = buildFilteredResponder(dataset);
+
+        const app = buildApp();
+        const res = await call(app, { method: 'GET', path: '/api/agent/event/list?page=1&pageSize=10' });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { data: { events: Array<{ eventId: string }>; total: number; hasMore: boolean } };
+        const ids = body.data.events.map((e) => e.eventId).sort();
+        assert.deepStrictEqual(ids, ['evt_missing', 'evt_neg', 'evt_pos']);
+        assert.strictEqual(body.data.total, 3, 'total 应等于过滤后数量');
+        assert.strictEqual(body.data.hasMore, false);
+
+        // SELECT（含 DISTINCT ON）与 COUNT 查询必须包含完全一致的过滤条件
+        const selectCall = mockCalls.find((c) => c.sql.includes('DISTINCT ON'));
+        const countCall = mockCalls.find((c) => c.sql.includes('COUNT(DISTINCT'));
+        assert.ok(selectCall, '应存在 SELECT 查询');
+        assert.ok(countCall, '应存在 COUNT 查询');
+        for (const marker of DISPLAY_FILTER_MARKERS) {
+            assert.ok(selectCall!.sql.includes(marker), `SELECT 应包含 ${marker}`);
+            assert.ok(countCall!.sql.includes(marker), `COUNT 应包含 ${marker}`);
+        }
+    });
+
+    it('event/list 展示过滤：chain 有 bullish/bearish 但事件整体 neutral → 隐藏', async () => {
+        mockCalls = [];
+        const dataset = [
+            eventRow('evt_neutral_bull_bear', '2026-08-14T10:00:00Z',
+                [{ industry: 'A', direction: 'bullish' }, { industry: 'B', direction: 'bearish' }], 'neutral'),
+            eventRow('evt_pos', '2026-08-14T09:00:00Z', [{ industry: 'A', direction: 'bullish' }], 'positive'),
+        ];
+        mockResponder = buildFilteredResponder(dataset);
+
+        const app = buildApp();
+        const res = await call(app, { method: 'GET', path: '/api/agent/event/list?page=1&pageSize=10' });
+
+        const body = res.json as { data: { events: Array<{ eventId: string }>; total: number } };
+        const ids = body.data.events.map((e) => e.eventId);
+        assert.deepStrictEqual(ids, ['evt_pos']);
+        assert.strictEqual(body.data.total, 1);
+    });
+
+    it('event/list 展示过滤：分页 hasMore 基于过滤后集合正确', async () => {
+        mockCalls = [];
+        const dataset = [
+            eventRow('evt_empty', '2026-08-14T12:00:00Z', [], 'positive'), // 隐藏，不计入分页
+            eventRow('evt_pos', '2026-08-14T11:00:00Z', [{ industry: 'A', direction: 'bullish' }], 'positive'),
+            eventRow('evt_neg', '2026-08-14T10:00:00Z', [{ industry: 'B', direction: 'bearish' }], 'negative'),
+            eventRow('evt_pos2', '2026-08-14T09:00:00Z', [{ industry: 'C', direction: 'bullish' }], 'positive'),
+        ];
+        mockResponder = buildFilteredResponder(dataset);
+
+        // page=1 pageSize=2 → 2 条，total=3 → hasMore=true
+        const app1 = buildApp();
+        const res1 = await call(app1, { method: 'GET', path: '/api/agent/event/list?page=1&pageSize=2' });
+        const body1 = res1.json as { data: { events: unknown[]; total: number; hasMore: boolean } };
+        assert.strictEqual(body1.data.events.length, 2);
+        assert.strictEqual(body1.data.total, 3);
+        assert.strictEqual(body1.data.hasMore, true, '非末页 hasMore 应为 true');
+
+        // page=2 pageSize=2 → 1 条 → hasMore=false
+        const app2 = buildApp();
+        const res2 = await call(app2, { method: 'GET', path: '/api/agent/event/list?page=2&pageSize=2' });
+        const body2 = res2.json as { data: { events: unknown[]; total: number; hasMore: boolean } };
+        assert.strictEqual(body2.data.events.length, 1);
+        assert.strictEqual(body2.data.total, 3);
+        assert.strictEqual(body2.data.hasMore, false, '末页 hasMore 应为 false');
+    });
+
+    // ── 9. Detail 404 ──
+
+    it('event/list 支持 eventType 筛选：SELECT/COUNT 同条件且参数含筛选值', async () => {
+        mockCalls = [];
+        mockResponder = (sql: string, params: unknown[]) => {
+            if (sql.includes('COUNT')) {
+                return { rows: [{ total: 1 }] };
+            }
+            return {
+                rows: [{
+                    id: 1, report_date: '2026-08-14', user_id: 'evt_t1',
+                    content: { eventId: 'evt_t1', title: 'T', source: 'cls', publishTime: '2026-08-14T10:00:00', event_type: '产业政策' },
+                    created_at: '2026-08-14T10:00:00Z',
+                }],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, {
+            method: 'GET',
+            path: `/api/agent/event/list?page=1&pageSize=10&eventType=${encodeURIComponent('产业政策')}`,
+        });
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { data: { events: unknown[]; total: number; hasMore: boolean } };
+        assert.strictEqual(body.data.events.length, 1);
+        assert.strictEqual(body.data.total, 1);
+
+        const selectCall = mockCalls.find((c) => c.sql.includes('DISTINCT ON'));
+        const countCall = mockCalls.find((c) => c.sql.includes('COUNT(DISTINCT'));
+        assert.ok(selectCall, '应存在 SELECT 查询');
+        assert.ok(countCall, '应存在 COUNT 查询');
+        // SELECT 与 COUNT 必须包含完全一致的事件类型条件
+        assert.ok(selectCall!.sql.includes("content->>'event_type'"), 'SELECT 应包含 event_type 条件');
+        assert.ok(countCall!.sql.includes("content->>'event_type'"), 'COUNT 应包含 event_type 条件');
+        // SELECT 参数：[pageSize, offset, eventType]；COUNT 参数：[eventType]
+        assert.ok(selectCall!.params.includes('产业政策'), 'SELECT 参数应含筛选值');
+        assert.ok(countCall!.params.includes('产业政策'), 'COUNT 参数应含筛选值');
+    });
+
+    it('event/list 不传 eventType 时无 event_type 条件（行为不变）', async () => {
+        mockCalls = [];
+        mockResponder = (sql: string) => {
+            if (sql.includes('COUNT')) {
+                return { rows: [{ total: 1 }] };
+            }
+            return {
+                rows: [{
+                    id: 1, report_date: '2026-08-14', user_id: 'evt_x',
+                    content: { eventId: 'evt_x', title: 'X', source: 'cls', publishTime: '2026-08-14T10:00:00' },
+                    created_at: '2026-08-14T10:00:00Z',
+                }],
+            };
+        };
+
+        const app = buildApp();
+        const res = await call(app, { method: 'GET', path: '/api/agent/event/list?page=1&pageSize=10' });
+
+        assert.strictEqual(res.status, 200);
+        const selectCall = mockCalls.find((c) => c.sql.includes('DISTINCT ON'));
+        const countCall = mockCalls.find((c) => c.sql.includes('COUNT(DISTINCT'));
+        assert.ok(selectCall, '应存在 SELECT 查询');
+        assert.ok(countCall, '应存在 COUNT 查询');
+        assert.ok(!selectCall!.sql.includes("content->>'event_type'"), '不传 eventType 时 SELECT 不应含条件');
+        assert.ok(!countCall!.sql.includes("content->>'event_type'"), '不传 eventType 时 COUNT 不应含条件');
+        // 无 eventType 时不追加参数（SELECT 仍为 [pageSize, offset]）
+        assert.deepStrictEqual(selectCall!.params, [10, 0]);
+    });
+
     // ── 9. Detail 404 ──
 
     it('GET /api/agent/event/:eventId returns 404 for non-existent event', async () => {
@@ -599,6 +835,10 @@ describe('Event Conduction Report API', () => {
             if (sql.includes('COUNT')) {
                 countSql = sql;
                 return { rows: [{ total: 2 }] };
+            }
+            // 路由并行查询 global_importance（GI 映射），不属于事件列表查询，忽略并返回空
+            if (!sql.includes('event_conduction')) {
+                return { rows: [] };
             }
             listSql = sql;
             // Return the latest record for each of 2 eventIds

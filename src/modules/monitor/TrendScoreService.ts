@@ -1,4 +1,5 @@
 import * as TushareService from '../quote/TushareService';
+import { TencentKlineService } from '../quote/TencentKlineService';
 import { fetchBlockRotationData } from './WindLeaderAnalyzerService';
 import { getBestBoardForStock, ensureCacheBuilt } from './RotationBoardCache';
 import * as LeaderStockCache from './LeaderStockCache';
@@ -11,6 +12,7 @@ import {
 } from './TenxScoreService';
 import { ClsStockNewsService } from './ClsStockNewsService';
 import { calcMa60Excluded } from './ma60Excluded';
+import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 // ==================== 类型定义 ====================
 
@@ -121,7 +123,59 @@ const FUNDAMENTAL_SUB_DIMS: { name: string; weight: number; indicators: { name: 
 
 // ==================== 技术面维度计算 ====================
 
-function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string, bestBoardCode?: string): {
+/**
+ * 将腾讯 K 线数据（TencentKlineService.getKLine 返回的对象数组）转为评分 K 线结构。
+ * 腾讯日K传前复权（fqt=1）可消除除权/除息造成的价格断裂假跳变。
+ * 对象字段: { '时间': 'YYYY-MM-DD', '开盘价', '收盘价', '最高价', '最低价', '成交量' }；
+ * 同时兼容原始行数组格式 [时间, 开, 收, 高, 低, 成交量, (可选)除权标记]。
+ * 日期转 Tushare 紧凑 YYYYMMDD，OHLC 顺序与 Tushare 一致 [open, close, low, high]。
+ */
+export function parseTencentKlineToTrendKline(rows: unknown[]): { dates: string[]; ohlc: [number, number, number, number][] } {
+    const dates: string[] = [];
+    const ohlc: [number, number, number, number][] = [];
+    if (!Array.isArray(rows)) return { dates, ohlc };
+    for (const raw of rows) {
+        let dateCompact = '';
+        let open = Number.NaN;
+        let close = Number.NaN;
+        let high = Number.NaN;
+        let low = Number.NaN;
+        if (Array.isArray(raw)) {
+            if (raw.length < 5) continue;
+            dateCompact = String(raw[0] ?? '').replace(/[-/]/g, '');
+            open = Number(raw[1]);
+            close = Number(raw[2]);
+            high = Number(raw[3]);
+            low = Number(raw[4]);
+        } else if (raw && typeof raw === 'object') {
+            const rec = raw as Record<string, unknown>;
+            dateCompact = String(rec['时间'] ?? '').replace(/[-/]/g, '');
+            open = Number(rec['开盘价']);
+            close = Number(rec['收盘价']);
+            high = Number(rec['最高价']);
+            low = Number(rec['最低价']);
+        }
+        if (dateCompact.length !== 8) continue;
+        if (![open, close, high, low].every(Number.isFinite)) continue;
+        dates.push(dateCompact);
+        ohlc.push([open, close, low, high]);
+    }
+    return { dates, ohlc };
+}
+
+/** 拉取前复权日K用于评分K线展示（消除除权/除息假跳变）；失败返回 null 由调用方回退不复权。 */
+async function fetchAdjustedTrendKline(symbol: string): Promise<{ dates: string[]; ohlc: [number, number, number, number][] } | null> {
+    try {
+        const rows = await TencentKlineService.getKLine({ symbol, klt: 101, fqt: 1, limit: 120 });
+        const kline = parseTencentKlineToTrendKline(rows);
+        return kline.dates.length ? kline : null;
+    } catch (err) {
+        console.warn(`[TrendScore] ${symbol} 前复权K线获取失败，回退不复权:`, (err as Error).message);
+        return null;
+    }
+}
+
+function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string, bestBoardCode?: string, klineOverride?: { dates: string[]; ohlc: [number, number, number, number][] }): {
     score: number;
     indicators: { name: string; key: string; value: string; score: number }[];
     kline: { dates: string[]; ohlc: [number, number, number, number][] };
@@ -210,11 +264,18 @@ function calcTechnicalDim(prices: TushareService.DailyPriceRow[], symbol: string
         { name: '龙头股加成', key: 'leader_bonus', value: isLeader ? `是（+${leaderBonus}分）${leaderBoardName}` : '否', score: leaderBonus },
     ];
 
-    const klineDaily = daily.slice(-120);
-    const kline = {
-        dates: klineDaily.map(d => d.trade_date),
-        ohlc: klineDaily.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
-    };
+    // K线展示数据：优先用前复权（消除除权/除息假跳变，如源杰科技 2026-05-18 除权），
+    // 前复权缺失或异常时回退 Tushare 不复权日K。指标评分仍基于不复权 prices，口径不变。
+    let kline: { dates: string[]; ohlc: [number, number, number, number][] };
+    if (klineOverride && klineOverride.dates.length > 0 && klineOverride.dates.length === klineOverride.ohlc.length) {
+        kline = klineOverride;
+    } else {
+        const klineDaily = daily.slice(-120);
+        kline = {
+            dates: klineDaily.map(d => d.trade_date),
+            ohlc: klineDaily.map(d => [d.open, d.close, d.low, d.high] as [number, number, number, number]),
+        };
+    }
 
     return {
         score,
@@ -685,7 +746,7 @@ export class TrendScoreService {
         // 获取近250日日线数据用于技术面计算
         const startDate = new Date();
         startDate.setFullYear(startDate.getFullYear() - 2);
-        const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
         const prices = await TushareService.getDailyPrices(symbol, startDateStr);
 
         // 先获取板块轮动数据 + 最佳概念板块（技术面评分需要最佳板块代码来判断龙头股加成）
@@ -699,8 +760,9 @@ export class TrendScoreService {
 
         const bestBoard = await findBestConceptBoard(symbol, rotationRawData, data.industry?.industry_name);
 
-        // 1. 技术面维度（传入最佳板块代码，用于龙头股加成判断）
-        const techResult = calcTechnicalDim(prices, symbol, bestBoard?.boardCode);
+        // 1. 技术面维度（传入最佳板块代码，用于龙头股加成判断；K线展示用前复权消除除权假跳变）
+        const adjustedKline = await fetchAdjustedTrendKline(symbol);
+        const techResult = calcTechnicalDim(prices, symbol, bestBoard?.boardCode, adjustedKline ?? undefined);
 
         // 使用最佳概念板块的 ts_code 获取概念指数K线
         let conceptKline: { name: string; dates: string[]; ohlc: [number, number, number, number][] } = { name: '', dates: [], ohlc: [] };

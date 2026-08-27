@@ -2,6 +2,8 @@ import { StockInfoService, StockInfoType, type StockInfoPushWindow } from './Sto
 import { WechatPushService } from '../push/WechatPushService';
 import { MessagePushService } from '../push/MessagePushService';
 import { CacheService } from '../../shared/utils/CacheService';
+import { StockTraceTriggerService } from './services/StockTraceTriggerService';
+import { NotificationService } from '../../core/notification/NotificationService';
 
 export interface StockInfoPushRequest {
     window?: string;
@@ -26,6 +28,12 @@ function parseDate(value: unknown, field: string): Date {
     const date = new Date(raw);
     if (!raw || Number.isNaN(date.getTime())) throw new Error(`${field} must be a valid datetime`);
     return date;
+}
+
+function normalizeEventTime(value: unknown): string | undefined {
+    if (value === null || value === undefined || value === '') return undefined;
+    const date = value instanceof Date ? value : new Date(String(value));
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 async function getLastPushTime(): Promise<Date | null> {
@@ -97,9 +105,33 @@ export class StockInfoPushService {
             results: [],
         };
 
+        // 收集所有窗口的候选（用于后续 Trace 触发）
+        const allCandidates: Array<{ id: number; symbol: string }> = [];
+
         for (const window of windows) {
             const candidates = await StockInfoService.getPushCandidates(window);
+            const notificationCandidates = await StockInfoService.getAppNotificationCandidates(window);
             summary.candidates += candidates.length;
+
+            // App 通知中心保留该时间窗口内所有资讯研判；外部渠道仍只推重大事件。
+            for (const judgement of notificationCandidates) {
+                try {
+                    await NotificationService.createForWatchers({
+                        category: 'stock_info',
+                        sourceKey: `stock-info:${judgement.id}`,
+                        symbol: judgement.symbol,
+                        stockName: judgement.stock_name || undefined,
+                        title: `${judgement.stock_name || judgement.symbol}：资讯异动`,
+                        // 与个股详情“个股异动”列表保持一致，方便用户跳转后识别同一条资讯。
+                        summary: judgement.title || judgement.ai_summary || '自选股资讯出现新动态',
+                        targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(judgement.symbol)}&anchor=stock-info`,
+                        payload: { judgementId: judgement.id, infoType: judgement.info_type, url: judgement.url || '' },
+                        occurredAt: normalizeEventTime(judgement.published_at),
+                    });
+                } catch (error) {
+                    console.warn('[StockInfoPush] App notification failed:', error instanceof Error ? error.message : String(error));
+                }
+            }
 
             for (const judgement of candidates) {
                 const event = {
@@ -136,6 +168,7 @@ export class StockInfoPushService {
                 });
 
                 summary.results.push({ id: judgement.id, symbol: judgement.symbol, ...result });
+                allCandidates.push({ id: judgement.id, symbol: judgement.symbol });
             }
         }
 
@@ -143,6 +176,24 @@ export class StockInfoPushService {
         if (summary.sent > 0 || summary.candidates > 0) {
             await setLastPushTime(new Date());
             console.log(`[StockInfoPush] 已记录推送时间，下次推送起点=${new Date().toISOString()}`);
+        }
+
+        // ── 个股 Trace 触发（不阻塞通知结果） ──
+        // 在通知全部完成后，对每个 symbol 最多触发一次 Trace
+        // 倒序遍历候选（DESC → ASC），取每个 symbol 首次出现的 judgement
+        const seenSymbols = new Set<string>();
+        for (let i = allCandidates.length - 1; i >= 0; i--) {
+            const { symbol, id } = allCandidates[i];
+            if (!symbol || seenSymbols.has(symbol)) continue;
+            seenSymbols.add(symbol);
+
+            const traceId = `stock-info:${id}`;
+            try {
+                await StockTraceTriggerService.triggerStockTrace({ symbol, traceId });
+            } catch {
+                // StockTraceTriggerService 已吞掉所有异常，此处仅防御性兜底
+                console.error(`[StockInfoPush] unexpected error triggering trace for ${symbol}`);
+            }
         }
 
         return summary;

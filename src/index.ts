@@ -10,6 +10,8 @@ process.env.TZ = 'Asia/Shanghai';
 import express from 'express';
 import cors from 'cors';
 import cron from 'node-cron';
+import fs from 'fs';
+import path from 'path';
 
 import pool from './core/db';
 import redis from './core/redis';
@@ -34,12 +36,20 @@ import { createAgentProxy } from './modules/agent/agent.proxy';
 import { PotentialStockPushController } from './modules/push/controller';
 import { WechatEventController } from './modules/push/wechatEventController';
 import { MessagePushService } from './modules/push/MessagePushService';
+import { UsageController } from './modules/chat/usageController';
+import { SessionUsageController } from './modules/chat/sessionUsageController';
 
 // auth 认证模块
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
-import { FeishuMessageController } from './modules/auth/feishuMessageController';
+import { SmsAuthController } from './modules/auth/SmsAuthController';
+import { EmailAuthController } from './modules/auth/EmailAuthController';
+// user 用户画像（Phase 4-3 全局用户记忆）
+import { ProfileController } from './modules/user/profileController';
+// chat 会话元数据（P9 会话管理）
+import { SessionController } from './modules/chat/sessionController';
+import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
 import { FeishuAuthController } from './modules/auth/feishuAuthController';
 
 // monitor 监控模块
@@ -55,12 +65,32 @@ import { IndustryKGService } from './modules/monitor/IndustryKGService';
 import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
+import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
 import { HotBurstService } from './modules/monitor/HotBurstService';
+import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
+import { StockTraceController } from './modules/stock-trace/controller';
+import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
+import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector';
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
+
+// insight 自选股洞察模块
+import { runCycle as runInsightCycle } from './modules/insight/InsightService';
+import insightInternalRouter from './modules/insight/internalRouter';
+import { InsightController } from './modules/insight/controller';
+import { NotificationService } from './core/notification/NotificationService';
+import { NotificationRetryService } from './core/notification/NotificationRetryService';
+
+// prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
+import predictionInternalRouter from './modules/prediction/internalRouter';
+import predictionPublicRouter from './modules/prediction/publicRouter';
+
+// fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
+import { fearGreedRouter } from './modules/fear-greed/controller';
+import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
 
 // crawler 爬虫模块
 import { StockInfoController } from './modules/crawler/controller';
@@ -75,6 +105,7 @@ import { closeAllAgents } from './shared/utils/httpAgent';
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { initWebSocket } from './core/ws/handler';
+import { initChatBridge } from './core/ws/chat-bridge';
 import { shouldRunBackgroundJobs } from './core/qa_mode';
 
 import { Application } from 'express';
@@ -113,6 +144,7 @@ app.use('/api/agent', publicRouter);
 app.use('/api/agent', createAgentProxy({
     target: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
     internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+    jwtSecret: process.env.JWT_SECRET || '',
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -168,16 +200,42 @@ app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.g
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
 app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
+// 短信验证码登录 + 双向绑定（统一账户模型，2026-08-25）
+app.post('/api/auth/sms/send', (req, res, next) => SmsAuthController.sendSms(req, res, next));
+app.post('/api/auth/sms/login', (req, res, next) => SmsAuthController.smsLogin(req, res, next));
+app.post('/api/auth/bind/phone', (req, res, next) => SmsAuthController.bindPhone(req, res, next));
+// 邮箱验证码登录（替代短信登录；短信路由保留，仅前端不再暴露短信入口）
+app.post('/api/auth/email/send', (req, res, next) => EmailAuthController.sendEmail(req, res, next));
+app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailLogin(req, res, next));
+app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
+// 微信绑定改走邮箱证明归属（前端仅邮箱入口）
+app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
+// 用户画像（Phase 4-3：JWT 鉴权，openid 即 user_id；GET 无记录返回空对象，PUT 部分更新 + G7 数组整体替换；
+// DELETE：PIPL 删除权，删除后同步失效 agent-py 侧 db=1 缓存，Phase 4 验收修复 B8）
+app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
+app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
+app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
 app.get('/api/users/me/push-ranking', (req, res, next) => UserController.getPushRanking(req, res, next));
 app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavorites(req, res, next));
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
+app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
+app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
+app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
+// 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
+app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
+app.get('/api/chat/usage/sessions/:id', (req, res, next) => SessionUsageController.detailBySession(req, res, next));
 app.post('/api/users/me/favorites/delete', (req, res, next) => UserController.removeFavorites(req, res, next));
+
+// 会话元数据（P9 会话管理；鉴权同 /api/users/me，JWT openid）
+app.post('/api/chat/sessions', (req, res, next) => SessionController.upsert(req, res, next));
+app.get('/api/chat/sessions', (req, res, next) => SessionController.list(req, res, next));
+app.delete('/api/chat/sessions/:id', (req, res, next) => SessionController.remove(req, res, next));
 
 app.get('/api/internal/stock-info/targets', (req, res, next) => StockInfoJudgementController.getTargets(req, res, next));
 app.post('/api/internal/stock-info/existing', (req, res, next) => StockInfoJudgementController.getExisting(req, res, next));
@@ -187,6 +245,16 @@ app.post('/api/internal/stock-info/push', (req, res, next) => StockInfoJudgement
 // 个股异动监控 - 前端查询接口，数据来自外部爬虫提交的公告/新闻研判。
 app.get('/api/cn/stock-monitors/events', (req, res, next) => StockMonitorController.getEvents(req, res, next));
 app.get('/api/cn/stock-monitors/events/:stockCode', (req, res, next) => StockMonitorController.getEventsByStock(req, res, next));
+app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.list(req, res, next));
+app.post('/api/cn/favorites/movements/detect', (req, res, next) => StockTraceController.detect(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
+app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
+
+// 自选股洞察 - 前端查询接口（登录用户自选股过滤，数据来自涨停雷达采集 + Python 归因）
+app.get('/api/cn/favorites/insights', (req, res, next) => InsightController.list(req, res, next));
+app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightController.get(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
@@ -194,6 +262,7 @@ app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementC
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
 app.get('/api/cn/wind-leaders', (req, res, next) => WindLeaderController.getWindLeaders(req, res, next));
+app.get('/api/cn/wind-leaders/board-kline', (req, res, next) => WindLeaderController.getBoardKline(req, res, next));
 app.post('/api/internal/wind-leaders', (req, res, next) => WindLeaderController.pushWindLeaders(req, res, next));
 app.post('/api/cn/hot-keywords/detect', (req, res, next) => WindLeaderController.detectHotKeywords(req, res, next));
 app.get('/api/cn/hot-keywords', (req, res, next) => WindLeaderController.getHotKeywords(req, res, next));
@@ -228,8 +297,8 @@ app.post('/api/internal/push-leader', async (req, res) => {
         const force = req.body?.force === true || req.query.force === 'true';
         const result = await MessagePushService.executeLeaderPush(force);
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -244,8 +313,8 @@ app.post('/api/internal/push-institution-research', async (req, res) => {
         const force = req.body?.force === true || req.query.force === 'true';
         const result = await MessagePushService.executeOutbreakPush(testData, force);
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -292,8 +361,8 @@ app.post('/api/internal/push-stock-info', async (req, res) => {
             const result = await StockInfoPushService.push(req.body || { window: 'morning' });
             res.json({ success: true, result });
         }
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -325,9 +394,9 @@ app.post('/api/internal/trigger-trend-batch', async (req, res) => {
         const result = await TrendBatchService.run(force);
         console.log(`[ManualTrigger] trend batch done:`, result);
         res.json({ success: true, result });
-    } catch (err: any) {
-        console.error('[ManualTrigger] trend batch failed:', err?.message || err);
-        res.status(500).json({ error: err?.message || 'batch failed' });
+    } catch (err: unknown) {
+        console.error('[ManualTrigger] trend batch failed:', err instanceof Error ? err.message : String(err));
+        res.status(500).json({ error: (err instanceof Error ? err.message : String(err)) || 'batch failed' });
     }
 });
 
@@ -340,8 +409,8 @@ app.post('/api/internal/crawl/run', async (req, res) => {
     try {
         const result = await StockInfoCrawlService.runOnce(req.body || {});
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -355,8 +424,8 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
         const window = req.body?.window || 'morning';
         const result = await StockInfoCrawlService.runCycle(window, req.body || {});
         res.json({ success: true, result });
-    } catch (err: any) {
-        res.status(500).json({ error: err.message });
+    } catch (err: unknown) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -368,9 +437,9 @@ app.post('/api/admin/trigger-price-update', async (_req, res) => {
         console.log('[ManualTrigger] update push history prices');
         await WindLeaderService.updatePushHistoryPrices();
         res.json({ code: 200, message: 'price update succeeded' });
-    } catch (err: any) {
-        console.error('[ManualTrigger] price update failed:', err?.message || err);
-        res.status(500).json({ code: 500, message: 'price update failed', error: err?.message || err });
+    } catch (err: unknown) {
+        console.error('[ManualTrigger] price update failed:', err instanceof Error ? err.message : String(err));
+        res.status(500).json({ code: 500, message: 'price update failed', error: err instanceof Error ? err.message : String(err) });
     }
 });
 
@@ -420,7 +489,7 @@ app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
     try {
         const data = await getSemiAnnualReport(symbol);
         res.json({ code: 200, message: 'success', data });
-    } catch (err: any) {
+    } catch (err: unknown) {
         console.error(`Error fetching semi-annual report for ${symbol}:`, err);
         res.status(500).json({ code: 500, message: err instanceof Error ? err.message : 'Internal Server Error' });
     }
@@ -515,6 +584,16 @@ app.post('/api/kg/refresh', (req, res, next) => IndustryKGController.refresh(req
 // ==================== Internal API（Python Agent 服务专用） ====================
 app.use('/internal', internalRouter);
 
+app.use('/internal/stock-trace', stockTraceInternalRouter);
+
+app.use('/internal/insight', insightInternalRouter);
+
+app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
+
+app.use('/api/fear-greed', fearGreedRouter); // 恐贪指数：公开查询（温度计 + 主面板）
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -531,8 +610,8 @@ cron.schedule('0 2 * * *', async () => {
     try {
         await TrendBatchService.run();
         console.log('[TrendCron] 批量趋势股评分完成');
-    } catch (err: any) {
-        console.error('[TrendCron] 批量趋势股评分失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[TrendCron] 批量趋势股评分失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -548,7 +627,7 @@ cron.schedule('5 19 * * 1-5', async () => {
         const poolModule = await import('./core/db');
         const dbPool = poolModule.default;
         const result = await dbPool.query('SELECT symbol FROM stocks');
-        const symbols = result.rows.map((r: any) => r.symbol as string);
+        const symbols = result.rows.map((r: { symbol: string }) => r.symbol);
         console.log(`[CapitalFlowCron] 共${symbols.length}只股票待预取`);
 
         const { getCapitalFlow } = await import('./modules/quote/TushareCapitalFlowService');
@@ -561,16 +640,16 @@ cron.schedule('5 19 * * 1-5', async () => {
                 const cacheKey = `capital_flow:${symbol}`;
                 const data = await getCapitalFlow(symbol);
                 const ttl = await getAShareAdaptiveCacheTtlSeconds(3 * 60);
-                await CacheService.put(cacheKey, data as unknown as Record<string, any>, ttl);
+                await CacheService.put(cacheKey, data as unknown as Record<string, unknown>, ttl);
                 success++;
-            } catch (err: any) {
+            } catch (err: unknown) {
                 failed++;
-                if (failed <= 5) console.error(`[CapitalFlowCron] ${symbol} error:`, err?.message || err);
+                if (failed <= 5) console.error(`[CapitalFlowCron] ${symbol} error:`, err instanceof Error ? err.message : String(err));
             }
         }
         console.log(`[CapitalFlowCron] 完成: 成功=${success}, 失败=${failed}`);
-    } catch (err: any) {
-        console.error('[CapitalFlowCron] 批量预取失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CapitalFlowCron] 批量预取失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -586,8 +665,8 @@ cron.schedule('0 3 * * *', async () => {
         }
         const result = await WindLeaderAnalyzerService.runFullAnalysis();
         console.log(`[WindLeaderCron] 分析完成: ${result.hot_sectors?.length || 0} 个板块`);
-    } catch (err: any) {
-        console.error('[WindLeaderCron] 分析失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[WindLeaderCron] 分析失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -597,8 +676,8 @@ const runInstitutionResearchDetect = async (label: string) => {
     try {
         const result = await HotBurstService.detectHotBurst();
         console.log(`[InstResearchCron] ${label} 检测完成: ${result.outbreaks.length} 个信号`);
-    } catch (err: any) {
-        console.error(`[InstResearchCron] ${label} 检测失败:`, err?.message || err);
+    } catch (err: unknown) {
+        console.error(`[InstResearchCron] ${label} 检测失败:`, err instanceof Error ? err.message : String(err));
     }
 };
 cron.schedule('30 9 * * 1-5', () => runInstitutionResearchDetect('开盘'), { timezone: 'Asia/Shanghai' });
@@ -608,14 +687,67 @@ cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { t
 cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
 
+// 自选股洞察午盘/尾盘价格打点：11:30 午盘、15:05 尾盘（与六时段定时任务对齐）
+const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
+    try {
+        const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+        const r = await PriceMoveService.run(snapshotType);
+        console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
+    } catch (err) {
+        console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+
+// 异动监控收盘兜底（15:05）：强制落定当日仍 active 的事件并触发一次最终归因。
+// 盘中不再即时归因（降 token / 数据更全），此 cron 保证 5 分钟恢复窗口在收盘前未到期的事件也不漏归因。
+cron.schedule('5 15 * * 1-5', async () => {
+    try {
+        const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
+        const settled = await StockTraceService.settleActiveEvents();
+        console.log(`[StockTraceCron] 收盘落定完成 settled=${settled}`);
+    } catch (err: unknown) {
+        console.error('[StockTraceCron] 收盘落定失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 11:50 补抓停用：stocktrace 以 revision 机制处理盘中变化，2026-08-15 迁移决策
+// cron.schedule('50 11 * * 1-5', async () => {
+//     try {
+//         const { PriceMoveService } = await import('./modules/insight/PriceMoveService');
+//         const r = await PriceMoveService.refetchMiddayEvidence();
+//         console.log(`[PriceMoveCron] refetch 完成 events=${r.events}`);
+//     } catch (err) {
+//         console.error('[PriceMoveCron] refetch 失败:', err instanceof Error ? err.message : String(err));
+//     }
+// }, { timezone: 'Asia/Shanghai' });
+
+// 飞书消息千问分析：每分钟串行处理少量待分析记录。
+cron.schedule('* * * * *', async () => {
+    if (!FeishuMessageAiService.isConfigured()) return;
+    try {
+        const result = await FeishuMessageAiService.processPending(
+            Number(process.env.QWEN_BATCH_SIZE || 3),
+        );
+        if (result.claimed > 0) {
+            console.log(
+                `[FeishuAI] 完成: claimed=${result.claimed}, succeeded=${result.succeeded}, failed=${result.failed}`,
+            );
+        }
+    } catch (err: unknown) {
+        console.error('[FeishuAI] 批处理失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 每日 04:30 刷新个股-板块映射表
 cron.schedule('30 4 * * *', async () => {
     console.log('[StockConceptMappingCron] 开始刷新个股-板块映射');
     try {
         const count = await syncStockConceptMapping();
         console.log(`[StockConceptMappingCron] 刷新完成: ${count} 条记录`);
-    } catch (err: any) {
-        console.error('[StockConceptMappingCron] 刷新失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[StockConceptMappingCron] 刷新失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -626,8 +758,8 @@ cron.schedule('0 8 * * *', async () => {
     try {
         const result = await StockInfoCrawlService.runCycle('morning', { source: 'favorites', limit: 200 });
         console.log(`[CrawlCron] 早盘完成: 抓取${result.crawler.submitted}条, 推送候选${result.push.candidates}条`);
-    } catch (err: any) {
-        console.error('[CrawlCron] 早盘失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CrawlCron] 早盘失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -636,8 +768,8 @@ cron.schedule('0 15 * * *', async () => {
     try {
         const result = await StockInfoCrawlService.runCycle('closing', { source: 'favorites', limit: 200 });
         console.log(`[CrawlCron] 尾盘完成: 抓取${result.crawler.submitted}条, 推送候选${result.push.candidates}条`);
-    } catch (err: any) {
-        console.error('[CrawlCron] 尾盘失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[CrawlCron] 尾盘失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -645,8 +777,59 @@ cron.schedule('30 15 * * *', async () => {
     console.log('[PushHistoryPriceUpdateCron] update push history prices');
     try {
         await WindLeaderService.ensurePushHistoryPricesCurrent();
-    } catch (err: any) {
-        console.error('[PushHistoryPriceUpdateCron] failed:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[PushHistoryPriceUpdateCron] failed:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
+cron.schedule('35 15 * * *', async () => {
+    console.log('[RotationBoardCron] 开始同步板块轮动榜');
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
+            return;
+        }
+        const count = await RotationBoardStore.syncRotationHistory();
+        console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
+    } catch (err: unknown) {
+        console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 恐贪指数：盘前 09:15 / 正午 11:30 / 盘后 15:30（周一至周五，跳过节假日）
+// 盘前用前日收盘数据预计算，正午更新盘中实时，盘后用最终收盘数据定版
+// 各时段落库到 fear_greed_snapshot.time_slot，供前端绘制 intraday 短热度线
+const runFearGreedRefresh = async (label: string, timeSlot: 'pre' | 'noon' | 'post') => {
+    console.log(`[FearGreedCron] ${label}刷新恐贪指数 (time_slot=${timeSlot})`);
+    try {
+        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
+        const isTradingDay = await isAShareTradingDay();
+        if (!isTradingDay) {
+            console.log(`[FearGreedCron] 非交易日，跳过${label}刷新`);
+            return;
+        }
+        await refreshJq(timeSlot);
+        console.log(`[FearGreedCron] ${label}刷新完成`);
+    } catch (err: unknown) {
+        console.error(`[FearGreedCron] ${label}刷新失败:`, err instanceof Error ? err.message : String(err));
+    }
+};
+cron.schedule('15 9 * * 1-5', () => runFearGreedRefresh('盘前', 'pre'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runFearGreedRefresh('正午', 'noon'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 15 * * 1-5', () => runFearGreedRefresh('盘后', 'post'), { timezone: 'Asia/Shanghai' });
+
+// App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
+cron.schedule('*/5 * * * *', async () => {
+    try {
+        const result = await NotificationRetryService.run();
+        if (result.flushed || result.delivered || result.retrying || result.dropped) {
+            console.log(`[NotificationRetry] flushed=${result.flushed}, delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+        }
+    } catch (err: unknown) {
+        console.error('[NotificationRetry] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -656,8 +839,8 @@ cron.schedule('0 0 * * *', async () => {
     try {
         const result = await ProfitForecastAutoUpdateService.run();
         console.log(`[ProfitForecastAutoUpdateCron] 完成: method=${result.method}, updated=${result.updated}, skipped=${result.skipped}, errors=${result.errors}`);
-    } catch (err: any) {
-        console.error('[ProfitForecastAutoUpdateCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[ProfitForecastAutoUpdateCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -667,10 +850,11 @@ cron.schedule('0 0 * * *', async () => {
     try {
         const result = await PerformanceReportAutoUpdateService.run();
         console.log(`[PerformanceReportCron] 完成: updated=${result.updated}, skipped=${result.skipped}, errors=${result.errors}`);
-    } catch (err: any) {
-        console.error('[PerformanceReportCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error('[PerformanceReportCron] 执行失败:', msg);
     }
-});
+}, { timezone: 'Asia/Shanghai' });
 
 // 股票基础数据同步：每天凌晨 00:05 执行（同步新股、更新行业等）
 cron.schedule('5 0 * * *', async () => {
@@ -678,8 +862,8 @@ cron.schedule('5 0 * * *', async () => {
     try {
         const result = await StockSyncService.sync();
         console.log(`[StockSyncCron] 完成: 新增=${result.inserted}, 更新=${result.updated}, 总计=${result.total}`);
-    } catch (err: any) {
-        console.error('[StockSyncCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[StockSyncCron] 执行失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -691,8 +875,28 @@ cron.schedule('0 3 * * *', async () => {
             `DELETE FROM agent_analysis_reports WHERE expires_at < NOW() RETURNING id`
         );
         console.log(`[ReportCleanupCron] 完成: 删除 ${result.rows.length} 条过期报告`);
-    } catch (err: any) {
-        console.error('[ReportCleanupCron] 执行失败:', err?.message || err);
+    } catch (err: unknown) {
+        console.error('[ReportCleanupCron] 执行失败:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 播报缓存清理：删除过期 podcast_cache 行及对应音频文件，避免孤儿文件堆积
+    try {
+        const expired = await pool.query(
+            `SELECT cache_key, audio_path FROM podcast_cache WHERE expires_at < NOW()`
+        );
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        for (const row of expired.rows as { cache_key: string; audio_path: string }[]) {
+            // audio_path 形如 /api/agent/audio/podcast-{key}.mp3，仅清理本模块生成的播报文件
+            const match = /\/podcast-[a-zA-Z0-9_-]+\.mp3$/.exec(row.audio_path)
+            if (match) {
+                const filePath = path.join(audioDir, match[0].replace(/^\//, ''))
+                fs.promises.unlink(filePath).catch(() => undefined)
+            }
+        }
+        await pool.query(`DELETE FROM podcast_cache WHERE expires_at < NOW()`)
+        console.log(`[ReportCleanupCron] 播报缓存清理: 删除 ${expired.rows.length} 条过期缓存`);
+    } catch (err: unknown) {
+        console.error('[ReportCleanupCron] 播报缓存清理失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -704,22 +908,79 @@ cron.schedule('*/10 * * * *', () => {
         `[Heartbeat] uptime=${uptime}h rss=${Math.round(mem.rss / 1024 / 1024)}MB heap=${Math.round(mem.heapUsed / 1024 / 1024)}/${Math.round(mem.heapTotal / 1024 / 1024)}MB`
     );
 }, { timezone: 'Asia/Shanghai' });
+
+// 自选股洞察：交易时段（周一至周五 9:00-15:59）每 10 分钟轮询采集
+cron.schedule('*/10 9-15 * * 1-5', async () => {
+    try {
+        const { collected, events } = await runInsightCycle();
+        console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
+    } catch (err: unknown) {
+        console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 恐贪指数：每日 16:30 收盘后自动刷新（幂等，覆盖当日快照）
+cron.schedule('30 16 * * *', async () => {
+    console.log('[FearGreedCron] 开始刷新恐贪指数');
+    try {
+        await refreshJq();
+        console.log('[FearGreedCron] 恐贪指数刷新完成');
+    } catch (err: unknown) {
+        console.error('[FearGreedCron] 刷新失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
 }
 
 async function start() {
     try {
         await pool.query('SELECT 1');
         console.log('[PG] Connected successfully');
-    } catch (err: any) {
-        console.error('[PG] Connection failed:', err.message);
+    } catch (err: unknown) {
+        console.error('[PG] Connection failed:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await NotificationService.ensureSchemaAtStartup();
+        console.log('[DB] user_notifications table ready');
+        // 启动补投：进程上次退出时 outbox 里可能还有没投递成功的通知
+        NotificationRetryService.run()
+            .then(result => {
+                if (result.delivered || result.retrying || result.dropped) {
+                    console.log(`[NotificationRetry] 启动补投: delivered=${result.delivered}, retrying=${result.retrying}, dropped=${result.dropped}`);
+                }
+            })
+            .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
+    } catch (err: unknown) {
+        console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {
         await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS industry TEXT DEFAULT ''`);
         console.log('[DB] stocks.industry column ready');
-    } catch (err: any) {
-        console.warn('[DB] stocks.industry column check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] stocks.industry column check:', err instanceof Error ? err.message : String(err));
     }
+
+    try {
+        await ensureFeishuMessageSchema();
+        console.log('[DB] feishu_messages AI columns ready');
+    } catch (err: unknown) {
+        console.warn('[DB] feishu_messages schema check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 恐贪指数快照表 + 市场宽度表（此前未建表，dashboard 查询会失败）
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear_greed schema check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 恐贪指数启动预热（非阻塞）：首跑需逐日拉取全市场 daily（500 交易日 × ~5400 只），
+    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存
+    refreshJq('post')
+        .then((r) => console.log(`[FearGreedCron] 启动预热完成: 恐贪指数=${r.composite}`))
+        .catch((err: unknown) => console.error('[FearGreedCron] 启动预热失败:', err instanceof Error ? err.message : String(err)));
 
     try {
         await pool.query(`
@@ -732,8 +993,16 @@ async function start() {
             )
         `);
         console.log('[DB] stock_concept_mapping table ready');
-    } catch (err: any) {
-        console.warn('[DB] stock_concept_mapping table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 板块轮动榜表（网页同款口径：每日涨幅/跌幅前10），风口龙头与趋势股评分共用
+        await RotationBoardStore.ensureRotationSchema();
+        console.log('[DB] board_rotation_daily table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -777,8 +1046,184 @@ async function start() {
             ADD COLUMN IF NOT EXISTS resonance_count INT DEFAULT 0
         `);
         console.log('[DB] institution_research_history table ready');
-    } catch (err: any) {
-        console.warn('[DB] institution_research_history table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] institution_research_history table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // P10 线 2：chat_token_usage 计费表（user_id 维度；session_id 预留外键，
+    // 线 4 补会话维度不返工表结构）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_token_usage (
+                id BIGSERIAL PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                session_id VARCHAR(64),
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                question TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_user ON chat_token_usage(user_id, created_at DESC)'
+        );
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_chat_token_usage_session ON chat_token_usage(user_id, session_id, created_at DESC)'
+        );
+        console.log('[DB] chat_token_usage table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_token_usage table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 预测能力：prediction_records 表（大盘溯源预测 + 到期验证历史）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS prediction_records (
+                id BIGSERIAL PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                schema_version TEXT NOT NULL DEFAULT '1.0',
+                prediction JSONB NOT NULL,
+                verification JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'pending',
+                due_dates JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        `);
+        await pool.query(
+            'CREATE INDEX IF NOT EXISTS idx_prediction_records_status ON prediction_records(status)'
+        );
+        await pool.query(
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_prediction_records_source ON prediction_records(source_type, source_id)'
+        );
+        console.log('[DB] prediction_records table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                user_id TEXT PRIMARY KEY,
+                nickname TEXT,
+                investment_preferences JSONB,
+                risk_tolerance TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        console.log('[DB] user_profiles table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // is_vip 会员标记（2026-08-24 报告导出会员解锁用；默认 false）
+    try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_vip BOOLEAN NOT NULL DEFAULT false`);
+        console.log('[DB] users.is_vip ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
+    // 主键从 openid 切换为不可变 id(UUID)；openid/phone/unionid 均可空唯一。
+    // 切主键前必须摘除所有 REFERENCES users(openid) 的外键（user_notifications/user_subscriptions/user_stocks），
+    // 否则 DROP CONSTRAINT users_pkey 会被依赖拦截；重建后由 openid 非空唯一索引承载，保持既有语义零破坏。
+    try {
+        // ① 摘除引用 users(openid) 的外键（记录定义与 ON DELETE 语义，重建时还原）
+        const fkRows = await pool.query<{ name: string; table_name: string; columns: string[]; on_delete: string }>(`
+            SELECT
+                c.conname AS name,
+                ct.relname AS table_name,
+                c.confdeltype::text AS on_delete,
+                array_agg(att.attname ORDER BY ord.ordinality) AS columns
+            FROM pg_constraint c
+            JOIN pg_class ct ON ct.oid = c.conrelid
+            JOIN pg_class rt ON rt.oid = c.confrelid
+            CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS ord(attnum, ordinality)
+            JOIN pg_attribute att ON att.attrelid = c.conrelid AND att.attnum = ord.attnum
+            WHERE c.contype = 'f'
+              AND rt.relname = 'users'
+              AND (SELECT a.attnum FROM pg_attribute a
+                   WHERE a.attrelid = rt.oid AND a.attname = 'openid') = ANY(c.confkey)
+            GROUP BY c.conname, ct.relname, c.confdeltype::text
+        `);
+        const fks = fkRows.rows;
+        for (const fk of fks) {
+            await pool.query(`ALTER TABLE ${fk.table_name} DROP CONSTRAINT IF EXISTS ${fk.name}`);
+        }
+        if (fks.length > 0) {
+            console.log('[DB] users: 摘除引用 openid 的外键', fks.map(f => `${f.table_name}(${f.columns.join(',')})`).join('; '));
+        }
+
+        // ② users 新增不可变主键 id（UUID）并回填存量行
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS id UUID');
+        await pool.query('UPDATE users SET id = gen_random_uuid() WHERE id IS NULL');
+        await pool.query('ALTER TABLE users ALTER COLUMN id SET NOT NULL');
+
+        // ③ openid 建立非空唯一索引（承载被摘除外键的引用；允许多个 NULL 手机号账户）
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_openid_key ON users (openid)');
+
+        // ④ 主键切换 openid → id（约束名可能非默认，按 pg_constraint 实测名删除）
+        const pkRow = await pool.query<{ conname: string }>(
+            `SELECT conname FROM pg_constraint WHERE conrelid = 'users'::regclass AND contype = 'p' LIMIT 1`,
+        );
+        const pkName = pkRow.rows[0]?.conname;
+        if (pkName) await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS ${pkName}`);
+        await pool.query('ALTER TABLE users ALTER COLUMN openid DROP NOT NULL');
+        await pool.query('ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id)');
+
+        // ⑤ 重建被摘除的外键（仍指向 users(openid)，由 ③ 的唯一索引承载）
+        const odMap: Record<string, string> = { c: 'CASCADE', n: 'SET NULL', r: 'RESTRICT', a: 'NO ACTION', d: 'SET DEFAULT' };
+        for (const fk of fks) {
+            const onDelete = odMap[fk.on_delete] || 'NO ACTION';
+            const cols = fk.columns.join(', ');
+            await pool.query(
+                `ALTER TABLE ${fk.table_name} ADD CONSTRAINT ${fk.name} FOREIGN KEY (${cols}) REFERENCES users(openid) ON DELETE ${onDelete}`,
+            );
+        }
+
+        // ⑥ phone / unionid（可空唯一；unionid 预留跨 appid 合并）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_phone_key ON users (phone)');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS unionid VARCHAR(128)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_unionid_key ON users (unionid)');
+
+        // ⑦ email（可空唯一；邮箱验证码登录）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(254)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (email)');
+
+        console.log('[DB] users 统一账户模型 ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users 统一账户模型 migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // user_stocks：手机号用户自选股（openid 可空 + user_id 双通道）
+    try {
+        const stockTable = await pool.query(
+            `SELECT 1 FROM information_schema.tables WHERE table_name = 'user_stocks' LIMIT 1`,
+        );
+        if (stockTable.rows.length > 0) {
+            await pool.query('ALTER TABLE user_stocks ADD COLUMN IF NOT EXISTS user_id UUID');
+            // 旧主键 (openid, symbol) 强制 openid NOT NULL 且无法承载手机号用户 → 先摘除再放宽
+            const pkRow2 = await pool.query<{ conname: string }>(
+                `SELECT conname FROM pg_constraint WHERE conrelid = 'user_stocks'::regclass AND contype = 'p' LIMIT 1`,
+            );
+            const pkName2 = pkRow2.rows[0]?.conname;
+            if (pkName2) await pool.query(`ALTER TABLE user_stocks DROP CONSTRAINT IF EXISTS ${pkName2}`);
+            await pool.query('ALTER TABLE user_stocks ALTER COLUMN openid DROP NOT NULL');
+            // 微信用户（openid 非空）与手机号用户（user_id 非空）各自去重
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_openid_symbol ON user_stocks (openid, symbol) WHERE openid IS NOT NULL');
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_userid_symbol ON user_stocks (user_id, symbol) WHERE user_id IS NOT NULL');
+            // 回填：老微信自选股挂到对应 user_id，实现按 id 统一读取
+            await pool.query(`UPDATE user_stocks us SET user_id = u.id FROM users u WHERE us.openid = u.openid AND us.user_id IS NULL`);
+            console.log('[DB] user_stocks.user_id ready');
+        } else {
+            console.warn('[DB] user_stocks 表不存在，跳过 user_id 迁移（待手工建表后重跑）');
+        }
+    } catch (err: unknown) {
+        console.warn('[DB] user_stocks.user_id migration:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -798,10 +1243,10 @@ async function start() {
         try {
             await pool.query('ALTER TABLE earnings_forecast ADD CONSTRAINT earnings_forecast_symbol_unique UNIQUE (symbol)');
             console.log('[DB] earnings_forecast: added UNIQUE constraint on symbol');
-        } catch (e: any) {
+        } catch (e: unknown) {
             // 约束已存在则忽略
-            if (!/already exists|duplicate/i.test(e.message)) {
-                console.warn('[DB] earnings_forecast UNIQUE constraint migration:', e.message);
+            if (!/already exists|duplicate/i.test(e instanceof Error ? e.message : String(e))) {
+                console.warn('[DB] earnings_forecast UNIQUE constraint migration:', e instanceof Error ? e.message : String(e));
             }
         }
         // 迁移：添加排序专用列（净利润预测金额、EPS预测、EPS同比）
@@ -810,12 +1255,12 @@ async function start() {
             await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps NUMERIC(10,3)');
             await pool.query('ALTER TABLE earnings_forecast ADD COLUMN IF NOT EXISTS forecast_eps_yoy NUMERIC(10,2)');
             console.log('[DB] earnings_forecast: added sort columns (forecast_netprofit, forecast_eps, forecast_eps_yoy)');
-        } catch (e: any) {
-            console.warn('[DB] earnings_forecast sort column migration:', e.message);
+        } catch (e: unknown) {
+            console.warn('[DB] earnings_forecast sort column migration:', e instanceof Error ? e.message : String(e));
         }
         console.log('[DB] earnings_forecast table ready');
-    } catch (err: any) {
-        console.warn('[DB] earnings_forecast table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] earnings_forecast table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩报告表
@@ -843,9 +1288,9 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_performance_reports_ann_date ON performance_reports(ann_date DESC)');
         try {
             await pool.query('ALTER TABLE performance_reports ADD CONSTRAINT performance_reports_unique UNIQUE (symbol, report_type, ann_date)');
-        } catch (e: any) {
-            if (!/already exists|duplicate/i.test(e.message)) {
-                console.warn('[DB] performance_reports UNIQUE constraint migration:', e.message);
+        } catch (e: unknown) {
+            if (!/already exists|duplicate/i.test(e instanceof Error ? e.message : String(e))) {
+                console.warn('[DB] performance_reports UNIQUE constraint migration:', e instanceof Error ? e.message : String(e));
             }
         }
         console.log('[DB] performance_reports table ready');
@@ -860,8 +1305,8 @@ async function start() {
                 await pool.query('ALTER TABLE performance_reports ADD COLUMN ai_tag VARCHAR(20) DEFAULT NULL');
                 console.log('[DB] performance_reports.ai_tag column added');
             }
-        } catch (e: any) {
-            console.warn('[DB] ai_tag column migration:', e.message);
+        } catch (e: unknown) {
+            console.warn('[DB] ai_tag column migration:', e instanceof Error ? e.message : String(e));
         }
 
         // 创建 stock_ai_scores 表（存储四维评分缓存）
@@ -880,11 +1325,11 @@ async function start() {
                 )
             `);
             console.log('[DB] stock_ai_scores table ready');
-        } catch (e: any) {
-            console.warn('[DB] stock_ai_scores table:', e.message);
+        } catch (e: unknown) {
+            console.warn('[DB] stock_ai_scores table:', e instanceof Error ? e.message : String(e));
         }
-    } catch (err: any) {
-        console.warn('[DB] performance_reports table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] performance_reports table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
@@ -921,8 +1366,8 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_push_date ON wind_leader_push_history(push_date DESC)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_wind_leader_stock_code ON wind_leader_push_history(stock_code)');
         console.log('[DB] wind_leader_push_history table ready');
-    } catch (err: any) {
-        console.warn('[DB] wind_leader_push_history table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] wind_leader_push_history table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 趋势股评分表 — 建表 + 补列（ma60_excluded 迁移自动修复，避免漏执行 SQL 文件导致评分写入/查询全部失败）
@@ -949,15 +1394,68 @@ async function start() {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_date ON trend_scores(score_date)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_trend_scores_symbol ON trend_scores(symbol)');
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
-    } catch (err: any) {
-        console.warn('[DB] trend_scores table check:', err.message);
+    } catch (err: unknown) {
+        console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
+    try {
+        await pool.query('SELECT 1 FROM watchlist_insight_sources LIMIT 1');
+        console.log('[DB] watchlist_insight_sources table ready');
+    } catch (err: unknown) {
+        console.warn('[insight] watchlist_insight_sources 表不存在，请先执行 016_watchlist_insights.sql', err);
+    }
+
+    // 恐贪指数：建表（fear_greed_snapshot + breadth_daily，幂等）
+    try {
+        await ensureFearGreedSchema();
+        console.log('[DB] fear_greed_snapshot / breadth_daily tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] fear-greed schema check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 播报缓存表（podcast_cache）— 通用播报文本/音频缓存（8.1会议需求：文本先生成存库）
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS podcast_cache (
+                id SERIAL PRIMARY KEY,
+                cache_key VARCHAR(100) NOT NULL UNIQUE,
+                text TEXT NOT NULL,
+                audio_path VARCHAR(255) NOT NULL DEFAULT '',
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                error_message TEXT,
+                created_at TIMESTAMP DEFAULT NOW(),
+                expires_at TIMESTAMP DEFAULT NOW() + INTERVAL '7 days'
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_podcast_cache_expires_at ON podcast_cache(expires_at)');
+        console.log('[DB] podcast_cache table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] podcast_cache table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 会话元数据表（P9 会话管理）：消息仍前端本地存储，服务端只存会话标题/时间
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id VARCHAR(64) PRIMARY KEY,
+                user_id VARCHAR(50) NOT NULL,
+                title VARCHAR(200) NOT NULL DEFAULT '新会话',
+                last_message_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, last_message_at DESC)');
+        console.log('[DB] chat_sessions table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] chat_sessions table check:', err instanceof Error ? err.message : String(err));
     }
 
     try {
         await redis.ping();
         console.log('[Redis] Connected successfully');
-    } catch (err: any) {
-        console.error('[Redis] Connection failed:', err.message);
+    } catch (err: unknown) {
+        console.error('[Redis] Connection failed:', err instanceof Error ? err.message : String(err));
     }
 
     const server = app.listen(PORT, '0.0.0.0', () => {
@@ -968,9 +1466,19 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
+        // stock_trace 实时价格异动为主链路（保底实时层，不依赖外部新闻源）：
+        // 默认启动，仅显式 STOCK_TRACE_TRIGGER_ENABLED === 'false' 时关闭。
+        // 自选股洞察（insight）只作辅助补充层，不承担主事件源职责。
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED !== 'false') {
+            PriceTriggerDetector.start();
+            console.log('[StockTrace] PriceTriggerDetector 已启动（实时价格异动为主链路）');
+        }
+        StockSyncService.sync().catch((err: unknown) => {
+            console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);
+        });
         // 异步同步个股-板块映射（不阻塞启动，首次启动时填充空表）
         syncStockConceptMapping().catch(err => {
-            console.error('[Startup] stock_concept_mapping 同步失败:', err?.message || err);
+            console.error('[Startup] stock_concept_mapping 同步失败:', err instanceof Error ? err.message : String(err));
         });
         // 启动时：如果是交易日，清除可能残留的旧行情缓存，确保开盘后获取最新数据
         (async () => {
@@ -1008,20 +1516,33 @@ async function start() {
                 WindLeaderAnalyzerService.runFullAnalysis().then(result => {
                     console.log(`[Startup] 风口龙头自动分析完成: ${result.hot_sectors?.length || 0} 个板块`);
                 }).catch(err => {
-                    console.error('[Startup] 风口龙头自动分析失败:', err?.message || err);
+                    console.error('[Startup] 风口龙头自动分析失败:', err instanceof Error ? err.message : String(err));
                 });
             }
         }).catch(err => {
-            console.warn('[Startup] 风口龙头数据检查失败:', err?.message || err);
+            console.warn('[Startup] 风口龙头数据检查失败:', err instanceof Error ? err.message : String(err));
         });
         // Compensate a missed post-close settlement after restarts or deployments.
         WindLeaderService.ensurePushHistoryPricesCurrent().catch(err => {
-            console.warn('[Startup] 推送历史收盘结算补偿失败:', err?.message || err);
+            console.warn('[Startup] 推送历史收盘结算补偿失败:', err instanceof Error ? err.message : String(err));
+        });
+        // 启动时同步板块轮动榜（首次回填近140个交易日，之后每日增量；不阻塞启动）
+        RotationBoardStore.syncRotationHistory().then(count => {
+            console.log(`[Startup] 板块轮动榜同步完成: ${count} 条`);
+        }).catch(err => {
+            console.warn('[Startup] 板块轮动榜同步失败:', err instanceof Error ? err.message : String(err));
         });
     });
 
     // 初始化 WebSocket 服务（用于实时行情推送、异动提醒、对话流式输出）
     initWebSocket(server);
+
+    // P0 身份鉴权：接管 /api/agent/ws/chat（前端 WS 直连 agent-py 改为经 app-api 桥接，验签 + 覆写 user_id）
+    initChatBridge(server, {
+        agentPyTarget: process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8080',
+        internalToken: process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production',
+        jwtSecret: process.env.JWT_SECRET || '',
+    });
 }
 
 start();

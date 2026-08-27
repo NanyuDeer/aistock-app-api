@@ -1,17 +1,21 @@
 import { Request, Response, NextFunction } from 'express';
 import { createResponse } from '../../shared/utils/response';
 import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import { isValidAShareSymbol } from '../../shared/utils/validator';
 import pool from '../../core/db';
+import { NotificationService, NotificationTableUnavailableError } from '../../core/notification/NotificationService';
 
 export class UserController {
+    private static readonly UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
     private static log(stage: string, message: string, data?: any): void {
         const ts = new Date().toISOString();
         const detail = data !== undefined ? ` | ${JSON.stringify(data)}` : '';
         console.log(`[User][${stage}] ${ts} ${message}${detail}`);
     }
 
-    private static async requireAuth(req: Request): Promise<{ ok: true; openid: string } | { ok: false; code: number; message: string }> {
+    private static async requireAuth(req: Request): Promise<{ ok: true; id: string; openid: string } | { ok: false; code: number; message: string }> {
         // 优先从 Authorization: Bearer <token> header 读取（App/H5 标准方式）
         let token: string | undefined;
         const authHeader = req.headers.authorization;
@@ -27,7 +31,12 @@ export class UserController {
         if (!token) return { ok: false, code: 401, message: '未登录' };
         const payload = verifyJwt(token, process.env.JWT_SECRET!);
         if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
-        return { ok: true, openid: payload.openid };
+        // token-revocation Step 2：验签通过后查黑名单（读侧 fail-open，命中即拒绝）
+        if (await isTokenRevoked(payload.jti)) return { ok: false, code: 401, message: REVOKED_MESSAGE };
+        // 信任 JWT 载荷（不查库，见设计 §3）：id 为统一账户主键；旧 token 无 id 时用 openid 回填。
+        // 手机号账户 openid 为空串，下游关联表按 openid 查询自然为空，符合"其余关联表本期不动"。
+        const id = payload.id ?? payload.openid;
+        return { ok: true, id, openid: payload.openid };
     }
 
     private static extractSymbols(req: Request, allowQuery = true): string[] {
@@ -41,24 +50,32 @@ export class UserController {
         return [];
     }
 
-    private static async buildFavoritesResponse(res: Response, openid: string): Promise<void> {
+    /** 自选股定位列：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行） */
+    private static favoritesScope(id: string, openid: string): { where: string; params: string[] } {
+        return { where: 'us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2)', params: [id, openid] };
+    }
+
+    private static async buildFavoritesResponse(res: Response, id: string, openid: string): Promise<void> {
         const userResult = await pool.query(
-            'SELECT openid, nickname, avatar_url, created_at FROM users WHERE openid = $1',
-            [openid],
+            'SELECT id, openid, phone, nickname, avatar_url, created_at FROM users WHERE id = $1',
+            [id],
         );
         const user = userResult.rows[0];
 
+        const scope = UserController.favoritesScope(id, openid);
         const stocksResult = await pool.query(
-            `SELECT us.symbol, s.name, s.market, us.created_at
+            `SELECT us.symbol, s.name, s.market, us.created_at, us.sort_order
              FROM user_stocks us
              LEFT JOIN stocks s ON us.symbol = s.symbol
-             WHERE us.openid = $1
-             ORDER BY us.created_at DESC`,
-            [openid],
+             WHERE ${scope.where}
+             ORDER BY us.sort_order ASC, us.created_at DESC`,
+            scope.params,
         );
 
         createResponse(res, 200, 'success', {
-            openid: user?.openid || openid,
+            id: user?.id || id,
+            openid: user?.openid || openid || null,
+            phone: user?.phone ?? null,
             nickname: user?.nickname || '',
             avatar_url: user?.avatar_url || '',
             created_at: user?.created_at || null,
@@ -67,6 +84,7 @@ export class UserController {
                 股票简称: s.name || null,
                 市场代码: s.market || null,
                 添加时间: s.created_at || null,
+                排序: s.sort_order ?? 0,
             })),
         });
     }
@@ -79,39 +97,49 @@ export class UserController {
             createResponse(res, auth.code, auth.message);
             return;
         }
-        const { openid } = auth;
+        const { id, openid } = auth;
 
+        // 唯一按 id 查库处：拉取最新绑定状态（手机/邮箱/微信），供账号安全页展示
         const userResult = await pool.query(
-            'SELECT openid, nickname, avatar_url, created_at FROM users WHERE openid = $1',
-            [openid],
+            'SELECT id, openid, phone, email, nickname, avatar_url, created_at, is_vip FROM users WHERE id = $1',
+            [id],
         );
         const user = userResult.rows[0];
 
         if (!user) {
-            UserController.log('me', '❌ 用户不存在', { openid });
+            UserController.log('me', '❌ 用户不存在', { id, openid });
             createResponse(res, 404, '用户不存在');
             return;
         }
 
+        const scope = UserController.favoritesScope(id, openid);
         const stocksResult = await pool.query(
-            `SELECT us.symbol, s.name, s.market, us.created_at
+            `SELECT us.symbol, s.name, s.market, us.created_at, us.sort_order
              FROM user_stocks us
              LEFT JOIN stocks s ON us.symbol = s.symbol
-             WHERE us.openid = $1
-             ORDER BY us.created_at DESC`,
-            [openid],
+             WHERE ${scope.where}
+             ORDER BY us.sort_order ASC, us.created_at DESC`,
+            scope.params,
         );
 
         createResponse(res, 200, 'success', {
-            openid: user.openid,
+            id: user.id,
+            openid: user.openid ?? null,
+            phone: user.phone ?? null,
+            email: user.email ?? null,
             nickname: user.nickname,
             avatar_url: user.avatar_url,
             created_at: user.created_at,
+            is_vip: !!user.is_vip,
+            wechatBound: !!user.openid,
+            phoneBound: !!user.phone,
+            emailBound: !!user.email,
             自选股: stocksResult.rows.map((s: any) => ({
                 股票代码: s.symbol,
                 股票简称: s.name || null,
                 市场代码: s.market || null,
                 添加时间: s.created_at || null,
+                排序: s.sort_order ?? 0,
             })),
         });
     }
@@ -124,7 +152,7 @@ export class UserController {
             createResponse(res, auth.code, auth.message);
             return;
         }
-        const { openid } = auth;
+        const { id, openid } = auth;
 
         const symbols = UserController.extractSymbols(req);
         if (symbols.length === 0) {
@@ -138,15 +166,28 @@ export class UserController {
             return;
         }
 
+        // 新加入的自选股放到列表末尾：sort_order = 当前最大 +1（老数据未迁移时为 0，天然靠前）
+        const scope = UserController.favoritesScope(id, openid);
+        // favoritesScope 的 WHERE 用 us. 前缀，FROM 必须给 user_stocks 起别名 us，否则 "missing FROM-clause entry for table us"
+        const maxOrderResult = await pool.query(
+            `SELECT COALESCE(MAX(sort_order), 0)::int AS max_order FROM user_stocks us
+             WHERE ${scope.where}`,
+            scope.params,
+        );
+        let nextOrder = (maxOrderResult.rows[0]?.max_order ?? 0) + 1;
+        // 归属按 user_id（统一主键）；openid 手机号用户为空时写 NULL（部分唯一索引 WHERE openid IS NOT NULL 排除，防跨用户冲突）
+        const openidForDb = openid || null;
         for (const sym of validSymbols) {
+            // 已存在的自选股不改变其顺序，仅新增的按序分配；ON CONFLICT DO NOTHING 覆盖两枚部分唯一索引
             await pool.query(
-                'INSERT INTO user_stocks (openid, symbol) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-                [openid, sym],
+                `INSERT INTO user_stocks (user_id, openid, symbol, sort_order) VALUES ($1, $2, $3, $4)
+                 ON CONFLICT DO NOTHING`,
+                [id, openidForDb, sym, nextOrder++],
             );
         }
 
-        UserController.log('addFavorites', '✅ 添加完成', { openid, count: validSymbols.length });
-        await UserController.buildFavoritesResponse(res, openid);
+        UserController.log('addFavorites', '✅ 添加完成', { id, count: validSymbols.length });
+        await UserController.buildFavoritesResponse(res, id, openid);
     }
 
     static async removeFavorites(req: Request, res: Response, _next: NextFunction): Promise<void> {
@@ -157,7 +198,7 @@ export class UserController {
             createResponse(res, auth.code, auth.message);
             return;
         }
-        const { openid } = auth;
+        const { id, openid } = auth;
 
         const isDelete = req.method === 'DELETE';
         const symbols = UserController.extractSymbols(req, !isDelete);
@@ -174,13 +215,42 @@ export class UserController {
 
         for (const sym of validSymbols) {
             await pool.query(
-                'DELETE FROM user_stocks WHERE openid = $1 AND symbol = $2',
-                [openid, sym],
+                'DELETE FROM user_stocks WHERE symbol = $1 AND (user_id = $2 OR (user_id IS NULL AND openid = $3))',
+                [sym, id, openid],
             );
         }
 
-        UserController.log('removeFavorites', '✅ 删除完成', { openid, count: validSymbols.length });
-        await UserController.buildFavoritesResponse(res, openid);
+        UserController.log('removeFavorites', '✅ 删除完成', { id, count: validSymbols.length });
+        await UserController.buildFavoritesResponse(res, id, openid);
+    }
+
+    /** 保存自选股拖拽排序：body { symbols: string[] }，按数组顺序写入 sort_order（0 起） */
+    static async saveFavoritesOrder(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        UserController.log('saveFavoritesOrder', '收到保存自选股排序请求');
+
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const { id, openid } = auth;
+
+        const symbols = UserController.extractSymbols(req);
+        if (symbols.length === 0) {
+            createResponse(res, 400, '缺少 symbols 参数');
+            return;
+        }
+
+        // 只更新该用户自选内的 symbol；不在自选中的忽略（防篡改/越权）
+        for (let i = 0; i < symbols.length; i++) {
+            await pool.query(
+                'UPDATE user_stocks SET sort_order = $1 WHERE symbol = $2 AND (user_id = $3 OR (user_id IS NULL AND openid = $4))',
+                [i, symbols[i], id, openid],
+            );
+        }
+
+        UserController.log('saveFavoritesOrder', '✅ 排序保存完成', { id, count: symbols.length });
+        await UserController.buildFavoritesResponse(res, id, openid);
     }
 
     static async getPushNews(req: Request, res: Response, _next: NextFunction): Promise<void> {
@@ -408,5 +478,55 @@ export class UserController {
             enabled: Number(updated?.enabled ?? enabledValue) === 1,
             updated_at: updated?.updated_at || null,
         });
+    }
+
+    static async listNotifications(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+        const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+        try {
+            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor));
+        } catch (error) {
+            UserController.respondNotificationError(res, error, '通知读取失败');
+        }
+    }
+
+    static async markNotificationsRead(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        const rawIds = Array.isArray(req.body?.ids)
+            ? req.body.ids.map((id: unknown) => String(id)).filter(Boolean).slice(0, 50)
+            : [];
+        if (!rawIds.length) {
+            createResponse(res, 400, '缺少 ids 参数');
+            return;
+        }
+        // 通知 id 是 UUID，非法值直接落到 $2::uuid[] 会让 PG 抛类型错误并被外层当成 500
+        const ids = rawIds.filter((id: string) => UserController.UUID_PATTERN.test(id));
+        if (!ids.length) {
+            createResponse(res, 400, 'ids 需为合法的通知 ID');
+            return;
+        }
+        try {
+            await NotificationService.markRead(auth.openid, ids);
+            createResponse(res, 200, 'success', { ids });
+        } catch (error) {
+            UserController.respondNotificationError(res, error, '通知状态更新失败');
+        }
+    }
+
+    private static respondNotificationError(res: Response, error: unknown, fallback: string): void {
+        if (error instanceof NotificationTableUnavailableError) {
+            createResponse(res, 503, '通知服务暂不可用');
+            return;
+        }
+        createResponse(res, 500, error instanceof Error ? error.message : fallback);
     }
 }

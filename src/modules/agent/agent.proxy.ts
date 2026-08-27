@@ -23,15 +23,22 @@ import { Router, type Request, type Response, type NextFunction } from 'express'
 import http from 'http';
 import https from 'https';
 import { URL } from 'url';
+import { verifyJwt } from '../../shared/utils/jwt';
+import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 
 export interface AgentProxyOptions {
   /** Python FastAPI 基地址，例如 `http://localhost:8000` */
   target: string;
   /** 注入到上游请求的 `X-Internal-Token` 值（Python 侧 `internal_api_token`） */
   internalToken: string;
+  /** P0：JWT 验签密钥（chat 路径鉴权；缺省空串时 verifyJwt 仍可运行但等同不鉴权） */
+  jwtSecret: string;
   /** 连接/响应错误时的日志回调，默认 `console.error` */
   onError?: (err: NodeJS.ErrnoException, context: { method: string; url: string }) => void;
 }
+
+/** P0：chat 三入口（HTTP 降级路径）——加 JWT 校验 + 覆写 body user_id；其余路径行为零变化 */
+const CHAT_PATHS = new Set(['/chat/message', '/chat/stream/messages', '/chat/stream/updates']);
 
 /** 不应转发给上游的 hop-by-hop / 代理控制请求头 */
 const HOP_BY_HOP_REQUEST = new Set<string>([
@@ -155,22 +162,17 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
     next();
   });
 
-  router.use((req: Request, res: Response, _next: NextFunction) => {
-    // 复制客户端请求头，剔除 hop-by-hop，并注入 X-Internal-Token（覆写，防伪造）
-    const headers: http.OutgoingHttpHeaders = {};
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (HOP_BY_HOP_REQUEST.has(key.toLowerCase())) continue;
-      headers[key] = value;
-    }
-    headers['x-internal-token'] = internalToken;
-
-    // 转发原始路径（含 /api/agent 前缀 + query），与 Python 路由前缀一致 —— 不做路径重写
-    const upstreamUrl = targetUrl.origin + req.originalUrl;
-
-    const upstreamReq = transport.request(upstreamUrl, {
-      method: req.method,
-      headers,
-    });
+  /**
+   * 创建上游请求并统一处理响应/错误/关闭（chat 路径与 pipe 路径共用，DRY）。
+   * 返回 upstreamReq 供调用方决定 body 发送方式（end(buffer) 或 pipe）。
+   */
+  const createUpstreamRequest = (
+    req: Request,
+    res: Response,
+    headers: http.OutgoingHttpHeaders,
+    upstreamUrl: string,
+  ): http.ClientRequest => {
+    const upstreamReq = transport.request(upstreamUrl, { method: req.method, headers });
 
     upstreamReq.on('response', (upstreamRes: http.IncomingMessage) => {
       const status = upstreamRes.statusCode ?? 502;
@@ -184,22 +186,11 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
       // 直接 pipe：不缓冲，SSE chunk 实时透传
       upstreamRes.pipe(res);
 
-      // 响应流错误处理：Node 的 pipe() 不会把源流的 'error' 转发到目标流，
-      // 也不会在源流出错时结束目标流。若上游连接在流式中途断开
-      // （ECONNRESET / socket 超时 / Python 在长 SSE 连接中崩溃），upstreamRes 会 emit 'error'。
-      // 若无监听器，Node 视为未捕获异常并抛出 → 整个 API 进程崩溃。
-      // 注意：upstreamReq.on('error', failWith502) 只覆盖连接/请求阶段错误；
-      // 进入响应阶段后 socket 错误由 upstreamRes 而非 upstreamReq emit（已通过调试脚本验证）。
+      // 响应流中途断开（ECONNRESET / Python 崩溃 / socket 超时）：结束客户端响应，销毁上游
       upstreamRes.on('error', (err: NodeJS.ErrnoException) => {
         logError(err, { method: req.method, url: req.originalUrl });
-        // 结束客户端响应，避免前端连接挂起（此时 writeHead 已发送，无法再改状态码）
-        if (!res.writableEnded) {
-          res.end();
-        }
-        // 销毁上游请求，释放 socket
-        if (!upstreamReq.destroyed) {
-          upstreamReq.destroy();
-        }
+        if (!res.writableEnded) res.end();
+        if (!upstreamReq.destroyed) upstreamReq.destroy();
       });
     });
 
@@ -224,17 +215,93 @@ export function createAgentProxy(options: AgentProxyOptions): Router {
     // （属于正常流程，并非断开信号），若据此 destroy upstreamReq 会把每个正常请求都中断 → ECONNRESET。
     // res 'close' 在响应流关闭时触发：此时若 writableEnded 仍为 false，才说明客户端提前断开。
     res.on('close', () => {
-      if (!res.writableEnded && !upstreamReq.destroyed) {
-        upstreamReq.destroy();
-      }
+      if (!res.writableEnded && !upstreamReq.destroyed) upstreamReq.destroy();
     });
     req.on('error', (err: NodeJS.ErrnoException) => {
       logError(err, { method: req.method, url: req.originalUrl });
       if (!upstreamReq.destroyed) upstreamReq.destroy();
     });
 
-    // 原始请求体直接 pipe 到上游（未经 express.json 消费）
-    req.pipe(upstreamReq);
+    return upstreamReq;
+  };
+
+  /**
+   * 读取请求体到 Buffer（chat 路径需要改写 body，不能直接 pipe）。
+   * 大小上限 10MB，与 index.ts `express.json({ limit: '10mb' })` 对齐；超限返回 413（防内存耗尽 + 防客户端挂起）。
+   */
+  const collectRequestBody = (req: Request, res: Response, cb: (body: Buffer) => void): void => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (c: Buffer) => {
+      total += c.length;
+      if (total > 10 * 1024 * 1024) {
+        res.status(413).json({ code: 413, message: 'request body too large' });
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => cb(Buffer.concat(chunks)));
+  };
+
+  router.use(async (req: Request, res: Response) => {
+    // P0：chat 路径鉴权。无 token 放行（user_id=None，保持"登录非必须"）；
+    // 有 token 必须验签通过，否则 401（绝不透传非法 token 到上游）。
+    const normalized = normalizePath(req.path);
+    const isChatPath = normalized !== null && CHAT_PATHS.has(normalized);
+    const authHeader = req.headers.authorization ?? '';
+    const bearer = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+    let openid: string | null = null;
+    if (isChatPath && bearer) {
+      const payload = verifyJwt(bearer, options.jwtSecret);
+      if (!payload) {
+        res.status(401).json({ code: 401, message: 'unauthorized' });
+        return;
+      }
+      // token-revocation Step 2：已撤销凭证 → 401，绝不透传到上游
+      if (await isTokenRevoked(payload.jti)) {
+        res.status(401).json({ code: 401, message: REVOKED_MESSAGE });
+        return;
+      }
+      openid = payload.openid;
+    }
+
+    // 复制客户端请求头，剔除 hop-by-hop，并注入 X-Internal-Token（覆写，防伪造）
+    const headers: http.OutgoingHttpHeaders = {};
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (HOP_BY_HOP_REQUEST.has(key.toLowerCase())) continue;
+      headers[key] = value;
+    }
+    headers['x-internal-token'] = internalToken;
+
+    // 转发原始路径（含 /api/agent 前缀 + query），与 Python 路由前缀一致 —— 不做路径重写
+    const upstreamUrl = targetUrl.origin + req.originalUrl;
+
+    if (isChatPath) {
+      // P0：读 body → 覆写 user_id（openid 或 null，擦除客户端自报值）→ 转发。
+      // content-length 需在创建请求前确定（Node http 创建后改 headers 不生效）。
+      collectRequestBody(req, res, (body) => {
+        let finalBody = body;
+        const text = body.toString('utf8');
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            (parsed as Record<string, unknown>).user_id = openid;
+            finalBody = Buffer.from(JSON.stringify(parsed), 'utf8');
+          }
+        } catch {
+          // 非 JSON 体：原样转发（不破坏既有行为）
+        }
+        const finalHeaders: http.OutgoingHttpHeaders = { ...headers };
+        finalHeaders['content-length'] = String(finalBody.length);
+        const upstreamReq = createUpstreamRequest(req, res, finalHeaders, upstreamUrl);
+        upstreamReq.end(finalBody);
+      });
+    } else {
+      // 非 chat 路径：保持既有 pipe 原样转发（行为零变化）
+      const upstreamReq = createUpstreamRequest(req, res, headers, upstreamUrl);
+      req.pipe(upstreamReq);
+    }
   });
 
   return router;

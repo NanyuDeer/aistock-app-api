@@ -11,27 +11,107 @@ import pool from '../db'
 import { TencentQuoteService } from '../../modules/quote/TencentQuoteService'
 import { getSinaMoneyflow } from '../../modules/quote/SinaMoneyFlowService'
 import { getCapitalFlow } from '../../modules/quote/TushareCapitalFlowService'
+import { TushareKlineService } from '../../modules/quote/TushareKlineService'
 import { TushareTagLeaderService } from '../../modules/quote/TushareTagLeaderService'
 import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService'
 import { ThsService } from '../../modules/monitor/ThsService'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
+import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKeywordDetectorService'
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
-import { IndustryKGService } from '../../modules/monitor/IndustryKGService'
+import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { verifyJwt } from '../../shared/utils/jwt'
+import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist'
 // MarketSnapshotService 通过 namespace 导入：路由调用 MarketSnapshotService.getTodayCloseSnapshot()，
 // 与 brief 中 verbatim 路由代码一致；MarketSnapshotUnavailableError 用 instanceof 判别 409 分支。
 import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotService'
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
+import { MAX_SYMBOLS } from '../../modules/quote/indexController'
+import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 
 // Agent 报告类型枚举
-const VALID_REPORT_TYPES = [
+export const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
-    'broadcast', 'event_conduction', 'trend_score',
+    'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
+    'chat_analysis', 'event_scrape', 'midday',
 ]
+
+interface ChainSummaryItem {
+    industry: string
+    direction: string
+    impactStrength: number
+    reason: string
+}
+
+/**
+ * 从事件报告 content 中提取前端展示专用 chain_summary。
+ *
+ * 来源：content.analysis_reports.event_transmission.chain
+ * 规则：
+ *  - chain 缺失 / 非数组 → 返回 []
+ *  - 过滤 industry 为空的节点
+ *  - 按 impactStrength 降序
+ *  - 最多返回 5 条
+ *  - 不修改原 chain 结构
+ *
+ * 示例输出：
+ *  [ { industry: '石油石化', direction: 'bullish', impactStrength: 0.92, reason: '...' } ]
+ */
+function extractChainSummary(content: unknown): ChainSummaryItem[] {
+    if (!content || typeof content !== 'object') return []
+
+    const contentObj = content as Record<string, unknown>
+    const analysisReports = contentObj['analysis_reports']
+    if (!analysisReports || typeof analysisReports !== 'object') return []
+
+    const transmission = (analysisReports as Record<string, unknown>)['event_transmission']
+    if (!transmission || typeof transmission !== 'object') return []
+
+    const chain = (transmission as Record<string, unknown>)['chain']
+    if (!Array.isArray(chain)) return []
+
+    const items: ChainSummaryItem[] = []
+    for (const node of chain) {
+        if (!node || typeof node !== 'object') continue
+        const item = node as Record<string, unknown>
+        const industry = typeof item['industry'] === 'string' ? item['industry'].trim() : ''
+        // 过滤无效行业（industry 为空不返回）
+        if (!industry) continue
+        items.push({
+            industry,
+            direction: typeof item['direction'] === 'string' ? item['direction'] : 'neutral',
+            impactStrength: typeof item['impactStrength'] === 'number' ? item['impactStrength'] : 0,
+            reason: typeof item['reason'] === 'string' ? item['reason'] : '',
+        })
+    }
+
+    // 按 impactStrength 降序，最多 5 条
+    return items
+        .sort((a, b) => b.impactStrength - a.impactStrength)
+        .slice(0, 5)
+}
+
+/**
+ * 事件卡片展示过滤条件（展示层，仅用于 GET /api/agent/event/list，不删除任何数据）。
+ *
+ * 判断"事件整体结论"而非 chain 是否含 bullish/bearish：
+ * 1. transmission.chain 非空（chain 为空 = 未形成明确行业传导 → 不展示）
+ * 2. event_investment.rating != 'neutral'（rating 为系统定义的"事件整体方向"：
+ *    positive=整体偏积极/看好、negative=整体偏谨慎/看空、neutral=中性）
+ *    - rating 缺失（event_investment 为 null，如旧数据/LLM Call4 失败）视为非中性，
+ *      避免误杀 chain 有明确方向的正常事件
+ *    - chain 中存在 neutral/bearish 节点不影响展示，只要整体结论非中性即可
+ * 说明：不通过 investment.focusIndustries 是否为空判断；不影响详情接口与落库数据。
+ */
+const EVENT_LIST_DISPLAY_FILTER_SQL = `
+  AND jsonb_typeof(content->'analysis_reports'->'event_transmission'->'chain') = 'array'
+  AND jsonb_array_length(content->'analysis_reports'->'event_transmission'->'chain') > 0
+  AND (content->'analysis_reports'->'event_investment'->>'rating') IS DISTINCT FROM 'neutral'`;
 
 const router: Router = Router()
 
@@ -75,6 +155,19 @@ function errMsg(err: unknown): string {
 }
 
 /**
+ * 安全解析 jsonb/json 字段：pg 驱动已将 json 解析为 JS 对象/数组，
+ * 对已是数组的值直接返回，字符串才 JSON.parse，异常时回退空数组。
+ * 避免裸 JSON.parse 在值为数组对象时（先 toString 成 "47,85,65,49"）抛 502。
+ */
+function parseJsonSafe(val: unknown): unknown[] {
+    if (Array.isArray(val)) return val
+    if (typeof val === 'string') {
+        try { return JSON.parse(val) } catch { return [] }
+    }
+    return []
+}
+
+/**
  * GET /internal/health
  * 轻量健康探针，供 Python Agent 服务 /health/ready 探测 Node.js 连通性。
  *
@@ -87,6 +180,74 @@ router.get('/health', (_req: Request, res: Response) => {
 })
 
 router.use(verifyInternalToken)
+
+/**
+ * GET /internal/ths/index-map
+ * 同花顺 885/886 板块指数全表（板块名 → ts_code 映射，进程缓存 + 6h TTL）。
+ *
+ * 供 Python Agent 预测验证器（M2 roadmap）板块名匹配用。
+ *
+ * - 200: { code: 200, data: { ts_codes: [{ ts_code, name, count, exchange, list_date, type }], updated_at } }
+ * - 502: 取数失败
+ */
+router.get('/ths/index-map', async (_req: Request, res: Response) => {
+    try {
+        const data = await getIndexMap()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/index-map error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/ths/resolve
+ * 板块名 → ts_code 三级匹配（归一化精确 → 归一化双向包含 → 未命中 null）。
+ * 归一化：去空格/全角括号、剥「概念/板块/行业/产业链」后缀、小写。
+ *
+ * - 200: { code: 200, data: { matched: { ts_code, name } | null } }（未命中 matched: null，非 404）
+ * - 400: name 缺失或为空
+ * - 502: 服务异常
+ */
+router.get('/ths/resolve', async (req: Request, res: Response) => {
+    const name = String(req.query.name || '').trim()
+    if (!name) return res.status(400).json({ code: 400, message: 'name 必填' })
+    try {
+        const matched = await resolveBoardName(name)
+        res.json({ code: 200, data: { matched } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/resolve error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+const CODE_RE = /^\d{6}\.TI$/i
+
+/**
+ * GET /internal/ths/:code/daily
+ * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
+ *
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
+ * - 502: 服务异常
+ */
+router.get('/ths/:code/daily', async (req: Request, res: Response) => {
+    const code = String(req.params.code || '').toUpperCase()
+    const start = String(req.query.start || '')
+    const end = String(req.query.end || '')
+    const YM = /^\d{8}$/
+    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    }
+    try {
+        const rows = await getBoardDailyRange(code, start, end)
+        res.json({ code: 200, data: { ts_code: code, days: rows.length, rows } })
+    } catch (err: unknown) {
+        console.error(`[Internal] ths/${code}/daily error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
 
 /**
  * GET /internal/quote/:symbol
@@ -104,6 +265,108 @@ router.get('/quote/:symbol', async (req: Request, res: Response) => {
     } catch (err: any) {
         console.error(`[Internal] quote/${symbol} error:`, err.message)
         res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/quote/:symbol/kline
+ * 个股日 K 线（P5 D41，复用 TushareKlineService，与公开 /api/cn/stock/quotes/kline 同源）
+ *
+ * - 200: { code: 200, data: { symbol, klt, days, rows } }
+ * - 400: symbol 非 6 位 / klt≠101 / days∉[1,120] / fqt∉[0,2]
+ * - 502: 服务异常
+ */
+router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 120) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-120 的整数' })
+    }
+    const klt = queryInt(req, 'klt', 101)
+    if (klt !== 101) {
+        return res.status(400).json({ code: 400, message: 'Invalid klt — 对话场景仅支持日线 (101)' })
+    }
+    const fqt = queryInt(req, 'fqt', 1)
+    if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
+        return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
+    }
+    try {
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
+        // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
+        // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+    } catch (err: unknown) {
+        console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
+ * 指数必须走 index_daily（Tushare），且不经 getStockIdentity——000001 会被误判为深市个股。
+ * - 200: { code: 200, data: { code, klt: 101, days, rows } }
+ * - 400: code 不在指数映射 / days 非 1-200 整数
+ * - 502: 服务异常
+ */
+const INDEX_CODE_TO_TS: Record<string, string> = {
+    '000001': '000001.SH', // 上证指数
+    '000300': '000300.SH', // 沪深300
+    '000688': '000688.SH', // 科创50
+    '399001': '399001.SZ', // 深证成指
+    '399006': '399006.SZ', // 创业板指
+}
+
+router.get('/index/:code/kline', async (req: Request, res: Response) => {
+    const code = param(req, 'code')
+    const tsCode = INDEX_CODE_TO_TS[code]
+    if (!tsCode) {
+        return res.status(400).json({ code: 400, message: 'Invalid index code — 支持: 000001/000300/000688/399001/399006' })
+    }
+    const days = queryInt(req, 'days', 30)
+    if (!Number.isInteger(days) || days < 1 || days > 200) {
+        return res.status(400).json({ code: 400, message: 'Invalid days — days 必须是 1-200 的整数' })
+    }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（H9 向后兼容）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
+    try {
+        // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
+        const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
+        const clean = rows.map((r) => ({
+            trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
+            open: r.open ?? r['开盘价'] ?? null,
+            high: r.high ?? r['最高价'] ?? null,
+            low: r.low ?? r['最低价'] ?? null,
+            close: r.close ?? r['收盘价'] ?? null,
+            pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+        }))
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { code, klt: 101, days: filtered.length, rows: filtered } })
+    } catch (err: unknown) {
+        console.error(`[Internal] index/${code}/kline error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
 
@@ -184,6 +447,29 @@ router.get('/news/latest', async (req: Request, res: Response) => {
         res.json({ code: 200, data })
     } catch (err: any) {
         console.error('[Internal] news/latest error:', err.message)
+        res.status(500).json({ code: 500, message: err.message })
+    }
+})
+
+/**
+ * GET /internal/news/telegraph
+ * 财联社当日全量电报流（溯源用，按日期分页拉取）
+ *
+ * 注册在 /news/fulltext/:id 等参数化路由之前，避免 "telegraph" 被 :param 匹配。
+ */
+router.get('/news/telegraph', async (req: Request, res: Response) => {
+    const date = req.query.date as string
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return res.status(400).json({ code: 400, message: 'Invalid date — 必须是 YYYY-MM-DD' })
+    }
+
+    const limit = Math.min(parseInt(req.query.limit as string) || 200, 500)
+
+    try {
+        const data = await ClsStockNewsService.fetchTelegraphByDate(date, { limit })
+        res.json({ code: 200, data })
+    } catch (err: any) {
+        console.error('[Internal] news/telegraph error:', err.message)
         res.status(500).json({ code: 500, message: err.message })
     }
 })
@@ -283,6 +569,34 @@ router.get('/performance-report/:symbol', async (req: Request, res: Response) =>
 })
 
 /**
+ * GET /internal/stock/resolve
+ * 中文股票名称 → 6 位代码（复用 HotKeywordDetectorService 的 A 股名称映射，stocks 表/Tushare stock_basic）
+ *
+ * - 200：{ code: 200, data: { name: "贵州茅台", symbol: "600519" } }
+ * - 400：name 参数缺失或为空
+ * - 404：未找到匹配股票
+ * - 502：服务异常
+ */
+router.get('/stock/resolve', async (req: Request, res: Response) => {
+    const name = (queryStr(req, 'name') || '').trim()
+    if (!name) {
+        return res.status(400).json({ code: 400, message: 'name 参数缺失或为空' })
+    }
+
+    try {
+        await loadStockNameMap()
+        const hit = resolveStockName(name)
+        if (!hit) {
+            return res.status(404).json({ code: 404, message: '未找到匹配股票' })
+        }
+        res.json({ code: 200, data: { name: hit.name, symbol: hit.symbol } })
+    } catch (err: unknown) {
+        console.error('[Internal] stock/resolve error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/performance-reports/latest
  * 最新披露业绩报告列表（默认正式报告，按公告日倒序）
  *
@@ -360,6 +674,56 @@ router.get('/performance-reports/latest', async (req: Request, res: Response) =>
     }
 })
 
+// ==================== 个股事件识别：股票基础信息接口 ====================
+// GET /internal/stocks/basic — 全量 A 股基础信息，供 Python 股票名称实体匹配
+// （stock_event_detector.company_event_rule）。只读 + verifyInternalToken 鉴权 +
+// 内存 TTL 缓存，避免 Python 侧每次事件归一化重复拉取。数据复用 stocks 表
+// （symbol/name/industry，Tushare stock_basic 同步，与 /api/cn/stocks 同源）。
+
+interface StockBasicItem {
+    symbol: string;
+    name: string;
+    industry: string;
+}
+
+let stockBasicCache: StockBasicItem[] | null = null;
+let stockBasicCacheAt = 0;
+const STOCK_BASIC_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function getStockBasicList(): Promise<StockBasicItem[]> {
+    const now = Date.now();
+    if (stockBasicCache && now - stockBasicCacheAt < STOCK_BASIC_CACHE_TTL_MS) {
+        return stockBasicCache;
+    }
+    const result = await pool.query(
+        `SELECT symbol, name, industry FROM stocks WHERE name IS NOT NULL AND name <> ''`
+    );
+    stockBasicCache = (result.rows as StockBasicItem[]).map((row) => ({
+        symbol: String(row.symbol ?? ''),
+        name: String(row.name ?? ''),
+        industry: String(row.industry ?? ''),
+    }));
+    stockBasicCacheAt = now;
+    return stockBasicCache;
+}
+
+/**
+ * GET /internal/stocks/basic
+ * 全量 A 股基础信息（symbol/name/industry），供 Python 股票名称实体匹配。
+ *
+ * - 200：{ code: 200, data: [{ symbol, name, industry }, ...] }
+ * - 502：服务异常
+ */
+router.get('/stocks/basic', async (req: Request, res: Response) => {
+    try {
+        const data = await getStockBasicList();
+        res.json({ code: 200, data });
+    } catch (err: unknown) {
+        console.error('[Internal] stocks/basic error:', errMsg(err));
+        res.status(502).json({ code: 502, message: errMsg(err) });
+    }
+});
+
 // ==================== Phase 5: 新增 /internal/* 接口（供 Python Agent 调用） ====================
 // 以下 9 个路由对接 monitor 模块现有 Service，全部走 verifyInternalToken 鉴权。
 // Service 失败时返回 502 + 错误信息（区别于现有接口的 500）。
@@ -393,6 +757,7 @@ router.get('/monitor/alerts', async (req: Request, res: Response) => {
             change_type: queryStr(req, 'change_type'),
             limit: queryInt(req, 'limit', 20),
             offset: queryInt(req, 'offset', 0),
+            dateFrom: queryStr(req, 'dateFrom') || undefined,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
@@ -484,7 +849,7 @@ router.get('/trend/top', async (req: Request, res: Response) => {
             label: r.label,
             expectedMultiple: r.expected_multiple,
             scoreDate: r.score_date,
-            dimScores: JSON.parse(r.dim_scores as string || '[]'),
+            dimScores: parseJsonSafe(r.dim_scores),
             description: r.description,
         }))
 
@@ -543,7 +908,7 @@ router.get('/graph/:concept', async (req: Request, res: Response) => {
  * - industry: { id, name } 中心行业信息
  * - upstream: 上游行业列表（含 id, name, leadingStocks）
  * - downstream: 下游行业列表（含 id, name, leadingStocks）
- * - graphVersion: 图谱版本（当前系统无版本字段，返回 null）
+ * - graphVersion: 图谱版本（稳定常量，供 Agent 侧缓存边界校验）
  * - updatedAt: 图谱更新时间
  *
  * 注意：
@@ -612,12 +977,43 @@ router.get('/industry/:name/chain', async (req: Request, res: Response) => {
                 source: 'IndustryKGService',
                 upstream,
                 downstream,
-                graphVersion: null,  // 当前系统无版本字段
+                graphVersion: INDUSTRY_GRAPH_VERSION,  // 稳定图谱版本，Agent 缓存边界校验依赖非空字符串
                 updatedAt: graph.updateTime,
             },
         })
     } catch (err: unknown) {
         console.error(`[Internal] industry/${name}/chain error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/industry/graph
+ * 读取 IndustryKG 全图快照（B-5，裁决书 B 论题）。
+ * 供 Python build_iterate_cases 产片时采集 window_before.industry_graph
+ * （get_industry_graph_full）：返回 chains（上下游边）+ graph_update_time。
+ * 注意：必须在 /industry/:name/chain 之后注册不冲突（路径段数不同）；
+ * 图谱未初始化 → 502，采集侧降级 None 不阻断产片。
+ */
+router.get('/industry/graph', async (_req: Request, res: Response) => {
+    try {
+        const graph = IndustryKGService.getFullGraph()
+        res.json({
+            code: 200,
+            data: {
+                chains: graph.edges.map((edge) => ({
+                    source: edge.source,
+                    target: edge.target,
+                    confidence: edge.confidence,
+                })),
+                graph_update_time: graph.updateTime,
+                industry_count: graph.industryCount,
+                edge_count: graph.edgeCount,
+                concept_count: graph.conceptCount,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] industry/graph error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -633,7 +1029,7 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const rawMinResonance = queryStr(req, 'min_resonance')
         const minResonance = rawMinResonance === undefined
             ? undefined
-            : Math.min(Math.max(queryInt(req, 'min_resonance', 3), 2), 4)
+            : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 4)
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
@@ -650,13 +1046,16 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
 
 /**
  * GET /internal/institution-research
- * 机构调研推荐热门股检测结果（四信号源共振模型）
+ * 机构调研推荐热门股检测结果（三信号源共振模型）
  */
 router.get('/institution-research', async (req: Request, res: Response) => {
     try {
+        const rawMinResonanceCount = queryInt(req, 'min_resonance_count', 0)
         const data = await HotBurstService.getHotBurst({
             hours: queryInt(req, 'hours', 6),
-            minResonanceCount: queryInt(req, 'min_resonance_count', 0),
+            minResonanceCount: rawMinResonanceCount === 0
+                ? 0
+                : Math.min(Math.max(rawMinResonanceCount, 2), 4),
             limit: queryInt(req, 'limit', 20),
         })
         res.json({ code: 200, data })
@@ -670,15 +1069,20 @@ router.get('/institution-research', async (req: Request, res: Response) => {
  * GET /internal/market/close-snapshot
  * 当日 A 股大盘收盘事实快照（供 Python Agent 拉取当日收盘事实）
  *
+ * 可选 query 参数：?date=YYYY-MM-DD（历史交易日回补；缺省 = 当日）。
+ *
  * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
  * - 409：服务未就绪，data 含 status 与 reason：
- *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / 指数数据延迟
+ *   - status='not_ready' + reason='market_not_closed'：未收盘 / 非交易日 / date 格式非法 / 指数数据延迟
  *   - status='incomplete' + reason='incomplete_daily_coverage'：已收盘但 daily 覆盖残缺
  * - 502：其它意外异常（沿用既有 502 约定）
  */
-router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
+router.get('/market/close-snapshot', async (req: Request, res: Response) => {
+    const dateParam = queryStr(req, 'date')
     try {
-        const data = await MarketSnapshotService.getTodayCloseSnapshot()
+        const data = dateParam
+            ? await MarketSnapshotService.getCloseSnapshotByDate(dateParam)
+            : await MarketSnapshotService.getTodayCloseSnapshot()
         res.json({ code: 200, data })
     } catch (err: unknown) {
         if (err instanceof MarketSnapshotUnavailableError) {
@@ -689,6 +1093,94 @@ router.get('/market/close-snapshot', async (_req: Request, res: Response) => {
             return
         }
         console.error('[Internal] market/close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/market/last-close-snapshot
+ * 最近一个已完成交易日的收盘快照（跳过 15:30 时钟门禁）。
+ *
+ * 用途：在盘中或开盘前（如凌晨）需要昨日收盘数据时调用。Python review_full
+ * 链路在 close-snapshot 返回 409 时降级到此接口。
+ *
+ * - 200：data 为完整 CloseMarketSnapshot（status: 'complete'）
+ * - 409：数据不可用（非交易日连续回溯失败等）
+ * - 502：其它意外异常
+ */
+router.get('/market/last-close-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const data = await MarketSnapshotService.getLastCloseSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        if (err instanceof MarketSnapshotUnavailableError) {
+            res.status(409).json({
+                code: 409,
+                data: { status: err.status, reason: err.reason },
+            })
+            return
+        }
+        console.error('[Internal] market/last-close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/market/quick-snapshot
+ * 15:30 收盘后基于腾讯实时行情的简版收盘快照。
+ *
+ * - 200：data 为 CloseMarketSnapshot（snapshot_kind='quick'）
+ * - 409：未收盘（status='not_ready'）
+ * - 502：其它意外异常
+ */
+router.get('/market/quick-snapshot', async (_req: Request, res: Response) => {
+    try {
+        const { TencentSnapshotService } = await import('../../modules/quote/TencentSnapshotService')
+        const data = await TencentSnapshotService.buildQuickSnapshot()
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        const msg = errMsg(err)
+        if (msg.includes('market_not_closed')) {
+            res.status(409).json({
+                code: 409,
+                data: { status: 'not_ready', reason: 'market_not_closed' },
+            })
+            return
+        }
+        console.error('[Internal] market/quick-snapshot error:', msg)
+        res.status(502).json({ code: 502, message: msg })
+    }
+})
+
+/**
+ * GET /internal/index/quotes
+ * A 股指数快照（P5 工作线 B：对话快速指数源，复用 IndexQuoteController 缓存+腾讯源）
+ *
+ * - 200: { code: 200, data: { indices: [{ index, name, price, changePercent, changeAmount }] } }
+ * - 400: symbols 缺失 / 非 6 位数字 / 超 MAX_SYMBOLS
+ * - 502: 服务异常
+ */
+router.get('/index/quotes', async (req: Request, res: Response) => {
+    const symbolsParam = queryStr(req, 'symbols')
+    if (!symbolsParam) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数，示例: ?symbols=000001,399001,399006' })
+    }
+    const symbols = [...new Set(symbolsParam.split(',').map((s) => s.trim()).filter(Boolean))]
+    if (symbols.length === 0) {
+        return res.status(400).json({ code: 400, message: '缺少 symbols 参数' })
+    }
+    if (symbols.length > MAX_SYMBOLS) {
+        return res.status(400).json({ code: 400, message: `单次最多查询 ${MAX_SYMBOLS} 只指数` })
+    }
+    if (symbols.some((s) => !isValidAShareSymbol(s))) {
+        return res.status(400).json({ code: 400, message: '指数代码必须是6位数字（不带 sh/sz 前缀）' })
+    }
+    try {
+        const { IndexQuoteController } = await import('../../modules/quote/indexController')
+        const indices = await IndexQuoteController.fetchCnIndexQuotesData(symbols)
+        res.json({ code: 200, data: { indices } })
+    } catch (err: unknown) {
+        console.error('[Internal] index/quotes error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -897,6 +1389,169 @@ router.delete('/analysis-reports/cleanup', async (_req: Request, res: Response) 
     }
 })
 
+// ==================== Chat token 用量计费接口（P10 线 2） ====================
+
+/**
+ * POST /internal/usage/records
+ * 记录一次对话 token 用量（Python ws.py 计费回调）
+ *
+ * 请求体: { user_id(必填非空), session_id?, prompt_tokens, completion_tokens, total_tokens, question? }
+ * 成功: { code: 200, data: { id } }
+ * 400: user_id 空 / token 字段非非负整数（含 total_tokens<0）
+ */
+router.post('/usage/records', async (req: Request, res: Response) => {
+    const user_id = req.body.user_id ?? '';
+    const session_id = req.body.session_id ?? null;
+    const prompt_tokens = req.body.prompt_tokens ?? 0;
+    const completion_tokens = req.body.completion_tokens ?? 0;
+    const total_tokens = req.body.total_tokens ?? 0;
+    const question = req.body.question ?? null;
+
+    if (typeof user_id !== 'string' || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+    if (
+        !Number.isInteger(prompt_tokens) || prompt_tokens < 0 ||
+        !Number.isInteger(completion_tokens) || completion_tokens < 0 ||
+        !Number.isInteger(total_tokens) || total_tokens < 0
+    ) {
+        return res.status(400).json({ code: 400, message: 'token 字段必须是非负整数' });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO chat_token_usage
+                (user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question)
+             VALUES ($1, $2, $3, $4, $5, $6)
+             RETURNING id`,
+            [user_id, session_id, prompt_tokens, completion_tokens, total_tokens, question]
+        );
+        res.json({ code: 200, data: { id: result.rows[0]?.id ?? null } });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/records POST error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
+/**
+ * GET /internal/usage/summary?user_id=xxx
+ * 按 user_id 累计 token 用量（无记录全 0）
+ *
+ * 成功: { code: 200, data: { user_id, prompt_tokens, completion_tokens, total_tokens, turn_count } }
+ * 400: user_id 缺失
+ */
+router.get('/usage/summary', async (req: Request, res: Response) => {
+    const user_id = queryStr(req, 'user_id');
+    if (!user_id || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                COALESCE(SUM(total_tokens), 0) AS total_tokens,
+                COUNT(*) AS turn_count
+             FROM chat_token_usage
+             WHERE user_id = $1`,
+            [user_id]
+        );
+        const row = result.rows[0] ?? {};
+        res.json({
+            code: 200,
+            data: {
+                user_id,
+                prompt_tokens: Number(row.prompt_tokens ?? 0),
+                completion_tokens: Number(row.completion_tokens ?? 0),
+                total_tokens: Number(row.total_tokens ?? 0),
+                turn_count: Number(row.turn_count ?? 0),
+            },
+        });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/summary GET error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
+/**
+ * GET /internal/usage/sessions?user_id=xxx
+ * 会话维度 token 用量聚合（P10 线 4：会话列表 + 历史用量查询）。
+ *
+ * 只读聚合 chat_token_usage（session_id 由计划 B 的 ws.py 每轮写入），
+ * 按 session_id GROUP BY；pg 对 SUM(...)::bigint 返回 string，统一 Number() 数值化。
+ *
+ * 成功: { code: 200, data: { user_id, items: [{ session_id, turn_count,
+ *          total_tokens, prompt_tokens, completion_tokens, last_used_at }] } }
+ * 400: user_id 缺失或为空
+ */
+router.get('/usage/sessions', async (req: Request, res: Response) => {
+    const user_id = queryStr(req, 'user_id');
+    if (!user_id || user_id.trim() === '') {
+        return res.status(400).json({ code: 400, message: 'user_id is required' });
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT
+                session_id,
+                COUNT(*)::int AS turn_count,
+                SUM(total_tokens)::bigint AS total_tokens,
+                SUM(prompt_tokens)::bigint AS prompt_tokens,
+                SUM(completion_tokens)::bigint AS completion_tokens,
+                MAX(created_at) AS last_used_at
+             FROM chat_token_usage
+             WHERE user_id = $1 AND session_id IS NOT NULL
+             GROUP BY session_id
+             ORDER BY last_used_at DESC`,
+            [user_id]
+        );
+        const items = result.rows.map((row: Record<string, unknown>) => ({
+            session_id: row.session_id,
+            turn_count: Number(row.turn_count ?? 0),
+            total_tokens: Number(row.total_tokens ?? 0),
+            prompt_tokens: Number(row.prompt_tokens ?? 0),
+            completion_tokens: Number(row.completion_tokens ?? 0),
+            last_used_at: row.last_used_at ?? null,
+        }));
+        res.json({ code: 200, data: { user_id, items } });
+    } catch (err: unknown) {
+        console.error('[Internal] usage/sessions GET error:', errMsg(err));
+        res.status(500).json({ code: 500, message: errMsg(err) });
+    }
+});
+
+// ==================== 用户画像（Phase 4-3 全局用户记忆） ====================
+
+/**
+ * GET /internal/user-profile/:user_id
+ * 按 user_id 拉取用户画像（agent-py 对话入口注入用）
+ *
+ * - 200：{ code: 200, data: profile }（user_id/nickname/investment_preferences/risk_tolerance/updated_at）
+ * - 200 + {}：无记录（空画像，不 404——agent-py 无 profile 时零行为变化）
+ * - 400：user_id 缺失
+ * - 502：服务异常
+ */
+router.get('/user-profile/:userId', async (req: Request, res: Response) => {
+    const user_id = param(req, 'userId')
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+    try {
+        const result = await pool.query(
+            `SELECT user_id, nickname, investment_preferences, risk_tolerance, updated_at
+             FROM user_profiles
+             WHERE user_id = $1`,
+            [user_id]
+        )
+        const row = result.rows[0]
+        res.json({ code: 200, data: row ?? {} })
+    } catch (err: unknown) {
+        console.error('[Internal] user-profile GET error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 // ==================== 行业向量搜索（pgvector） ====================
 
 /**
@@ -996,14 +1651,17 @@ import path from 'path'
 import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { AzureMultiVoiceTtsProvider, type DialogueLine } from '../services/tts.service'
-import { readVolcenginePodcastOptions, VolcenginePodcastProvider } from '../services/volcenginePodcast.service'
+import { readVolcenginePodcastAccounts, VolcenginePodcastPool } from '../services/volcenginePodcast.service'
+import { parseSingleByteRange } from '../services/audioRange.service'
 
 const publicRouter: Router = Router()
 
 async function synthesizeBroadcast(lines: DialogueLine[]): Promise<Buffer> {
     const provider = process.env.TTS_PROVIDER || 'azure'
     if (provider === 'volcengine_podcast') {
-        return new VolcenginePodcastProvider(readVolcenginePodcastOptions(process.env)).synthesize(lines)
+        const accounts = readVolcenginePodcastAccounts(process.env)
+        const pool = new VolcenginePodcastPool(accounts)
+        return pool.synthesize(lines)
     }
 
     if (provider === 'azure') {
@@ -1072,7 +1730,7 @@ async function getAnalysisReport(report_type: string, report_date: string) {
  */
 async function getLatestAnalysisReport(report_type: string) {
     const result = await pool.query(
-        `SELECT id, report_type, report_date, content, data_source, status,
+        `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
                 generation_time_ms, model_version,
                 created_at AT TIME ZONE 'UTC' AS created_at
          FROM agent_analysis_reports
@@ -1142,6 +1800,67 @@ const BRIEF_REPORT_TYPES = {
     evening: 'brief_evening',
 } as const
 
+/**
+ * POST /internal/midday/generate-audio
+ * 请求体: { date: 'YYYY-MM-DD', dialogue: DialogueLine[] }。
+ * 接收午报播报双人对话（midday_broadcast agent 生成），合成完整 MP3，并回填
+ * 到当日 midday 报告 content.audio_path（同一份报告，方案 A）。
+ * 文件名约定 `midday-<date>.mp3`，与前端 parseMiddayReport.isMiddayAudioPath 期望一致。
+ */
+router.post('/midday/generate-audio', json(), async (req: Request, res: Response) => {
+    const date = typeof req.body?.date === 'string' ? req.body.date : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: 400, message: 'date 必须是 YYYY-MM-DD' })
+        return
+    }
+    const rawDialogue: unknown[] = Array.isArray(req.body?.dialogue) ? req.body.dialogue : []
+    if (!rawDialogue.length) {
+        res.status(400).json({ code: 400, message: 'dialogue 必须是非空数组' })
+        return
+    }
+
+    try {
+        const report = await getAnalysisReport('midday', date)
+        if (!report) {
+            res.status(404).json({ code: 404, message: 'midday 报告不存在' })
+            return
+        }
+
+        // 清洗对话行为 DialogueLine[]（仅 host/analyst + 非空 content），复用现有 TTS 合成
+        const lines: DialogueLine[] = rawDialogue.flatMap((item): DialogueLine[] => {
+            if (!item || typeof item !== 'object') return []
+            const { role, content } = item as Record<string, unknown>
+            if ((role !== 'host' && role !== 'analyst') || typeof content !== 'string' || !content.trim()) return []
+            return [{ role, content: content.trim() }]
+        })
+        if (!lines.length) {
+            res.status(400).json({ code: 400, message: 'dialogue 没有有效台词' })
+            return
+        }
+
+        const audio = await synthesizeBroadcast(lines)
+        const filename = `midday-${date}.mp3`
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        const filePath = path.join(audioDir, filename)
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        await fs.promises.writeFile(tempPath, audio)
+        await fs.promises.rename(tempPath, filePath)
+
+        const audioPath = `/api/agent/audio/${filename}`
+        await pool.query(
+            `UPDATE agent_analysis_reports
+             SET content = jsonb_set(content, '{audio_path}', to_jsonb($2::text), true)
+             WHERE id = $1`,
+            [(report as Record<string, unknown>).id, audioPath]
+        )
+        res.json({ code: 0, data: { audio_path: audioPath }, message: '' })
+    } catch (err: unknown) {
+        console.error('[Internal] midday/generate-audio error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 const BROADCAST_REPORT_TYPES = {
     morning: 'broadcast_morning',
     evening: 'broadcast_evening',
@@ -1174,11 +1893,24 @@ function reportDateMatches(value: unknown, expectedDate: string): boolean {
         && value.toISOString().slice(0, 10) === expectedDate
 }
 
+/**
+ * 校验 missing_sources 元素是否合法。支持两种形式：
+ * 1. 纯 report_type：如 "review"（briefing.py morning 分支）
+ * 2. 变体后缀：如 "review.sectors"（briefing.py evening 分支按 review 展示维度
+ *    细分缺失来源）。校验时取 "." 前缀做白名单判断，避免整份 Brief 因某个
+ *    展示维度缺失而被公开接口拒绝（防复发缺陷）。
+ */
+function isKnownBriefSourceType(source: string): boolean {
+    if (BRIEF_SOURCE_REPORT_TYPES.has(source)) return true
+    const dotIndex = source.indexOf('.')
+    return dotIndex > 0 && BRIEF_SOURCE_REPORT_TYPES.has(source.slice(0, dotIndex))
+}
+
 function hasValidDegradation(content: Record<string, unknown>): boolean {
     if (typeof content.degraded !== 'boolean' || !Array.isArray(content.missing_sources)) return false
     const missingSources = content.missing_sources
     return missingSources.every(
-        (source) => isNonEmptyString(source) && BRIEF_SOURCE_REPORT_TYPES.has(source),
+        (source) => isNonEmptyString(source) && isKnownBriefSourceType(source),
     )
         && new Set(missingSources).size === missingSources.length
         && (content.degraded ? missingSources.length > 0 : missingSources.length === 0)
@@ -1406,6 +2138,71 @@ publicRouter.get('/broadcast/:briefType/:date', async (req: Request, res: Respon
 })
 
 /**
+ * GET /api/agent/report/chat/:reportId
+ * 深度分析报告详情（公开接口，需 JWT Bearer 鉴权）
+ *
+ * chat_analysis 是私密对话内容（非 alert 等公开数据），report_id 自增主键可枚举，
+ * 必须服务端验签：user_id 取 token 的 openid（绝不信客户端参数，硬约束 6）。
+ * 不存在/非本人/过期（7 天 TTL）→ data: null，不泄露存在性。
+ *
+ * 注意：必须注册在 /report/:intent/:date 通用端点之前（Express 按注册顺序匹配，
+ * 否则 /report/chat/5 会被通用端点捕获 → intent='chat'、date='5' → 400）。
+ */
+publicRouter.get('/report/chat/:reportId', async (req: Request, res: Response) => {
+    // 鉴权：Bearer 优先、Cookie token= 兜底（与 requireAuth 提取逻辑同源，tokenBlacklist.extractTokenFromRequest）
+    const token = extractTokenFromRequest(req)
+    if (!token) {
+        res.status(401).json({ code: 401, message: '未登录' })
+        return
+    }
+    const payload = verifyJwt(token, process.env.JWT_SECRET!)
+    if (!payload) {
+        res.status(401).json({ code: 401, message: 'token 无效或已过期' })
+        return
+    }
+    // token-revocation Step 2：验签通过后查黑名单（命中即拒绝）
+    if (await isTokenRevoked(payload.jti)) {
+        res.status(401).json({ code: 401, message: REVOKED_MESSAGE })
+        return
+    }
+
+    const reportId = param(req, 'reportId')
+    if (!/^\d+$/.test(reportId)) {
+        res.status(400).json({ code: -1, message: `Invalid report_id: ${reportId}` })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                    generation_time_ms, model_version,
+                    created_at AT TIME ZONE 'UTC' AS created_at
+             FROM agent_analysis_reports
+             WHERE id = $1
+               AND report_type = 'chat_analysis'
+               AND user_id = $2
+               AND (expires_at IS NULL OR expires_at > NOW())
+             LIMIT 1`,
+            [reportId, payload.openid]
+        )
+        const row = result.rows.length > 0 ? result.rows[0] : null
+        // 不存在/非本人/过期 → data: null（不泄露存在性）
+        let data: unknown = null
+        if (row) {
+            if (row.content) {
+                row.content = cleanReportContent(row.content as Record<string, unknown>)
+            }
+            // id 为 BIGSERIAL，pg 返回 string，归一为 Number（repo 既有约定，见 usage 聚合注释）
+            data = { ...row, id: Number(row.id) }
+        }
+        res.json({ code: 0, data })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report/chat GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
  * GET /api/agent/report/:intent/:date
  * 获取 Agent 分析报告（公开接口，供前端调用）
  *
@@ -1450,6 +2247,61 @@ publicRouter.get('/report/:intent/:date', async (req: Request, res: Response) =>
 })
 
 /**
+ * GET /api/agent/report/alert/:symbol/:date
+ * 查询指定股票的异动分析报告（公开接口）
+ *
+ * alert 报告写入 DB 时 user_id = symbol，与通用 /report/:intent/:date 端点
+ * （过滤 user_id IS NULL）不兼容，故单独提供按 symbol 查询的端点。
+ *
+ * 路径参数：
+ * - symbol: 6位A股代码，如 603601
+ * - date: 报告日期 YYYY-MM-DD
+ *
+ * 响应：{ code: 0, data: { report_type, report_date, content: { symbol, display_report, podcast_brief } } | null }
+ */
+publicRouter.get('/report/alert/:symbol/:date', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    const date = param(req, 'date')
+
+    if (!isValidAShareSymbol(symbol)) {
+        res.status(400).json({ code: -1, message: `Invalid symbol: ${symbol}` })
+        return
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+
+    try {
+        // alert 报告 user_id = symbol，按 symbol + date 精确查询
+        // 时区处理与 getAnalysisReport 一致：覆盖 Asia/Shanghai 当日
+        const start = `${date}T00:00:00+08:00`
+        const end = `${date}T23:59:59+08:00`
+        const result = await pool.query(
+            `SELECT id, report_type, report_date::text AS report_date, content, data_source, status,
+                    generation_time_ms, model_version,
+                    created_at AT TIME ZONE 'UTC' AS created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'alert'
+               AND user_id = $1
+               AND report_date >= $2::timestamptz
+               AND report_date <= $3::timestamptz
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [symbol, start, end]
+        )
+        const row = result.rows.length > 0 ? result.rows[0] : null
+        if (row && row.content) {
+            row.content = cleanReportContent(row.content as Record<string, unknown>)
+        }
+        res.json({ code: 0, data: row })
+    } catch (err: unknown) {
+        console.error('[Public] agent/report/alert GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
  * GET /api/agent/audio/:filename
  * 获取播报音频文件（公开接口）
  *
@@ -1473,9 +2325,120 @@ publicRouter.get('/audio/:filename', (req: Request, res: Response) => {
         return
     }
 
+    const fileSize = fs.statSync(filePath).size
+    const rangeHeader = req.headers.range
+    const range = parseSingleByteRange(rangeHeader, fileSize)
+    res.setHeader('Accept-Ranges', 'bytes')
     res.setHeader('Content-Type', 'audio/mpeg')
-    const stream = fs.createReadStream(filePath)
+
+    if (rangeHeader && !range) {
+        res.setHeader('Content-Range', `bytes */${fileSize}`)
+        res.status(416).end()
+        return
+    }
+
+    const stream = range
+        ? fs.createReadStream(filePath, range)
+        : fs.createReadStream(filePath)
+    if (range) {
+        res.status(206)
+        res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${fileSize}`)
+        res.setHeader('Content-Length', String(range.end - range.start + 1))
+    } else {
+        res.setHeader('Content-Length', String(fileSize))
+    }
+    stream.on('error', () => res.destroy())
     stream.pipe(res)
+})
+
+/**
+ * POST /api/agent/brief/generate-podcast
+ * 通用播报生成（公开接口，单主播朗读文本）
+ *
+ * 请求体: { text: string, key: string }
+ * - text: 播报文本（podcast_brief，1-250字，约1分钟播报时长）
+ * - key: 缓存键（如 alert_603601_2026-08-01），用于文本落库和音频文件幂等
+ *
+ * 响应: { code: 0, data: { audio_url: string, cached: boolean } }
+ * - 文本先生成存库（podcast_cache 表），音频文件已存在时直接返回（cached: true），不重复合成
+ */
+publicRouter.post('/brief/generate-podcast', json(), async (req: Request, res: Response) => {
+    const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+    const key = typeof req.body?.key === 'string' ? req.body.key.trim() : ''
+
+    if (!text) {
+        res.status(400).json({ code: -1, message: 'text 不能为空' })
+        return
+    }
+    if (text.length > 250) {
+        res.status(400).json({ code: -1, message: 'text 长度不能超过 250 字（约1分钟播报时长）' })
+        return
+    }
+    if (!key) {
+        res.status(400).json({ code: -1, message: 'key 不能为空' })
+        return
+    }
+
+    // sanitize key：仅保留字母数字下划线连字符，防止路径遍历
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, '_')
+    if (!safeKey) {
+        res.status(400).json({ code: -1, message: 'key 无效' })
+        return
+    }
+
+    const filename = `podcast-${safeKey}.mp3`
+    const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+    const filePath = path.join(audioDir, filename)
+    const audioUrl = `/api/agent/audio/${filename}`
+
+    try {
+        // 文本先生成存库：按 key upsert 播报文本（幂等），避免每次依赖前端实时传参，7 天过期随清理任务删除
+        await pool.query(
+            `INSERT INTO podcast_cache (cache_key, text, status, audio_path)
+             VALUES ($1, $2, 'pending', '')
+             ON CONFLICT (cache_key) DO UPDATE SET
+                text = EXCLUDED.text,
+                status = 'pending',
+                error_message = NULL,
+                expires_at = NOW() + INTERVAL '7 days'`,
+            [safeKey, text]
+        )
+
+        // 缓存命中：音频文件已存在直接返回（cached: true）
+        if (fs.existsSync(filePath)) {
+            await pool.query(
+                `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+                [safeKey, audioUrl]
+            )
+            res.json({ code: 0, data: { audio_url: audioUrl, cached: true } })
+            return
+        }
+
+        // 单主播朗读：包装为单条 host 对话行，复用现有 synthesizeBroadcast
+        const lines: DialogueLine[] = [{ role: 'host', content: text }]
+        const audioBuffer = await synthesizeBroadcast(lines)
+
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.writeFile(tempPath, audioBuffer)
+        await fs.promises.rename(tempPath, filePath)
+
+        // 生成成功：回填音频路径与状态
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'completed', audio_path = $2 WHERE cache_key = $1`,
+            [safeKey, audioUrl]
+        )
+
+        res.json({ code: 0, data: { audio_url: audioUrl, cached: false } })
+    } catch (err: unknown) {
+        // 生成失败：标记 failed 并保留文本，前端可重试
+        await pool.query(
+            `UPDATE podcast_cache SET status = 'failed', error_message = $2 WHERE cache_key = $1`,
+            [safeKey, errMsg(err).slice(0, 500)]
+        ).catch(() => undefined)
+        console.error('[Public] generate-podcast error:', errMsg(err))
+        res.status(502).json({ code: -1, message: errMsg(err) })
+    }
 })
 
 /**
@@ -1489,41 +2452,117 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
     const page = Math.max(1, queryInt(req, 'page', 1))
     const pageSize = Math.min(Math.max(1, queryInt(req, 'pageSize', 10)), 100)
     const offset = (page - 1) * pageSize
+    // 可选事件类型筛选（2026-08-14，方案A：服务端筛选 + 服务端分页）：
+    // eventType 有值时在 WHERE 增加 content->>'event_type' = eventType，
+    // 先筛选再 ORDER BY / LIMIT / OFFSET；SELECT 与 COUNT 使用同一条件。
+    // 不传 eventType 时保持原行为（不追加条件、不追加参数）。
+    const eventType = (queryStr(req, 'eventType') || '').trim()
+    const eventTypeCond = (placeholder: string): string =>
+        eventType ? ` AND content->>'event_type' = ${placeholder}` : ''
 
     try {
-        const [dataResult, countResult] = await Promise.all([
+        const [dataResult, countResult, giResult] = await Promise.all([
             pool.query(
                 `SELECT id, report_date, user_id, content, created_at
                  FROM (
                    SELECT DISTINCT ON (user_id)
                      id, report_date, user_id, content, created_at
                    FROM agent_analysis_reports
-                   WHERE report_type = 'event_conduction'
+                   WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$3')}
                    ORDER BY user_id, created_at DESC
                  ) AS deduped
                  ORDER BY created_at DESC
                  LIMIT $1 OFFSET $2`,
-                [pageSize, offset]
+                eventType ? [pageSize, offset, eventType] : [pageSize, offset]
             ),
             pool.query(
                 `SELECT COUNT(DISTINCT user_id) AS total
                  FROM agent_analysis_reports
-                 WHERE report_type = 'event_conduction'`
+                 WHERE report_type = 'event_conduction'${EVENT_LIST_DISPLAY_FILTER_SQL}${eventTypeCond('$1')}`,
+                eventType ? [eventType] : []
+            ),
+            // 查询最新的 global_importance 报告
+            pool.query(
+                `SELECT content
+                 FROM agent_analysis_reports
+                 WHERE report_type = 'global_importance' AND status = 'completed'
+                 ORDER BY created_at DESC
+                 LIMIT 1`
             ),
         ])
+
+        // 构建 event_id → rank / direction / level 的映射
+        // 读取优先级（历史兼容三级回退）：
+        //   ① top_bullish_event / top_bearish_event（新 Schema）
+        //   ② current_focus_event / ongoing_significant_event（旧 Schema）
+        //   ③ events[]（最旧格式）
+        const giRankMap = new Map<string, number>()
+        const giDirectionMap = new Map<string, string>()
+        const giLevelMap = new Map<string, string>()
+        if (giResult.rows.length > 0) {
+            const giContent = (giResult.rows[0]['content'] as Record<string, unknown>) || {}
+
+            const applyGiEvent = (ev: Record<string, unknown> | undefined, rank: number): void => {
+                if (!ev) return
+                const eventId = String(ev['event_id'] || '')
+                if (eventId) {
+                    giRankMap.set(eventId, rank)
+                    giDirectionMap.set(eventId, String(ev['direction'] || ''))
+                    giLevelMap.set(eventId, String(ev['importance_level'] || ''))
+                }
+            }
+
+            const topBullish = giContent['top_bullish_event'] as Record<string, unknown> | undefined
+            const topBearish = giContent['top_bearish_event'] as Record<string, unknown> | undefined
+            if (topBullish || topBearish) {
+                // 新 Schema：最大利好 → rank=1，最大利空 → rank=2
+                applyGiEvent(topBullish, 1)
+                applyGiEvent(topBearish, 2)
+            } else {
+                const focus = giContent['current_focus_event'] as Record<string, unknown> | undefined
+                const ongoing = giContent['ongoing_significant_event'] as Record<string, unknown> | undefined
+                if (focus || ongoing) {
+                    // 旧 Schema 双事件：焦点 → rank=1，持续 → rank=2
+                    applyGiEvent(focus, 1)
+                    applyGiEvent(ongoing, 2)
+                } else {
+                    // 最旧格式 events[]（含 rank 字段）
+                    const legacyEvents = (giContent['events'] as Array<Record<string, unknown>>) || []
+                    legacyEvents.forEach((ev) => {
+                        const eventId = String(ev['event_id'] || '')
+                        const rank = Number(ev['rank']) || 0
+                        if (eventId && rank > 0) {
+                            giRankMap.set(eventId, rank)
+                            giDirectionMap.set(eventId, String(ev['direction'] || ''))
+                            giLevelMap.set(eventId, String(ev['importance_level'] || ''))
+                        }
+                    })
+                }
+            }
+        }
 
         const items = dataResult.rows.map((row: Record<string, unknown>) => {
             const content = (row['content'] as Record<string, unknown>) || {}
             const ar = (content['analysis_reports'] as Record<string, unknown>) || {}
             const eu = (ar['event_understanding'] as Record<string, unknown>) || {}
             const ei = (ar['event_investment'] as Record<string, unknown>) || {}
+            const eventId = String(content['eventId'] || row['user_id'] || '')
+
             return {
-                eventId: content['eventId'] || row['user_id'] || '',
+                eventId,
                 title: content['title'] || '',
                 source: content['source'] || '',
+                source_name: content['source_name'] || '',
+                event_type: content['event_type'] || '',
                 publishTime: content['publishTime'] || row['report_date'] || '',
                 summary: eu['summary'] || '',
                 conclusion: ei['conclusion'] || '',
+                // 轻量字段：仅返回 rank / direction / level（如果存在）
+                globalImportanceRank: giRankMap.get(eventId) || null,
+                globalImportanceDirection: giDirectionMap.get(eventId) || null,
+                globalImportanceLevel: giLevelMap.get(eventId) || null,
+                // 前端展示专用：行业影响摘要（降序 Top5，旧数据无 chain 返回 []）
+                chain_summary: extractChainSummary(content),
             }
         })
 
@@ -1575,9 +2614,349 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
             return
         }
 
-        res.json({ code: 0, data: result.rows[0] })
+        const row = result.rows[0] as Record<string, unknown>
+        const content = (row['content'] as Record<string, unknown>) || {}
+
+        res.json({
+            code: 0,
+            data: {
+                ...row,
+                // 顶层补充前端展示专用行业摘要（旧数据无 chain 返回 []，禁止 undefined）
+                chain_summary: extractChainSummary(content),
+            },
+        })
     } catch (err: unknown) {
         console.error('[Public] agent/event/:eventId error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+// =============================================================================
+// 交易日历查询（公开）
+// 供前端在"前一天/后一天"跳档时跳过非交易日，以及首页"市场洞见"取最近交易日。
+// 工作日历以服务端 TradingCalendarService 为权威（周末 + 官方休市日历），
+// 避免前端各自维护节假日表导致不一致。挂 /api/agent/*，与报告查询等公开接口同源。
+// =============================================================================
+
+function tradingCalendarDateParam(req: Request): string | undefined {
+    const date = queryStr(req, 'date')
+    return date && isCalendarDate(date) ? date : undefined
+}
+
+/** GET /api/agent/trading-calendar/previous?date=YYYY-MM-DD → 严格早于 date 的前一个交易日 */
+publicRouter.get('/trading-calendar/previous', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const prev = TradingCalendarService.getPreviousTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: prev.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/previous error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/next?date=YYYY-MM-DD → 严格晚于 date 的下一个交易日 */
+publicRouter.get('/trading-calendar/next', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    try {
+        const next = TradingCalendarService.getNextTradingDay(new Date(`${date}T00:00:00.000Z`))
+        res.json({ code: 0, data: next.toISOString().slice(0, 10) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/next error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** GET /api/agent/trading-calendar/recent?date=YYYY-MM-DD&count=N → 截至 date 最近 N 个交易日（含当天，若当天为交易日） */
+publicRouter.get('/trading-calendar/recent', (req: Request, res: Response) => {
+    const date = tradingCalendarDateParam(req)
+    if (!date) {
+        res.status(400).json({ code: -1, message: 'Invalid date parameter' })
+        return
+    }
+    const count = Math.min(Math.max(queryInt(req, 'count', 3), 1), 10)
+    try {
+        const days = TradingCalendarService.getRecentTradingDays(new Date(`${date}T00:00:00.000Z`), count)
+        res.json({ code: 0, data: days.map(d => d.toISOString().slice(0, 10)) })
+    } catch (err: unknown) {
+        console.error('[Public] trading-calendar/recent error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Trading calendar unavailable for this year' })
+    }
+})
+
+/** 标题归一化：去首尾空白 + 去全部空白字符，容忍"标题略有差异"。 */
+function normArticleTitle(s: unknown): string {
+    return String(s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 将多种日期输入统一规范化为 YYYY-MM-DD；无法解析时返回 ''（绝不抛异常）。
+ *
+ * 兼容输入：
+ *   - node-postgres 对 PG DATE 列默认返回的 JS Date 对象
+ *   - "2026-08-25"
+ *   - "2026-08-25T08:49:08.719676+08:00"（ISO / 带时区）
+ *   - String(Date)：如 "Tue Aug 25 2026 08:00:00 GMT+0800 (中国标准时间)"
+ */
+function normalizeArticleDate(value: unknown): string {
+    if (!value) return ''
+
+    // Date 对象：node-postgres 对 PG DATE 列以本地时区构造（new Date(y, m-1, d)），
+    // 必须取本地日期分量，不能用 toISOString()（UTC+8 时区会整体差一天）
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return ''
+        const y = value.getFullYear()
+        const m = String(value.getMonth() + 1).padStart(2, '0')
+        const d = String(value.getDate()).padStart(2, '0')
+        return `${y}-${m}-${d}`
+    }
+
+    const str = String(value).trim()
+    if (!str) return ''
+
+    // 已含 YYYY-MM-DD 前缀（覆盖纯日期 / ISO / 带时区时间戳）
+    const dateMatch = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    if (dateMatch) return dateMatch[1]
+
+    // 兜底：尝试用 Date 解析（覆盖 String(Date) 等实现相关格式）
+    const parsed = new Date(str)
+    if (Number.isNaN(parsed.getTime())) return ''
+    return parsed.toISOString().slice(0, 10)
+}
+
+/**
+ * ISO 日期（YYYY-MM-DD）偏移 n 天。
+ * 入参非法（无法规范化）时返回 ''，绝不生成 Invalid Date、绝不抛异常。
+ */
+function shiftArticleDate(isoDate: string, days: number): string {
+    const normalized = normalizeArticleDate(isoDate)
+    if (!normalized) return ''
+
+    const [y, m, d] = normalized.split('-').map(Number)
+    const dt = new Date(Date.UTC(y, m - 1, d))
+    dt.setUTCDate(dt.getUTCDate() + days)
+
+    if (Number.isNaN(dt.getTime())) return ''
+    return dt.toISOString().slice(0, 10)
+}
+
+/**
+ * GET /api/agent/event/:eventId/article
+ * 事件原文 — 前端 APP 内展示的源网页正文。
+ *
+ * 优先级（关键路径改为读库，减少对第三方网页结构的依赖）：
+ *   1. 按 eventId 查询 event_conduction 报告，取 content（source 原文 URL 等）。
+ *   2. 在 event_scrape 报告中匹配同一事件（匹配窗口：report_date ±1 天），
+ *      优先读取 event_scrape.payload.content 已有正文。
+ *      - 规则1：source URL 解析 newsId → 匹配 payload.id（财联社 detail/{id}）。
+ *      - 规则2：source URL 精确匹配 events[].url。
+ *      - 规则3：title 归一化后相等/互相包含（模糊兜底）。
+ *      命中但正文为空 → 返回 { code:0, hasContent:false }，不再实时抓取。
+ *   3. 仅 event_scrape 完全未命中时，才调 ClsStockNewsService.getNewsFulltext(newsId)
+ *      实时兜底；实时失败不影响接口（同样返回 hasContent:false）。
+ *   返回统一结构 { title, source, sourceName, publishTime, content, sourceUrl, hasContent }。
+ *
+ * 无 source 时不渲染正文（422 仅事件级缺失），正文缺失统一走 hasContent:false。
+ */
+publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT content, report_date, created_at
+             FROM agent_analysis_reports
+             WHERE report_type = 'event_conduction' AND user_id = $1
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [eventId]
+        )
+
+        if (result.rows.length === 0) {
+            res.status(404).json({ code: -1, message: 'Event not found' })
+            return
+        }
+
+        const content = (result.rows[0]['content'] as Record<string, unknown>) || {}
+        const source = String(content['source'] || '').trim()
+        // report_date 为 event_conduction 落库日期（必填），仅作兜底偏移计算输入。
+        // node-postgres 对 PG DATE 列默认返回 JS Date 对象，必须统一规范化为 YYYY-MM-DD，
+        // 否则 String(Date) 形如 "Tue Aug 25 2026 ..." 会让 shiftArticleDate 解析失败抛 RangeError。
+        const reportDate = normalizeArticleDate(result.rows[0]['report_date'])
+        const hasSource = Boolean(source)
+
+        // 统一正文缺失响应（code:0 + hasContent:false → 前端展示"暂无原文内容"）
+        const respondNoContent = (title: unknown) =>
+            res.json({
+                code: 0,
+                data: {
+                    title: String(title || content['title'] || ''),
+                    source: hasSource ? source : '',
+                    sourceName: String(content['source_name'] || ''),
+                    publishTime: String(content['publishTime'] || reportDate),
+                    content: '',
+                    sourceUrl: hasSource ? source : '',
+                    hasContent: false,
+                },
+            })
+
+        // ---- 步骤1：匹配 event_scrape 已有正文 ----
+        let matched: { title: string; payloadContent: string } | null = null
+        if (hasSource && reportDate) {
+            // 日期窗口（report_date ±1 天）；shiftArticleDate 对非法输入返回 ''，需过滤
+            const scrapeDates = [
+                reportDate,
+                shiftArticleDate(reportDate, -1),
+                shiftArticleDate(reportDate, 1),
+            ].filter((d): d is string => Boolean(d))
+            // 日期窗口为空（report_date 异常无法解析）时不构造非法日期查询，安全跳过 event_scrape 匹配
+            // PostgreSQL 42P18 修复：node-postgres 把 JS 字符串数组作为单个参数传给 `= ANY($n)` 时，
+            // 服务端无法推断参数类型（could not determine data type of parameter），必然抛错导致 500。
+            // 改为 IN 标量参数展开（$1,$2,...）——每个日期是独立标量参数，类型由 date 列推断为 date。
+            // 同时移除无用的 eventId 参数：event_scrape 按 report_date 分区，SQL 仅需 scrapeDates。
+            const placeholders = scrapeDates.map((_, i) => `$${i + 1}`).join(',')
+            const scrapeResult =
+                placeholders.length > 0
+                    ? await pool.query(
+                          `SELECT content
+                           FROM agent_analysis_reports
+                           WHERE report_type = 'event_scrape' AND report_date IN (${placeholders})
+                           ORDER BY created_at DESC`,
+                          scrapeDates
+                      )
+                    : { rows: [] as Array<Record<string, unknown>> }
+
+            // 从所有命中行收集 events（不 LIMIT，覆盖跨日窗口内的合并结果）
+            const events: Array<Record<string, unknown>> = []
+            for (const row of scrapeResult.rows) {
+                const c = (row['content'] as Record<string, unknown>) || {}
+                const evs = c['events']
+                if (!Array.isArray(evs)) continue
+                for (const e of evs) {
+                    if (e && typeof e === 'object') events.push(e as Record<string, unknown>)
+                }
+            }
+
+            const newsId = source.match(/cls\.cn\/detail\/(\d+)/)?.[1] ?? null
+            const normSourceTitle = normArticleTitle(content['title'])
+
+            // 规则1：newsId 匹配 payload.id（精确，优先级最高）
+            if (!matched && newsId) {
+                const hit = events.find(
+                    (e) =>
+                        e['payload'] &&
+                        typeof e['payload'] === 'object' &&
+                        String((e['payload'] as Record<string, unknown>)['id'] ?? '') === newsId
+                )
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 规则2：source 精确匹配 events[].url
+            if (!matched) {
+                const hit = events.find((e) => String(e['url'] ?? '').trim() === source)
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 规则3：title 归一化模糊匹配（相等或互相包含）
+            if (!matched && normSourceTitle) {
+                const hit = events.find((e) => {
+                    const nEv = normArticleTitle(e['title'])
+                    return Boolean(nEv && (nEv === normSourceTitle || nEv.includes(normSourceTitle) || normSourceTitle.includes(nEv)))
+                })
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 命中 event_scrape：优先返回已有正文；正文为空则不实时抓取，直接降级
+            if (matched) {
+                const body = matched.payloadContent.trim()
+                res.json({
+                    code: 0,
+                    data: {
+                        title: matched.title || String(content['title'] || ''),
+                        source,
+                        sourceName: String(content['source_name'] || ''),
+                        publishTime: String(content['publishTime'] || reportDate),
+                        content: body,
+                        sourceUrl: source,
+                        hasContent: Boolean(body),
+                    },
+                })
+                return
+            }
+        }
+
+        // ---- 步骤2：event_scrape 未命中 → 实时抓取兜底（仅财联社 newsId） ----
+        if (!hasSource) {
+            respondNoContent('')
+            return
+        }
+        const newsId = source.match(/cls\.cn\/detail\/(\d+)/)?.[1]
+        if (!newsId) {
+            // 非财联社且 event_scrape 无命中 → 暂无原文
+            respondNoContent('')
+            return
+        }
+        try {
+            const fulltext = await ClsStockNewsService.getNewsFulltext(newsId)
+            if (fulltext && fulltext.content) {
+                res.json({
+                    code: 0,
+                    data: {
+                        title: fulltext.title || String(content['title'] || ''),
+                        source,
+                        sourceName: String(content['source_name'] || ''),
+                        publishTime: String(content['publishTime'] || reportDate),
+                        content: fulltext.content,
+                        sourceUrl: source,
+                        hasContent: true,
+                    },
+                })
+                return
+            }
+        } catch (err: unknown) {
+            // 实时抓取失败不影响接口正常返回
+            console.error(`[Public] agent/event/:eventId/article fulltext error:`, errMsg(err))
+        }
+        respondNoContent('')
+    } catch (err: unknown) {
+        console.error('[Public] agent/event/:eventId/article error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
     }
 })

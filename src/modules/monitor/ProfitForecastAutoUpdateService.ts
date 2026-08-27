@@ -10,10 +10,13 @@
  *    - 重新爬取并对比新旧数据，仅当有变化时更新
  */
 
+import { createHash } from 'node:crypto';
 import pool from '../../core/db';
 import { getReportRc, type ReportRcRow } from '../quote/TushareService';
 import { CacheService } from '../../shared/utils/CacheService';
+import { NotificationService } from '../../core/notification/NotificationService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateStr, shanghaiDateYyyymmdd, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -24,14 +27,14 @@ function tsCodeToSymbol(tsCode: string): string {
 function getYesterdayStr(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10);
+    return shanghaiDateStr(d);
 }
 
 /** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
 function getYesterdayCompact(): string {
     const d = new Date();
     d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 export class ProfitForecastAutoUpdateService {
@@ -48,7 +51,7 @@ export class ProfitForecastAutoUpdateService {
         }
 
         // 检查今天是否已经执行过
-        const today = new Date().toISOString().slice(0, 10);
+        const today = shanghaiDateStr();
         const lastRunDate = await CacheService.get<string>('profit_forecast:auto_update:date');
         if (lastRunDate === today) {
             console.log('[ProfitForecastAutoUpdate] 今天已执行过，跳过');
@@ -201,6 +204,25 @@ export class ProfitForecastAutoUpdateService {
                             forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
                         [symbol, updateTime, summary, JSON.stringify(detail), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                     );
+                    try {
+                        const nameResult = await pool.query<{ name: string | null }>('SELECT name FROM stocks WHERE symbol = $1 LIMIT 1', [symbol]);
+                        const stockName = nameResult.rows[0]?.name || symbol;
+                        // 去重键取内容指纹而非抓取时刻：同一份预测无论重跑还是补投多少次都只产生一条通知
+                        const contentKey = ProfitForecastAutoUpdateService.buildContentKey(summary, detail);
+                        await NotificationService.createForWatchers({
+                            category: 'forecast',
+                            sourceKey: `forecast:${symbol}:${contentKey}`,
+                            symbol,
+                            stockName,
+                            title: `${stockName}：业绩预测更新`,
+                            summary: summary || '机构业绩预测数据已更新',
+                            targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=forecast`,
+                            payload: { updateTime },
+                            occurredAt: new Date().toISOString(),
+                        });
+                    } catch (error) {
+                        console.warn('[ProfitForecastAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+                    }
                     updated++;
                 } catch (err: any) {
                     errors++;
@@ -217,6 +239,14 @@ export class ProfitForecastAutoUpdateService {
         await Promise.all(workers);
 
         return { updated, skipped, errors };
+    }
+
+    /** 业绩预测内容指纹：摘要 + 明细，用作通知去重键 */
+    private static buildContentKey(summary: string, detail: unknown): string {
+        return createHash('sha256')
+            .update(`${summary}\u0000${JSON.stringify(detail ?? [])}`)
+            .digest('hex')
+            .slice(0, 16);
     }
 
     /** 爬取个股业绩预测 */
@@ -281,10 +311,9 @@ export class ProfitForecastAutoUpdateService {
         return null;
     }
 
-    /** 格式化时间为中国时区带毫秒 */
+    /** 格式化时间为中国时区带毫秒（统一走 shanghaiTime 通用函数） */
     private static formatToChinaTimeWithMs(timestamp: number): string {
-        const d = new Date(timestamp + 8 * 3600 * 1000);
-        return d.toISOString().slice(0, 23).replace('T', ' ');
+        return shanghaiDateTimeMsStr(timestamp);
     }
 
     /** 是否正在运行 */

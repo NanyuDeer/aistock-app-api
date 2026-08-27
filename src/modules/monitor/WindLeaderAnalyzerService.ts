@@ -16,11 +16,12 @@ import * as cheerio from 'cheerio';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { IndustryKGService } from './IndustryKGService';
 import { WindLeaderService } from './WindLeaderService';
+import * as RotationBoardStore from './RotationBoardStore';
 import { thsCrawler, thsApiCrawler } from '../../shared/utils/crawler';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { shanghaiDateYyyymmdd, shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 import {
     tushareRequest,
-    getMoneyflowByDate,
     getDailyBasicByDate,
     getStockDailyRecent,
     getThsIndex,
@@ -31,9 +32,9 @@ import {
     getThsHot,
     getLimitListThs,
     getLimitStep,
-    getMoneyflowCntThs,
     getMoneyflowThsByDate,
-    type MoneyflowRow,
+    getMoneyflowThs5dMap,
+    calcMainForceNetRatio,
     type DailyBasicFullRow,
     type DailyPriceRow,
     type ThsIndexRow,
@@ -43,7 +44,6 @@ import {
     type ThsHotRow,
     type LimitListThsRow,
     type LimitStepRow,
-    type MoneyflowCntThsRow,
     type MoneyflowThsRow,
     getStockCompany,
     type StockCompanyRow,
@@ -51,9 +51,133 @@ import {
 import pool from '../../core/db';
 import { getBatchSinaMoneyflowForBJ, isBJStock } from '../quote/SinaMoneyFlowService';
 
+// ==================== 类型定义 ====================
+
+/** 数据库 stocks 表行（仅取所需字段） */
+interface StockIndustryDbRow {
+    symbol: string;
+    industry: string;
+}
+
+/** 同花顺概念板块（基础字段） */
+interface BoardBase {
+    code: string;
+    name: string;
+    change: number;
+    price: number;
+    up_count: number;
+    down_count: number;
+}
+
+/** 同花顺行业板块（带 leading_stock） */
+interface IndustryBoard extends BoardBase {
+    leading_stock: string;
+}
+
+/** 板块成分股 */
+interface BoardConstituent {
+    code: string;
+    name: string;
+    price: number;
+    change_pct: number;
+    industry: string;
+}
+
+/** 板块涨幅前N股票（含资金流和换手率） */
+interface BoardTopStock extends BoardConstituent {
+    net_inflow: number;
+    turnover_rate: number;
+}
+
+/** 板块历史K线 */
+interface BoardHistoryItem {
+    date: string;
+    open: number;
+    close: number;
+    high: number;
+    low: number;
+    volume: number;
+    amount: number;
+    change_pct: number;
+}
+
+/** 同花顺概念页面 gnSectionVal 解析项（字段名不规则，使用索引签名） */
+interface ThsGnSectionItem {
+    cid?: string | number;
+    platename?: string;
+    zfl?: string | number;
+    zjjlr?: string | number;
+    [key: string]: string | number | undefined;
+}
+
+/** 同花顺板块轮动 API 单日数据 */
+interface BlockRotationDayItem {
+    name: string;
+    code: string;
+    info?: { zf5?: string };
+}
+interface BlockRotationDay {
+    date?: string;
+    block_list?: BlockRotationDayItem[];
+}
+
+/** AI Chat Completions API 响应（仅取所需字段） */
+interface AiChatResponse {
+    choices?: Array<{
+        message?: { content?: string; reasoning_content?: unknown };
+        finish_reason?: string;
+    }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number; [k: string]: unknown };
+}
+
+/** 行业行情统计 */
+interface IndustryStat {
+    name: string;
+    change: number;
+    up_count: number;
+    down_count: number;
+    leading_stock: string;
+}
+
+/** 风口板块完整分析结果（hot_sectors 元素） */
+interface HotSectorAnalysis {
+    code: string;
+    cycle: 'short' | 'long' | 'both' | 'none';  // 短线风口 / 长线风口 / 长短线同时成立 / 均不成立
+    name: string;
+    type: string;
+    frequency: number;
+    freq20?: number;
+    freq_delta?: number;
+    avg_change: number;
+    today_change: number;
+    driver_type?: string;
+    ma60_status?: string;
+    vol_trend?: string;
+    turnover?: number;
+    limit_up_count?: number;
+    max_boards?: number;
+    leading_stock: string;
+    leading_change: number;
+    up_count: number;
+    down_count: number;
+    score: number;
+    related_industries: string[];
+    industry_data: IndustryStat[];
+    ai_analysis: AiAnalysis;
+    main_stocks: SelectedStock[];
+    upstream_stocks: SelectedStock[];
+    downstream_stocks: SelectedStock[];
+    flow_data: { nodes: FlowNode[]; links: FlowLink[]; transfer_direction: string };
+    leading_stock_info: LeadingStockInfo;
+    long_leader: SelectedStock | null;   // 长期趋势龙头：板块成分股中 trend_scores 评分最高（无命中回退 main_stocks 最高分）
+}
+
 // ==================== 缓存 ====================
 const CACHE_DIR = path.resolve(__dirname, '../../data/hot-sector-cache');
 const CACHE_TTL = 3600 * 1000; // 缓存1小时
+
+/** 同一 key 的回源 Promise 去重表，避免 cache miss 时并发触发多次回源 */
+const inflightCache: Map<string, Promise<unknown>> = new Map();
 
 /** 批量查询股票的行业板块（从 stocks 表，与个股详情页一致） */
 async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string>> {
@@ -63,10 +187,54 @@ async function getStocksIndustryMap(codes: string[]): Promise<Map<string, string
             'SELECT symbol, industry FROM stocks WHERE symbol = ANY($1) AND industry IS NOT NULL AND industry != \'\'',
             [codes],
         );
-        return new Map(result.rows.map((r: any) => [r.symbol, r.industry]));
+        return new Map(result.rows.map((r: StockIndustryDbRow) => [r.symbol, r.industry]));
     } catch (err) {
         console.warn('[HotSectorAnalyzer] getStocksIndustryMap failed:', (err as Error).message);
         return new Map();
+    }
+}
+
+/**
+ * 查询板块成分股中长期趋势龙头：trend_scores 表最新评分日中，给定成分股代码集合内
+ * score 最高且未被 60 日均线剔除、非 D 评级的股票。
+ * 返回 null 表示成分股无趋势评分命中（调用方回退 main_stocks 最高分）。
+ */
+export async function queryTopTrendScore(codes: string[]): Promise<SelectedStock | null> {
+    if (!Array.isArray(codes) || codes.length === 0) return null;
+    try {
+        const result = await pool.query(
+            `SELECT t.symbol, t.score, t.label,
+                    COALESCE(s.name, '') AS name,
+                    COALESCE(s.industry, '') AS industry
+             FROM trend_scores t
+             LEFT JOIN stocks s ON t.symbol = s.symbol
+             WHERE t.score_date = (SELECT MAX(score_date) FROM trend_scores)
+               AND t.symbol = ANY($1)
+               AND t.label NOT IN ('D')
+               AND (t.ma60_excluded IS NULL OR t.ma60_excluded = false)
+             ORDER BY t.score DESC
+             LIMIT 1`,
+            [codes],
+        );
+        const row = result.rows[0];
+        if (!row) return null;
+        const score = Number(row.score);
+        return {
+            code: row.symbol,
+            name: row.name,
+            industry: row.industry,
+            score: Number.isFinite(score) ? score : 0,
+            reason: `趋势评分${row.label || ''}`,
+            reason_tag: row.label || '',
+            reason_tag_class: '',
+            source: 'trend_score',
+            in_concept: false,
+            chain_position: '核心',
+            related_industry: row.industry || '',
+        };
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] queryTopTrendScore failed:', (err as Error).message);
+        return null;
     }
 }
 
@@ -123,56 +291,335 @@ async function getThsIndexNameMap(): Promise<Map<string, string>> {
     return map;
 }
 
-function ensureCacheDir(): void {
-    if (!fs.existsSync(CACHE_DIR)) {
-        fs.mkdirSync(CACHE_DIR, { recursive: true });
+/**
+ * 纯函数：给定月收盘序列，判断是否月线多头排列且同比环比向上（供测试直接调用）
+ *
+ * 判定（8.1决议：月线多头发散且同比环比均向上确认趋势）：
+ * - 多头排列：最新月收盘 > MA5 > MA10（近5/10月收盘均值）
+ * - 发散：近3月收盘递增（latest > prev > prev2）
+ * - 同比环比向上：latest > yoy（12个月前）且 latest > prev
+ * - 数据不足13个月 → false（同比需要第13根）
+ */
+export function isMonthlyBullish(months: number[]): boolean {
+    if (months.length < 13) return false;
+    const ma5 = months.slice(-5).reduce((a, b) => a + b, 0) / 5;
+    const ma10 = months.slice(-10).reduce((a, b) => a + b, 0) / 10;
+    const latest = months[months.length - 1];
+    const prev = months[months.length - 2];
+    const prev2 = months[months.length - 3];
+    const yoy = months[months.length - 13]; // 去年同期（12个月前）
+    return latest > ma5 && ma5 > ma10 && latest > prev && prev > prev2 && latest > yoy && latest > prev;
+}
+
+/**
+ * 纯函数：将 Tushare 板块日线行聚合成升序月收盘序列（供测试直接调用）
+ *
+ * 注意：Tushare 日线接口（ths_daily）返回倒序（最新交易日在前），聚合前必须先按
+ * trade_date 升序排序，否则 Map.set 会用同月更早交易日覆盖月末收盘
+ * （与 getBoardHistory 先 sort 再取最近 N 天的模式一致）。
+ */
+export function buildMonthlySeries(
+    daily: Array<{ trade_date: string | number; close: string | number }>,
+): number[] {
+    const sorted = [...daily].sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)));
+    const monthly = new Map<string, number>();
+    for (const row of sorted) {
+        const key = String(row.trade_date).slice(0, 6); // YYYYMM
+        monthly.set(key, Number(row.close)); // 升序下同月最后处理的是月末交易日
+    }
+    return [...monthly.values()];
+}
+
+/** 单月多头排列：该月收盘 > MA5 > MA10（MA5/MA10 = 最近5/10个月收盘均值） */
+function isMonthBullish(monthIndex: number, months: number[]): boolean {
+    if (monthIndex < 9) return false; // 需要至少 10 个月的均线数据
+    const closes = months.slice(0, monthIndex + 1);
+    const last = closes[closes.length - 1];
+    const ma5 = closes.slice(-5).reduce((s, v) => s + v, 0) / 5;
+    const ma10 = closes.slice(-10).reduce((s, v) => s + v, 0) / 10;
+    return last > ma5 && ma5 > ma10;
+}
+
+/**
+ * 月线连续优先分级（作为 AI 研判输入因素，非硬条件）
+ * 强信号：最近 3 月连续多头排列；次信号：近 6 月多头月 ≥4 且最近 1 月多头；否则未确认
+ * 需 ≥16 个月月K
+ */
+export function classifyMonthlySignal(months: number[]): 'strong' | 'weak' | 'none' {
+    if (months.length < 16) return 'none';
+    const len = months.length;
+    const last3Bullish = [len - 1, len - 2, len - 3].every(idx => isMonthBullish(idx, months));
+    if (last3Bullish) return 'strong';
+    let recent6BullishCount = 0;
+    for (let offset = 0; offset < 6; offset++) {
+        if (isMonthBullish(len - 6 + offset, months)) recent6BullishCount += 1;
+    }
+    if (recent6BullishCount >= 4 && isMonthBullish(len - 1, months)) return 'weak';
+    return 'none';
+}
+
+/** 月线分级结果 → AI prompt 文本 */
+export function monthlySignalText(signal: 'strong' | 'weak' | 'none'): string {
+    if (signal === 'strong') return '强信号(近3月连续多头排列)';
+    if (signal === 'weak') return '次信号(近6月多头月≥4且最近1月多头)';
+    return '月线未确认';
+}
+
+/**
+ * 月线趋势确认：板块指数月线多头排列且同比环比向上 → 长线风口
+ *
+ * 数据源：getThsIndexNameMap（板块名→ts_code）→ getThsDaily（板块日线）→ 按 YYYYMM 聚合月K
+ * 降级：无映射/无数据/数据不足/异常 → 返回 false（不阻塞主流程）
+ */
+export async function confirmMonthlyTrend(conceptName: string): Promise<boolean> {
+    try {
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) {
+            console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 板块「${conceptName}」无Tushare指数映射`);
+            return false;
+        }
+
+        // 拉取近 2 年板块日线（约 24 个月），覆盖同比所需 13 个月
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 2);
+        const startStr = shanghaiDateYyyymmdd(startDate);
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length === 0) return false;
+
+        // 按 YYYYMM 聚合月K（取每月最后一条 trade_date 的 close 作为月收盘）
+        const months = buildMonthlySeries(daily);
+        if (months.length < 13) {
+            console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」月K不足13根(${months.length})`);
+            return false;
+        }
+
+        return isMonthlyBullish(months);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] confirmMonthlyTrend: 「${conceptName}」异常:`, (err as Error).message);
+        return false;
     }
 }
 
-/** 清除所有缓存（用于强制刷新数据） */
-function clearAllCache(): void {
+/**
+ * 月线连续优先分级（AI 输入因素）。复用 getThsIndexNameMap + getThsDaily 拉近2年日线。
+ * 降级：无映射/无数据/数据不足/异常 → 'none'（不阻塞主流程）
+ */
+export async function confirmLongTermMonthly(conceptName: string): Promise<'strong' | 'weak' | 'none'> {
     try {
-        ensureCacheDir();
-        const files = fs.readdirSync(CACHE_DIR);
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) {
+            console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 板块「${conceptName}」无Tushare指数映射`);
+            return 'none';
+        }
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 2);
+        const startStr = shanghaiDateYyyymmdd(startDate);
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length === 0) return 'none';
+        const months = buildMonthlySeries(daily);
+        if (months.length < 16) {
+            console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 「${conceptName}」月K不足16根(${months.length})`);
+            return 'none';
+        }
+        return classifyMonthlySignal(months);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] confirmLongTermMonthly: 「${conceptName}」异常:`, (err as Error).message);
+        return 'none';
+    }
+}
+
+/** MA60 位置：站上(+x%)/跌破(-x%)/贴近/数据不足（closes 升序，最新在后） */
+export function calcMa60Status(closes: number[]): string {
+    if (closes.length < 60) return '数据不足';
+    const window = closes.slice(-60);
+    const last = window[window.length - 1];
+    const ma60 = window.reduce((s, v) => s + v, 0) / 60;
+    const pct = (last - ma60) / ma60 * 100;
+    if (pct > 2) return `站上(+${pct.toFixed(1)}%)`;
+    if (pct < -2) return `跌破(${pct.toFixed(1)}%)`;
+    return '贴近60日线';
+}
+
+/** 量能趋势：近5日均量 vs 前5日均量（vols 升序，最新在后） */
+export function calcVolTrend(vols: number[]): string {
+    if (vols.length < 10) return '数据不足';
+    const recent = vols.slice(-5).reduce((s, v) => s + v, 0) / 5;
+    const prev = vols.slice(-10, -5).reduce((s, v) => s + v, 0) / 5;
+    if (prev <= 0) return '平量';
+    const ratio = recent / prev;
+    if (ratio > 1.2) return '放量';
+    if (ratio < 0.8) return '缩量';
+    return '平量';
+}
+
+/** 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（hits 升序，1=上榜；前5日为0且近5日>0 → 99 陡升哨兵） */
+export function calcFreqDelta(hits: number[]): number {
+    if (hits.length < 10) return 0;
+    const recent = hits.slice(-5).reduce((s, v) => s + v, 0);
+    const prev = hits.slice(-10, -5).reduce((s, v) => s + v, 0);
+    if (prev === 0) return recent > 0 ? 99 : 0;
+    return recent / prev;
+}
+
+/**
+ * 长线链证据：MA60 位置（仅长线池板块调用）
+ * 降级：无映射/无数据/异常 → '未知'（不阻塞）
+ */
+export async function fetchLongEvidence(conceptName: string): Promise<{ ma60_status: string }> {
+    const fallback = { ma60_status: '未知' };
+    try {
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) return fallback;
+        const startDate = new Date();
+        startDate.setFullYear(startDate.getFullYear() - 1);
+        const startStr = shanghaiDateYyyymmdd(startDate);
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length < 60) return fallback;
+        const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+        return { ma60_status: calcMa60Status(sorted.map(d => d.close)) };
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] fetchLongEvidence: 「${conceptName}」异常:`, (err as Error).message);
+        return fallback;
+    }
+}
+
+/**
+ * 短线链证据：量能趋势 + 换手率 + 涨停家数/最高连板（仅短线池板块调用）
+ * 涨停/连板复用主流程已拉取的 limitListMap（0 次额外 Tushare 调用）
+ * 降级：无映射/无数据/异常 → 默认值
+ */
+export async function fetchShortEvidence(
+    conceptName: string,
+    limitListMap?: Map<string, LimitListThsRow>,
+    conceptCodes?: Set<string>,
+): Promise<{ vol_trend: string; turnover: number; limit_up_count: number; max_boards: number }> {
+    const fallback = { vol_trend: '未知', turnover: 0, limit_up_count: 0, max_boards: 0 };
+    try {
+        // 涨停家数/最高连板：从已有 limitListMap 统计（status 如 "2连板"、"3天2板"，解析数字）
+        let limitUpCount = 0, maxBoards = 0;
+        if (limitListMap && conceptCodes && conceptCodes.size > 0) {
+            for (const [code, row] of limitListMap) {
+                const shortCode = code.replace(/\.(SS|SZ|BJ)$/, '');
+                if (!conceptCodes.has(shortCode)) continue;
+                limitUpCount += 1;
+                const m = (row.status || '').match(/(\d+)(?:连)?板/);
+                const boards = m ? parseInt(m[1], 10) : 1;
+                maxBoards = Math.max(maxBoards, boards);
+            }
+        }
+
+        // 量能/换手：ths_daily（近60日足够算近5vs前5均量）
+        const nameMap = await getThsIndexNameMap();
+        const tsCode = nameMap.get(conceptName);
+        if (!tsCode) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 60);
+        const startStr = shanghaiDateYyyymmdd(startDate);
+        const daily = await getThsDaily(tsCode, startStr);
+        if (!Array.isArray(daily) || daily.length < 10) return { ...fallback, limit_up_count: limitUpCount, max_boards: maxBoards };
+        const sorted = [...daily].sort((a, b) => a.trade_date.localeCompare(b.trade_date));
+        return {
+            vol_trend: calcVolTrend(sorted.map(d => d.vol)),
+            turnover: sorted[sorted.length - 1]?.turnover_rate ?? 0,
+            limit_up_count: limitUpCount,
+            max_boards: maxBoards,
+        };
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] fetchShortEvidence: 「${conceptName}」异常:`, (err as Error).message);
+        return fallback;
+    }
+}
+
+async function ensureCacheDir(): Promise<void> {
+    // recursive 选项在目录已存在时不抛错，无需 existsSync 预检查
+    await fs.promises.mkdir(CACHE_DIR, { recursive: true });
+}
+
+/** 清除所有缓存（用于强制刷新数据） */
+async function clearAllCache(): Promise<void> {
+    try {
+        await ensureCacheDir();
+        const files = await fs.promises.readdir(CACHE_DIR);
         let count = 0;
         for (const file of files) {
             // 保留AI板块判断缓存、快照文件、股票→行业反向映射、同花顺行业产业链
             if (file === 'ai_sector_judgment_cache.json' || file.startsWith('snapshot_') || file === 'stock_industry_reverse_map.json' || file === 'ths_industry_chain.json') continue;
             const fp = path.join(CACHE_DIR, file);
-            fs.unlinkSync(fp);
+            await fs.promises.unlink(fp);
             count++;
         }
         // 重置内存缓存
         dailyByDateCache = null;
         thsIndexNameMap = null;
+        inflightCache.clear();
         console.log(`[HotSectorAnalyzer] 缓存已清除: ${count}个文件`);
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 缓存清除失败:', err);
     }
 }
 
-function cacheGet(key: string): any | null {
+/**
+ * 读取缓存（异步 IO + in-flight 去重）。
+ * 如果同一 key 正在被回源（写入尚未完成），等待回源 Promise 完成后再读，
+ * 避免 cache miss 时多个并发调用方同时触发回源。
+ */
+async function cacheGet<T>(key: string): Promise<T | null> {
+    // 若有 in-flight 回源，等待它落盘后再读
+    const inflight = inflightCache.get(key);
+    if (inflight) {
+        try {
+            await inflight;
+        } catch {
+            // 回源失败不阻塞后续读，回退到文件读取
+        }
+    }
     try {
-        ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${key}.json`);
-        if (!fs.existsSync(fp)) return null;
-        const stat = fs.statSync(fp);
+        const stat = await fs.promises.stat(fp);
         if (Date.now() - stat.mtimeMs > CACHE_TTL) return null;
-        const raw = fs.readFileSync(fp, 'utf-8');
-        return JSON.parse(raw);
+        const raw = await fs.promises.readFile(fp, 'utf-8');
+        return JSON.parse(raw) as T;
     } catch {
         return null;
     }
 }
 
-function cacheSet(key: string, data: any): void {
+async function cacheSet<T>(key: string, data: T): Promise<void> {
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${key}.json`);
-        fs.writeFileSync(fp, JSON.stringify(data, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(data, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 缓存写入失败:', err);
     }
+}
+
+/**
+ * 带回源去重的缓存读取：cache miss 时执行 loader，并把回源 Promise 注册到
+ * inflightCache，使同一 key 的并发请求只回源一次。
+ */
+async function cacheGetOrLoad<T>(key: string, loader: () => Promise<T>): Promise<T> {
+    const inflight = inflightCache.get(key);
+    if (inflight) {
+        return inflight as Promise<T>;
+    }
+    const cached = await cacheGet<T>(key);
+    if (cached !== null) return cached;
+
+    const promise = (async (): Promise<T> => {
+        try {
+            const data = await loader();
+            await cacheSet(key, data);
+            return data;
+        } finally {
+            inflightCache.delete(key);
+        }
+    })();
+    inflightCache.set(key, promise);
+    return promise;
 }
 
 // ==================== 同花顺板块数据 ====================
@@ -190,32 +637,31 @@ async function fetchThsHtml(url: string): Promise<string> {
 }
 
 /** 同花顺JSON API请求 - 使用分布式爬虫 */
-async function fetchThsJson(url: string): Promise<any> {
+async function fetchThsJson(url: string): Promise<unknown> {
     return thsApiCrawler.fetchJson(url);
 }
 
 /** 获取同花顺概念板块列表（优先使用Tushare ths_index，回退到HTML爬虫） */
-async function getConceptBoards(): Promise<any[]> {
+async function getConceptBoards(): Promise<BoardBase[]> {
     const cacheKey = 'ths_concept_boards';
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardBase[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_index =====
     try {
         const conceptIndices = await getThsIndex('N', 'A');
         if (conceptIndices.length > 0) {
-            const result = conceptIndices.map(idx => ({
+            const result: BoardBase[] = conceptIndices.map(idx => ({
                 code: idx.ts_code,
                 name: idx.name,
                 change: 0,  // 涨跌幅在identifyHotConcepts中通过ths_daily获取
                 price: 0,
                 up_count: 0,
                 down_count: 0,
-                net_inflow: 0,
             }));
             console.log(`[HotSectorAnalyzer] Tushare概念板块获取成功: ${result.length}个`);
-            cacheSet(cacheKey, result);
-            saveDailySnapshot('concept', result);
+            await cacheSet(cacheKey, result);
+            await saveDailySnapshot('concept', result);
             return result;
         }
     } catch (err) {
@@ -229,27 +675,26 @@ async function getConceptBoards(): Promise<any[]> {
         // 从页面隐藏的#gnSection输入框提取概念板块数据
         const gnSectionVal = $('#gnSection').val() as string;
         if (gnSectionVal) {
-            const data = new Function('return (' + gnSectionVal + ')')() as Record<string, any>;
-            const result = Object.values(data).map((item: any) => ({
+            const data = new Function('return (' + gnSectionVal + ')')() as Record<string, ThsGnSectionItem>;
+            const result: BoardBase[] = Object.values(data).map((item) => ({
                 code: String(item.cid || ''),
                 name: item.platename || '',
-                change: parseFloat(item[199112]) || 0,  // 涨跌幅
+                change: parseFloat(String(item[199112] ?? '')) || 0,  // 涨跌幅
                 price: 0,
-                up_count: parseInt(item.zfl) || 0,       // 涨幅家数
+                up_count: parseInt(String(item.zfl ?? '')) || 0,       // 涨幅家数
                 down_count: 0,
-                net_inflow: (parseFloat(item.zjjlr) || 0) * 100000000, // 亿元→元
-            })).filter((item: any) => item.code && item.name);
+            })).filter((item) => item.code && item.name);
 
             if (result.length > 0) {
                 console.log(`[HotSectorAnalyzer] 同花顺概念板块获取成功: ${result.length}个`);
-                cacheSet(cacheKey, result);
-                saveDailySnapshot('concept', result);
+                await cacheSet(cacheKey, result);
+                await saveDailySnapshot('concept', result);
                 return result;
             }
         }
 
         // Fallback: 从概念链接提取（无涨幅数据）
-        const result: any[] = [];
+        const result: BoardBase[] = [];
         const seen = new Set<string>();
         $('a[href*="/gn/detail/code/"]').each((i, el) => {
             const name = $(el).text().trim();
@@ -264,15 +709,14 @@ async function getConceptBoards(): Promise<any[]> {
                     price: 0,
                     up_count: 0,
                     down_count: 0,
-                    net_inflow: 0,
                 });
             }
         });
 
         if (result.length > 0) {
             console.log(`[HotSectorAnalyzer] 同花顺概念板块链接提取成功: ${result.length}个（无涨幅数据）`);
-            cacheSet(cacheKey, result);
-            saveDailySnapshot('concept', result);
+            await cacheSet(cacheKey, result);
+            await saveDailySnapshot('concept', result);
             return result;
         }
     } catch (err) {
@@ -283,28 +727,27 @@ async function getConceptBoards(): Promise<any[]> {
 }
 
 /** 获取同花顺行业板块列表（优先使用Tushare ths_index，回退到HTML爬虫） */
-async function getIndustryBoards(): Promise<any[]> {
+async function getIndustryBoards(): Promise<IndustryBoard[]> {
     const cacheKey = 'ths_industry_boards';
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<IndustryBoard[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_index =====
     try {
         const industryIndices = await getThsIndex('I', 'A');
         if (industryIndices.length > 0) {
-            const industries = industryIndices.map(idx => ({
+            const industries: IndustryBoard[] = industryIndices.map(idx => ({
                 code: idx.ts_code,
                 name: idx.name,
                 change: 0,  // 涨跌幅在选股时按需获取
                 price: 0,
                 up_count: 0,
                 down_count: 0,
-                net_inflow: 0,
                 leading_stock: '--',
             }));
 
             console.log(`[HotSectorAnalyzer] Tushare行业板块获取成功: ${industries.length}个`);
-            cacheSet(cacheKey, industries);
+            await cacheSet(cacheKey, industries);
             return industries;
         }
     } catch (err) {
@@ -316,7 +759,7 @@ async function getIndustryBoards(): Promise<any[]> {
         const html = await fetchThsHtml('https://q.10jqka.com.cn/thshy/');
         const $ = cheerio.load(html);
 
-        const industries: any[] = [];
+        const industries: IndustryBoard[] = [];
         $('table tbody tr').each((i, el) => {
             const cells = $(el).find('td');
             if (cells.length < 8) return;
@@ -326,7 +769,6 @@ async function getIndustryBoards(): Promise<any[]> {
             const href = nameEl.attr('href') || '';
             const code = href.match(/code\/(\d+)/)?.[1] || '';
             const change = parseFloat(cells.eq(2).text().trim()) || 0;
-            const netInflow = parseFloat(cells.eq(5).text().trim()) || 0;
             const upCount = parseInt(cells.eq(6).text().trim()) || 0;
             const downCount = parseInt(cells.eq(7).text().trim()) || 0;
             const leadingStock = cells.eq(9).find('a').text().trim() || '';
@@ -339,14 +781,13 @@ async function getIndustryBoards(): Promise<any[]> {
                     price: 0,
                     up_count: upCount,
                     down_count: downCount,
-                    net_inflow: netInflow * 100000000, // 亿元→元
                     leading_stock: leadingStock,
                 });
             }
         });
 
         console.log(`[HotSectorAnalyzer] 同花顺行业板块获取成功: ${industries.length}个`);
-        cacheSet(cacheKey, industries);
+        await cacheSet(cacheKey, industries);
         return industries;
     } catch (err) {
         console.error('[HotSectorAnalyzer] 同花顺行业板块列表获取失败:', err);
@@ -355,21 +796,22 @@ async function getIndustryBoards(): Promise<any[]> {
 }
 
 /** 保存每日板块数据快照（用于历史回溯） */
-function saveDailySnapshot(type: 'concept' | 'industry', data: any[]): void {
+async function saveDailySnapshot(type: 'concept' | 'industry', data: readonly unknown[]): Promise<void> {
     try {
-        ensureCacheDir();
-        const today = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        await ensureCacheDir();
+        const today = shanghaiDateYyyymmdd();
         const fp = path.join(CACHE_DIR, `snapshot_${type}_${today}.json`);
-        if (!fs.existsSync(fp)) {
-            fs.writeFileSync(fp, JSON.stringify(data), 'utf-8');
-        }
+        // 仅当快照不存在时写入（每日首条 wins）
+        await fs.promises.access(fp).catch(async () => {
+            await fs.promises.writeFile(fp, JSON.stringify(data), 'utf-8');
+        });
     } catch { /* ignore */ }
 }
 
 /** 获取板块历史数据（通过Tushare ths_daily） */
-async function getBoardHistory(boardName: string, days: number = 10): Promise<any[]> {
+async function getBoardHistory(boardName: string, days: number = 10): Promise<BoardHistoryItem[]> {
     const cacheKey = `board_history_${boardName}_${days}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardHistoryItem[]>(cacheKey);
     if (cached) return cached;
 
     const nameMap = await getThsIndexNameMap();
@@ -379,10 +821,10 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<an
     try {
         const startDate = new Date();
         startDate.setDate(startDate.getDate() - days * 2);
-        const startDateStr = startDate.toISOString().slice(0, 10).replace(/-/g, '');
+        const startDateStr = shanghaiDateYyyymmdd(startDate);
 
         const hist = await getThsDaily(tsCode, startDateStr);
-        const result = hist
+        const result: BoardHistoryItem[] = hist
             .sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
             .slice(-days)
             .map(h => ({
@@ -397,7 +839,7 @@ async function getBoardHistory(boardName: string, days: number = 10): Promise<an
             }));
 
         if (result.length > 0) {
-            cacheSet(cacheKey, result);
+            await cacheSet(cacheKey, result);
         }
         return result;
     } catch (err) {
@@ -434,8 +876,10 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
         return { date: dailyByDateCache.date, data: dailyByDateCache.data };
     }
 
-    // 尝试最近3天
-    for (let offset = 0; offset < 3; offset++) {
+    // 尝试最近10天（覆盖周末与长假）：分析在凌晨运行，周一/长假后首个交易日可能位于
+    // 3 个日历日之外——窗口太短会取不到最近交易日，导致 moneyflow 日期回退到今天而返回空，
+    // moneyflow 与 MA60 数据均缺失
+    for (let offset = 0; offset < 10; offset++) {
         const d = new Date();
         d.setDate(d.getDate() - offset);
         const dateStr = formatDate(d);
@@ -448,9 +892,9 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
 }
 
 /** 获取板块成分股（优先使用Tushare ths_member + daily，回退到HTML爬虫） */
-async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<any[]> {
+async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<BoardConstituent[]> {
     const cacheKey = `board_cons_${boardType}_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardConstituent[]>(cacheKey);
     if (cached) return cached;
 
     // ===== 优先使用Tushare ths_member + daily =====
@@ -475,7 +919,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
             const { data: dailyMap } = await getLatestDailyMap();
 
             // 组装成分股数据（含涨幅）
-            const result: any[] = [];
+            const result: BoardConstituent[] = [];
             for (const m of members) {
                 if (m.is_new === 'N') continue;  // 跳过已剔除的
                 const dailyRow = dailyMap.get(m.con_code);
@@ -494,7 +938,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
 
             console.log(`[HotSectorAnalyzer] Tushare ${boardType} ${boardCode} 成分股: ${result.length}只`);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
                 return result.slice(0, pageSize);
             }
         }
@@ -507,7 +951,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
         try {
             const result = await parseConceptConstituents(boardCode, pageSize);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
                 return result;
             }
         } catch (err) {
@@ -517,7 +961,7 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
         try {
             const result = await parseIndustryConstituents(boardCode, pageSize);
             if (result.length > 0) {
-                cacheSet(cacheKey, result);
+                await cacheSet(cacheKey, result);
             }
             return result;
         } catch (err) {
@@ -528,8 +972,8 @@ async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'i
 }
 
 /** 解析概念板块成分股（使用同花顺board/all接口） */
-async function parseConceptConstituents(boardCode: string, pageSize: number): Promise<any[]> {
-    const result: any[] = [];
+async function parseConceptConstituents(boardCode: string, pageSize: number): Promise<BoardConstituent[]> {
+    const result: BoardConstituent[] = [];
     const maxPages = Math.ceil(pageSize / 20);
 
     for (let page = 1; page <= maxPages; page++) {
@@ -567,8 +1011,8 @@ async function parseConceptConstituents(boardCode: string, pageSize: number): Pr
 }
 
 /** 解析行业板块成分股（使用同花顺行业详情页） */
-async function parseIndustryConstituents(boardCode: string, pageSize: number): Promise<any[]> {
-    const result: any[] = [];
+async function parseIndustryConstituents(boardCode: string, pageSize: number): Promise<BoardConstituent[]> {
+    const result: BoardConstituent[] = [];
     const maxPages = Math.ceil(pageSize / 20);
 
     for (let page = 1; page <= maxPages; page++) {
@@ -608,15 +1052,15 @@ async function parseIndustryConstituents(boardCode: string, pageSize: number): P
 }
 
 /** 获取板块涨幅排名前N的股票 */
-async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType: 'concept' | 'industry' = 'concept'): Promise<any[]> {
+async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType: 'concept' | 'industry' = 'concept'): Promise<BoardTopStock[]> {
     const cacheKey = `board_top_${boardType}_${boardCode}_${topN}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<BoardTopStock[]>(cacheKey);
     if (cached) return cached;
 
     // 按指定类型获取成分股（已按涨幅排序）
     const stocks = await getBoardConstituents(boardCode, boardType, topN);
 
-    const result = stocks.slice(0, topN).map(s => ({
+    const result: BoardTopStock[] = stocks.slice(0, topN).map(s => ({
         code: s.code,
         name: s.name,
         price: s.price,
@@ -627,13 +1071,26 @@ async function getBoardTopStocks(boardCode: string, topN: number = 5, boardType:
     }));
 
     if (result.length > 0) {
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
     }
     return result;
 }
 
+/** 板块名称归一化：去空格、去"概念/指数"后缀、去"及/与/和"连接词、去行业分级后缀(Ⅱ/Ⅲ等)，
+ * 用于跨板块体系名称匹配。例："旅游及酒店" → "旅游酒店"；"CRO概念" → "cro"；
+ * "共封装光学(CPO)" → "共封装光学(cpo)"；"电子化学品Ⅲ" → "电子化学品"（对齐板块池名） */
+function normalizeBoardName(name: string): string {
+    return String(name || '')
+        .replace(/\s+/g, '')
+        .replace(/[（(](?:概念|指数)[)）]/g, '')
+        .replace(/(概念|指数)$/, '')
+        .replace(/[及与和]/g, '')
+        .replace(/[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$/, '') // 去行业分级罗马数字后缀（Ⅱ/Ⅲ…）
+        .toLowerCase();
+}
+
 function formatDate(d: Date): string {
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return shanghaiDateYyyymmdd(d);
 }
 
 // ==================== 风口概念板块识别 ====================
@@ -643,11 +1100,19 @@ interface HotConcept {
     name: string;
     type: string;
     frequency: number;
-    avg_change: number;
+    freq20?: number;        // 近10日上榜次数（短线活跃度，字段名保留freq20兼容前端）
+    freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
+    avg_change: number;     // 120日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
-    amount_trend: number;
-    net_inflow: number;  // 板块主力净流入（万元，来自东方财富）
-    driver: string;
+    driver?: string;        // 驱动文本（当前无数据源，不填占位文本）
+    driver_type?: string;   // 驱动类型：政策/业绩/事件/技术（AI 研判回填，非规则归类）
+    ma60_status?: string;   // MA60 位置：站上(+x%)/跌破(-x%)/贴近/数据不足
+    vol_trend?: string;     // 近5日量能：放量/平量/缩量
+    turnover?: number;      // 换手率（ths_daily，缺失为 0）
+    limit_up_count?: number; // 板块内涨停家数（limit_list_ths，短线情绪）
+    max_boards?: number;     // 板块内最高连板数（limit_list_ths，短线高度）
+    in_long_pool?: boolean;  // 是否进入长线池（近120日上榜≥16次）
+    in_short_pool?: boolean; // 是否进入短线池（freq20≥3）
     leading_stock: string;
     leading_change: number;
     up_count: number;
@@ -655,16 +1120,124 @@ interface HotConcept {
     score: number;
 }
 
-/** 从同花顺板块轮动API获取板块轮动数据（截取指定天数） */
+/** 从 rawData（每日榜，交易日降序）组装 sectorStats（frequency/freq20/freq_delta/avgZf5/latestZf5） */
+export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: number): {
+    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    rawData: BlockRotationDay[];
+} {
+    const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
+    for (let i = 0; i < rawData.length; i++) {
+        for (const block of rawData[i].block_list || []) {
+            const key = block.name;
+            const zf = parseFloat(block.info?.zf5 || '0');
+            if (!sectorStats.has(key)) {
+                sectorStats.set(key, {
+                    name: block.name,
+                    code: block.code,
+                    frequency: 1,
+                    freq20: i < 10 ? 1 : 0,
+                    freq_delta: 0,
+                    avgZf5: zf,
+                    latestZf5: zf, // first（i 最小=最近一次上榜日）的涨幅
+                });
+            } else {
+                const stat = sectorStats.get(key)!;
+                stat.frequency += 1;
+                if (i < 10) stat.freq20 += 1;
+                stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf) / stat.frequency;
+                // latestZf5 保持 first 的涨幅（最近一次上榜日）
+            }
+        }
+    }
+
+    // 频次变化率 Δ：近10日（数组前10位，降序最新在前）逐日标记后反转为升序（旧→新），近5日 = 后5位
+    const windowDays = rawData.slice(0, 10);
+    const hitsMap = new Map<string, number[]>();
+    for (let d = windowDays.length - 1; d >= 0; d--) {
+        const daySet = new Set((windowDays[d].block_list || []).map(b => b.name));
+        for (const name of sectorStats.keys()) {
+            const hits = hitsMap.get(name) || [];
+            hits.push(daySet.has(name) ? 1 : 0);
+            hitsMap.set(name, hits);
+        }
+    }
+    for (const stat of sectorStats.values()) {
+        stat.freq_delta = calcFreqDelta(hitsMap.get(stat.name) || []);
+    }
+
+    console.log(`[HotSectorAnalyzer] 轮动榜统计完成: ${sectorStats.size} 个板块 / ${rawData.length} 个交易日`);
+    return { sectorStats, rawData };
+}
+
+/** 板块轮动榜 - 从 DB 行组装 rawData 并统计（网页同款口径：每日涨幅/跌幅前10，涨跌都算上榜） */
+export function buildSectorStatsFromRotationRows(
+    rows: RotationBoardStore.DailyRotationRow[],
+    days: number,
+): {
+    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    rawData: BlockRotationDay[];
+} {
+    // rows 已按交易日降序（queryRotationDaily），按日分组
+    const byDate = new Map<string, RotationBoardStore.DailyRotationRow[]>();
+    for (const r of rows) {
+        const arr = byDate.get(r.trading_date) || [];
+        arr.push(r);
+        byDate.set(r.trading_date, arr);
+    }
+    const dates = [...byDate.keys()];
+    const rawData: BlockRotationDay[] = dates.map(date => ({
+        date,
+        block_list: (byDate.get(date) || []).map(r => ({
+            name: r.board_name,
+            code: r.board_code,
+            // 字段名 zf5 兼容旧消费方（RotationBoardCache/TrendScore），值改为当日涨跌幅
+            info: { zf5: String(r.pct_change) },
+        })),
+    }));
+    return buildSectorStatsFromRawData(rawData, days);
+}
+
+/** 从同花顺板块轮动表获取板块轮动数据（网页同款口径，支持任意天数；DB 空时降级 hot_block_list） */
 export async function fetchBlockRotationData(days: number = 20): Promise<{
-    sectorStats: Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>;
-    rawData: any[];
+    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    rawData: BlockRotationDay[];
 }> {
-    const cacheKey = `block_rotation_${days}`;
-    const cached = cacheGet(cacheKey);
-    if (cached) {
+    const cacheKey = `block_rotation_${days}_v3`;
+    const cached = await cacheGet<{ rawData?: BlockRotationDay[] }>(cacheKey);
+    if (cached && cached.rawData && cached.rawData.length > 0) {
         console.log('[HotSectorAnalyzer] 使用缓存的板块轮动数据');
-        return cached;
+        // 只缓存 rawData（纯数组，JSON 安全），sectorStats 每次重建（Map 无法 JSON 序列化）
+        return buildSectorStatsFromRawData(cached.rawData, days);
+    }
+
+    // ===== 数据源1：轮动榜数据库（日线法，每日涨/跌前10，与网页板块轮动表一致）=====
+    try {
+        const rows = await RotationBoardStore.queryRotationDaily(days);
+        if (rows.length > 0) {
+            const result = buildSectorStatsFromRotationRows(rows, days);
+            await cacheSet(cacheKey, { rawData: result.rawData });
+            return result;
+        }
+        console.warn(`[HotSectorAnalyzer] 轮动榜DB数据为空（${days}日），回退 hot_block_list`);
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] 轮动榜DB读取失败，回退 hot_block_list:', (err as Error).message);
+    }
+
+    // ===== 数据源2（降级）：旧 hot_block_list（5日涨幅榜）=====
+    return fetchBlockRotationDataLegacy(days);
+}
+
+/** 旧数据源实现（hot_block_list，5日涨幅榜），保留为降级路径 */
+async function fetchBlockRotationDataLegacy(days: number): Promise<{
+    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    rawData: BlockRotationDay[];
+}> {
+    const cacheKey = `block_rotation_${days}_v2`;
+    const cached = await cacheGet<{ rawData?: BlockRotationDay[] }>(cacheKey);
+    if (cached && cached.rawData && cached.rawData.length > 0) {
+        console.log('[HotSectorAnalyzer] 使用缓存的板块轮动数据');
+        // 只缓存 rawData，sectorStats 每次重建（Map 无法 JSON 序列化）
+        return buildSectorStatsFromRawData(cached.rawData, days);
     }
 
     const url = 'https://eq.10jqka.com.cn/pick/block/block_hotspot/hotspot/v1/hot_block_list?type=con&field=zf5';
@@ -675,20 +1248,20 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     };
 
     console.log('[HotSectorAnalyzer] 正在从同花顺板块轮动API获取数据...');
-    
+
     // 添加重试机制：最多重试 3 次
     let response: Response | null = null;
     let lastError: Error | null = null;
     const MAX_RETRIES = 3;
-    
+
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
             response = await sessionFetch(url, { headers });
             if (response.ok) break; // 成功则跳出循环
-            
+
             lastError = new Error(`同花顺板块轮动API请求失败: HTTP ${response.status}`);
             console.warn(`[HotSectorAnalyzer] API请求失败 (尝试 ${attempt}/${MAX_RETRIES}): HTTP ${response.status}`);
-            
+
             if (attempt < MAX_RETRIES) {
                 // 等待一段时间后重试
                 await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
@@ -696,20 +1269,24 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
         } catch (err) {
             lastError = err as Error;
             console.warn(`[HotSectorAnalyzer] API请求异常 (尝试 ${attempt}/${MAX_RETRIES}):`, (err as Error).message);
-            
+
             if (attempt < MAX_RETRIES) {
                 await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
             }
         }
     }
-    
+
     // 所有重试失败后，返回空数据而非抛出异常
     if (!response || !response.ok) {
         console.error('[HotSectorAnalyzer] 同花顺板块轮动API多次重试失败，返回空数据:', lastError?.message);
         return { sectorStats: new Map(), rawData: [] };
     }
-    
-    const json = await response.json() as any;
+
+    const json = await response.json() as {
+        status_code?: number;
+        status_msg?: string;
+        data?: { data_list?: BlockRotationDay[] };
+    };
 
     if (json.status_code !== 0 || !json.data?.data_list) {
         console.error(`[HotSectorAnalyzer] 同花顺板块轮动API返回异常: ${json.status_msg}，返回空数据`);
@@ -717,15 +1294,17 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     }
 
     // 截取指定天数的数据
-    const allDataLists = json.data.data_list;
+    const allDataLists = json.data?.data_list ?? [];
     const dataLists = allDataLists.slice(0, days);
     console.log(`[HotSectorAnalyzer] 板块轮动API返回 ${allDataLists.length} 天数据，截取前 ${dataLists.length} 天`);
 
     // 统计每个板块的上榜次数和涨幅
-    const sectorStats = new Map<string, { name: string; code: string; frequency: number; avgZf5: number; latestZf5: number }>();
+    const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
 
-    for (const dayData of dataLists) {
-        const blockList = dayData.block_list || [];
+    // dataLists 契约：降序（最新在前，首日=最新交易日；已由数据探查验证：首日 2026-08-05 / 末日 2026-05-13）。
+    // freq20 统计数组前 10 位（最新 10 天，短线活跃度口径）。
+    for (let i = 0; i < dataLists.length; i++) {
+        const blockList = dataLists[i].block_list || [];
         for (const block of blockList) {
             const key = block.name;
             const zf5 = parseFloat(block.info?.zf5 || '0');
@@ -735,29 +1314,47 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
                     name: block.name,
                     code: block.code,
                     frequency: 1,
+                    freq20: i < 10 ? 1 : 0,
+                    freq_delta: 0,
                     avgZf5: zf5,
                     latestZf5: zf5,
                 });
             } else {
                 const stat = sectorStats.get(key)!;
                 stat.frequency += 1;
+                if (i < 10) stat.freq20 += 1;
                 stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf5) / stat.frequency;
                 stat.latestZf5 = zf5; // 保留最新一天的涨幅
             }
         }
     }
 
+    // 频次变化率 Δ：近10日（数组前10位，降序最新在前）逐日标记后反转为升序（旧→新），近5日 = 后5位
+    const windowDays = dataLists.slice(0, 10);
+    const hitsMap = new Map<string, number[]>();
+    for (let d = windowDays.length - 1; d >= 0; d--) {
+        const daySet = new Set((windowDays[d].block_list || []).map(b => b.name));
+        for (const name of sectorStats.keys()) {
+            const hits = hitsMap.get(name) || [];
+            hits.push(daySet.has(name) ? 1 : 0);
+            hitsMap.set(name, hits);
+        }
+    }
+    for (const stat of sectorStats.values()) {
+        stat.freq_delta = calcFreqDelta(hitsMap.get(stat.name) || []);
+    }
+
     console.log(`[HotSectorAnalyzer] 板块轮动统计完成: ${sectorStats.size} 个板块`);
 
     const result = { sectorStats, rawData: dataLists };
-    cacheSet(cacheKey, result);
+    await cacheSet(cacheKey, { rawData: result.rawData }); // 只缓存 rawData（Map 无法 JSON 序列化）
     return result;
 }
 
 /** 从同花顺概念板块页面爬取龙头股 - 使用分布式爬虫 */
 export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ code: string; name: string }[]> {
     const cacheKey = `concept_leading_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<{ code: string; name: string }[]>(cacheKey);
     if (cached) return cached;
 
     const url = `https://basic.10jqka.com.cn/48/${boardCode.replace(/\.TI$/, '')}/`;
@@ -773,7 +1370,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
         const topStockAttr = $('input.topStock').attr('topstock') || $('input.topStock').attr('topStock') || '';
         console.log(`[HotSectorAnalyzer] 概念${boardCode} topstock字段: "${topStockAttr}"`);
         
-        const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+        const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
         console.log(`[HotSectorAnalyzer] 概念${boardCode} 解析后的龙头股代码: ${topStockCodes.join(', ') || '无'}`);
         
         if (topStockCodes.length > 0) {
@@ -838,10 +1435,8 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
                     row.find('a').each((j, a) => {
                         const href = $(a).attr('href') || '';
                         const name = $(a).text().trim();
-                        // 从href中提取股票代码，如 /300801/ 或 stockpage.10jqka.com.cn/300801
-                        const codeMatch = href.match(/(\d{6})/);
-                        const code = codeMatch ? codeMatch[1] : '';
-                        if (code && name && /^\d{6}$/.test(code)) {
+                        const code = extractStockCodeFromHref(href);
+                        if (code && isValidStockName(name)) {
                             // 去重
                             if (!leadingStocks.some(s => s.code === code)) {
                                 leadingStocks.push({ code, name });
@@ -858,9 +1453,8 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
             $('table.m_table').find('a').each((i, a) => {
                 const href = $(a).attr('href') || '';
                 const name = $(a).text().trim();
-                const codeMatch = href.match(/(\d{6})/);
-                const code = codeMatch ? codeMatch[1] : '';
-                if (code && name && /^\d{6}$/.test(code)) {
+                const code = extractStockCodeFromHref(href);
+                if (code && isValidStockName(name)) {
                     if (!leadingStocks.some(s => s.code === code)) {
                         leadingStocks.push({ code, name });
                     }
@@ -872,7 +1466,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
 
         console.log(`[HotSectorAnalyzer] 概念${boardCode}龙头股: ${leadingStocks.map(s => s.name).join(', ') || '无'}`);
         if (leadingStocks.length > 0) {
-            cacheSet(cacheKey, leadingStocks);
+            await cacheSet(cacheKey, leadingStocks);
         }
         return leadingStocks;
     } catch (err) {
@@ -884,7 +1478,7 @@ export async function fetchConceptLeadingStocks(boardCode: string): Promise<{ co
 /** 从同花顺概念板块页面爬取成分股列表 - 使用分布式爬虫 */
 async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ code: string; name: string; exchange: string }[]> {
     const cacheKey = `concept_page_cons_${boardCode}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<{ code: string; name: string; exchange: string }[]>(cacheKey);
     if (cached) return cached;
 
     const url = `https://basic.10jqka.com.cn/48/${boardCode}/`;
@@ -895,22 +1489,22 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
         const match = html.match(/id="concept_data"[^>]*>([\s\S]*?)<\/div>/);
         if (!match) return [];
 
-        const data = JSON.parse(match[1]);
+        const data = JSON.parse(match[1]) as { result?: { listdata?: Record<string, string[][]> } };
         const listData = data.result?.listdata;
         if (!listData) return [];
 
         const dates = Object.keys(listData);
         if (dates.length === 0) return [];
 
-        const stocks = listData[dates[0]].map((s: string[]) => ({
+        const stocks = listData[dates[0]].map((s) => ({
             code: s[0],
             name: s[1],
             exchange: s[2] || '',
-        })).filter((s: { code: string; name: string }) => s.code && s.name && /^\d{6}$/.test(s.code));
+        })).filter((s) => s.code && s.name && /^\d{6}$/.test(s.code));
 
         console.log(`[HotSectorAnalyzer] 概念${boardCode}页面成分股: ${stocks.length}只`);
         if (stocks.length > 0) {
-            cacheSet(cacheKey, stocks);
+            await cacheSet(cacheKey, stocks);
         }
         return stocks;
     } catch (err) {
@@ -919,9 +1513,9 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
     }
 }
 
-async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, days: number = 20): Promise<HotConcept[]> {
-    const cacheKey = `hot_concepts_${days}_${minFrequency}_${topN}`;
-    const cached = cacheGet(cacheKey);
+async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW): Promise<HotConcept[]> {
+    const cacheKey = `hot_concepts_${days}_${topN}`;
+    const cached = await cacheGet<HotConcept[]>(cacheKey);
     if (cached) {
         console.log('[HotSectorAnalyzer] 使用缓存的风口概念数据');
         return cached;
@@ -931,20 +1525,18 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
     console.log('[HotSectorAnalyzer] 使用同花顺板块轮动表筛选风口板块');
     const { sectorStats } = await fetchBlockRotationData(days);
 
-    // 全行业覆盖：不再筛选AI相关板块，直接使用全部板块
+    // 全行业覆盖：直接使用全部板块
     const allSectors = Array.from(sectorStats.values());
     console.log(`[HotSectorAnalyzer] 全行业板块: ${allSectors.length} 个`);
 
     // 按上榜频次排序，频次相同按平均涨幅排序
     allSectors.sort((a, b) => b.frequency - a.frequency || b.avgZf5 - a.avgZf5);
 
-    // 构建HotConcept列表
+    // 构建HotConcept列表（含 freq20/freq_delta；driver 占位与 amount_trend 已移除）
     const candidates: HotConcept[] = allSectors.map(sector => {
-        // 评分：上榜频次(40%) + 资金净流入(30%) + 平均涨幅(20%) + 最新涨幅(10%)
         const freqScore = Math.min(10, sector.frequency * 1.2);
         const avgChangeScore = Math.min(10, Math.abs(sector.avgZf5) * 1.5);
         const latestChangeScore = Math.min(10, Math.abs(sector.latestZf5) * 1.0);
-        // 资金评分初始为0，补充资金数据后重新计算
         const score = Math.round((freqScore * 4.0 + avgChangeScore * 2.0 + latestChangeScore * 1.0) * 100) / 100;
 
         return {
@@ -952,11 +1544,10 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             name: sector.name,
             type: 'concept',
             frequency: sector.frequency,
+            freq20: sector.freq20,
+            freq_delta: sector.freq_delta,
             avg_change: Math.round(sector.avgZf5 * 100) / 100,
             today_change: Math.round(sector.latestZf5 * 100) / 100,
-            amount_trend: 0,
-            net_inflow: 0,
-            driver: `20日板块轮动上榜${sector.frequency}次`,
             leading_stock: '--',
             leading_change: 0,
             up_count: 0,
@@ -965,23 +1556,31 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
         };
     });
 
-    // 筛选上榜频次 >= minFrequency 的概念
-    let hotConcepts = candidates.filter(c => c.frequency >= minFrequency);
-    if (hotConcepts.length < topN) {
-        hotConcepts = candidates.filter(c => c.frequency >= Math.max(1, minFrequency - 1));
+    // 双池预筛：长线池(freq{LONG_WINDOW}≥LONG_POOL_MIN_FREQ) ∪ 短线池(freq20≥3)，交集板块两链都跑（无兜底降级）
+    const longNames = new Set(candidates.filter(c => c.frequency >= LONG_POOL_MIN_FREQ).map(c => c.name));
+    const shortNames = new Set(candidates.filter(c => (c.freq20 ?? 0) >= 3).map(c => c.name));
+    if (longNames.size === 0 && shortNames.size === 0) {
+        console.log(`[HotSectorAnalyzer] 双池为空（freq${LONG_WINDOW}<${LONG_POOL_MIN_FREQ} 且 freq20<3）`);
+        return [];
     }
-    if (hotConcepts.length < topN) {
-        hotConcepts = candidates
-            .sort((a, b) => b.score - a.score)
-            .slice(0, topN);
+    // 双轨选板：长线池与短线池各自按评分取 topN 再取并集（交集去重）。
+    // 原单池 topN 截断会把短线池成员挤出（评分公式 freqScore×4 权重偏向 freq120 长线），
+    // 导致短线档候选不足——实测短线池 35 个成员被截得只剩 3 个交集成员。
+    const marked = candidates
+        .filter(c => longNames.has(c.name) || shortNames.has(c.name))
+        .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }));
+    const byScore = (a: HotConcept, b: HotConcept) => b.score - a.score;
+    const longTrack = marked.filter(c => c.in_long_pool).sort(byScore).slice(0, topN);
+    const shortTrack = marked.filter(c => c.in_short_pool).sort(byScore).slice(0, topN);
+    const merged = new Map<string, HotConcept>();
+    for (const c of [...longTrack, ...shortTrack]) {
+        merged.set(c.name, c);  // 交集板块两边都出现，flags 一致，后写覆盖
     }
+    const result = [...merged.values()];
 
-    hotConcepts.sort((a, b) => b.score - a.score);
-    const result = hotConcepts.slice(0, topN);
-
-    console.log(`[HotSectorAnalyzer] 风口板块筛选完成: ${result.length} 个`);
+    console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个（选 top${topN}）/ 短线池: ${shortNames.size} 个（选 top${topN}），并集 ${result.length} 个做 AI 研判`);
     for (const c of result) {
-        console.log(`  ${c.name}: 上榜${c.frequency}次, 均涨幅${c.avg_change}%, 评分${c.score}`);
+        console.log(`  ${c.name}: freq${LONG_WINDOW}=${c.frequency} freq20=${c.freq20} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
     }
 
     // 从同花顺概念板块页面并发爬取龙头股
@@ -994,7 +1593,7 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
 
                 // 策略1：从 topStock 隐藏字段提取
                 const topStockAttr = $('input.topStock').attr('topStock') || '';
-                const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+                const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
                 if (topStockCodes.length > 0) {
                     for (const code of topStockCodes) {
                         const name = $(`a[code="${code}"]`).first().text().trim();
@@ -1023,9 +1622,8 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
                             $(el).closest('tr').find('a').each((j, a) => {
                                 const href = $(a).attr('href') || '';
                                 const name = $(a).text().trim();
-                                const codeMatch = href.match(/(\d{6})/);
-                                const code = codeMatch ? codeMatch[1] : '';
-                                if (code && name && /^\d{6}$/.test(code) && !stocks.some(s => s.code === code)) {
+                                const code = extractStockCodeFromHref(href);
+                                if (code && isValidStockName(name) && !stocks.some(s => s.code === code)) {
                                     stocks.push({ code, name });
                                 }
                             });
@@ -1039,9 +1637,8 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
                     $('table.m_table').find('a').each((i, a) => {
                         const href = $(a).attr('href') || '';
                         const name = $(a).text().trim();
-                        const codeMatch = href.match(/(\d{6})/);
-                        const code = codeMatch ? codeMatch[1] : '';
-                        if (code && name && /^\d{6}$/.test(code) && !stocks.some(s => s.code === code)) {
+                        const code = extractStockCodeFromHref(href);
+                        if (code && isValidStockName(name) && !stocks.some(s => s.code === code)) {
                             stocks.push({ code, name });
                         }
                         if (stocks.length >= 3) return false;
@@ -1058,73 +1655,47 @@ async function identifyHotConcepts(topN: number = 8, minFrequency: number = 3, d
             result[i].leading_stock = stocks[0].name;
             result[i].leading_change = 0;
             // 缓存龙头股结果
-            cacheSet(`concept_leading_${result[i].code}`, stocks);
+            await cacheSet(`concept_leading_${result[i].code}`, stocks);
         }
     }
 
-    // 从Tushare moneyflow_cnt_ths获取资金流向数据
+    // 净流入已彻底下线（2026-08-19，改用同花顺成交额展示，资金维度改由量能/换手体现）。
+    // 此前经 getMoneyflowCntThs / getMoneyflowIndDc 抓取东财派生板块资金流并写入
+    // concept.net_inflow（用于资金评分与 AI prompt），现整块移除。
+    // 下方保留独立的领涨股补充逻辑与评分，try/catch 统一包裹。
     try {
-        const today = formatDate(new Date());
-        const moneyflowData = await getMoneyflowCntThs(today);
-        // 同时用ts_code和去掉后缀的code建立索引，兼容不同code格式
-        const mfMap = new Map(moneyflowData.map(r => [r.ts_code, r]));
-        const mfMapByShortCode = new Map(moneyflowData.map(r => [r.ts_code.replace(/\.(TI|SI)$/, ''), r]));
+
+        // 领涨股缺失的板块（行业板块/概念板块），用成分股按涨幅排序补充
+        const missingLeader = result.filter(c => c.leading_stock === '--');
+        if (missingLeader.length > 0) {
+            console.log(`[HotSectorAnalyzer] ${missingLeader.length}个板块领涨股缺失，用成分股涨幅排序补充: ${missingLeader.map(c => `${c.name}(${c.code})`).join(', ')}`);
+            await Promise.all(missingLeader.map(async (concept) => {
+                try {
+                    // 行业板块（881xxx）成分股走 industry 接口，概念板块走 concept 接口
+                    const boardType: 'concept' | 'industry' = isIndustryBoardCode(concept.code) ? 'industry' : 'concept';
+                    const topStocks = await getBoardTopStocks(concept.code, 1, boardType);
+                    if (topStocks.length > 0) {
+                        concept.leading_stock = topStocks[0].name;
+                        concept.leading_change = topStocks[0].change_pct || 0;
+                        console.log(`[HotSectorAnalyzer] ${concept.name} 领涨股补充: ${concept.leading_stock}(${concept.leading_change}%)`);
+                    }
+                } catch { /* 忽略 */ }
+            }));
+        }
+
+        // 资金评分（净流入下线后不再含资金因子）：评分 = 频次(60%) + 平均涨幅(25%) + 最新涨幅(15%)
         for (const concept of result) {
-            // 优先精确匹配，再尝试短码匹配
-            const mf = mfMap.get(concept.code) || mfMapByShortCode.get(concept.code);
-            if (mf) {
-                // net_amount单位是亿元，转为万元存储（前端formatNetInflow会转换显示）
-                const netAmountWan = (mf.net_amount || 0) * 10000;
-                concept.net_inflow = netAmountWan;
-                concept.amount_trend = netAmountWan;
-                // 用lead_stock补充领涨股（如果爬取失败）
-                if (concept.leading_stock === '--' && mf.lead_stock) {
-                    concept.leading_stock = mf.lead_stock;
-                    concept.leading_change = mf.pct_change_stock || 0;
-                }
-            }
+            const freqScore = Math.min(10, concept.frequency * 1.2);
+            const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
+            const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
+            concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
         }
-        console.log(`[HotSectorAnalyzer] 资金流向数据获取成功: ${moneyflowData.length}条`);
-
-        // 补充资金数据后重新计算评分
-        // 收集所有板块的net_inflow用于归一化
-        const inflows = result.map(c => c.net_inflow).filter(v => v !== 0);
-        const hasFundData = inflows.length > 0;
-
-        if (hasFundData) {
-            // 有资金数据：评分 = 频次(40%) + 资金净流入(30%) + 平均涨幅(20%) + 最新涨幅(10%)
-            const maxInflow = Math.max(...inflows);
-            const minOutflow = Math.min(...inflows);
-            const absMax = Math.max(Math.abs(maxInflow), Math.abs(minOutflow), 1);
-
-            for (const concept of result) {
-                const freqScore = Math.min(10, concept.frequency * 1.2);
-                const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
-                const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
-
-                let fundScore = 5;
-                if (concept.net_inflow > 0) {
-                    fundScore = 5 + 5 * Math.min(1, concept.net_inflow / absMax);
-                } else if (concept.net_inflow < 0) {
-                    fundScore = 5 - 5 * Math.min(1, Math.abs(concept.net_inflow) / absMax);
-                }
-
-                concept.score = Math.round((freqScore * 4.0 + fundScore * 3.0 + avgChangeScore * 2.0 + latestChangeScore * 1.0) * 100) / 100;
-            }
-        } else {
-            // 无资金数据：回退到旧逻辑 评分 = 频次(60%) + 平均涨幅(25%) + 最新涨幅(15%)
-            for (const concept of result) {
-                const freqScore = Math.min(10, concept.frequency * 1.2);
-                const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
-                const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
-                concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
-            }
-        }
-    } catch (err: any) {
-        console.warn(`[HotSectorAnalyzer] 资金流向数据获取失败: ${err?.message || err}`);
+    } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.warn(`[HotSectorAnalyzer] 领涨股补充/评分失败: ${errMsg}`);
     }
 
-    cacheSet(cacheKey, result);
+    await cacheSet(cacheKey, result);
     return result;
 }
 
@@ -1152,19 +1723,19 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
 
     // 检查缓存是否在7天内
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        if (fs.existsSync(fp)) {
-            const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < SEVEN_DAYS) {
-                const raw = fs.readFileSync(fp, 'utf-8');
-                const cached = JSON.parse(raw);
-                const map = new Map<string, { name: string; code: string }[]>();
-                for (const [k, v] of Object.entries(cached as Record<string, { name: string; code: string }[]>)) {
-                    map.set(k, v);
-                }
-                return map;
+        const stat = await fs.promises.stat(fp).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs < SEVEN_DAYS) {
+            const raw = await fs.promises.readFile(fp, 'utf-8');
+            const cached = JSON.parse(raw) as Record<string, { name: string; code: string }[]>;
+            const map = new Map<string, { name: string; code: string }[]>();
+            for (const [k, v] of Object.entries(cached)) {
+                map.set(k, v);
             }
+            return map;
+        }
+        if (stat) {
             console.log('[HotSectorAnalyzer] 股票→行业反向映射缓存已过期(>7天)，重新构建');
         }
     } catch { /* ignore */ }
@@ -1193,21 +1764,21 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
     const obj: Record<string, { name: string; code: string }[]> = {};
     for (const [k, v] of map) { obj[k] = v; }
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        fs.writeFileSync(fp, JSON.stringify(obj, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(obj, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 反向映射缓存写入失败:', err);
     }
 
     // 清理构建过程中产生的行业成分股缓存文件
     try {
-        ensureCacheDir();
-        const files = fs.readdirSync(CACHE_DIR);
+        await ensureCacheDir();
+        const files = await fs.promises.readdir(CACHE_DIR);
         let cleaned = 0;
         for (const file of files) {
             if (file.startsWith('board_cons_industry_') && file.endsWith('.json')) {
-                fs.unlinkSync(path.join(CACHE_DIR, file));
+                await fs.promises.unlink(path.join(CACHE_DIR, file));
                 cleaned++;
             }
         }
@@ -1225,7 +1796,7 @@ async function buildStockIndustryMap(): Promise<Map<string, { name: string; code
 /** 概念→行业映射（通过知识图谱，替代原来的成分股重叠度计算） */
 async function mapConceptToIndustries(conceptCode: string, conceptName: string, topN: number = 3): Promise<ConceptIndustryResult> {
     const cacheKey = `concept_industry_map_${conceptName}`;
-    const cached = cacheGet(cacheKey);
+    const cached = await cacheGet<ConceptIndustryResult>(cacheKey);
     if (cached) return cached;
 
     try {
@@ -1254,13 +1825,13 @@ async function mapConceptToIndustries(conceptCode: string, conceptName: string, 
         console.log(`[HotSectorAnalyzer] 概念 ${conceptName} KG关联行业: ${stronglyRelated.map(s => `${s.name}(${s.overlap_count})`).join(', ')}`);
 
         const result: ConceptIndustryResult = { strongly_related: stronglyRelated, all_ranked: allRanked };
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
         return result;
     } catch (err) {
         console.warn(`[HotSectorAnalyzer] KG获取概念 ${conceptName} 关联行业失败: ${(err as Error).message}，使用排名接口映射`);
         const fallback = await mapByRankingIndustry(conceptName, topN);
         const result: ConceptIndustryResult = { strongly_related: fallback, all_ranked: fallback };
-        cacheSet(cacheKey, result);
+        await cacheSet(cacheKey, result);
         return result;
     }
 }
@@ -1280,6 +1851,89 @@ async function mapByRankingIndustry(conceptName: string, topN: number = 3): Prom
         stock_count: 0,
         overlap_codes: [],
     }));
+}
+
+/** 板块代码是否为行业板块（881xxx 为同花顺二级行业） */
+function isIndustryBoardCode(code: string): boolean {
+    return typeof code === 'string' && code.startsWith('881');
+}
+
+/**
+ * 校验 6 位数字是否为合法 A 股代码。
+ * 排除两类误判：
+ * 1. 日期型：同花顺新闻 URL 形如 news.10jqka.com.cn/20260805/c678696112.shtml，
+ *    截取前 6 位为 "202608"（日期 2026-08），首位 2 不合法。
+ * 2. 同花顺板块代码 881/884/885/886xxx：首位 8 但非个股（A 股个股代码段：
+ *    沪市 60/68、深市 00/30、北交所 43/83/87/92）。
+ */
+export function isValidStockCode(code: string): boolean {
+    return /^(60|68|00|30|43|83|87|92)\d{4}$/.test(code);
+}
+
+/**
+ * 校验是否为合法股票名：非空、长度 2~12、不含描述性关键词。
+ * 防"概念细分|玻璃基板新增…细分方向"这类新闻标题被当作股票名（含 | 分隔符与"概念/细分/新增"等词）。
+ */
+export function isValidStockName(name: string): boolean {
+    const n = (name || '').trim();
+    if (!n || n.length < 2 || n.length > 12) return false;
+    if (/[|｜、,，。;；：:]/.test(n)) return false;
+    if (/概念|细分|新增|方向|设备|耗材|龙头|板块/.test(n)) return false;
+    return true;
+}
+
+/**
+ * 从链接 href 中提取股票代码。
+ * 排除新闻链接（同花顺新闻域名 news.10jqka.com.cn，其 URL 含日期 20260805 会被误认为代码），
+ * 再按 6 位数字段提取并校验合法代码。
+ */
+export function extractStockCodeFromHref(href: string): string | null {
+    if (!href) return null;
+    // 排除新闻/资讯链接（news. 域名）
+    if (/news\./i.test(href)) return null;
+    const m = href.match(/(\d{6})/);
+    if (!m) return null;
+    return isValidStockCode(m[1]) ? m[1] : null;
+}
+
+/**
+ * 行业板块专用：直接从知识图谱获取该行业的上/下游，不走"概念→行业"映射。
+ * 修复：风口榜单出现行业板块（881xxx）时，此前会被当作概念查询
+ * （getConceptRelatedIndustriesByName 找不到 → fallback 随机行业排名），
+ * 导致层级流向图 related 错乱、上下游为空。行业板块应直接展示其产业链上下游。
+ */
+async function mapIndustryToChain(industryName: string): Promise<{
+    industryResult: ConceptIndustryResult;
+    transmission: TransmissionResult;
+}> {
+    // 知识图谱可能尚未初始化（构建中），失败时返回空上下游，不阻塞风口分析
+    let kg: { upstream: { name: string }[]; downstream: { name: string }[] } = { upstream: [], downstream: [] };
+    try {
+        kg = IndustryKGService.getUpstreamDownstreamByName(industryName, 1);
+    } catch (err) {
+        console.warn(`[HotSectorAnalyzer] 行业 ${industryName} 获取知识图谱上下游失败: ${(err as Error).message}`);
+    }
+
+    // 行业板块无"强关联行业"，related 为空（主节点直接连接上下游）
+    const industryResult: ConceptIndustryResult = { strongly_related: [], all_ranked: [] };
+
+    const industryBoards = await getIndustryBoards();
+    const codeMap = new Map(industryBoards.map(i => [i.name, i.code]));
+    const makeItem = (name: string, dir: 'upstream' | 'downstream', factor: number): TransmissionItem => ({
+        name,
+        code: codeMap.get(name) || '',
+        factor,
+        direction: dir,
+        source_industry: industryName, // 上游/下游直接挂在主行业下
+    });
+
+    // 权重：越靠前的产业链关联越强，递减 0.05
+    const upstream = kg.upstream.map((ind, i) =>
+        makeItem(ind.name, 'upstream', Math.round((0.5 - i * 0.05) * 1000) / 1000));
+    const downstream = kg.downstream.map((ind, i) =>
+        makeItem(ind.name, 'downstream', Math.round((0.4 - i * 0.05) * 1000) / 1000));
+
+    return { industryResult, transmission: { upstream, downstream } };
 }
 
 // ==================== 产业链上下游（同花顺行业分类） ====================
@@ -1334,14 +1988,14 @@ ${batch.map((n, i) => `${i + 1}. ${n}`).join('\n')}
         throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
     }
 
-    const json = await resp.json() as any;
+    const json = await resp.json() as AiChatResponse;
     let content = (json?.choices?.[0]?.message?.content || '').trim();
     if (content.startsWith('```')) {
         content = content.split('```')[1] || '';
         if (content.startsWith('json')) content = content.slice(4);
     }
 
-    return JSON.parse(content.trim());
+    return JSON.parse(content.trim()) as Record<string, { upstream: string[]; downstream: string[] }>;
 }
 
 /** 模糊匹配行业名到同花顺行业列表 */
@@ -1367,14 +2021,14 @@ async function buildThsIndustryChain(): Promise<Record<string, { upstream: strin
     // 使用30天TTL
     const THIRTY_DAYS = 30 * 24 * 3600 * 1000;
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        if (fs.existsSync(fp)) {
-            const stat = fs.statSync(fp);
-            if (Date.now() - stat.mtimeMs < THIRTY_DAYS) {
-                const raw = fs.readFileSync(fp, 'utf-8');
-                return JSON.parse(raw);
-            }
+        const stat = await fs.promises.stat(fp).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs < THIRTY_DAYS) {
+            const raw = await fs.promises.readFile(fp, 'utf-8');
+            return JSON.parse(raw) as Record<string, { upstream: string[]; downstream: string[] }>;
+        }
+        if (stat) {
             console.log('[HotSectorAnalyzer] 同花顺行业产业链缓存已过期，重新生成');
         }
     } catch { /* ignore */ }
@@ -1421,9 +2075,9 @@ async function buildThsIndustryChain(): Promise<Record<string, { upstream: strin
 
     // 缓存
     try {
-        ensureCacheDir();
+        await ensureCacheDir();
         const fp = path.join(CACHE_DIR, `${cacheKey}.json`);
-        fs.writeFileSync(fp, JSON.stringify(chain, null, 2), 'utf-8');
+        await fs.promises.writeFile(fp, JSON.stringify(chain, null, 2), 'utf-8');
     } catch (err) {
         console.warn('[HotSectorAnalyzer] 产业链缓存写入失败:', err);
     }
@@ -1576,6 +2230,15 @@ function pearsonCorrelation(x: number[], y: number[]): number {
 interface AiAnalysis {
     persistence: string;
     persistence_reason: string;
+    long_term_days: number;      // 长线影响预计持续天数（0~120，可按半月估算如45）
+    long_confidence: number;     // 长线置信度（0~1）
+    logic_type: string;          // 长线置信度依据标签：政策/业绩/资金/无支撑（前端 Tag）
+    long_reason: string;         // 长线研判理由（50字内，喂给 agent 长线链简报）
+    short_term_days: number;     // 短线影响预计持续天数（0~30）
+    short_heat: number;          // 短线热度（0~1）
+    heat_stage: string;          // 短线热度阶段标签：启动期/发酵期/高潮期/衰退期（前端 Tag）
+    short_reason: string;        // 短线研判理由（50字内，喂给 agent 短线链简报）
+    driver_type?: string;        // 驱动类型：政策/业绩/事件/技术（AI 推断）
     heat_transfer: boolean;
     transfer_direction: string;
     transfer_reason: string;
@@ -1585,7 +2248,94 @@ interface AiAnalysis {
 /** AI API是否可用的标记（首次失败后直接跳过，避免重复超时） */
 let aiApiAvailable: boolean | null = null;
 
-async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): Promise<AiAnalysis> {
+/** 构建 AI 研判 prompt（chain 分流：仅含当前池的数据与输出字段；修复原"近20日上榜频次"硬编码，frequency 现为 ${days} 日口径） */
+export function buildAiPrompt(
+    sectorName: string,
+    sectorData: HotConcept,
+    transmission: TransmissionResult,
+    monthlySignal: 'strong' | 'weak' | 'none',
+    days: number = LONG_WINDOW,
+    chain: 'long' | 'short' | 'both' = 'both',
+): string {
+    const formatTransmission = (items: TransmissionItem[]) => {
+        if (items.length === 0) return '无';
+        return items.map(i => `${i.name}(传导因子:${i.factor.toFixed(2)}, 来源:${i.source_industry})`).join('; ');
+    };
+    const longData = chain !== 'short'
+        ? `- MA60位置：${sectorData.ma60_status ?? '未知'}（板块指数收盘vs60日均线）\n- 月线规则：${monthlySignalText(monthlySignal)}`
+        : '';
+    const freqDelta = sectorData.freq_delta ?? 0;
+    const deltaDesc = freqDelta >= 1.5 ? `陡升(×${freqDelta.toFixed(1)})` : (freqDelta > 0 ? `平稳(×${freqDelta.toFixed(1)})` : '数据不足');
+    const turnoverDesc = (sectorData.turnover ?? 0) > 12 ? '过热(>12%)' : `${sectorData.turnover ?? 0}%`;
+    const shortData = chain !== 'long'
+        ? `- 频次变化率：${deltaDesc}（近5日 vs 前5日上榜天数）\n- 量能/换手率：${sectorData.vol_trend ?? '未知'}，换手${turnoverDesc}\n- 涨停家数：${sectorData.limit_up_count ?? 0}家；最高连板：${sectorData.max_boards ?? 0}板`
+        : '';
+    const longFields = chain !== 'short'
+        ? `1. long_term_days: 长线影响预计持续天数，整数0~120，按月估算并支持任意半月粒度（如45=1.5个月、75=2.5个月、105=3.5个月），不要局限于固定档位。按趋势强度分档：月线多头排列+站上MA60+资金净流入→75~120天；趋势确立但信号一般→45~75天；初期确认/信号较弱→30天；仅当明确无长期趋势（月线走坏/频次骤降/资金持续流出）才输出0。长线统计窗口为近120日上榜次数，切勿因"120日上榜频次"锚定输出120天，应结合月线位置与资金方向差异化判断
+2. long_confidence: 长线置信度，0~1（双支撑[政策+业绩]→0.7+，单支撑→0.5）
+3. logic_type: 长线置信度依据标签，取"政策"/"业绩"/"资金"/"无支撑"之一
+4. long_reason: 长线研判理由，50字内（结合热度筛选/趋势确认/逻辑验证给出持续时间天数判断依据）
+5. driver_type: 驱动类型，取"政策"/"业绩"/"事件"/"技术"之一（从板块名/领涨股/连板推断）`
+        : '';
+    const shortFields = chain !== 'long'
+        ? `6. short_term_days: 短线影响预计持续天数，整数1~30（已进入短线池的板块默认具备短线热度，应给出≥1天；0仅用于明确无短线机会）
+7. short_heat: 短线热度，0~1（综合涨停家数/连板高度/量能/上榜频次评定；存在涨停或连板时不应低于0.3）
+8. heat_stage: 短线热度阶段标签，取"启动期"/"发酵期"/"高潮期"/"衰退期"之一
+9. short_reason: 短线研判理由，50字内（结合热度捕捉/资金博弈/位置风险给出热度阶段与持续预计依据）`
+        : '';
+    const longGuide = chain !== 'short'
+        ? `【长线链】（侧重确定性+时间）：
+1. 热度筛选：freq120 是否平稳上升/持续高位？（剔除断续或爆发后沉寂）
+2. 趋势确认：月线多头排列且站上MA60→高天数75~120；月线走平/刚站稳→中天数45~75；月线走坏→可判反弹非反转，输出0或低天数
+3. 逻辑验证：从板块名称/领涨股/连板推断驱动类型，给出置信度依据（政策/业绩/资金/无支撑）
+4. 已进入长线池（120日上榜≥16次）即具备长线基础：除非月线明确走坏或频次骤降，否则应给出≥30天的长线研判，避免一刀切输出0天
+`
+        : '';
+    const shortGuide = chain !== 'long'
+        ? `【短线链】（侧重爆发力+热度维持）：
+1. 热度捕捉：freq20 与频次变化率是否陡升/连续霸榜（上榜频次高即热度基础，默认给出≥1天短线研判）
+2. 催化剂定性：从板块名/领涨股推断事件类型（突发→短炒1~5天；技术突破→1~2波5~15天）
+3. 资金博弈：涨停家数/连板高度（游资情绪近似），连板高度决定持续时间
+4. 位置风险：换手率是否过热（>12% 高潮期，1-3天见顶）；首次放量且换手温和→启动期（5-10天）
+5. 数据缺失（涨停0家/连板0板/换手0%）多为数据源口径，不应据此判0天，应基于上榜频次与涨跌幅仍给出短线研判与热度
+`
+        : '';
+    return `你是一位资深A股市场分析师。请沿当前研判链分析该风口概念板块的持续性与热度。
+注意：输入数据可能存在异常（如领涨股涨幅为0、涨跌家数为0、涨停家数/连板/换手率为0），这是数据源口径问题，请忽略并直接基于现有数据判断，不要质疑或分析数据本身。
+
+## 概念板块数据
+- 概念名称：${sectorName}
+- 板块评分：${sectorData.score}分
+- ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
+- 近10日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
+- 今日涨幅：${sectorData.today_change}%
+- 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
+- 上涨/下跌家数：${sectorData.up_count}/${sectorData.down_count}（行业维度）
+${longData}${shortData}
+## 上下游传导
+- 上游行业：${formatTransmission(transmission.upstream)}
+- 下游行业：${formatTransmission(transmission.downstream)}
+
+## 研判要求
+${longGuide}${shortGuide}
+请以JSON格式返回${chain === 'both' ? '以下全部' : '以下'}字段：
+${longFields}${longFields && shortFields ? '\n' : ''}${shortFields}
+10. persistence_reason: 持续性判断理由（80字以内）
+11. heat_transfer: 热度是否会在板块间传递，true/false
+12. transfer_direction: 传递方向（如"上游→中游"、"中游→下游"、"无明显传递"）
+13. transfer_reason: 传递判断理由（50字以内）
+14. risk_warning: 风险提示（30字以内）
+
+只返回JSON，不要其他文字。`;
+}
+
+async function aiAnalyzeSector(
+    sectorName: string,
+    sectorData: HotConcept,
+    transmission: TransmissionResult,
+    monthlySignal: 'strong' | 'weak' | 'none' = 'none',
+    chain: 'long' | 'short' | 'both' = 'both',
+): Promise<AiAnalysis> {
     const apiKey = process.env.OPENAI_API_KEY || '';
     let apiBase = process.env.OPENAI_API_BASE_URL || process.env.OPENAI_API_BASE || 'https://api.openai.com/v1';
     // 兼容URL已包含/chat/completions的情况（其他Service直接用完整URL）
@@ -1601,98 +2351,206 @@ async function aiAnalyzeSector(sectorName: string, sectorData: HotConcept, trans
         return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
 
-    try {
-        // 格式化上下游传导数据
-        const formatTransmission = (items: TransmissionItem[]) => {
-            if (items.length === 0) return '无';
-            return items.map(i => `${i.name}(传导因子:${i.factor.toFixed(2)}, 来源:${i.source_industry})`).join('; ');
-        };
+    let respStatus = 0;
+    let respRaw = '';
+    let respFinish = '';
+    let respUsage = '';
+    // DeepSeek V4-Flash（2026-07-31 发布）默认开启深度思考：思考(reasoning_content)与正文(content)
+    // 共用同一个 max_tokens 池子，预算被思考耗尽后 content 为空（HTTP 200、不报错）。
+    // 官方 API 实测 reasoning_effort:"none" 与 thinking:{type:"disabled"} 均可彻底关闭思考
+    // （关闭后响应不再含 reasoning_content）。生产走本地代理网关(127.0.0.1:3300)，参数可能被剥离，
+    // 因此用大 max_tokens 兜底：即使思考关不掉，也让"思考+正文"装得下（实测板块分析思考约 2~4K token）。
+    const MAX_TOKENS_TRIES = [8000, 16000];
+    for (let tryIdx = 0; tryIdx < MAX_TOKENS_TRIES.length; tryIdx++) {
+        try {
+            const prompt = buildAiPrompt(sectorName, sectorData, transmission, monthlySignal, LONG_WINDOW, chain);
 
-        const prompt = `你是一位资深A股市场分析师。请根据以下数据，分析该风口概念板块的持续性和热度传递。
+            const resp = await sessionFetch(chatUrl, {
+                method: 'POST',
+                signal: AbortSignal.timeout(90000),  // 90秒超时：推理模型思考更久
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model,
+                    messages: [{ role: 'user', content: prompt }],
+                    temperature: 0.3,
+                    // DeepSeek V4 系列（v4-flash/v4-pro）默认开启深度思考，max_tokens 会被
+                    // reasoning_content 耗尽导致 content 为空。双参数关闭思考：reasoning_effort="none"
+                    // （OpenAI o 系列风格）+ thinking:{type:"disabled"}（Anthropic 风格，V4 官方均兼容），
+                    // 任一个被网关透传即生效。仅对 deepseek 模型附加，避免影响其他模型。
+                    ...(model.toLowerCase().includes('deepseek')
+                        ? { reasoning_effort: 'none', thinking: { type: 'disabled' } }
+                        : {}),
+                    max_tokens: MAX_TOKENS_TRIES[tryIdx],
+                }),
+            });
+            respStatus = resp.status;
+            respRaw = '';
 
-## 概念板块数据
-- 概念名称：${sectorName}
-- 板块评分：${sectorData.score}分（综合频次、涨幅、资金等因素）
-- 近20日上榜频次：${sectorData.frequency}天
-- 近20日平均涨幅：${sectorData.avg_change}%
-- 今日涨幅：${sectorData.today_change}%
-- 主力净流入：${sectorData.amount_trend}万元
-- 板块净流入：${sectorData.net_inflow}万元
-- 驱动因素：${sectorData.driver}
-- 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
+            if (!resp.ok) {
+                const errBody = await resp.text().catch(() => '');
+                throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+            }
 
-## 上下游传导
-- 上游行业：${formatTransmission(transmission.upstream)}
-- 下游行业：${formatTransmission(transmission.downstream)}
+            // 先读取原始 body（用于失败时定位空响应/格式问题），再解析 JSON
+            respRaw = await resp.text();
+            const json = JSON.parse(respRaw) as AiChatResponse;
+            respFinish = String(json?.choices?.[0]?.finish_reason ?? '');
+            respUsage = json?.usage ? JSON.stringify(json.usage) : '';
+            let content = json?.choices?.[0]?.message?.content?.trim() || '';
+            if (content.startsWith('```')) {
+                content = content.split('```')[1];
+                if (content.startsWith('json')) content = content.slice(4);
+            }
+            if (!content) {
+                // 推理模型：思考未完成导致 content 为空 → 提高 max_tokens 重试
+                const reasoning = json?.choices?.[0]?.message?.reasoning_content;
+                if (reasoning && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                    console.log(`[HotSectorAnalyzer] AI 推理未完成（content 空、reasoning 有内容，finish=${respFinish} usage=${respUsage}），提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}`);
+                    continue;
+                }
+                throw new Error(`AI 返回空 content（finish=${respFinish} usage=${respUsage}，原始响应前300: ${respRaw.slice(0, 300)}）`);
+            }
 
-请以JSON格式返回分析结果，包含以下字段：
-1. persistence: 持续时间判断，值为"短期(1-3天)"/"中期(1-2周)"/"长期(1月+)"
-2. persistence_reason: 持续性判断理由（50字以内，需结合上榜频次、涨幅、资金等因素综合分析）
-3. heat_transfer: 热度是否会在板块间传递，true/false
-4. transfer_direction: 传递方向（如"上游→中游"、"中游→下游"、"无明显传递"）
-5. transfer_reason: 传递判断理由（50字以内，需结合上下游传导因子分析）
-6. risk_warning: 风险提示（30字以内）
-
-只返回JSON，不要其他文字。`;
-
-        const resp = await sessionFetch(chatUrl, {
-            method: 'POST',
-            signal: AbortSignal.timeout(45000),  // 45秒超时，32B模型复杂分析需要更长时间
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`,
-            },
-            body: JSON.stringify({
-                model,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.3,
-                max_tokens: 500,
-            }),
-        });
-
-        if (!resp.ok) {
-            const errBody = await resp.text().catch(() => '');
-            throw new Error(`AI API HTTP ${resp.status}: ${errBody.slice(0, 300)}`);
+            const result = JSON.parse(content.trim()) as AiAnalysis;
+            // AI 输出健壮性：天数约束在 schema 范围内（长期0~120、短期0~30），防 LLM 越界值
+            result.long_term_days = Math.min(120, Math.max(0, Number(result.long_term_days) || 0));
+            result.short_term_days = Math.min(30, Math.max(0, Number(result.short_term_days) || 0));
+            aiApiAvailable = true;  // AI可用
+            return result;
+        } catch (err) {
+            const errMsg = (err as Error).message || '';
+            // content 有值但 JSON 被截断（如 "Unterminated string in JSON"）→ 提高 max_tokens 重试，避免直接降级
+            if (errMsg.includes('JSON') && tryIdx < MAX_TOKENS_TRIES.length - 1) {
+                console.log(`[HotSectorAnalyzer] AI JSON 截断/解析失败，提高 max_tokens 重试: ${MAX_TOKENS_TRIES[tryIdx + 1]}: ${errMsg.slice(0, 100)}`);
+                continue;
+            }
+            // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
+            // 超时只是暂时问题，不标记
+            if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
+                aiApiAvailable = false;
+            }
+            console.error(`[HotSectorAnalyzer] AI分析失败（HTTP=${respStatus}，finish=${respFinish} usage=${respUsage}，原始响应前300=${respRaw.slice(0, 300) || '（空）'}），使用规则引擎:`, errMsg);
+            return ruleBasedAnalysis(sectorName, sectorData, transmission);
         }
-
-        const json: any = await resp.json();
-        let content = json?.choices?.[0]?.message?.content?.trim() || '';
-        if (content.startsWith('```')) {
-            content = content.split('```')[1];
-            if (content.startsWith('json')) content = content.slice(4);
-        }
-
-        const result = JSON.parse(content.trim());
-        aiApiAvailable = true;  // AI可用
-        return result;
-    } catch (err) {
-        const errMsg = (err as Error).message || '';
-        // 连接错误或认证失败(401)时标记AI不可用，避免重复重试浪费时间
-        // 超时只是暂时问题，不标记
-        if (errMsg.includes('ECONNREFUSED') || errMsg.includes('ENOTFOUND') || errMsg.includes('fetch failed') || errMsg.includes('HTTP 401')) {
-            aiApiAvailable = false;
-        }
-        console.error('[HotSectorAnalyzer] AI分析失败，使用规则引擎:', errMsg);
-        return ruleBasedAnalysis(sectorName, sectorData, transmission);
     }
+    return ruleBasedAnalysis(sectorName, sectorData, transmission);
+}
+
+/** 由 AI 长/短线持续天数与置信度/热度推导 cycle（阈值常量见本函数上方） */
+export const LONG_DAYS_MIN = 30;
+export const LONG_CONF_MIN = 0.5;
+export const SHORT_DAYS_MIN = 1;
+export const SHORT_HEAT_MIN = 0.3;
+export const OVERHEAT_TURNOVER = 12;
+export const FREQ_DELTA_SURGE = 1.5;
+/** 长线风口统计窗口：近 120 个交易日（约半年），60 日只算波段不算长线 */
+export const LONG_WINDOW = 120;
+/** 长线池门槛：LONG_WINDOW 内上榜 ≥16 次（对齐原 60日≥8 的强度：120/60×8=16） */
+export const LONG_POOL_MIN_FREQ = 16;
+
+export function deriveCycle(a: {
+    long_term_days?: number;
+    long_confidence?: number;
+    short_term_days?: number;
+    short_heat?: number;
+}): 'both' | 'long' | 'short' | 'none' {
+    const isLong = (a.long_term_days ?? 0) >= LONG_DAYS_MIN && (a.long_confidence ?? 0) >= LONG_CONF_MIN;
+    const isShort = (a.short_term_days ?? 0) >= SHORT_DAYS_MIN && (a.short_heat ?? 0) >= SHORT_HEAT_MIN;
+    if (isLong && isShort) return 'both';
+    if (isLong) return 'long';
+    if (isShort) return 'short';
+    return 'none';  // 长短线均不成立（不再无条件归 short）
+}
+
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按上榜次数 freq20 降序，相同按热度 short_heat 降序），按 name 去重；
+ * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
+export function applyDualRankings<T extends {
+    name: string;
+    cycle: 'short' | 'long' | 'both' | 'none';
+    long_term_days?: number;
+    short_term_days?: number;
+    frequency?: number;
+    freq20?: number;
+    ai_analysis?: AiAnalysis | string | null;
+}>(sectors: T[]): T[] {
+    const longBoard = sectors
+        .filter(s => s.cycle === 'long' || s.cycle === 'both')
+        .sort((a, b) => {
+            const daysDiff = (b.long_term_days ?? 0) - (a.long_term_days ?? 0);
+            if (daysDiff !== 0) return daysDiff;
+            return (b.frequency ?? 0) - (a.frequency ?? 0);
+        })
+        .slice(0, 8);
+    const shortBoard = sectors
+        .filter(s => s.cycle === 'short' || s.cycle === 'both')
+        .sort((a, b) => {
+            // 短线榜按上榜次数（近10日 freq20）降序，相同按短线热度（short_heat，存于 ai_analysis）降序
+            const freqDiff = (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            if (freqDiff !== 0) return freqDiff;
+            const heatOf = (s: { ai_analysis?: AiAnalysis | string | null }) =>
+                typeof s.ai_analysis === 'object' && s.ai_analysis ? (s.ai_analysis.short_heat ?? 0) : 0;
+            return heatOf(b) - heatOf(a);
+        })
+        .slice(0, 8);
+    const merged = new Map<string, T>();
+    for (const s of [...longBoard, ...shortBoard]) {
+        if (!merged.has(s.name)) merged.set(s.name, s);
+    }
+    for (const s of sectors) {
+        if (s.cycle === 'none' && !merged.has(s.name)) merged.set(s.name, s);
+    }
+    return [...merged.values()];
+}
+
+/** 政策/规划类关键词（规则引擎降级时区分 logic_type） */
+const RULE_POLICY_KEYWORDS = ['政策', '规划', '改革', '补贴', '关税', '双碳', '新能源', '基建', '投资', '出口', '战略', '纲要', '环保', '地产', '军工'];
+/** 业绩/涨价类关键词（规则引擎降级时区分 logic_type） */
+const EARN_KEYWORDS = ['业绩', '预增', '扭亏', '盈利', '利润', '涨价', '提价', '景气', '高送转'];
+
+/** 规则引擎降级的 logic_type 推断：板块名含政策类关键词→政策；业绩类→业绩；否则沿用资金/无支撑 */
+function inferRuleLogicType(sectorName: string, fallback: string): string {
+    if (RULE_POLICY_KEYWORDS.some(k => sectorName.includes(k))) return '政策';
+    if (EARN_KEYWORDS.some(k => sectorName.includes(k))) return '业绩';
+    return fallback;
 }
 
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
     const freq = sectorData.frequency;
     const avgChange = sectorData.avg_change;
-    const amountTrend = sectorData.amount_trend;
 
-    let persistence: string, reason: string;
-    if (freq >= 6 && avgChange > 2 && amountTrend > 10) {
-        persistence = '长期(1月+)';
-        reason = '高频上榜+持续放量+资金加速流入，趋势强劲';
-    } else if (freq >= 4 && avgChange > 1) {
-        persistence = '中期(1-2周)';
-        reason = '中频上榜+涨幅稳定，有一定持续性';
+    // 规则引擎降级八字段（仅降级，不写入 prompt）
+    // 长线持续天数按月分档（1/2/3个月≈30/60/90天），不再固定45天；标签按板块名关键词+资金区分，避免全为"资金"
+    // freq 为 LONG_WINDOW(120) 日口径，门槛按原 60 日 8/6/4 等比对齐为 16/12/8
+    let longTermDays = 0, longConfidence = 0, shortTermDays = 5, shortHeat = 0.4;
+    let logicType = '无支撑', heatStage = '启动期';
+    let longReason = '频次较低持续性存疑', shortReason = '热度低迷';
+    let persistence = '短期(1-3天)', reason: string;
+    if (freq >= 16 && avgChange > 1.5) {
+        longTermDays = 90; longConfidence = 0.85; shortTermDays = 3; shortHeat = 0.6;
+        logicType = '资金'; heatStage = '发酵期';
+        longReason = '极高频霸榜+趋势延续，中线空间充足'; shortReason = '资金活跃但换手需警惕';
+        persistence = '长期(2-3个月)';
+        reason = '极高频上榜+持续放量，中线趋势强劲';
+    } else if (freq >= 12 && avgChange > 2) {
+        longTermDays = 60; longConfidence = 0.8; shortTermDays = 3; shortHeat = 0.5;
+        logicType = '资金'; heatStage = '发酵期';
+        longReason = '高频上榜+持续放量，趋势强劲'; shortReason = '资金活跃但换手需警惕';
+        persistence = '长期(1-2个月)';
+        reason = '高频上榜+持续放量，趋势强劲';
+    } else if (freq >= 8 && avgChange > 1) {
+        longTermDays = 30; longConfidence = 0.5; shortTermDays = 5; shortHeat = 0.6;
+        logicType = '无支撑'; heatStage = '启动期';
+        longReason = '中频上榜涨幅稳定，月线级别趋势初步确立'; shortReason = '热度温和启动';
+        persistence = '中期(1个月)';
+        reason = '中频上榜+涨幅稳定，月线级别有持续性';
     } else {
-        persistence = '短期(1-3天)';
         reason = '上榜频次较低或资金流出，持续性存疑';
     }
+    // 长线置信度依据标签：板块名含政策/业绩类关键词优先，否则沿用资金/无支撑（避免全为"资金"）
+    logicType = inferRuleLogicType(sectorName, logicType);
 
     const upFactors = transmission.upstream.map(u => u.factor);
     const downFactors = transmission.downstream.map(d => d.factor);
@@ -1720,6 +2578,15 @@ function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmiss
     return {
         persistence,
         persistence_reason: reason,
+        long_term_days: longTermDays,
+        long_confidence: longConfidence,
+        logic_type: logicType,
+        long_reason: longReason,
+        short_term_days: shortTermDays,
+        short_heat: shortHeat,
+        heat_stage: heatStage,
+        short_reason: shortReason,
+        driver_type: undefined,
         heat_transfer: heatTransfer,
         transfer_direction: direction,
         transfer_reason: transferReason,
@@ -1773,14 +2640,12 @@ async function fetchQuoteWithRetry(code: string, _maxRetries = 3): Promise<{ pri
 
 /** 批量获取Tushare增强数据（资金流向+每日指标），返回Map<ts_code, data> */
 async function fetchTushareEnhancement(stockCodes: string[]): Promise<{
-    moneyflowMap: Map<string, MoneyflowRow>;
     moneyflowThsMap: Map<string, MoneyflowThsRow>;
     dailyBasicMap: Map<string, DailyBasicFullRow>;
     dailyHistMap: Map<string, DailyPriceRow[]>;
     limitListMap: Map<string, LimitListThsRow>;
     limitStepData: LimitStepRow[];
 }> {
-    const moneyflowMap = new Map<string, MoneyflowRow>();
     const moneyflowThsMap = new Map<string, MoneyflowThsRow>();
     const dailyBasicMap = new Map<string, DailyBasicFullRow>();
     const dailyHistMap = new Map<string, DailyPriceRow[]>();
@@ -1806,7 +2671,7 @@ async function fetchTushareEnhancement(stockCodes: string[]): Promise<{
         }
         console.log(`[HotSectorAnalyzer] moneyflow_ths获取成功: ${moneyflowThsMap.size}只`);
     } catch (err) {
-        console.warn('[HotSectorAnalyzer] moneyflow_ths获取失败，回退到moneyflow:', (err as Error).message);
+        console.warn('[HotSectorAnalyzer] moneyflow 资金流向获取失败（当日与昨日均失败，选股资金维度将降级）:', (err as Error).message);
     }
 
     // 北交所股票Tushare不支持资金流向，用新浪接口补充
@@ -1823,24 +2688,21 @@ async function fetchTushareEnhancement(stockCodes: string[]): Promise<{
         }
     }
 
-    // 如果moneyflow_ths无数据，回退到原有moneyflow
-    if (moneyflowThsMap.size === 0) {
-        try {
-            const mfRows = await getMoneyflowByDate(tradeDateStr);
-            for (const row of mfRows) {
-                moneyflowMap.set(row.ts_code, row);
-            }
-            if (mfRows.length === 0) {
-                const yesterday = new Date(today);
-                yesterday.setDate(yesterday.getDate() - 1);
-                const ydRows = await getMoneyflowByDate(formatDate(yesterday));
-                for (const row of ydRows) {
-                    moneyflowMap.set(row.ts_code, row);
-                }
-            }
-        } catch (err) {
-            console.warn('[HotSectorAnalyzer] Tushare资金流向获取失败:', err);
+    // 补充 mf_5day（5日主力净额）：moneyflow 原版接口无此字段，用 moneyflow_ths 接口的 net_d5_amount 回填
+    try {
+        const mf5dMap = await getMoneyflowThs5dMap(tradeDateStr);
+        for (const [tsCode, v] of mf5dMap) {
+            const row = moneyflowThsMap.get(tsCode);
+            if (row) row.mf_5day = v;
         }
+        console.log(`[HotSectorAnalyzer] moneyflow_ths 5日净额补充: ${mf5dMap.size}只`);
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] moneyflow_ths 5日净额补充失败（选股评分 mf_5day 因子将降级为0）:', (err as Error).message);
+    }
+
+    // 资金流向仅保留 moneyflowThsMap（moneyflow 与 moneyflow_ths 已合并为同一 moneyflow 接口调用，见 getMoneyflowThsByDate）
+    if (moneyflowThsMap.size === 0) {
+        console.warn('[HotSectorAnalyzer] moneyflow 资金流向无数据（当日与昨日均空），选股资金维度将降级');
     }
 
     // 获取涨跌停数据（limit_list_ths + limit_step）—— 2次调用
@@ -1908,7 +2770,7 @@ async function fetchTushareEnhancement(stockCodes: string[]): Promise<{
         await Promise.all(promises);
     }
 
-    return { moneyflowMap, moneyflowThsMap, dailyBasicMap, dailyHistMap, limitListMap, limitStepData };
+    return { moneyflowThsMap, dailyBasicMap, dailyHistMap, limitListMap, limitStepData };
 }
 
 /** 计算连续上涨天数（从最近一天往前数） */
@@ -1928,7 +2790,6 @@ async function selectStocksFromIndustry(
     conceptCodes: Set<string>,
     maxStocks: number = 3,
     enhancement?: {
-        moneyflowMap: Map<string, MoneyflowRow>;
         moneyflowThsMap: Map<string, MoneyflowThsRow>;
         dailyBasicMap: Map<string, DailyBasicFullRow>;
         dailyHistMap: Map<string, DailyPriceRow[]>;
@@ -1954,7 +2815,6 @@ async function selectStocksFromIndustry(
 
         // Tushare增强数据
         const tsCode = toTsCodeFromEm(stock.code);
-        const mfData = enhancement?.moneyflowMap.get(tsCode);
         const mfThsData = enhancement?.moneyflowThsMap.get(tsCode);
         const dbData = enhancement?.dailyBasicMap.get(tsCode);
         const histData = enhancement?.dailyHistMap.get(tsCode);
@@ -1963,13 +2823,13 @@ async function selectStocksFromIndustry(
         // 换手率：优先用Tushare数据，回退到同花顺HTML解析值
         const turnover = dbData?.turnover_rate || stock.turnover_rate || 0;
 
-        // 资金净流入：优先用moneyflow_ths（更精准，含占比和5日数据），回退到moneyflow
-        const netMfAmount = mfThsData?.net_mf_amount || mfData?.net_mf_amount || 0;
+        // 资金净流入（万元）：moneyflow 与 moneyflow_ths 已合并为同一数据源（moneyflowThsMap）
+        const netMfAmount = mfThsData?.net_mf_amount || 0;
         const mf5day = mfThsData?.mf_5day || 0;  // 5日主力净额（万元）
         // 大单+特大单净买入（万元）
         const bigNetAmount = mfThsData
             ? ((mfThsData.buy_lg_amount || 0) - (mfThsData.sell_lg_amount || 0) + (mfThsData.buy_elg_amount || 0) - (mfThsData.sell_elg_amount || 0))
-            : (mfData ? ((mfData.buy_lg_amount || 0) - (mfData.sell_lg_amount || 0) + (mfData.buy_elg_amount || 0) - (mfData.sell_elg_amount || 0)) : 0);
+            : 0;
 
         // 资金净流入（元）：优先用Tushare数据（万元→元），回退到同花顺HTML解析值
         const netInflowEm = netMfAmount ? netMfAmount * 10000 : (stock.net_inflow || 0);
@@ -2069,9 +2929,10 @@ async function selectStocksFromIndustry(
         // ---- 维度2：资金流/量价（权重30%，4因子）----
         let fundScore = 0;
 
-        // 因子5：5日主力净流入占比 net_mf_ratio（0-25分）
+        // 因子5：主力净流入占比（0-25分）
         // 占比越高说明主力资金越积极，是短期上涨的核心驱动力
-        const netMfRatio = mfThsData?.net_mf_ratio || 0;
+        // 注：net_mf_ratio 字段两个 Tushare 接口均无，用金额分项推导主力(大单+特大单)净流入占比
+        const netMfRatio = mfThsData ? calcMainForceNetRatio(mfThsData) : 0;
         if (netMfRatio >= 20) {
             fundScore += 25; // 主力极度积极
         } else if (netMfRatio >= 10) {
@@ -2401,7 +3262,6 @@ async function extractLeadingStock(
     mainStocks: SelectedStock[],
     conceptCode: string,
     enhancement?: {
-        moneyflowMap: Map<string, MoneyflowRow>;
         moneyflowThsMap: Map<string, MoneyflowThsRow>;
         dailyBasicMap: Map<string, DailyBasicFullRow>;
         dailyHistMap: Map<string, DailyPriceRow[]>;
@@ -2507,27 +3367,28 @@ async function extractLeadingStock(
         };
     }
 
-    // 同花顺页面爬取失败时，不再回退到其他数据源，确保龙头股必须来自同花顺
-    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})同花顺页面未爬取到龙头股，不使用备选数据源`);
+    // 同花顺页面爬取失败时，回退到 main_stocks 中评分最高的股票作为龙头股（保证有 code/价格/涨幅，行业板块 881xxx 无概念页结构时必走此分支）
+    const fallbackStock = [...mainStocks].sort((a, b) => (b.score || 0) - (a.score || 0)).find(s => s.code);
+    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})同花顺页面未爬取到龙头股，回退到评分最高核心股: ${fallbackStock ? fallbackStock.name : '无'}`);
     return {
-        name: concept.leading_stock !== '--' ? concept.leading_stock : '',
-        code: '',
-        industry: '',
-        price: null,
-        change_pct: null,
-        reason: concept.driver || '',
-        reason_tag: '',
-        reason_tag_class: '',
-        related_industry: '',
-        in_concept: false,
+        name: fallbackStock?.name || (concept.leading_stock !== '--' ? concept.leading_stock : ''),
+        code: fallbackStock?.code || '',
+        industry: fallbackStock?.industry || '',
+        price: fallbackStock?.price ?? null,
+        change_pct: fallbackStock?.change_pct ?? null,
+        reason: fallbackStock?.reason || concept.driver || '',
+        reason_tag: fallbackStock?.reason_tag || '',
+        reason_tag_class: fallbackStock?.reason_tag_class || '',
+        related_industry: fallbackStock?.related_industry || conceptName,
+        in_concept: fallbackStock?.in_concept ?? false,
     };
 }
 
 // ==================== 获取关联行业行情统计 ====================
 
-async function getIndustryStats(industryNames: string[]): Promise<any[]> {
+async function getIndustryStats(industryNames: string[]): Promise<IndustryStat[]> {
     const industryBoards = await getIndustryBoards();
-    const result: any[] = [];
+    const result: IndustryStat[] = [];
 
     for (const name of industryNames) {
         const ind = industryBoards.find(i => i.name === name);
@@ -2551,7 +3412,7 @@ async function getIndustryStats(industryNames: string[]): Promise<any[]> {
 
 export interface FullAnalysisResult {
     update_time: string;
-    hot_sectors: any[];
+    hot_sectors: HotSectorAnalysis[];
 }
 
 export class WindLeaderAnalyzerService {
@@ -2570,24 +3431,24 @@ export class WindLeaderAnalyzerService {
     static async runFullAnalysis(): Promise<FullAnalysisResult> {
         console.log('[WindLeaderAnalyzer] 开始执行风口龙头分析...');
         // 清除缓存，确保获取最新数据
-        clearAllCache();
+        await clearAllCache();
 
-        // 1. 识别风口概念板块
-        let hotConcepts = await identifyHotConcepts(8, 2, 20);
+        // 1. 识别风口候选池（120天长线统计 + freq20，候选池预筛 freq120≥16 || freq20≥3）
+        const hotConcepts = await identifyHotConcepts(16, LONG_WINDOW);
+        // 候选池为空 → 空榜（不再降低条件重试）
         if (hotConcepts.length === 0) {
-            console.log('[HotSectorAnalyzer] 未识别到风口概念，降低筛选条件重试');
-            hotConcepts = await identifyHotConcepts(8, 1, 20);
+            console.log(`[HotSectorAnalyzer] 候选池为空（freq${LONG_WINDOW}<${LONG_POOL_MIN_FREQ} 且 freq20<3），返回空榜`);
         }
 
         const result: FullAnalysisResult = {
-            update_time: new Date().toLocaleString('zh-CN', { hour12: false }),
+            update_time: shanghaiDateTimeStr(),
             hot_sectors: [],
         };
 
         // 预先收集所有候选股代码，用于批量获取Tushare增强数据
         const allCandidateCodes: string[] = [];
         const conceptCodeSets: Map<string, Set<string>> = new Map();
-        const conceptIndustryMap: Map<string, any[]> = new Map(); // 缓存行业映射结果
+        const conceptIndustryMap: Map<string, IndustryMapping[]> = new Map(); // 缓存行业映射结果
         const industryBoards = await getIndustryBoards();
 
         // ===== 并发爬取概念板块页面（成分股+龙头股）=====
@@ -2602,7 +3463,7 @@ export class WindLeaderAnalyzerService {
                     const $ = cheerio.load(html);
                     // 提取龙头股
                     const topStockAttr = $('input.topStock').attr('topStock') || '';
-                    const topStockCodes = topStockAttr.split(',').filter((c: string) => c && /^\d{6}$/.test(c));
+                    const topStockCodes = topStockAttr.split(',').filter((c: string) => c && isValidStockCode(c));
                     const leadingStocks: { code: string; name: string }[] = [];
                     if (topStockCodes.length > 0) {
                         for (const code of topStockCodes) {
@@ -2627,14 +3488,14 @@ export class WindLeaderAnalyzerService {
                     const match = html.match(/id="concept_data"[^>]*>([\s\S]*?)<\/div>/);
                     if (match) {
                         try {
-                            const data = JSON.parse(match[1]);
+                            const data = JSON.parse(match[1]) as { result?: { listdata?: Record<string, string[][]> } };
                             const listData = data.result?.listdata;
                             if (listData) {
                                 const dates = Object.keys(listData);
                                 if (dates.length > 0) {
-                                    constituents = listData[dates[0]].map((s: string[]) => ({
+                                    constituents = listData[dates[0]].map((s) => ({
                                         code: s[0], name: s[1], exchange: s[2] || '',
-                                    })).filter((s: { code: string; name: string }) => s.code && s.name && /^\d{6}$/.test(s.code));
+                                    })).filter((s) => s.code && s.name && /^\d{6}$/.test(s.code));
                                 }
                             }
                         } catch { /* ignore */ }
@@ -2660,13 +3521,13 @@ export class WindLeaderAnalyzerService {
                 const conceptCodes = new Set(conceptCons.map(s => s.code));
                 conceptCodeSets.set(concept.code, conceptCodes);
                 if (conceptCons.length > 0) {
-                    cacheSet(`concept_page_cons_${concept.code}`, conceptCons);
+                    await cacheSet(`concept_page_cons_${concept.code}`, conceptCons);
                 }
 
                 // 龙头股
                 const conceptLeadingStocks = pageResult.leadingStocks;
                 if (conceptLeadingStocks.length > 0) {
-                    cacheSet(`concept_leading_${concept.code}`, conceptLeadingStocks);
+                    await cacheSet(`concept_leading_${concept.code}`, conceptLeadingStocks);
                 }
                 for (const ls of conceptLeadingStocks) {
                     if (ls.code && !allCandidateCodes.includes(ls.code)) {
@@ -2682,8 +3543,19 @@ export class WindLeaderAnalyzerService {
             }
 
             // 收集强关联行业的候选股代码
-            const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
+            const industryResult = isIndustryBoardCode(concept.code)
+                ? { strongly_related: [] as IndustryMapping[], all_ranked: [] as IndustryMapping[] }
+                : await mapConceptToIndustries(concept.code, concept.name, 3);
             conceptIndustryMap.set(concept.code, industryResult.strongly_related);
+            if (isIndustryBoardCode(concept.code)) {
+                // 行业板块：补充行业自身龙头股作为候选（无概念关联行业）
+                const topStocks = await getBoardTopStocks(concept.code, 10, 'industry');
+                for (const s of topStocks) {
+                    if (s.code && !allCandidateCodes.includes(s.code)) {
+                        allCandidateCodes.push(s.code);
+                    }
+                }
+            }
             for (const ind of industryResult.strongly_related) {
                 const topStocks = await getBoardTopStocks(ind.code, 10, 'industry');
                 for (const s of topStocks) {
@@ -2694,7 +3566,9 @@ export class WindLeaderAnalyzerService {
             }
 
             // 收集上下游行业的候选股代码（限制数量，使用与流向图一致的过滤逻辑）
-            const transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
+            const transmission = isIndustryBoardCode(concept.code)
+                ? (await mapIndustryToChain(concept.name)).transmission
+                : await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
             const filteredTrans = filterTransmissionForFlow(transmission);
             for (const up of filteredTrans.upstream.slice(0, 1)) {
                 const indCode = industryBoards.find(i => i.name === up.name)?.code || '';
@@ -2721,7 +3595,7 @@ export class WindLeaderAnalyzerService {
         // 批量获取Tushare增强数据（资金流向+每日指标+近10日日线）
         console.log(`[HotSectorAnalyzer] 批量获取Tushare增强数据，共${allCandidateCodes.length}只候选股...`);
         const enhancement = await fetchTushareEnhancement(allCandidateCodes);
-        console.log(`[HotSectorAnalyzer] Tushare增强数据获取完成：资金流向${enhancement.moneyflowMap.size}只，THS资金${enhancement.moneyflowThsMap.size}只，每日指标${enhancement.dailyBasicMap.size}只，涨停${enhancement.limitListMap.size}只`);
+        console.log(`[HotSectorAnalyzer] Tushare增强数据获取完成：资金流向${enhancement.moneyflowThsMap.size}只，每日指标${enhancement.dailyBasicMap.size}只，涨停${enhancement.limitListMap.size}只`);
 
         // 清除概念板块和行业映射的缓存，让后续调用重新获取（因为前面已经获取过一次了）
         // 不清除，因为缓存TTL=1小时，同一次分析内复用是合理的
@@ -2729,18 +3603,52 @@ export class WindLeaderAnalyzerService {
         for (const concept of hotConcepts) {
             console.log(`[HotSectorAnalyzer] 分析风口概念: ${concept.name}`);
 
-            // 2. 映射强关联二级行业
-            const industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
-            const relatedIndNames = industryResult.strongly_related.map(r => r.name);
-
-            // 获取概念成分股代码集合
+            // 获取概念成分股代码集合（供短线证据统计涨停/连板）
             const conceptCodes = conceptCodeSets.get(concept.code) || new Set();
 
-            // 3. 计算上下游传导（使用全排名行业）
-            const transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
+            // 双链分流数据获取（Tushare 限频：仅进池板块才拉对应数据）
+            let monthlySignal: 'strong' | 'weak' | 'none' = 'none';
+            if (concept.in_long_pool) {
+                monthlySignal = await confirmLongTermMonthly(concept.name);
+                const longEv = await fetchLongEvidence(concept.name);
+                concept.ma60_status = longEv.ma60_status;
+            }
+            if (concept.in_short_pool) {
+                const shortEv = await fetchShortEvidence(concept.name, enhancement.limitListMap, conceptCodes);
+                concept.vol_trend = shortEv.vol_trend;
+                concept.turnover = shortEv.turnover;
+                concept.limit_up_count = shortEv.limit_up_count;
+                concept.max_boards = shortEv.max_boards;
+            }
+            console.log(`[HotSectorAnalyzer] ${concept.name}: 月线=${monthlySignal} MA60=${concept.ma60_status} 量能=${concept.vol_trend} 涨停=${concept.limit_up_count} 连板=${concept.max_boards}`);
 
-            // 4. AI判断持续性
-            const aiAnalysis = await aiAnalyzeSector(concept.name, concept, transmission);
+            // 2. 映射关联行业/上下游（概念板块→强关联行业；行业板块→直接取行业产业链上下游）
+            let industryResult: ConceptIndustryResult;
+            let transmission: TransmissionResult;
+            if (isIndustryBoardCode(concept.code)) {
+                const chain = await mapIndustryToChain(concept.name);
+                industryResult = chain.industryResult;
+                transmission = chain.transmission;
+            } else {
+                industryResult = await mapConceptToIndustries(concept.code, concept.name, 3);
+                transmission = await calculateTransmissionFactor(concept.name, industryResult.all_ranked);
+            }
+            const relatedIndNames = industryResult.strongly_related.map(r => r.name);
+
+            // 4. 双链分流 AI 研判（长线池→长线链 / 短线池→短线链 / 交集→both）
+            const chain: 'long' | 'short' | 'both' = concept.in_long_pool && concept.in_short_pool ? 'both'
+                : concept.in_long_pool ? 'long' : 'short';
+            const aiAnalysis = await aiAnalyzeSector(concept.name, concept, transmission, monthlySignal, chain);
+            // 非本链字段裁剪：避免前端展示缺失链的假数据
+            if (chain === 'short') {
+                aiAnalysis.long_term_days = 0; aiAnalysis.long_confidence = 0; aiAnalysis.logic_type = '无支撑'; aiAnalysis.long_reason = '';
+            }
+            if (chain === 'long') {
+                aiAnalysis.short_term_days = 0; aiAnalysis.short_heat = 0; aiAnalysis.heat_stage = '未知'; aiAnalysis.short_reason = '';
+            }
+            if (aiAnalysis.driver_type) concept.driver_type = aiAnalysis.driver_type; // AI 推断驱动类型回填
+            const cycle: 'short' | 'long' | 'both' | 'none' = deriveCycle(aiAnalysis);
+            console.log(`[HotSectorAnalyzer] ${concept.name}: ${cycle}风口 (long=${aiAnalysis.long_term_days}d/conf=${aiAnalysis.long_confidence}/${aiAnalysis.logic_type}, short=${aiAnalysis.short_term_days}d/heat=${aiAnalysis.short_heat}/${aiAnalysis.heat_stage})`);
 
             // 5. 选股 - 强关联行业（风口精选）
             const mainStocks: SelectedStock[] = [];
@@ -2844,6 +3752,19 @@ export class WindLeaderAnalyzerService {
                         change_pct: changePct,
                     });
                 }
+            }
+
+            // 行业板块（881xxx）无概念关联行业，直接用行业自身成分股选核心股
+            if (isIndustryBoardCode(concept.code)) {
+                const indStocks = await selectStocksFromIndustry(
+                    concept.code, concept.name, concept.name, conceptCodes, 5, enhancement,
+                );
+                for (const s of indStocks) {
+                    s.chain_position = '核心';
+                    s.related_industry = concept.name;
+                    s.overlap_ratio = 1;
+                }
+                mainStocks.push(...indStocks);
             }
 
             for (const ind of industryResult.strongly_related) {
@@ -2974,6 +3895,20 @@ export class WindLeaderAnalyzerService {
                 concept.name, concept, finalMainStocks, concept.code, enhancement,
             );
 
+            // 10. 长期趋势龙头：板块成分股中 trend_scores 评分最高者（长线榜展示用）
+            // 概念板块用概念成分股代码；行业板块（881xxx）无概念成分股，用行业成分股代码。
+            // 无趋势评分命中时回退 main_stocks 评分最高者。
+            let longLeaderCodes: string[] = [];
+            if (isIndustryBoardCode(concept.code)) {
+                const indTop = await getBoardTopStocks(concept.code, 20, 'industry');
+                longLeaderCodes = indTop.map(s => s.code);
+            } else {
+                longLeaderCodes = Array.from(conceptCodes);
+            }
+            const longLeader = (await queryTopTrendScore(longLeaderCodes))
+                || [...finalMainStocks].sort((a, b) => (b.score || 0) - (a.score || 0))[0]
+                || null;
+
             // 板块综合评分（用于泡泡图大小）：频次*5 + 均涨幅*3 + 最新涨幅*2
             const sectorScore = Math.round(
                 (concept.frequency || 0) * 5 +
@@ -2983,18 +3918,24 @@ export class WindLeaderAnalyzerService {
 
             result.hot_sectors.push({
                 code: concept.code,
+                cycle,                       // 'short' | 'long' | 'both'
                 name: concept.name,
                 type: concept.type,
                 frequency: concept.frequency,
+                freq20: concept.freq20,
+                freq_delta: concept.freq_delta,
                 avg_change: concept.avg_change,
                 today_change: concept.today_change,
-                amount_trend: concept.amount_trend,
-                net_inflow: concept.net_inflow,
                 leading_stock: concept.leading_stock,
                 leading_change: concept.leading_change,
                 up_count: concept.up_count,
                 down_count: concept.down_count,
-                driver: concept.driver,
+                driver_type: concept.driver_type,
+                ma60_status: concept.ma60_status,
+                vol_trend: concept.vol_trend,
+                turnover: concept.turnover,
+                limit_up_count: concept.limit_up_count,
+                max_boards: concept.max_boards,
                 score: sectorScore,
                 related_industries: relatedIndNames,
                 industry_data: industryData,
@@ -3004,8 +3945,12 @@ export class WindLeaderAnalyzerService {
                 downstream_stocks: filteredDownstream,
                 flow_data: flowData,
                 leading_stock_info: leadingStockInfo,
+                long_leader: longLeader,
             });
         }
+
+        // 双榜合并：长线榜 top8 + 短线榜 top8（可重复），按 name 去重 ≤16
+        result.hot_sectors = applyDualRankings(result.hot_sectors);
 
         if (result.hot_sectors.length === 0) {
             // 空结果不覆盖旧数据，避免因外部 API 暂时不可用导致历史数据丢失

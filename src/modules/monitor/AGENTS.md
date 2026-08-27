@@ -8,6 +8,7 @@
 - `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
 - `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
+- `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
@@ -22,8 +23,10 @@
 - `profitForecastController.ts` — 业绩预测
 - `trendScoreController.ts` — 趋势股评分（S/A/B/C/D 评级 + 60日均线剔除）
 - `TrendBatchService.ts` — 趋势股批量评分（cron 凌晨2点）
+- `FeishuMessageAiService.ts` — 领取待处理飞书消息、调用千问并生成按股票关联的关键词
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
+- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线法，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
 - 对应 Service 文件
 
 ## 依赖的 shared 类型
@@ -42,8 +45,25 @@
 - `modules/crawler/StockInfoService` — 股票信息（研判）
 
 ## 开发注意事项
-- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）
+- 行业知识图谱（`IndustryKGService`）：
+  - 行业上下游边由 AI 批量生成（`buildAIEdges`，每批 20 行业）+ **专家人工修正表**（`EXPERT_INDUSTRY_RELATIONS`，按行业名精确匹配，约 90 个热门行业权威上下游）双重保障；`applyExpertEdges` 幂等覆盖 AI 边，缓存命中与重新生成统一生效
+  - 缓存 TTL 修复：full_graph.json 的过期判断用缓存内部 `updateTime` 而非文件 mtime（mtime 会被龙头股后台加载重写刷新，导致永不更新）；`rebuild(force)` 支持强制跳过 ai_edges 缓存
+  - AI prompt 明确：881xxx 为二级行业、884xxx 为三级细分，严禁把并列/细分-父级/服务外包当上下游
+- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10，网页同款口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填
+- 风口榜单会出现行业板块（881xxx）：行业板块不走"概念→行业"映射（`mapConceptToIndustries`），改走 `mapIndustryToChain` 直接从知识图谱取行业上下游（`getUpstreamDownstreamByName`，失败返回空不阻塞）；前端 WindLeaderPanel 流向图支持无 related 节点的行业板块布局
+- 龙头股爬取必须经 `isValidStockCode`/`isValidStockName`/`extractStockCodeFromHref` 校验：同花顺概念页新闻链接（`news.10jqka.com.cn/20260805/...`）URL 中日期 `202608` 会被旧正则 `/(\d{6})/` 误当股票代码、新闻标题被当股票名（曾污染 leading_stock 如"概念细分|玻璃基板…"）；`extractLeadingStock` 爬取失败时回退 main_stocks 评分最高者补全 code/价格（行业板块 881xxx 无概念页龙头结构）
+- 长线风口榜龙头展示用 `long_leader` 字段（趋势龙头，非爬虫龙头）：`queryTopTrendScore` 查 `trend_scores` 最新评分日中成分股集合内 score 最高、非 D 评级且未被 60 日线剔除的股票；行业板块（881xxx）用 `getBoardTopStocks(20,'industry')` 成分股代码、概念板块用概念成分股代码；无命中回退 main_stocks 评分最高者
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
+- 飞书消息 AI 任务每分钟执行一次；仅处理正文/OCR非空且已有候选股票代码的消息，失败不自动重试
 - 趋势股批量评分由 cron 调度（凌晨 2 点），含60日均线剔除规则（连续两日跌破60日线→从Top列表剔除）
+- 趋势股评分技术面 K 线展示数据用腾讯**前复权**日K（`TencentKlineService.getKLine` + `parseTencentKlineToTrendKline`，fqt=1，近120日），消除除权/除息导致的不复权价格断裂假跳变（如源杰科技 2026-05-18 除权后 40% 断裂）；获取失败回退 Tushare 不复权数据
 - 业绩预测自动更新由 cron 调度（凌晨 0 点）
+- 业绩报告自动更新（`PerformanceReportAutoUpdateService`，凌晨 0 点）：**无候选池**，按日期增量发现四类数据，各类型只查自己的发现源：
+  - 业绩正式报告（formal）：`disclosure_date.actual_date`=昨日 全市场发现 → 对命中的股票逐只拉 `income` 明细（income 不能批量只能按股，故只在 discovery 命中时拉）
+  - 业绩预告（express）：`forecast.ann_date`=昨日 批量发现（行内自带净利润范围+摘要）
+  - 业绩快报（express）：`express_vip(end_date=最近两个报告期)` 全量分页，客户端过滤 `ann_date`=昨日（快报无法按 ann_date 批量）
+  - 研报评级（rating）：`report_rc.report_date`=昨日 批量发现
+  - 各源 INSERT+通知，已存在跳过；昨日四源均无新增时用前 2 个自然日窗口重扫补漏
+  - `disclosure_date.pre_date` 额外推送"预计披露日"前瞻提醒（仅订阅者）
+  - 事实（实测）：`forecast`/`report_rc`/`disclosure_date` 可按日期全市场批查；`express_vip` 按 end_date 全量（不支持按 ann_date）；`income`/`cashflow`/`balancesheet`/`express` 必须传 ts_code。快报(express)与预告(forecast)目标公司基本不重叠（银行/券商常发快报但从不发预告），两者都需要。TushareService 提供 `getForecastByAnnDate`（forecast 按公告日批查）、`getExpressVip`（express_vip 按报告期全量分页）

@@ -40,3 +40,4 @@
 - 龙头股数据来自同花顺/Tushare
 - K 线数据来自 Tushare
 - 所有行情接口均支持缓存，使用 CacheService
+- **行情缓存键必须按 level 区分前缀**（core/activity/fundamental 各自独立，见 `quoteCacheConfig`）。2026-08-20 曾因 `getCachedBatchQuotes` 固定用 `stock_quote:core:` 前缀，导致 `activity` 打点命中 core 缓存（缺"今开价"）→ `moveBps` 恒 null → 价格异动（午/尾盘）永不触发

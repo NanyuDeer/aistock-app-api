@@ -8,6 +8,7 @@ import { WindLeaderService } from './WindLeaderService';
 import { WindLeaderAnalyzerService } from './WindLeaderAnalyzerService';
 import { HotKeywordDetectorService } from './HotKeywordDetectorService';
 import { HotBurstService } from './HotBurstService';
+import { fetchBoardKline } from './RotationBoardStore';
 
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
 
@@ -40,6 +41,33 @@ export class WindLeaderController {
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
             console.error('[WindLeaderController] getWindLeaders error:', errMsg);
+            createResponse(res, 500, errMsg);
+        }
+    }
+
+    /**
+     * GET /api/cn/wind-leaders/board-kline
+     * 板块日 K 线（近 N 日，默认 120）
+     * Query params: code（必填，6 位同花顺板块代码）、days（可选，默认 120，上限 120）
+     */
+    static async getBoardKline(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        try {
+            const raw = String(req.query.code || '').trim();
+            // 归一化：去掉 Tushare ts_code 后缀（881121.TI → 881121），同花顺 cid 6 位数字直接通过
+            const code = raw.split('.')[0].trim();
+            if (!/^\d{6}$/.test(code)) {
+                createResponse(res, 400, 'code 必须为 6 位同花顺板块代码（如 881121）');
+                return;
+            }
+            const days = Math.min(Math.max(parseInt(String(req.query.days || '120'), 10) || 120, 1), 120);
+            const data = await fetchBoardKline(code, days);
+            if (!data) {
+                console.warn(`[WindLeaderController] board-kline 抓取失败/无数据: raw=${raw} code=${code}`);
+            }
+            createResponse(res, 200, 'success', data); // data 为 null 时前端展示空态
+        } catch (err: any) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error('[WindLeaderController] getBoardKline error:', errMsg);
             createResponse(res, 500, errMsg);
         }
     }
@@ -162,12 +190,15 @@ export class WindLeaderController {
     /**
      * GET /api/cn/institution-research
      * 查询最近机构调研推荐热门股检测结果
-     * 默认返回三源共振及以上（resonanceCount >= 3）的信号（min_resonance=3）
+     * 默认返回二源共振及以上（resonanceCount >= 2）的信号（min_resonance=2）
      */
     static async getHotBurst(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
             const hours = Math.min(Math.max(parseInt(String(req.query.hours || '6'), 10), 1), 72);
-            const minResonance = parseInt(String(req.query.min_resonance || '3'), 10);
+            const minResonance = Math.min(
+                Math.max(parseInt(String(req.query.min_resonance || '2'), 10) || 2, 2),
+                4,
+            );
             const result = await HotBurstService.getRecentBursts(hours, minResonance);
             if (!result) {
                 createResponse(res, 404, '暂无机构调研推荐热门股检测数据');
@@ -205,7 +236,7 @@ export class WindLeaderController {
     /**
      * GET /api/cn/institution-research/history
      * 查询历史机构调研推荐热门股记录
-     * 默认仅返回三源共振及以上（resonance_count >= 3）的记录（min_resonance_only=true）
+     * 默认仅返回二源共振及以上（resonance_count >= 2）的记录（min_resonance_only=true）
      */
     static async getHotBurstHistory(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
@@ -216,7 +247,7 @@ export class WindLeaderController {
             const rawMinResonance = req.query.min_resonance;
             const minResonance = rawMinResonance === undefined
                 ? undefined
-                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 3, 2), 4);
+                : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 2, 2), 4);
             const result = await HotBurstService.getHistory(
                 limit,
                 offset,

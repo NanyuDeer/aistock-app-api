@@ -19,7 +19,7 @@ function verifyInternalToken(req: Request): boolean {
     return token === INTERNAL_TOKEN;
 }
 
-async function ensureSchema(): Promise<void> {
+export async function ensureFeishuMessageSchema(): Promise<void> {
     await pool.query(`
         CREATE TABLE IF NOT EXISTS feishu_messages (
             id SERIAL PRIMARY KEY,
@@ -29,8 +29,15 @@ async function ensureSchema(): Promise<void> {
             message_id TEXT NOT NULL DEFAULT '',
             message_type TEXT NOT NULL DEFAULT '',
             text TEXT NOT NULL DEFAULT '',
+            ocr_text TEXT NOT NULL DEFAULT '',
             stock_codes TEXT[] DEFAULT '{}',
             keywords JSONB DEFAULT '[]',
+            ai_status TEXT NOT NULL DEFAULT 'skipped',
+            ai_analysis JSONB,
+            ai_error TEXT,
+            ai_attempts INTEGER NOT NULL DEFAULT 0,
+            ai_next_retry_at TIMESTAMPTZ,
+            ai_processed_at TIMESTAMPTZ,
             received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
@@ -38,6 +45,14 @@ async function ensureSchema(): Promise<void> {
         CREATE INDEX IF NOT EXISTS idx_fm_message_id ON feishu_messages(message_id);
         CREATE INDEX IF NOT EXISTS idx_fm_received_at ON feishu_messages(received_at);
         CREATE INDEX IF NOT EXISTS idx_fm_stock_codes ON feishu_messages USING GIN(stock_codes);
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ocr_text TEXT NOT NULL DEFAULT '';
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_status TEXT NOT NULL DEFAULT 'skipped';
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_analysis JSONB;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_error TEXT;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_attempts INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_next_retry_at TIMESTAMPTZ;
+        ALTER TABLE feishu_messages ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ;
+        CREATE INDEX IF NOT EXISTS idx_fm_ai_status ON feishu_messages(ai_status);
     `);
 }
 
@@ -59,7 +74,7 @@ export class FeishuMessageController {
                 return;
             }
 
-            await ensureSchema();
+            await ensureFeishuMessageSchema();
 
             // 去重检查
             const existing = await pool.query(
@@ -71,26 +86,37 @@ export class FeishuMessageController {
                 return;
             }
 
-            // 如果 bot 未提取到 stock_codes，用 extractStockCodes 从 text 中重新提取
+            // 如果 bot 未提取到 stock_codes，用 extractStockCodes 从正文和 OCR 中重新提取
             // 这能识别 OCR 文本中的股票名称（如"中际旭创"→300308）
             let stockCodes = data.stock_codes || [];
             const textContent = data.text || '';
-            if (stockCodes.length === 0 && textContent) {
+            const ocrText = data.ocr_text || '';
+            const stockDetectionText = [textContent, ocrText].filter(Boolean).join('\n');
+            if (stockCodes.length === 0 && stockDetectionText) {
                 try {
                     await loadStockNameMap();
-                    const extracted = extractStockCodes(textContent);
+                    const extracted = extractStockCodes(stockDetectionText);
                     stockCodes = Array.from(extracted.keys());
                     if (stockCodes.length > 0) {
-                        console.log(`[FeishuMessage] 从text中提取到${stockCodes.length}个股票代码: ${JSON.stringify(stockCodes)}`);
+                        console.log(`[FeishuMessage] 从text和ocr_text中提取到${stockCodes.length}个股票代码: ${JSON.stringify(stockCodes)}`);
                     }
                 } catch (err) {
                     console.warn('[FeishuMessage] extractStockCodes 失败:', (err as Error).message);
                 }
             }
+            // 启动补拉的历史消息只保留原始数据，不自动消耗千问额度。
+            const aiStatus = data.source !== 'feishu_history'
+                && stockDetectionText.trim()
+                && stockCodes.length > 0
+                ? 'pending'
+                : 'skipped';
 
             await pool.query(
-                `INSERT INTO feishu_messages (source, chat_id, chat_name, message_id, message_type, text, stock_codes, keywords, received_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+                `INSERT INTO feishu_messages (
+                    source, chat_id, chat_name, message_id, message_type,
+                    text, ocr_text, stock_codes, keywords, ai_status, received_at
+                 )
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
                 [
                     data.source || 'feishu',
                     data.chat_id || '',
@@ -98,8 +124,10 @@ export class FeishuMessageController {
                     data.message_id,
                     data.message_type || '',
                     textContent,
+                    ocrText,
                     stockCodes,
                     JSON.stringify(data.keywords || []),
+                    aiStatus,
                     data.received_at || new Date().toISOString(),
                 ],
             );
@@ -131,10 +159,13 @@ export class FeishuMessageController {
             const hours = Math.min(Math.max(parseInt(String(req.query.hours || '6'), 10), 1), 72);
             const limit = Math.min(Math.max(parseInt(String(req.query.limit || '50'), 10), 1), 200);
 
-            await ensureSchema();
+            await ensureFeishuMessageSchema();
 
             const result = await pool.query(
-                `SELECT id, source, chat_id, chat_name, message_id, message_type, text, stock_codes, keywords, received_at
+                `SELECT id, source, chat_id, chat_name, message_id, message_type,
+                        text, ocr_text, stock_codes, keywords,
+                        ai_status, ai_analysis, ai_error, ai_attempts, ai_next_retry_at,
+                        ai_processed_at, received_at
                  FROM feishu_messages
                  WHERE received_at > NOW() - INTERVAL '${hours} hours'
                  ORDER BY received_at DESC

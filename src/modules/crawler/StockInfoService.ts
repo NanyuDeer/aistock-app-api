@@ -76,6 +76,7 @@ export interface StockInfoQueryParams {
     impact?: StockInfoImpact;
     limit?: number;
     offset?: number;
+    dateFrom?: string;
 }
 
 export interface StockInfoPushWindow {
@@ -474,6 +475,13 @@ export class StockInfoService {
             values.push(params.impact);
             conditions.push(`ai_impact = $${values.length}`);
         }
+        // P0-2：Node /internal/monitor/alerts 原忽略 days 参数只取最新 20 行；
+        // 支持 dateFrom 后按 published_at 窗口过滤（timestamptz 显式类型转换，
+        // 允许传入含时区偏移的 ISO 字符串，如 2026-08-12T00:00:00+08:00）
+        if (params.dateFrom) {
+            values.push(params.dateFrom);
+            conditions.push(`published_at >= $${values.length}::timestamptz`);
+        }
 
         const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
         const countResult = await pool.query(`SELECT COUNT(*)::int AS total FROM stock_info_judgements ${whereClause}`, values);
@@ -516,5 +524,26 @@ export class StockInfoService {
         return result.rows
             .map((row: any) => ({ ...row, ai_keywords: Array.isArray(row.ai_keywords) ? row.ai_keywords : [] }))
             .filter((row: StockInfoJudgementRow) => shouldPushStockInfoJudgement(row, window));
+    }
+
+    /**
+     * App 通知中心展示全部资讯研判；微信、飞书等外部推送仍使用 getPushCandidates 的重大事件筛选。
+     */
+    static async getAppNotificationCandidates(window: StockInfoPushWindow): Promise<StockInfoJudgementRow[]> {
+        await this.ensureSchema();
+        const result = await pool.query(
+            `SELECT id, symbol, stock_name, info_type, source, source_id, title, url, published_at,
+                    ai_impact, ai_horizon, ai_keywords, ai_summary, created_at
+             FROM stock_info_judgements
+             WHERE info_type = $1
+               AND published_at >= $2::timestamptz
+               AND published_at <= $3::timestamptz
+             ORDER BY published_at DESC, id DESC`,
+            [window.info_type, window.from.toISOString(), window.to.toISOString()],
+        );
+        return result.rows.map((row: any) => ({
+            ...row,
+            ai_keywords: Array.isArray(row.ai_keywords) ? row.ai_keywords : [],
+        }));
     }
 }

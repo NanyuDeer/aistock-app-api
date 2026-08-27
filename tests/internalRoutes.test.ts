@@ -12,13 +12,16 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import express from 'express'
-import internalRouter from '../src/core/routes/internal'
+import internalRouter, { publicRouter } from '../src/core/routes/internal'
 
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
+import * as HKModule from '../src/modules/monitor/HotKeywordDetectorService'
 import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
+import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
+import { TencentSnapshotService } from '../src/modules/quote/TencentSnapshotService'
 
 // MarketSnapshotService 通过 __marketSnapshotDependencies 注入依赖（Task 1 已建立），
 // 路由侧调用 getTodayCloseSnapshot()，单测通过替换 deps 字段实现 mock。
@@ -120,6 +123,42 @@ function makeGetRequest(
     })
 }
 
+function makePostRequest(
+    port: number,
+    path: string,
+    body: unknown,
+): Promise<HttpResponse> {
+    return new Promise((resolve, reject) => {
+        const payload = JSON.stringify(body)
+        const req = http.request(
+            {
+                hostname: '127.0.0.1',
+                port,
+                path: `/agent${path}`,
+                method: 'POST',
+                headers: {
+                    'content-type': 'application/json',
+                    'content-length': Buffer.byteLength(payload),
+                },
+            },
+            (res) => {
+                let data = ''
+                res.on('data', (chunk: Buffer) => (data += chunk.toString()))
+                res.on('end', () => {
+                    try {
+                        resolve({ status: res.statusCode || 0, body: JSON.parse(data) })
+                    } catch {
+                        resolve({ status: res.statusCode || 0, body: data })
+                    }
+                })
+            },
+        )
+        req.on('error', reject)
+        req.write(payload)
+        req.end()
+    })
+}
+
 // ==================== Mock 数据 ====================
 
 const mockData = {
@@ -169,6 +208,14 @@ function setupMocks(): void {
     const H = HotBurstService as any
     H.getHotBurst = async () => mockData.hotBurst
     H.getHotBurstHistory = async () => mockData.hotBurstHistory
+
+    // /internal/stock/resolve：loadStockNameMap 不做真实 Tushare 调用，
+    // resolveStockName 由具体用例按需覆盖（默认未命中）。
+    // 路由侧通过具名导入访问模块导出对象，直接改导出属性即可拦截（CJS 属性访问）。
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).loadStockNameMap = async () => {}
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(HKModule as any).resolveStockName = () => null
 }
 
 async function withRealOneHopGraph(fn: () => Promise<void>): Promise<void> {
@@ -292,6 +339,7 @@ const endpoints: EndpointCase[] = [
     { name: 'institution-research', path: '/institution-research' },
     { name: 'institution-research/history', path: '/institution-research/history' },
     { name: 'market/close-snapshot', path: '/market/close-snapshot' },
+    { name: 'stock/resolve', path: '/stock/resolve?name=x' },
 ]
 
 // ==================== 主测试流程 ====================
@@ -301,6 +349,8 @@ async function main(): Promise<void> {
     const app = express()
     app.use(express.json())
     app.use('/internal', internalRouter)
+    // 挂载公开路由（/agent/*），用于 generate-podcast 播报缓存接口校验测试
+    app.use('/agent', publicRouter)
 
     // 2. 启动 HTTP 服务器（随机端口）
     const server = http.createServer(app)
@@ -574,6 +624,142 @@ async function main(): Promise<void> {
             code: 409,
             data: { status: 'incomplete', reason: 'incomplete_daily_coverage' },
         })
+    })
+
+    // --- /internal/market/quick-snapshot 路由测试 ---
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 200 with quick snapshot', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => ({
+            schema_version: '1.0',
+            status: 'complete',
+            trade_date: '20260720',
+            captured_at: '2026-07-20T07:30:00.000Z',
+            indexes: [{ ts_code: 'sh000001', name: '上证指数', trade_date: '20260720', close: 3200, pct_chg: 1.2, amount: 3000000000, source: 'tushare:index_daily' }],
+            breadth: { total_count: 10, advance_count: 8, decline_count: 2, flat_count: 0, advance_ratio: 0.8, source: 'tencent:quote' },
+            turnover: { amount_yuan: null, previous_amount_yuan: null, change_pct: null, source: 'tushare:daily' },
+            limits: { up_count: 1, down_count: 0, broken_count: null, highest_board: null },
+            sectors: { top_gainers: [], top_losers: [], top_inflows: [], top_outflows: [] },
+            main_force: { large_and_extra_large_net_yuan: null, source: 'tushare:moneyflow_ths' },
+            coverage: { current_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 }, previous_daily: { complete: false, reason: 'empty', page_count: 0, row_count: 0 } },
+            snapshot_kind: 'quick',
+            coverage_info: { has_limit_pool: false, has_moneyflow: false, has_concept_flow: false },
+            quick_data_availability: {
+                breadth: { state: 'available' },
+                turnover: { state: 'unavailable', reason: 'fixture has no verified turnover' },
+                limits: { state: 'partial', available_fields: ['up_count', 'down_count'], approximate: true },
+                sectors: { state: 'unavailable', reason: 'fixture has no sectors' },
+                main_force: { state: 'unavailable', reason: 'fixture has no main force' },
+            },
+        })
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 200)
+            const body = res.body as {
+                code: number
+                data: { snapshot_kind: string; quick_data_availability: { breadth: { state: string } } }
+            }
+            assert.equal(body.code, 200)
+            assert.equal(body.data.snapshot_kind, 'quick')
+            assert.equal(body.data.quick_data_availability.breadth.state, 'available')
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
+    })
+
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 409 before 15:30', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => {
+            const err = new Error('market_not_closed: before 15:30 Shanghai time')
+            err.name = 'MarketSnapshotUnavailable'
+            throw err
+        }
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 409)
+            const body = res.body as { code: number; data: { status: string; reason: string } }
+            assert.equal(body.code, 409)
+            assert.equal(body.data.status, 'not_ready')
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
+    })
+
+    await runAsyncTest('GET /internal/market/quick-snapshot returns 502 on unexpected error', async () => {
+        const originalBuild = TencentSnapshotService.buildQuickSnapshot
+        TencentSnapshotService.buildQuickSnapshot = async () => {
+            throw new Error('unexpected internal error')
+        }
+        try {
+            const res = await makeGetRequest(port, '/market/quick-snapshot', INTERNAL_TOKEN)
+            assert.equal(res.status, 502)
+            const body = res.body as { code: number; message: string }
+            assert.equal(body.code, 502)
+        } finally {
+            TencentSnapshotService.buildQuickSnapshot = originalBuild
+        }
+    })
+
+    // --- 公开接口 generate-podcast 校验测试（校验在 DB 访问之前，无需 mock DB）---
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when text empty', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', { text: '', key: 'k1' })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
+    })
+
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when text > 250 chars', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', {
+            text: '测'.repeat(251),
+            key: 'k1',
+        })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
+        assert.match(body.message, /250/)
+    })
+
+    await runAsyncTest('POST /agent/brief/generate-podcast returns 400 when key empty', async () => {
+        const res = await makePostRequest(port, '/brief/generate-podcast', { text: '播报文本', key: '' })
+        assert.equal(res.status, 400)
+        const body = res.body as { code: number; message: string }
+        assert.equal(body.code, -1)
+    })
+
+    // --- /internal/stock/resolve（M4：中文名称 → 代码解析） ---
+    await runAsyncTest('GET /internal/stock/resolve returns 400 when name missing', async () => {
+        const res = await makeGetRequest(port, '/stock/resolve', INTERNAL_TOKEN)
+        assert.equal(res.status, 400)
+        assert.equal((res.body as { code: number }).code, 400)
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 200 + symbol (贵州茅台 → 600519)', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = (name: string) => {
+            if (name === '贵州茅台' || name === '茅台') return { name: '贵州茅台', symbol: '600519' }
+            return null
+        }
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('贵州茅台')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { code: number; data: { name: string; symbol: string } }
+        assert.equal(body.code, 200)
+        assert.equal(body.data.symbol, '600519')
+        assert.equal(body.data.name, '贵州茅台')
+    })
+
+    await runAsyncTest('GET /internal/stock/resolve returns 404 for unknown name', async () => {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ;(HKModule as any).resolveStockName = () => null
+        const res = await makeGetRequest(
+            port,
+            `/stock/resolve?name=${encodeURIComponent('不存在股票名XYZ')}`,
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 404)
+        assert.equal((res.body as { code: number }).code, 404)
     })
 
     // 5. 关闭服务器 + 释放长连接资源，让进程自然退出
