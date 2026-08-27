@@ -13,12 +13,16 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import { EmailAuthController } from '../EmailAuthController';
+import { AuthController } from '../controller';
 import { signJwt } from '../../../shared/utils/jwt';
 import pool from '../../../core/db';
 import redis from '../../../core/redis';
 import { CacheService } from '../../../shared/utils/CacheService';
 
 const origQuery = pool.query.bind(pool);
+const origConnect = pool.connect.bind(pool);
+const origExchange = AuthController.exchangeCodeForToken;
+const origFetchUserInfo = AuthController.fetchWechatUserInfo;
 const origGet = (CacheService as unknown as { get: unknown }).get;
 const EMAIL = 'user@163.com';
 
@@ -31,8 +35,17 @@ before(() => {
 after(() => {
     (CacheService as unknown as { get: unknown }).get = origGet;
     ;(pool as unknown as { query: typeof pool.query }).query = origQuery;
+    ;(pool as unknown as { connect: unknown }).connect = origConnect;
+    AuthController.exchangeCodeForToken = origExchange;
+    AuthController.fetchWechatUserInfo = origFetchUserInfo;
     redis.disconnect();
 });
+
+/** mock 微信授权换取 openid（避免真实 HTTP 调用） */
+function mockWechatAuth(openid = 'wx-u1'): void {
+    AuthController.exchangeCodeForToken = (async () => ({ openid, access_token: 'at', errcode: 0 })) as never;
+    AuthController.fetchWechatUserInfo = (async () => ({ nickname: '微信用户', headimgurl: 'http://avatar' })) as never;
+}
 
 function buildApp(): Express {
     const app = express();
@@ -165,16 +178,56 @@ test('bindEmail Bearer 登录 + 测试码 → 200 + emailBound=true', async () =
     assert.strictEqual(data.email, EMAIL);
 });
 
-test('bindEmail 邮箱已属他人 → 409', async () => {
+test('bindEmail 邮箱已绑非空账户（有微信/手机/自选股）→ 409', async () => {
     ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
         if (String(sql).includes('SELECT id FROM users WHERE email = $1 AND id <> $2')) {
             return { rows: [{ id: 'other' }] } as never;
         }
         return { rows: [] } as never;
     };
+    // takeoverEmail 事务客户端：占户已绑微信 → 非空壳 → ROLLBACK → 409
+    const clientQuery = (async (sql: unknown) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [] } as never;
+        if (s.includes('FOR UPDATE')) return { rows: [{ openid: 'wx-other', phone: null }] } as never;
+        return { rows: [] } as never;
+    }) as unknown as typeof pool.query;
+    const client = { query: clientQuery, release: () => {} };
+    ;(pool as unknown as { connect: unknown }).connect = async () => client;
     const app = buildApp();
     const r = await call(app, 'POST', '/api/auth/bind/email', { email: EMAIL, code: '123456' }, signToken('u1', ''));
     assert.strictEqual(r.status, 409);
+});
+
+test('bindEmail 邮箱已绑空壳账户（无微信/手机/自选股）→ 自动接管 200', async () => {
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        if (String(sql).includes('SELECT id FROM users WHERE email = $1 AND id <> $2')) {
+            return { rows: [{ id: 'abandoned' }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    const tx: string[] = [];
+    const clientQuery = (async (sql: unknown) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+            tx.push(s);
+            return { rows: [] } as never;
+        }
+        if (s.includes('FOR UPDATE')) return { rows: [{ openid: null, phone: null }] } as never;
+        if (s.includes('FROM user_stocks')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET email = NULL')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET email')) return { rows: [{ id: 'u1', openid: null, email: EMAIL, nickname: '张三', avatar_url: '' }] } as never;
+        return { rows: [] } as never;
+    }) as unknown as typeof pool.query;
+    const client = { query: clientQuery, release: () => {} };
+    ;(pool as unknown as { connect: unknown }).connect = async () => client;
+    const app = buildApp();
+    const r = await call(app, 'POST', '/api/auth/bind/email', { email: EMAIL, code: '123456' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { emailBound: boolean; email: string | null };
+    assert.strictEqual(data.emailBound, true);
+    assert.strictEqual(data.email, EMAIL);
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '接管事务应正常提交');
 });
 
 test('bindEmail 无 token → 401', async () => {
@@ -193,4 +246,65 @@ test('bindWechat 邮箱不属于当前账户 → 403', async () => {
     const app = buildApp();
     const r = await call(app, 'POST', '/api/auth/bind/wechat', { email: EMAIL, code: '123456', wxCode: 'wx' }, signToken('u1', ''));
     assert.strictEqual(r.status, 403);
+});
+
+test('bindWechat 微信已绑空壳账户（无邮箱/手机/自选股/设置）→ 自动接管 200', async () => {
+    mockWechatAuth('wx-u1');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        const s = String(sql);
+        if (s.includes('SELECT id FROM users WHERE email = $1 AND id = $2')) {
+            return { rows: [{ id: 'u1' }] } as never;
+        }
+        if (s.includes('SELECT id FROM users WHERE openid = $1 AND id <> $2')) {
+            return { rows: [{ id: 'abandoned-wx' }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    const tx: string[] = [];
+    const clientQuery = (async (sql: unknown) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+            tx.push(s);
+            return { rows: [] } as never;
+        }
+        if (s.includes('FOR UPDATE')) return { rows: [{ email: null, openid: 'wx-u1', phone: null }] } as never;
+        if (s.includes('FROM user_stocks') || s.includes('FROM user_settings')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET openid = NULL')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET openid')) return { rows: [{ id: 'u1', openid: 'wx-u1', email: EMAIL, nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
+        return { rows: [] } as never;
+    }) as unknown as typeof pool.query;
+    const client = { query: clientQuery, release: () => {} };
+    ;(pool as unknown as { connect: unknown }).connect = async () => client;
+    const app = buildApp();
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { email: EMAIL, code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { wechatBound: boolean; openid: string | null };
+    assert.strictEqual(data.wechatBound, true);
+    assert.strictEqual(data.openid, 'wx-u1');
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '接管事务应正常提交');
+});
+
+test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 409', async () => {
+    mockWechatAuth('wx-other');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        const s = String(sql);
+        if (s.includes('SELECT id FROM users WHERE email = $1 AND id = $2')) {
+            return { rows: [{ id: 'u1' }] } as never;
+        }
+        if (s.includes('SELECT id FROM users WHERE openid = $1 AND id <> $2')) {
+            return { rows: [{ id: 'wx-other' }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    const clientQuery = (async (sql: unknown) => {
+        const s = String(sql);
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [] } as never;
+        if (s.includes('FOR UPDATE')) return { rows: [{ email: 'other@163.com', openid: 'wx-other', phone: null }] } as never;
+        return { rows: [] } as never;
+    }) as unknown as typeof pool.query;
+    const client = { query: clientQuery, release: () => {} };
+    ;(pool as unknown as { connect: unknown }).connect = async () => client;
+    const app = buildApp();
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { email: EMAIL, code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 409);
 });
