@@ -2,6 +2,15 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-08-27 — 事件原文接口修复 PostgreSQL 42P18（event_scrape 匹配参数）
+
+**开发者**: Siyun
+
+### 修复
+- `src/core/routes/internal.ts`：`GET /api/agent/event/:eventId/article` 中 event_scrape 匹配查询，将 `= ANY($2)` 数组参数改为 IN 标量参数展开（`$1,$2,...`）。node-postgres 将 JS 字符串数组作为单个参数传给 `= ANY()` 时服务端无法推断参数类型（42P18），必然 500；改为标量参数后类型由 date 列推断，同时移除无用的 eventId 参数（event_scrape 按 report_date 分区，SQL 仅需 scrapeDates）
+
+---
+
 ## [master] 2026-08-25 — 短信服务生产接入骨架（本期不真发）
 
 **开发者**: Aria

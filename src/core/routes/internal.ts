@@ -2689,14 +2689,19 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
                 shiftArticleDate(reportDate, 1),
             ].filter((d): d is string => Boolean(d))
             // 日期窗口为空（report_date 异常无法解析）时不构造非法日期查询，安全跳过 event_scrape 匹配
+            // PostgreSQL 42P18 修复：node-postgres 把 JS 字符串数组作为单个参数传给 `= ANY($n)` 时，
+            // 服务端无法推断参数类型（could not determine data type of parameter），必然抛错导致 500。
+            // 改为 IN 标量参数展开（$1,$2,...）——每个日期是独立标量参数，类型由 date 列推断为 date。
+            // 同时移除无用的 eventId 参数：event_scrape 按 report_date 分区，SQL 仅需 scrapeDates。
+            const placeholders = scrapeDates.map((_, i) => `$${i + 1}`).join(',')
             const scrapeResult =
-                scrapeDates.length > 0
+                placeholders.length > 0
                     ? await pool.query(
                           `SELECT content
                            FROM agent_analysis_reports
-                           WHERE report_type = 'event_scrape' AND report_date = ANY($2)
+                           WHERE report_type = 'event_scrape' AND report_date IN (${placeholders})
                            ORDER BY created_at DESC`,
-                          [eventId, scrapeDates]
+                          scrapeDates
                       )
                     : { rows: [] as Array<Record<string, unknown>> }
 
