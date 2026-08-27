@@ -2,6 +2,25 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-08-27 — 文章接口完整发布前回归测试（35 用例全覆盖）
+
+**开发者**: Siyun
+
+### 测试
+- `src/core/routes/__tests__/event_article.spec.ts`：扩展至 **35 条**本地 mock 回归用例，覆盖 `GET /api/agent/event/:eventId/article` 所有正常/异常/降级路径（不连库、不部署、不入生产库）：
+  - **匹配规则**：财联社 newsId→payload.id 精确 / 非财联社 url 精确 / title 归一化及互为子串模糊匹配 / newsId 解析失败回落 url
+  - **正文形态**：空字符串 / null / payload 缺失 / payload 非对象 / content 非字符串（String 化）/ events 缺失或非数组 / events 含 null 子项
+  - **数据缺失**：source 空 / event_scrape 不存在 / 非财联社无命中 / content 整行为 null
+  - **多条记录**：多 event_scrape 跨日合并匹配 / 同一事件多份取最新 / events 内多事件不被无关项误匹配（newsId 精确）
+  - **日期**：PG Date 对象 / 'YYYY-MM-DD' / 时区 ISO / String(Date) / 非法日期跳过 SQL / 跨月 / 跨年 shift ∓1 天
+  - **SQL 异常**：event_scrape / event_conduction 查询异常仍正确 500；非法日期空窗口不构造 SQL
+  - **实时兜底**：mock ClsStockNewsService.getNewsFulltext 覆盖抓取成功 / 抛异常降级 / 返回空 content 降级
+  - **SQL 修复回归**：无 `= ANY($n)`、日期参数全标量、占位符数===参数数（42P18）；无 RangeError/Invalid time value
+- 回归确认：`event_conduction.spec.ts` 23 条用例全部通过；前端 `vue-tsc --noEmit` 零错误
+- 验证方式变更：既有 D 场景原本会触发真实 `getNewsFulltext` 网络调用，现改为 mock，消除测试不确定性
+
+---
+
 ## [xusiyun] 2026-08-27 — 文章接口本地验证测试（42P18 / DATE / 匹配规则）
 
 **开发者**: Siyun
