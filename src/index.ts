@@ -465,6 +465,7 @@ app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => Perform
 app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
 app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
 app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
+app.get('/api/cn/stocks/performance-reports/ranking', (req, res, next) => PerformanceReportController.getPerformanceRanking(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 

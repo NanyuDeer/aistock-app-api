@@ -516,6 +516,59 @@ router.get('/forecast/:symbol', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/performance-report/:symbol
+ * 个股业绩报告（正式报告 + 业绩快报，按报告期倒序最近 6 期）
+ *
+ * 供 Python Agent 在 AI 对话中回答"XX 公司的业绩报告/财报/快报"类问题。
+ */
+router.get('/performance-report/:symbol', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT symbol, stock_name, report_type, ann_date, end_date,
+                    total_revenue, n_income, n_income_attr_p, basic_eps, summary, ai_tag
+             FROM performance_reports
+             WHERE symbol = $1 AND report_type IN ('formal', 'express')
+             ORDER BY end_date DESC, ann_date DESC
+             LIMIT 6`,
+            [symbol]
+        )
+        if (result.rows.length === 0) {
+            return res.status(404).json({ code: 404, message: '未找到该股票的业绩报告数据' })
+        }
+
+        const reports = result.rows.map((row: Record<string, unknown>) => ({
+            report_type: row.report_type,
+            report_type_label: row.report_type === 'formal' ? '正式报告' : '业绩快报',
+            ann_date: row.ann_date,
+            end_date: row.end_date,
+            total_revenue: row.total_revenue,          // 元
+            n_income: row.n_income,                    // 元
+            n_income_attr_p: row.n_income_attr_p,      // 元（归母净利润）
+            basic_eps: row.basic_eps,
+            summary: row.summary || '',
+            ai_tag: row.ai_tag || '',
+        }))
+
+        res.json({
+            code: 200,
+            data: {
+                symbol,
+                stock_name: result.rows[0].stock_name || '',
+                reports,
+            },
+        })
+    } catch (err: unknown) {
+        console.error(`[Internal] performance-report/${symbol} error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/stock/resolve
  * 中文股票名称 → 6 位代码（复用 HotKeywordDetectorService 的 A 股名称映射，stocks 表/Tushare stock_basic）
  *
@@ -539,6 +592,84 @@ router.get('/stock/resolve', async (req: Request, res: Response) => {
         res.json({ code: 200, data: { name: hit.name, symbol: hit.symbol } })
     } catch (err: unknown) {
         console.error('[Internal] stock/resolve error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/performance-reports/latest
+ * 最新披露业绩报告列表（默认正式报告，按公告日倒序）
+ *
+ * 参数：
+ * - reportType: formal（默认）/ express / all
+ * - limit: 返回条数，默认 10，最大 30
+ *
+ * 供 Python Agent 在 AI 对话中回答"最新业绩报告/最新快报有哪些"类问题。
+ */
+router.get('/performance-reports/latest', async (req: Request, res: Response) => {
+    const reportType = queryStr(req, 'reportType') || 'formal'
+    if (!['formal', 'express', 'all'].includes(reportType)) {
+        return res.status(400).json({ code: 400, message: 'Invalid reportType — 仅支持 formal / express / all' })
+    }
+    const limit = Math.min(queryInt(req, 'limit', 10), 30)
+
+    try {
+        const result = await pool.query(
+            `WITH latest AS (
+                SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+                       p.total_revenue, p.n_income_attr_p, p.basic_eps, p.summary, p.ai_tag,
+                       CASE WHEN p.total_revenue IS NOT NULL
+                                 AND prev.total_revenue IS NOT NULL AND prev.total_revenue <> 0
+                            THEN ((p.total_revenue - prev.total_revenue) / ABS(prev.total_revenue) * 100)::float8
+                            ELSE NULL END AS revenue_yoy,
+                       CASE WHEN p.n_income_attr_p IS NOT NULL
+                                 AND prev.n_income_attr_p IS NOT NULL AND prev.n_income_attr_p <> 0
+                            THEN ((p.n_income_attr_p - prev.n_income_attr_p) / ABS(prev.n_income_attr_p) * 100)::float8
+                            ELSE NULL END AS profit_yoy
+                FROM performance_reports p
+                INNER JOIN (
+                    SELECT symbol, report_type, MAX(ann_date) AS latest_ann_date
+                    FROM performance_reports
+                    GROUP BY symbol, report_type
+                ) m ON p.symbol = m.symbol AND p.report_type = m.report_type AND p.ann_date = m.latest_ann_date
+                LEFT JOIN LATERAL (
+                    SELECT total_revenue, n_income_attr_p
+                    FROM performance_reports
+                    WHERE symbol = p.symbol
+                      AND report_type IN ('formal', 'express')
+                      AND end_date IS NOT NULL AND end_date != ''
+                      AND end_date < p.end_date
+                    ORDER BY end_date DESC, report_type DESC
+                    LIMIT 1
+                ) prev ON true
+                WHERE p.report_type IN ('formal', 'express')
+                  AND ($1 = 'all' OR p.report_type = $1)
+            )
+            SELECT l.* FROM latest l
+            ORDER BY l.ann_date DESC NULLS LAST, l.symbol ASC
+            LIMIT $2`,
+            [reportType, limit]
+        )
+
+        const reports = result.rows.map((row: Record<string, unknown>) => ({
+            symbol: row.symbol,
+            stock_name: row.stock_name || '',
+            report_type: row.report_type,
+            report_type_label: row.report_type === 'formal' ? '正式报告' : '业绩快报',
+            ann_date: row.ann_date,
+            end_date: row.end_date,
+            total_revenue: row.total_revenue,          // 元
+            n_income_attr_p: row.n_income_attr_p,      // 元（归母净利润）
+            basic_eps: row.basic_eps,
+            revenue_yoy: row.revenue_yoy,
+            profit_yoy: row.profit_yoy,
+            summary: row.summary || '',
+            ai_tag: row.ai_tag || '',
+        }))
+
+        res.json({ code: 200, data: { reports } })
+    } catch (err: unknown) {
+        console.error('[Internal] performance-reports/latest error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
