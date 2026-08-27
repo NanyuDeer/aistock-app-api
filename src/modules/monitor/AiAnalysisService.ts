@@ -110,15 +110,16 @@ export class AiAnalysisService {
      * 对指定股票执行 AI 研判
      * 数据来源优先级：formal（正式报告）> express（快报/预告）> rating（研报评级）
      */
-    static async analyze(symbol: string, _endDate?: string): Promise<AiAnalysisResult | null> {
+    static async analyze(symbol: string, endDate?: string): Promise<AiAnalysisResult | null> {
         // 1. 获取多期数据（formal → express → rating 逐级降级）
         const rows = await this.fetchReportRows(symbol);
         if (rows.length === 0) return null;
 
-        const current = rows[0];
+        const currentIndex = endDate ? Math.max(0, rows.findIndex(row => row.end_date === endDate)) : 0;
+        const current = rows[currentIndex];
 
         // 2. 计算 YoY（前一期）
-        const prev = rows.length > 1 ? rows[1] : null;
+        const prev = rows.length > currentIndex + 1 ? rows[currentIndex + 1] : null;
         const revenueYoy = prev ? this.calcYoy(current.total_revenue, prev.total_revenue) : null;
         const profitYoy = prev ? this.calcYoy(current.n_income_attr_p, prev.n_income_attr_p) : null;
 

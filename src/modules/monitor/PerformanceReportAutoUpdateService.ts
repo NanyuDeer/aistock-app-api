@@ -201,8 +201,8 @@ export class PerformanceReportAutoUpdateService {
                                 stockName: stockName || symbol,
                                 title: `${stockName || symbol}：业绩快报/预告更新`,
                                 summary: row.summary || `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
-                                payload: { reportType: 'express', annDate },
+                                targetPath: `/modules/analytics/pages/report-detail?symbol=${encodeURIComponent(symbol)}&endDate=${encodeURIComponent(row.end_date?.replace(/-/g, '') || '')}`,
+                                payload: { reportType: 'express', annDate, endDate: row.end_date?.replace(/-/g, '') || '' },
                                 occurredAt: annDateToIso(annDate),
                             });
                         } catch (error) {
@@ -245,8 +245,8 @@ export class PerformanceReportAutoUpdateService {
                                 stockName: stockName || symbol,
                                 title: `${stockName || symbol}：财报披露`,
                                 summary: `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
-                                payload: { reportType: 'formal', annDate },
+                                targetPath: `/modules/analytics/pages/report-detail?symbol=${encodeURIComponent(symbol)}&endDate=${encodeURIComponent(row.end_date?.replace(/-/g, '') || '')}`,
+                                payload: { reportType: 'formal', annDate, endDate: row.end_date?.replace(/-/g, '') || '' },
                                 occurredAt: annDateToIso(annDate),
                             });
                         } catch (error) {
