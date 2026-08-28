@@ -2,6 +2,42 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-08-27 — 个股异动溯源只读端点（阶段 2.2 读层）
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/stock-trace/internalRouter.ts`：只读端点 `GET /internal/stock-trace/events?openid=&symbol=&limit=`（复用 `StockTraceService.listUserEvents` 后按 symbol 内存过滤；openid 必填 400、symbol 可选——为空返回该用户全部异动溯源、limit 默认 50 上限 100）——供 agent-py 对话 `stock_trace_lookup` 读层 skill 使用；另加 `queryStr`/`errMsg` 帮助函数
+
+### 测试
+- `src/modules/stock-trace/__tests__/internalRouter-events.spec.ts`：openid 缺失 400（不触库）、列表 limit 透传、symbol 过滤
+
+---
+
+## [junliang] 2026-08-27 — 洞察只读端点（阶段 2.1 读层）
+
+**开发者**: Aria
+
+### 新增
+- `src/modules/insight/internalRouter.ts`：只读端点 `GET /internal/insight/events?openid=&symbol=&limit=`（自选股洞察列表，openid 归属过滤、symbol 可选、limit 默认 50 上限 100）+ `GET /internal/insight/events/:eventId?openid=`（详情，openid 归属校验无归属 404 + 最新证据包）——供 agent-py 对话读层 skill 使用
+
+### 测试
+- `src/modules/insight/__tests__/internalRouter.spec.ts`：openid 缺失 400、列表过滤、详情归属 404
+
+---
+
+## [junliang] 2026-08-27 — 预测公开统计按验证口径版本过滤（阶段 0）
+
+**开发者**: Aria
+
+### 改进
+- `src/modules/prediction/publicRouter.ts`：新增 `CURRENT_METHODOLOGY_VERSION='2.0'` 常量 + `versionOk` 版本判定（旧记录无 `methodology_version` 兼容视为 2.0）；`bucketStats`/`computeStats` 命中率按版本过滤（3.0 记录隔离防混桶），档位进度 `verifiedHorizonCount` 全量（版本无关）
+
+### 测试
+- `src/modules/prediction/publicRouter.test.ts`：版本过滤用例（2.0 计入 / 3.0 隔离 / 无版本兼容）+ 门禁断言 `hitRate === bucketStats.combined.hitRate`
+
+---
+
 ## [junliang] 2026-08-24 — 归因校验规则放宽 + 异动列表按最近触发时间排序
 
 **开发者**: Aria

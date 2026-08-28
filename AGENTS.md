@@ -207,8 +207,11 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates） |
 | `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
 | `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
+| `GET /internal/insight/events?openid=&symbol=&limit=` | watchlist_insight | 自选股洞察列表（阶段 2.1 读层：涨停雷达/价格异动归因结果，仅登录用户自选股命中事件；openid 必填、symbol 可选过滤、limit 默认 50 上限 100） |
+| `GET /internal/insight/events/:eventId?openid=` | watchlist_insight | 自选股洞察详情（阶段 2.1 读层：事件 + 归因结果 + 最新证据包；openid 归属校验，无归属 404） |
+| `GET /internal/stock-trace/events?openid=&symbol=&limit=` | stock_trace | 自选股异动溯源列表（阶段 2.2 读层：价格异动/涨停雷达归因，复用 listUserEvents：openid 过滤 + analysis_status/primary_cause；symbol 可选过滤、limit 默认 50 上限 100） |
 
-> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified)/due_dates(JSONB)/created_at；status 仅 `{pending, verified}`（无 expired）；`appendVerification` 全档位覆盖自动置 verified。Python agent-py scheduler 每日 16:00 到期验证任务消费。
+> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified|skipped)/due_dates(JSONB)/created_at；status `{pending, verified, skipped}`（无 expired）；`appendVerification` 全档位覆盖自动置 verified；skipped 行（gate_skipped/skip_reason）不计入命中率统计。Python agent-py scheduler 每日 16:00 到期验证任务消费（阶段 0 起验证口径 3.0，见 agent-py AGENTS.md B2）。
 
 ### 7.2 Agent 分析报告持久化接口
 
@@ -242,10 +245,10 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 | 接口 | 方法 | 说明 |
 |------|------|------|
-| `GET /api/predictions` | GET | 历史预测列表（B2.1）：`status=all\|pending\|verified`（默认 all）+ `page`（默认1）+ `pageSize`（默认20，上限50），按 created_at DESC；响应含 `items`（每项附 `report_date`，从 source_id `review:YYYY-MM-DD` 解析，失败回退 created_at 上海日期）+ `stats`（total/pendingCount/verifiedCount/hitRate/verifiedHorizonCount/hitCount/missCount；命中率 = hit/(hit+miss)，insufficient 不计）+ `pagination`；`id` 已归一为数字（pg BIGSERIAL 返回 string） |
+| `GET /api/predictions` | GET | 历史预测列表（B2.1）：`status=all\|pending\|verified`（默认 all）+ `page`（默认1）+ `pageSize`（默认20，上限50），按 created_at DESC；响应含 `items`（每项附 `report_date`，从 source_id `review:YYYY-MM-DD` 解析，失败回退 created_at 上海日期）+ `stats`（total/pendingCount/verifiedCount/hitRate/verifiedHorizonCount/hitCount/missCount + approximateHorizonCount + `bucketStats` 三桶；命中率 = hit/(hit+miss)，insufficient 不计；**阶段 0（2026-08-27）起命中率按 `methodology_version` 版本过滤（默认 `CURRENT_METHODOLOGY_VERSION='2.0'` 防跳变，3.0 记录隔离；旧记录无版本兼容视为 2.0），档位进度 verifiedHorizonCount 全量（版本无关）**）+ `pagination`；`id` 已归一为数字（pg BIGSERIAL 返回 string） |
 | `GET /api/predictions/:id` | GET | 历史预测详情；`:id` 非正整数 → 400，不存在 → 404 |
 
-> `modules/prediction/publicRouter.ts`（含 `__predictionPublicDependencies` 测试注入点，测试见 `publicRouter.test.ts`，6 用例 mock Service 层不触达 PG）。
+> `modules/prediction/publicRouter.ts`（含 `__predictionPublicDependencies` 测试注入点，测试见 `publicRouter.test.ts`，15 用例 mock Service 层不触达 PG）。版本过滤四处同步：agent-py `prediction_stats._CURRENT_METHODOLOGY_VERSION` / `prediction_validator._METHODOLOGY_VERSION`(3.0) / `_BACKFILL_METHODOLOGY_VERSION`(2.0) / 本文件 `CURRENT_METHODOLOGY_VERSION`。切换 3.0 为默认过滤版本时改本文件常量为 `'3.0'`（存量无版本记录随之隔离）。
 
 ### 7.4 Agent 反代接口
 

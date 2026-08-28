@@ -10,6 +10,17 @@ import type { FavoriteSecurity, PriceFact } from './types';
 const router: Router = Router();
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production';
 
+/** query 安全取 string（Express 5 query 可能为 string | string[] | ParsedQs） */
+function queryStr(req: Request, key: string): string {
+    const val = req.query[key];
+    return Array.isArray(val) ? String(val[0] || '') : typeof val === 'string' ? val : '';
+}
+
+/** 从 unknown 错误中安全提取 message */
+function errMsg(err: unknown): string {
+    return err instanceof Error ? err.message : String(err);
+}
+
 router.use((req, res, next) => {
     if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
         res.status(403).json({ code: 403, message: 'Forbidden' });
@@ -27,6 +38,26 @@ router.post('/jobs/publish', async (req: Request, res: Response) => {
     const body = req.body as { limit?: number };
     const result = await StockTraceJobService.publishPending(body.limit);
     res.json({ code: 200, data: result });
+});
+
+// ── 阶段 2.2：只读列表端点（个股溯源读层 skill 用，openid 走 query——internal 可信）──
+/** 登录用户自选股异动溯源列表（复用 listUserEvents：openid 过滤 + analysis_status/primary_cause） */
+router.get('/events', async (req: Request, res: Response) => {
+    const openid = queryStr(req, 'openid');
+    if (!openid) {
+        res.status(400).json({ code: 400, message: 'openid is required' });
+        return;
+    }
+    const symbol = queryStr(req, 'symbol');
+    const limitRaw = Number.parseInt(queryStr(req, 'limit'), 10);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 50;
+    try {
+        const { items } = await StockTraceService.listUserEvents(openid, limit);
+        const data = symbol ? items.filter((i) => i.symbol === symbol) : items;
+        res.json({ code: 200, data });
+    } catch (error: unknown) {
+        res.status(500).json({ code: 500, message: errMsg(error) });
+    }
 });
 
 router.patch('/jobs/:jobId', async (req: Request, res: Response) => {
