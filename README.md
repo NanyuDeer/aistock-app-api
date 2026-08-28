@@ -163,6 +163,7 @@ src/
 | `/internal/stock-trace/events?openid=&symbol=&limit=` | **个股异动溯源只读列表**（阶段 2.2 读层：价格异动/涨停雷达归因，复用 listUserEvents） | openid 必填 + symbol 可选（为空返回该用户全部）+ limit 默认 50 上限 100，需 X-Internal-Token |
 | `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
 | `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
+| `/internal/stocks/basic` | **全量 A 股基础信息**（symbol/name/industry，内存 6h 缓存，Python 股票名称实体匹配用） | 无参数，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >

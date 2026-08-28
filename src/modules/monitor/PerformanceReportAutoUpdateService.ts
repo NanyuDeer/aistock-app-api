@@ -1,58 +1,105 @@
 /**
  * 业绩报告自动更新服务
  *
- * 每天凌晨 00:00 定时执行，从 Tushare 获取业绩快报（预告）+ 正式报告数据。
+ * 每天凌晨 00:00 定时执行，从 Tushare 获取业绩快报（express）+ 正式报告（formal）数据。
  *
- * 数据源：
- * - Tushare forecast 接口：业绩快报/预告（含净利润变动、摘要）
- * - Tushare income 接口：正式财报（含营收、净利润、EPS）
- * - Tushare report_rc 接口：卖方研报评级（含 EPS 预测、评级、机构）
+ * 架构（无候选池，各类型只去自己的发现源按"前一天日期"批量增量）：
+ * - 业绩快报（report_type='express'）：`express_vip` 按最近两个报告期全量分页
+ *   （该接口不支持按 ann_date 过滤，需整报告期拉全量），客户端筛 `ann_date`=目标日期
+ * - 正式报告（report_type='formal'）：`disclosure_date.actual_date`=目标日期
+ *   全市场发现（真实披露日，T+1 权威），命中后才逐股拉 `income`
+ * - 若目标日期无新增，用前 2 个自然日窗口重扫补漏（仍按日期批量，轻量）
  *
- * 字段说明：
- * - 快报（report_type='express'）：基于 forecast 接口，提供净利润预测范围、摘要
- * - 正式报告（report_type='formal'）：基于 income 接口，提供营收、净利润、EPS等
- * - 评级（report_type='rating'）：基于 report_rc 接口，提供机构评级、EPS预测
+ * 已下线：
+ * - 业绩预告（forecast）分支：业绩预告单独不建逻辑
+ * - 研报评级（rating）分支：report_rc 只归业绩预测（第 1 套）使用，避免同一批研报触发两套通知
+ * - 预披露提醒（disclosure_date.pre_date 前瞻）：目前用不上
  */
 
 import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { NotificationService } from '../../core/notification/NotificationService';
-import { getForecast, getIncome, getReportRc, type ForecastRow, type IncomeRow, type ReportRcRow } from '../quote/TushareService';
+import {
+    getExpressVip, getIncome, getDisclosureDate,
+    type ExpressVipRow, type DisclosureDateRow,
+} from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
-import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
     return tsCode.split('.')[0];
 }
 
-/** 获取前一天的日期字符串 YYYY-MM-DD */
-function getYesterdayStr(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return shanghaiDateStr(d);
-}
-
-/** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
-function getYesterdayCompact(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return shanghaiDateYyyymmdd(d);
-}
-
-/** 获取N天前的日期 YYYYMMDD */
-function getDaysAgoCompact(days: number): string {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    return shanghaiDateYyyymmdd(d);
-}
-
+/** YYYYMMDD → ISO 时间（上海时区零点），用于通知 occurredAt */
 function annDateToIso(annDate: string): string | undefined {
     if (!/^\d{8}$/.test(annDate)) return undefined;
     const date = new Date(
         `${annDate.slice(0, 4)}-${annDate.slice(4, 6)}-${annDate.slice(6, 8)}T00:00:00+08:00`,
     );
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+/** 获取前一天的日期字符串 YYYY-MM-DD */
+function getYesterdayStr(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10);
+}
+
+/** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
+function getYesterdayCompact(): string {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/** 获取N天前的日期 YYYYMMDD */
+function getDaysAgoCompact(days: number): string {
+    const d = new Date();
+    d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10).replace(/-/g, '');
+}
+
+/** 报告期前后关系（0331→上年1231，其余回退一个季度） */
+function prevPeriod(period: string): string {
+    const y = Number(period.slice(0, 4));
+    const md = period.slice(4);
+    if (md === '0331') return `${y - 1}1231`;
+    const seq: Record<string, string> = { '0630': '0331', '0930': '0630', '1231': '0930' };
+    return `${y}${seq[md] || '0930'}`;
+}
+
+/** 最近 N 个已结束报告期（YYYYMMDD），从当前日期往前推 */
+function getRecentPeriods(count: number): string[] {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth() + 1; // 1-12
+    const d = now.getDate();
+    const quarters: Array<[string, number, number]> = [['0331', 3, 31], ['0630', 6, 30], ['0930', 9, 30], ['1231', 12, 31]];
+
+    // 当前已结束的最近报告期
+    let period: string | null = null;
+    for (let i = quarters.length - 1; i >= 0; i--) {
+        const [md, qm, qd] = quarters[i];
+        if (m > qm || (m === qm && d >= qd)) {
+            period = `${y}${md}`;
+            break;
+        }
+    }
+    if (!period) period = `${y - 1}1231`; // 一季度末尚未到来（1/1-3/30）→ 上一年年报
+
+    const periods: string[] = [period];
+    for (let i = 1; i < count; i++) {
+        period = prevPeriod(period);
+        periods.push(period);
+    }
+    return periods;
+}
+
+interface ProcessResult {
+    updated: number;
+    skipped: number;
+    errors: number;
 }
 
 export class PerformanceReportAutoUpdateService {
@@ -68,7 +115,7 @@ export class PerformanceReportAutoUpdateService {
         }
 
         // 检查今天是否已经执行过
-        const today = shanghaiDateStr();
+        const today = new Date().toISOString().slice(0, 10);
         const lastRunDate = await CacheService.get<string>('performance_report:auto_update:date');
         if (lastRunDate === today) {
             console.log('[PerformanceReportAutoUpdate] 今天已执行过，跳过');
@@ -81,30 +128,20 @@ export class PerformanceReportAutoUpdateService {
         console.log(`[PerformanceReportAutoUpdate] 开始执行，目标日期: ${yesterday}`);
 
         try {
-            // 策略1：通过 report_rc 按日期查询有新研报的股票（精确增量）
-            let symbolsToUpdate: string[] = [];
-            try {
-                symbolsToUpdate = await this.getSymbolsFromReportRc(yesterdayCompact);
-                console.log(`[PerformanceReportAutoUpdate] report_rc 获取到 ${symbolsToUpdate.length} 只有新报告的股票`);
-            } catch (err: any) {
-                console.warn(`[PerformanceReportAutoUpdate] report_rc 不可用: ${err.message}，回退到全量更新`);
-            }
+            // 主路径：按"昨日"各源批量增量（formal ← actual_date / express ← express_vip 筛 ann_date）
+            let result = await this.processSingleDay(yesterdayCompact);
 
-            // 策略2：回退到全量更新已有记录的股票
-            if (symbolsToUpdate.length === 0) {
-                symbolsToUpdate = await this.getSymbolsFromDatabase();
-                console.log(`[PerformanceReportAutoUpdate] 回退策略：获取到 ${symbolsToUpdate.length} 只有记录的股票`);
+            // 兜底：昨日各源均无新增时，用前 2 个自然日窗口重扫补漏（仍按日期批量，轻量）
+            if (result.updated === 0) {
+                const fallbackDate = getDaysAgoCompact(2);
+                console.log(`[PerformanceReportAutoUpdate] 昨日无新增，前 2 日兜底重扫: ${fallbackDate}`);
+                const fallback = await this.processSingleDay(fallbackDate);
+                result = {
+                    updated: result.updated + fallback.updated,
+                    skipped: result.skipped + fallback.skipped,
+                    errors: result.errors + fallback.errors,
+                };
             }
-
-            if (symbolsToUpdate.length === 0) {
-                console.log('[PerformanceReportAutoUpdate] 没有需要更新的股票');
-                await CacheService.put('performance_report:auto_update:date', today, 25 * 3600);
-                this.running = false;
-                return { updated: 0, skipped: 0, errors: 0 };
-            }
-
-            // 执行更新
-            const result = await this.updateSymbols(symbolsToUpdate, yesterdayCompact);
 
             // 标记今天已执行
             await CacheService.put('performance_report:auto_update:date', today, 25 * 3600);
@@ -120,41 +157,158 @@ export class PerformanceReportAutoUpdateService {
     }
 
     /**
-     * 策略1：通过 Tushare report_rc 接口获取前一天有新研报的股票
+     * 处理单个目标日期：formal + express 两源批量增量，命中股票补算 ai_tag
      */
-    private static async getSymbolsFromReportRc(reportDate: string): Promise<string[]> {
-        const rows = await getReportRc({ report_date: reportDate });
-        const symbolSet = new Set<string>();
-        for (const row of rows) {
-            const symbol = tsCodeToSymbol(row.ts_code);
-            if (/^\d{6}$/.test(symbol)) {
-                symbolSet.add(symbol);
+    private static async processSingleDay(dateCompact: string): Promise<ProcessResult> {
+        // 命中且需要补 ai_tag 的股票（按 symbol 去重）
+        const symbolsToTag = new Set<string>();
+
+        const express = await this.processExpress(dateCompact, symbolsToTag);
+        const formal = await this.processFormal(dateCompact, symbolsToTag);
+
+        // 对命中股票补算 ai_tag（新插入报告 + 历史空标签补偿）
+        let tagErrors = 0;
+        for (const symbol of symbolsToTag) {
+            try {
+                await this.updateAiTags(symbol);
+            } catch (err: any) {
+                tagErrors++;
+                console.warn(`[PerformanceReportAutoUpdate] ${symbol} ai_tag 计算失败: ${err.message}`);
             }
         }
-        return Array.from(symbolSet);
+
+        return {
+            updated: express.updated + formal.updated,
+            skipped: express.skipped + formal.skipped,
+            errors: express.errors + formal.errors + tagErrors,
+        };
     }
 
     /**
-     * 策略2：获取数据库中所有已有业绩报告记录的股票
+     * 业绩快报 express ← express_vip（最近两个报告期全量分页 + 客户端筛 ann_date=目标日期）
      */
-    private static async getSymbolsFromDatabase(): Promise<string[]> {
-        const result = await pool.query(
-            `SELECT DISTINCT symbol FROM performance_reports
-             WHERE created_at < NOW() - INTERVAL '24 hours'
-                OR created_at IS NULL
-             ORDER BY symbol
-             LIMIT 500`
-        );
-        return result.rows.map((r: { symbol: string }) => r.symbol).filter((s: string) => /^\d{6}$/.test(s));
+    private static async processExpress(dateCompact: string, symbolsToTag: Set<string>): Promise<ProcessResult> {
+        const periods = getRecentPeriods(2);
+        const nameCache = new Map<string, string>();
+        let updated = 0;
+        let skipped = 0;
+        let errors = 0;
+
+        for (const period of periods) {
+            let rows: ExpressVipRow[];
+            try {
+                rows = await getExpressVip(period);
+            } catch (err: any) {
+                errors++;
+                console.warn(`[PerformanceReportAutoUpdate] express_vip(${period}) 获取失败: ${err.message}`);
+                continue;
+            }
+            console.log(`[PerformanceReportAutoUpdate] express_vip(${period}) 返回 ${rows.length} 行`);
+
+            for (const row of rows) {
+                const annDate = String(row.ann_date || '').replace(/-/g, '');
+                if (annDate !== dateCompact) continue;
+
+                const symbol = tsCodeToSymbol(row.ts_code);
+                if (!/^\d{6}$/.test(symbol)) continue;
+
+                const exists = await this.checkExists(symbol, 'express', annDate);
+                if (exists) {
+                    skipped++;
+                    continue;
+                }
+
+                try {
+                    if (!nameCache.has(symbol)) {
+                        nameCache.set(symbol, await this.getStockName(symbol));
+                    }
+                    const stockName = nameCache.get(symbol) || '';
+
+                    await pool.query(
+                        `INSERT INTO performance_reports
+                         (symbol, stock_name, report_type, ann_date, end_date,
+                          total_revenue, n_income, n_income_attr_p, basic_eps, summary, created_at)
+                         VALUES ($1, $2, 'express', $3, $4, $5, $6, $7, $8, $9, NOW())
+                         ON CONFLICT (symbol, report_type, ann_date) DO NOTHING`,
+                        [
+                            symbol,
+                            stockName,
+                            annDate,
+                            String(row.end_date || '').replace(/-/g, ''),
+                            row.revenue ?? null,
+                            row.n_income ?? null,
+                            // express_vip 无归母净利润字段，用净利润近似
+                            row.n_income ?? null,
+                            row.diluted_eps ?? null,
+                            row.perf_summary || '',
+                        ]
+                    );
+                    await PerformanceReportAutoUpdateService.notifyFor(
+                        symbol, stockName || symbol, annDate,
+                        `${stockName || symbol}：业绩快报更新`,
+                        row.perf_summary || `业绩快报，公告日期 ${annDate}`,
+                        'express',
+                        String(row.end_date || '').replace(/-/g, ''),
+                    );
+                    updated++;
+                    symbolsToTag.add(symbol);
+                } catch (err: any) {
+                    errors++;
+                    console.warn(`[PerformanceReportAutoUpdate] ${symbol} express 插入失败: ${err.message}`);
+                }
+            }
+        }
+
+        return { updated, skipped, errors };
+    }
+
+    /** 统一的入库通知封装（不抛错，失败仅告警，不中断主流程） */
+    private static async notifyFor(
+        symbol: string, stockName: string, annDate: string,
+        title: string, summary: string, reportType: string, endDate = '',
+    ): Promise<void> {
+        try {
+            const encodedSymbol = encodeURIComponent(symbol);
+            const normalizedEndDate = endDate.replace(/-/g, '');
+            const isReportDetail = (reportType === 'formal' || reportType === 'express') && normalizedEndDate;
+            const targetPath = isReportDetail
+                ? `/modules/analytics/pages/report-detail?symbol=${encodedSymbol}&endDate=${encodeURIComponent(normalizedEndDate)}`
+                : `/modules/favorites/pages/detail?symbol=${encodedSymbol}&anchor=performance-report`;
+            const payload = normalizedEndDate
+                ? { reportType, annDate, endDate: normalizedEndDate }
+                : { reportType, annDate };
+            await NotificationService.createForWatchers({
+                category: 'performance_report',
+                sourceKey: `performance-report:${symbol}:${reportType}:${annDate}`,
+                symbol,
+                stockName,
+                title,
+                summary,
+                targetPath,
+                payload,
+                occurredAt: annDateToIso(annDate),
+            });
+        } catch (error) {
+            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
+        }
     }
 
     /**
-     * 执行增量更新
+     * 业绩正式报告 formal ← disclosure_date.actual_date=目标日期 全市场发现，命中后逐股拉 income
      */
-    private static async updateSymbols(
-        symbols: string[],
-        yesterdayCompact: string
-    ): Promise<{ updated: number; skipped: number; errors: number }> {
+    private static async processFormal(dateCompact: string, symbolsToTag: Set<string>): Promise<ProcessResult> {
+        let rows: DisclosureDateRow[];
+        try {
+            rows = await getDisclosureDate({ actual_date: dateCompact });
+        } catch (err: any) {
+            console.warn(`[PerformanceReportAutoUpdate] disclosure_date(actual_date=${dateCompact}) 获取失败: ${err.message}`);
+            return { updated: 0, skipped: 0, errors: 1 };
+        }
+
+        // 去重 + 过滤合法 A 股代码
+        const symbols = Array.from(new Set(rows.map(r => tsCodeToSymbol(r.ts_code)))).filter(s => /^\d{6}$/.test(s));
+        console.log(`[PerformanceReportAutoUpdate] disclosure_date 命中 ${symbols.length} 只股票`);
+
         let updated = 0;
         let skipped = 0;
         let errors = 0;
@@ -168,57 +322,23 @@ export class PerformanceReportAutoUpdateService {
                 if (!symbol) break;
 
                 try {
-                    const stockName = await PerformanceReportAutoUpdateService.getStockName(symbol);
-
-                    // 1. 获取业绩快报/预告数据 (forecast)
-                    const forecastRows = await getForecast(symbol, getDaysAgoCompact(90));
-                    let expressUpdated = false;
-                    for (const row of forecastRows) {
-                        const annDate = row.ann_date?.replace(/-/g, '');
-                        if (!annDate) continue;
-                        const exists = await PerformanceReportAutoUpdateService.checkExists(symbol, 'express', annDate);
-                        if (exists) continue;
-
-                        await pool.query(
-                            `INSERT INTO performance_reports
-                             (symbol, stock_name, report_type, ann_date, end_date, summary, n_income_attr_p, created_at)
-                             VALUES ($1, $2, 'express', $3, $4, $5, $6, NOW())
-                             ON CONFLICT (symbol, report_type, ann_date) DO NOTHING`,
-                            [
-                                symbol,
-                                stockName,
-                                annDate,
-                                row.end_date?.replace(/-/g, '') || '',
-                                row.summary || '',
-                                row.net_profit_max ?? null,
-                            ]
-                        );
-                        try {
-                            await NotificationService.createForWatchers({
-                                category: 'performance_report',
-                                sourceKey: `performance-report:${symbol}:express:${annDate}`,
-                                symbol,
-                                stockName: stockName || symbol,
-                                title: `${stockName || symbol}：业绩快报/预告更新`,
-                                summary: row.summary || `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
-                                payload: { reportType: 'express', annDate },
-                                occurredAt: annDateToIso(annDate),
-                            });
-                        } catch (error) {
-                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
-                        }
-                        expressUpdated = true;
+                    // income 只能按股取：近 7 天窗口，只采纳 ann_date=目标日期 的行
+                    const incomeRows = await getIncome(symbol, getDaysAgoCompact(7));
+                    const hit = incomeRows.filter(r => String(r.ann_date || '').replace(/-/g, '') === dateCompact);
+                    if (hit.length === 0) {
+                        skipped++;
+                        continue;
                     }
 
-                    // 2. 获取正式报告数据 (income)
-                    const incomeRows = await getIncome(symbol, getDaysAgoCompact(365));
-                    let formalUpdated = false;
-                    for (const row of incomeRows) {
-                        const annDate = row.ann_date?.replace(/-/g, '');
-                        if (!annDate) continue;
+                    const stockName = await PerformanceReportAutoUpdateService.getStockName(symbol);
+                    let hasNew = false;
+                    for (const row of hit) {
+                        const annDate = String(row.ann_date || '').replace(/-/g, '');
                         const exists = await PerformanceReportAutoUpdateService.checkExists(symbol, 'formal', annDate);
-                        if (exists) continue;
+                        if (exists) {
+                            skipped++;
+                            continue;
+                        }
 
                         await pool.query(
                             `INSERT INTO performance_reports
@@ -230,93 +350,32 @@ export class PerformanceReportAutoUpdateService {
                                 symbol,
                                 stockName,
                                 annDate,
-                                row.end_date?.replace(/-/g, '') || '',
+                                String(row.end_date || '').replace(/-/g, ''),
                                 row.total_revenue ?? null,
                                 row.n_income ?? null,
                                 row.n_income_attr_p ?? null,
                                 row.basic_eps ?? null,
                             ]
                         );
-                        try {
-                            await NotificationService.createForWatchers({
-                                category: 'performance_report',
-                                sourceKey: `performance-report:${symbol}:formal:${annDate}`,
-                                symbol,
-                                stockName: stockName || symbol,
-                                title: `${stockName || symbol}：财报披露`,
-                                summary: `公告日期 ${annDate}`,
-                                targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=performance-report`,
-                                payload: { reportType: 'formal', annDate },
-                                occurredAt: annDateToIso(annDate),
-                            });
-                        } catch (error) {
-                            console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
-                        }
-                        formalUpdated = true;
+                        await PerformanceReportAutoUpdateService.notifyFor(
+                            symbol, stockName || symbol, annDate,
+                            `${stockName || symbol}：财报披露`,
+                            `公告日期 ${annDate}`,
+                            'formal',
+                            String(row.end_date || '').replace(/-/g, ''),
+                        );
+                        hasNew = true;
                     }
 
-                    // 3. 获取研报评级数据 (report_rc)
-                    try {
-                        const reportRcRows = await getReportRc({
-                            ts_code: symbol.length === 6
-                                ? `${symbol}.${['6', '9'].includes(symbol[0]) ? 'SH' : 'SZ'}`
-                                : symbol,
-                            start_date: getDaysAgoCompact(30),
-                        });
-                        let ratingUpdated = false;
-                        for (const row of reportRcRows) {
-                            const reportDate = row.report_date?.replace(/-/g, '');
-                            if (!reportDate || !row.eps) continue;
-                            const exists = await PerformanceReportAutoUpdateService.checkExists(symbol, 'rating', reportDate);
-                            if (exists) continue;
-
-                            await pool.query(
-                                `INSERT INTO performance_reports
-                                 (symbol, stock_name, report_type, ann_date, end_date,
-                                  forecast_eps, rating, org_name, created_at)
-                                 VALUES ($1, $2, 'rating', $3, $4, $5, $6, $7, NOW())
-                                 ON CONFLICT (symbol, report_type, ann_date) DO NOTHING`,
-                                [
-                                    symbol,
-                                    stockName,
-                                    reportDate,
-                                    row.quarter || '',
-                                    row.eps ?? null,
-                                    row.rating || '',
-                                    row.org_name || '',
-                                ]
-                            );
-                            ratingUpdated = true;
-                        }
-                    } catch (err: any) {
-                        // report_rc 可能积分不足，跳过不报错
-                        console.warn(`[PerformanceReportAutoUpdate] ${symbol} report_rc 获取失败: ${err.message}`);
-                    }
-
-                    // 是否有新插入的报告
-                    const hasNewReport = expressUpdated || formalUpdated;
-
-                    // 是否还有"利润数据已就绪但标签为空"的报告需要补算
-                    // （覆盖：插入时利润字段为空被跳过、或上次计算失败等情况）
-                    const pendingTagFix = await pool.query(
-                        `SELECT 1 FROM performance_reports
-                         WHERE symbol = $1 AND report_type IN ('formal', 'express')
-                           AND n_income_attr_p IS NOT NULL
-                           AND (ai_tag IS NULL OR ai_tag = '')
-                         LIMIT 1`,
-                        [symbol]
-                    );
-
-                    if (hasNewReport || pendingTagFix.rows.length > 0) {
+                    if (hasNew) {
                         updated++;
-                        // 为新插入的报告计算 ai_tag，并补偿历史空标签
-                        await PerformanceReportAutoUpdateService.updateAiTags(symbol);
+                        symbolsToTag.add(symbol);
                     } else {
                         skipped++;
                     }
                 } catch (err: any) {
                     errors++;
-                    console.warn(`[PerformanceReportAutoUpdate] ${symbol} 更新失败: ${err.message}`);
+                    console.warn(`[PerformanceReportAutoUpdate] ${symbol} formal 更新失败: ${err.message}`);
                 }
 
                 if (intervalMs > 0) {
@@ -370,9 +429,6 @@ export class PerformanceReportAutoUpdateService {
         if (formalRows.rows.length === 0) return;
 
         // 2. 逐条计算标签并 UPDATE
-        let prevRev: number | null = null;
-        let prevProfit: number | null = null;
-
         for (const row of formalRows.rows) {
             let tag: string;
             if (row.report_type === 'formal') {
@@ -392,11 +448,6 @@ export class PerformanceReportAutoUpdateService {
                  WHERE symbol = $2 AND end_date = $3 AND report_type = $4`,
                 [tag, symbol, row.end_date, row.report_type]
             );
-
-            if (row.report_type === 'formal') {
-                prevRev = row.total_revenue;
-                prevProfit = row.n_income_attr_p;
-            }
         }
     }
 

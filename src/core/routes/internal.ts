@@ -516,6 +516,59 @@ router.get('/forecast/:symbol', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/performance-report/:symbol
+ * 个股业绩报告（正式报告 + 业绩快报，按报告期倒序最近 6 期）
+ *
+ * 供 Python Agent 在 AI 对话中回答"XX 公司的业绩报告/财报/快报"类问题。
+ */
+router.get('/performance-report/:symbol', async (req: Request, res: Response) => {
+    const symbol = param(req, 'symbol')
+    if (!isValidAShareSymbol(symbol)) {
+        return res.status(400).json({ code: 400, message: 'Invalid symbol — A股代码必须是6位数字' })
+    }
+
+    try {
+        const result = await pool.query(
+            `SELECT symbol, stock_name, report_type, ann_date, end_date,
+                    total_revenue, n_income, n_income_attr_p, basic_eps, summary, ai_tag
+             FROM performance_reports
+             WHERE symbol = $1 AND report_type IN ('formal', 'express')
+             ORDER BY end_date DESC, ann_date DESC
+             LIMIT 6`,
+            [symbol]
+        )
+        if (result.rows.length === 0) {
+            return res.status(404).json({ code: 404, message: '未找到该股票的业绩报告数据' })
+        }
+
+        const reports = result.rows.map((row: Record<string, unknown>) => ({
+            report_type: row.report_type,
+            report_type_label: row.report_type === 'formal' ? '正式报告' : '业绩快报',
+            ann_date: row.ann_date,
+            end_date: row.end_date,
+            total_revenue: row.total_revenue,          // 元
+            n_income: row.n_income,                    // 元
+            n_income_attr_p: row.n_income_attr_p,      // 元（归母净利润）
+            basic_eps: row.basic_eps,
+            summary: row.summary || '',
+            ai_tag: row.ai_tag || '',
+        }))
+
+        res.json({
+            code: 200,
+            data: {
+                symbol,
+                stock_name: result.rows[0].stock_name || '',
+                reports,
+            },
+        })
+    } catch (err: unknown) {
+        console.error(`[Internal] performance-report/${symbol} error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/stock/resolve
  * 中文股票名称 → 6 位代码（复用 HotKeywordDetectorService 的 A 股名称映射，stocks 表/Tushare stock_basic）
  *
@@ -542,6 +595,134 @@ router.get('/stock/resolve', async (req: Request, res: Response) => {
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
+
+/**
+ * GET /internal/performance-reports/latest
+ * 最新披露业绩报告列表（默认正式报告，按公告日倒序）
+ *
+ * 参数：
+ * - reportType: formal（默认）/ express / all
+ * - limit: 返回条数，默认 10，最大 30
+ *
+ * 供 Python Agent 在 AI 对话中回答"最新业绩报告/最新快报有哪些"类问题。
+ */
+router.get('/performance-reports/latest', async (req: Request, res: Response) => {
+    const reportType = queryStr(req, 'reportType') || 'formal'
+    if (!['formal', 'express', 'all'].includes(reportType)) {
+        return res.status(400).json({ code: 400, message: 'Invalid reportType — 仅支持 formal / express / all' })
+    }
+    const limit = Math.min(queryInt(req, 'limit', 10), 30)
+
+    try {
+        const result = await pool.query(
+            `WITH latest AS (
+                SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+                       p.total_revenue, p.n_income_attr_p, p.basic_eps, p.summary, p.ai_tag,
+                       CASE WHEN p.total_revenue IS NOT NULL
+                                 AND prev.total_revenue IS NOT NULL AND prev.total_revenue <> 0
+                            THEN ((p.total_revenue - prev.total_revenue) / ABS(prev.total_revenue) * 100)::float8
+                            ELSE NULL END AS revenue_yoy,
+                       CASE WHEN p.n_income_attr_p IS NOT NULL
+                                 AND prev.n_income_attr_p IS NOT NULL AND prev.n_income_attr_p <> 0
+                            THEN ((p.n_income_attr_p - prev.n_income_attr_p) / ABS(prev.n_income_attr_p) * 100)::float8
+                            ELSE NULL END AS profit_yoy
+                FROM performance_reports p
+                INNER JOIN (
+                    SELECT symbol, report_type, MAX(ann_date) AS latest_ann_date
+                    FROM performance_reports
+                    GROUP BY symbol, report_type
+                ) m ON p.symbol = m.symbol AND p.report_type = m.report_type AND p.ann_date = m.latest_ann_date
+                LEFT JOIN LATERAL (
+                    SELECT total_revenue, n_income_attr_p
+                    FROM performance_reports
+                    WHERE symbol = p.symbol
+                      AND report_type IN ('formal', 'express')
+                      AND end_date IS NOT NULL AND end_date != ''
+                      AND end_date < p.end_date
+                    ORDER BY end_date DESC, report_type DESC
+                    LIMIT 1
+                ) prev ON true
+                WHERE p.report_type IN ('formal', 'express')
+                  AND ($1 = 'all' OR p.report_type = $1)
+            )
+            SELECT l.* FROM latest l
+            ORDER BY l.ann_date DESC NULLS LAST, l.symbol ASC
+            LIMIT $2`,
+            [reportType, limit]
+        )
+
+        const reports = result.rows.map((row: Record<string, unknown>) => ({
+            symbol: row.symbol,
+            stock_name: row.stock_name || '',
+            report_type: row.report_type,
+            report_type_label: row.report_type === 'formal' ? '正式报告' : '业绩快报',
+            ann_date: row.ann_date,
+            end_date: row.end_date,
+            total_revenue: row.total_revenue,          // 元
+            n_income_attr_p: row.n_income_attr_p,      // 元（归母净利润）
+            basic_eps: row.basic_eps,
+            revenue_yoy: row.revenue_yoy,
+            profit_yoy: row.profit_yoy,
+            summary: row.summary || '',
+            ai_tag: row.ai_tag || '',
+        }))
+
+        res.json({ code: 200, data: { reports } })
+    } catch (err: unknown) {
+        console.error('[Internal] performance-reports/latest error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+// ==================== 个股事件识别：股票基础信息接口 ====================
+// GET /internal/stocks/basic — 全量 A 股基础信息，供 Python 股票名称实体匹配
+// （stock_event_detector.company_event_rule）。只读 + verifyInternalToken 鉴权 +
+// 内存 TTL 缓存，避免 Python 侧每次事件归一化重复拉取。数据复用 stocks 表
+// （symbol/name/industry，Tushare stock_basic 同步，与 /api/cn/stocks 同源）。
+
+interface StockBasicItem {
+    symbol: string;
+    name: string;
+    industry: string;
+}
+
+let stockBasicCache: StockBasicItem[] | null = null;
+let stockBasicCacheAt = 0;
+const STOCK_BASIC_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+
+async function getStockBasicList(): Promise<StockBasicItem[]> {
+    const now = Date.now();
+    if (stockBasicCache && now - stockBasicCacheAt < STOCK_BASIC_CACHE_TTL_MS) {
+        return stockBasicCache;
+    }
+    const result = await pool.query(
+        `SELECT symbol, name, industry FROM stocks WHERE name IS NOT NULL AND name <> ''`
+    );
+    stockBasicCache = (result.rows as StockBasicItem[]).map((row) => ({
+        symbol: String(row.symbol ?? ''),
+        name: String(row.name ?? ''),
+        industry: String(row.industry ?? ''),
+    }));
+    stockBasicCacheAt = now;
+    return stockBasicCache;
+}
+
+/**
+ * GET /internal/stocks/basic
+ * 全量 A 股基础信息（symbol/name/industry），供 Python 股票名称实体匹配。
+ *
+ * - 200：{ code: 200, data: [{ symbol, name, industry }, ...] }
+ * - 502：服务异常
+ */
+router.get('/stocks/basic', async (req: Request, res: Response) => {
+    try {
+        const data = await getStockBasicList();
+        res.json({ code: 200, data });
+    } catch (err: unknown) {
+        console.error('[Internal] stocks/basic error:', errMsg(err));
+        res.status(502).json({ code: 502, message: errMsg(err) });
+    }
+});
 
 // ==================== Phase 5: 新增 /internal/* 接口（供 Python Agent 调用） ====================
 // 以下 9 个路由对接 monitor 模块现有 Service，全部走 verifyInternalToken 鉴权。
@@ -1619,6 +1800,67 @@ const BRIEF_REPORT_TYPES = {
     evening: 'brief_evening',
 } as const
 
+/**
+ * POST /internal/midday/generate-audio
+ * 请求体: { date: 'YYYY-MM-DD', dialogue: DialogueLine[] }。
+ * 接收午报播报双人对话（midday_broadcast agent 生成），合成完整 MP3，并回填
+ * 到当日 midday 报告 content.audio_path（同一份报告，方案 A）。
+ * 文件名约定 `midday-<date>.mp3`，与前端 parseMiddayReport.isMiddayAudioPath 期望一致。
+ */
+router.post('/midday/generate-audio', json(), async (req: Request, res: Response) => {
+    const date = typeof req.body?.date === 'string' ? req.body.date : ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: 400, message: 'date 必须是 YYYY-MM-DD' })
+        return
+    }
+    const rawDialogue: unknown[] = Array.isArray(req.body?.dialogue) ? req.body.dialogue : []
+    if (!rawDialogue.length) {
+        res.status(400).json({ code: 400, message: 'dialogue 必须是非空数组' })
+        return
+    }
+
+    try {
+        const report = await getAnalysisReport('midday', date)
+        if (!report) {
+            res.status(404).json({ code: 404, message: 'midday 报告不存在' })
+            return
+        }
+
+        // 清洗对话行为 DialogueLine[]（仅 host/analyst + 非空 content），复用现有 TTS 合成
+        const lines: DialogueLine[] = rawDialogue.flatMap((item): DialogueLine[] => {
+            if (!item || typeof item !== 'object') return []
+            const { role, content } = item as Record<string, unknown>
+            if ((role !== 'host' && role !== 'analyst') || typeof content !== 'string' || !content.trim()) return []
+            return [{ role, content: content.trim() }]
+        })
+        if (!lines.length) {
+            res.status(400).json({ code: 400, message: 'dialogue 没有有效台词' })
+            return
+        }
+
+        const audio = await synthesizeBroadcast(lines)
+        const filename = `midday-${date}.mp3`
+        const audioDir = process.env.AGENT_AUDIO_DIR || '/home/aistock/aistock-agent-py/data/audio'
+        const filePath = path.join(audioDir, filename)
+        const tempPath = `${filePath}.${randomUUID()}.part`
+        await fs.promises.mkdir(audioDir, { recursive: true })
+        await fs.promises.writeFile(tempPath, audio)
+        await fs.promises.rename(tempPath, filePath)
+
+        const audioPath = `/api/agent/audio/${filename}`
+        await pool.query(
+            `UPDATE agent_analysis_reports
+             SET content = jsonb_set(content, '{audio_path}', to_jsonb($2::text), true)
+             WHERE id = $1`,
+            [(report as Record<string, unknown>).id, audioPath]
+        )
+        res.json({ code: 0, data: { audio_path: audioPath }, message: '' })
+    } catch (err: unknown) {
+        console.error('[Internal] midday/generate-audio error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
 const BROADCAST_REPORT_TYPES = {
     morning: 'broadcast_morning',
     evening: 'broadcast_evening',
@@ -2450,17 +2692,78 @@ publicRouter.get('/trading-calendar/recent', (req: Request, res: Response) => {
     }
 })
 
+/** 标题归一化：去首尾空白 + 去全部空白字符，容忍"标题略有差异"。 */
+function normArticleTitle(s: unknown): string {
+    return String(s ?? '').replace(/\s+/g, '').trim()
+}
+
+/** 将多种日期输入统一规范化为 YYYY-MM-DD；无法解析时返回 ''（绝不抛异常）。
+ *
+ * 兼容输入：
+ *   - node-postgres 对 PG DATE 列默认返回的 JS Date 对象
+ *   - "2026-08-25"
+ *   - "2026-08-25T08:49:08.719676+08:00"（ISO / 带时区）
+ *   - String(Date)：如 "Tue Aug 25 2026 08:00:00 GMT+0800 (中国标准时间)"
+ */
+function normalizeArticleDate(value: unknown): string {
+    if (!value) return ''
+
+    // Date 对象：node-postgres 对 PG DATE 列以本地时区构造（new Date(y, m-1, d)），
+    // 必须取本地日期分量，不能用 toISOString()（UTC+8 时区会整体差一天）
+    if (value instanceof Date) {
+        if (Number.isNaN(value.getTime())) return ''
+        const y = value.getFullYear()
+        const m = String(value.getMonth() + 1).padStart(2, '0')
+        const d = String(value.getDate()).padStart(2, '0')
+        return `${y}-${m}-${d}`
+    }
+
+    const str = String(value).trim()
+    if (!str) return ''
+
+    // 已含 YYYY-MM-DD 前缀（覆盖纯日期 / ISO / 带时区时间戳）
+    const dateMatch = str.match(/^(\d{4}-\d{2}-\d{2})/)
+    if (dateMatch) return dateMatch[1]
+
+    // 兜底：尝试用 Date 解析（覆盖 String(Date) 等实现相关格式）
+    const parsed = new Date(str)
+    if (Number.isNaN(parsed.getTime())) return ''
+    return parsed.toISOString().slice(0, 10)
+}
+
+/**
+ * ISO 日期（YYYY-MM-DD）偏移 n 天。
+ * 入参非法（无法规范化）时返回 ''，绝不生成 Invalid Date、绝不抛异常。
+ */
+function shiftArticleDate(isoDate: string, days: number): string {
+    const normalized = normalizeArticleDate(isoDate)
+    if (!normalized) return ''
+
+    const [y, m, d] = normalized.split('-').map(Number)
+    const dt = new Date(Date.UTC(y, m - 1, d))
+    dt.setUTCDate(dt.getUTCDate() + days)
+
+    if (Number.isNaN(dt.getTime())) return ''
+    return dt.toISOString().slice(0, 10)
+}
+
 /**
  * GET /api/agent/event/:eventId/article
  * 事件原文 — 前端 APP 内展示的源网页正文。
  *
- * 逻辑：
- *   1. 按 eventId 查询 event_conduction 报告，取 content.source（原文 URL）。
- *   2. 从 source 解析财联社 newsId（https://www.cls.cn/detail/{id}）。
- *   3. 调 ClsStockNewsService.getNewsFulltext(id) 拉正文。
- *   返回 { title, source, publishTime, content, sourceUrl }。
+ * 优先级（关键路径改为读库，减少对第三方网页结构的依赖）：
+ *   1. 按 eventId 查询 event_conduction 报告，取 content（source 原文 URL 等）。
+ *   2. 在 event_scrape 报告中匹配同一事件（匹配窗口：report_date ±1 天），
+ *      优先读取 event_scrape.payload.content 已有正文。
+ *      - 规则1：source URL 解析 newsId → 匹配 payload.id（财联社 detail/{id}）。
+ *      - 规则2：source URL 精确匹配 events[].url。
+ *      - 规则3：title 归一化后相等/互相包含（模糊兜底）。
+ *      命中但正文为空 → 返回 { code:0, hasContent:false }，不再实时抓取。
+ *   3. 仅 event_scrape 完全未命中时，才调 ClsStockNewsService.getNewsFulltext(newsId)
+ *      实时兜底；实时失败不影响接口（同样返回 hasContent:false）。
+ *   返回统一结构 { title, source, sourceName, publishTime, content, sourceUrl, hasContent }。
  *
- * 异常友好降级：无 source / 无 newsId / 正文获取失败。
+ * 无 source 时不渲染正文（422 仅事件级缺失），正文缺失统一走 hasContent:false。
  */
 publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) => {
     const eventId = param(req, 'eventId')
@@ -2486,43 +2789,172 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
 
         const content = (result.rows[0]['content'] as Record<string, unknown>) || {}
         const source = String(content['source'] || '').trim()
+        // report_date 为 event_conduction 落库日期（必填），仅作兜底偏移计算输入。
+        // node-postgres 对 PG DATE 列默认返回 JS Date 对象，必须统一规范化为 YYYY-MM-DD，
+        // 否则 String(Date) 形如 "Tue Aug 25 2026 ..." 会让 shiftArticleDate 解析失败抛 RangeError。
+        const reportDate = normalizeArticleDate(result.rows[0]['report_date'])
+        const hasSource = Boolean(source)
 
-        // 无原文 URL → 友好错误
-        if (!source) {
-            res.status(422).json({ code: -1, message: '该事件暂无可展示的原文链接' })
-            return
-        }
-
-        // 从财联社详情 URL 解析 newsId：https://www.cls.cn/detail/{newsId}
-        const newsIdMatch = source.match(/cls\.cn\/detail\/(\d+)/)
-        if (!newsIdMatch?.[1]) {
-            // 非财联社来源：先尝试把整个 URL 当 newsId 数字源（非数字则判为无正文）
-            res.status(422).json({ code: -1, message: '暂不支持该来源的原文正文展示' })
-            return
-        }
-        const newsId = newsIdMatch[1]
-
-        try {
-            const fulltext = await ClsStockNewsService.getNewsFulltext(newsId)
-            if (!fulltext || !fulltext.content) {
-                res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
-                return
-            }
-
+        // 统一正文缺失响应（code:0 + hasContent:false → 前端展示"暂无原文内容"）
+        const respondNoContent = (title: unknown) =>
             res.json({
                 code: 0,
                 data: {
-                    title: fulltext.title || content['title'] || '',
-                    source: content['source_name'] || source,
-                    publishTime: content['publishTime'] || result.rows[0]['report_date'] || '',
-                    content: fulltext.content,
-                    sourceUrl: source,
+                    title: String(title || content['title'] || ''),
+                    source: hasSource ? source : '',
+                    sourceName: String(content['source_name'] || ''),
+                    publishTime: String(content['publishTime'] || reportDate),
+                    content: '',
+                    sourceUrl: hasSource ? source : '',
+                    hasContent: false,
                 },
             })
-        } catch (err: unknown) {
-            console.error(`[Public] agent/event/:eventId/article fulltext error:`, errMsg(err))
-            res.status(424).json({ code: -1, message: '正文获取失败，请稍后重试' })
+
+        // ---- 步骤1：匹配 event_scrape 已有正文 ----
+        let matched: { title: string; payloadContent: string } | null = null
+        if (hasSource && reportDate) {
+            // 日期窗口（report_date ±1 天）；shiftArticleDate 对非法输入返回 ''，需过滤
+            const scrapeDates = [
+                reportDate,
+                shiftArticleDate(reportDate, -1),
+                shiftArticleDate(reportDate, 1),
+            ].filter((d): d is string => Boolean(d))
+            // 日期窗口为空（report_date 异常无法解析）时不构造非法日期查询，安全跳过 event_scrape 匹配
+            // PostgreSQL 42P18 修复：node-postgres 把 JS 字符串数组作为单个参数传给 `= ANY($n)` 时，
+            // 服务端无法推断参数类型（could not determine data type of parameter），必然抛错导致 500。
+            // 改为 IN 标量参数展开（$1,$2,...）——每个日期是独立标量参数，类型由 date 列推断为 date。
+            // 同时移除无用的 eventId 参数：event_scrape 按 report_date 分区，SQL 仅需 scrapeDates。
+            const placeholders = scrapeDates.map((_, i) => `$${i + 1}`).join(',')
+            const scrapeResult =
+                placeholders.length > 0
+                    ? await pool.query(
+                          `SELECT content
+                           FROM agent_analysis_reports
+                           WHERE report_type = 'event_scrape' AND report_date IN (${placeholders})
+                           ORDER BY created_at DESC`,
+                          scrapeDates
+                      )
+                    : { rows: [] as Array<Record<string, unknown>> }
+
+            // 从所有命中行收集 events（不 LIMIT，覆盖跨日窗口内的合并结果）
+            const events: Array<Record<string, unknown>> = []
+            for (const row of scrapeResult.rows) {
+                const c = (row['content'] as Record<string, unknown>) || {}
+                const evs = c['events']
+                if (!Array.isArray(evs)) continue
+                for (const e of evs) {
+                    if (e && typeof e === 'object') events.push(e as Record<string, unknown>)
+                }
+            }
+
+            const newsId = source.match(/cls\.cn\/detail\/(\d+)/)?.[1] ?? null
+            const normSourceTitle = normArticleTitle(content['title'])
+
+            // 规则1：newsId 匹配 payload.id（精确，优先级最高）
+            if (!matched && newsId) {
+                const hit = events.find(
+                    (e) =>
+                        e['payload'] &&
+                        typeof e['payload'] === 'object' &&
+                        String((e['payload'] as Record<string, unknown>)['id'] ?? '') === newsId
+                )
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 规则2：source 精确匹配 events[].url
+            if (!matched) {
+                const hit = events.find((e) => String(e['url'] ?? '').trim() === source)
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 规则3：title 归一化模糊匹配（相等或互相包含）
+            if (!matched && normSourceTitle) {
+                const hit = events.find((e) => {
+                    const nEv = normArticleTitle(e['title'])
+                    return Boolean(nEv && (nEv === normSourceTitle || nEv.includes(normSourceTitle) || normSourceTitle.includes(nEv)))
+                })
+                if (hit) {
+                    matched = {
+                        title: String(hit['title'] ?? ''),
+                        payloadContent: String(
+                            (hit['payload'] && typeof hit['payload'] === 'object'
+                                ? (hit['payload'] as Record<string, unknown>)['content']
+                                : '') ?? ''
+                        ),
+                    }
+                }
+            }
+
+            // 命中 event_scrape：优先返回已有正文；正文为空则不实时抓取，直接降级
+            if (matched) {
+                const body = matched.payloadContent.trim()
+                res.json({
+                    code: 0,
+                    data: {
+                        title: matched.title || String(content['title'] || ''),
+                        source,
+                        sourceName: String(content['source_name'] || ''),
+                        publishTime: String(content['publishTime'] || reportDate),
+                        content: body,
+                        sourceUrl: source,
+                        hasContent: Boolean(body),
+                    },
+                })
+                return
+            }
         }
+
+        // ---- 步骤2：event_scrape 未命中 → 实时抓取兜底（仅财联社 newsId） ----
+        if (!hasSource) {
+            respondNoContent('')
+            return
+        }
+        const newsId = source.match(/cls\.cn\/detail\/(\d+)/)?.[1]
+        if (!newsId) {
+            // 非财联社且 event_scrape 无命中 → 暂无原文
+            respondNoContent('')
+            return
+        }
+        try {
+            const fulltext = await ClsStockNewsService.getNewsFulltext(newsId)
+            if (fulltext && fulltext.content) {
+                res.json({
+                    code: 0,
+                    data: {
+                        title: fulltext.title || String(content['title'] || ''),
+                        source,
+                        sourceName: String(content['source_name'] || ''),
+                        publishTime: String(content['publishTime'] || reportDate),
+                        content: fulltext.content,
+                        sourceUrl: source,
+                        hasContent: true,
+                    },
+                })
+                return
+            }
+        } catch (err: unknown) {
+            // 实时抓取失败不影响接口正常返回
+            console.error(`[Public] agent/event/:eventId/article fulltext error:`, errMsg(err))
+        }
+        respondNoContent('')
     } catch (err: unknown) {
         console.error('[Public] agent/event/:eventId/article error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })

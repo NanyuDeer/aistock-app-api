@@ -12,6 +12,9 @@ function base64UrlDecode(str: string): Buffer {
 }
 
 export interface JwtPayload {
+    /** 账户唯一主键（UUID，统一账户模型）。手机号登录/微信登录签发处必填；旧 token 无此字段 */
+    id?: string;
+    /** 微信 openid。手机号账户签空串 ''（保持下游 string 类型零改动，见设计 §3 兼容约束） */
     openid: string;
     nickname?: string;
     iat: number;

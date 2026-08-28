@@ -69,13 +69,13 @@ export class AuthController {
             AuthController.log('callback', '✅ 用户信息获取成功', { openid, nickname });
 
             AuthController.log('callback', '③ 写入用户表（UPSERT）', { openid, nickname });
-            await AuthController.upsertUser(openid, nickname, avatarUrl);
-            AuthController.log('callback', '✅ 写入成功');
+            const id = await AuthController.upsertUser(openid, nickname, avatarUrl);
+            AuthController.log('callback', '✅ 写入成功', { id });
 
             const now = Math.floor(Date.now() / 1000);
             const exp = now + 7 * 24 * 3600;
-            AuthController.log('callback', '④ 签发 JWT', { openid, iat: now, exp });
-            const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
+            AuthController.log('callback', '④ 签发 JWT', { id, openid, iat: now, exp });
+            const jwt = signJwt({ id, openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
             AuthController.log('callback', '✅ JWT 签发成功');
 
             const frontendUrl = process.env.FRONTEND_URL || `${req.protocol}://${req.get('host')}`;
@@ -194,15 +194,15 @@ export class AuthController {
             const avatarUrl = userInfo.headimgurl || '';
             AuthController.log('appWxLogin', '✅ 用户信息', { openid, nickname: nickname || '(空)' });
 
-            // ③ 写入用户表（UPSERT）
+            // ③ 写入用户表（UPSERT），返回不可变主键 id 用于签发 JWT
             AuthController.log('appWxLogin', '③ 写入用户表');
-            await AuthController.upsertUser(openid, nickname, avatarUrl);
+            const id = await AuthController.upsertUser(openid, nickname, avatarUrl);
 
-            // ④ 签发 JWT
+            // ④ 签发 JWT（payload 携带 id 统一账户主键 + openid 兼容旧关联）
             const now = Math.floor(Date.now() / 1000);
             const exp = now + 7 * 24 * 3600;
-            const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
-            AuthController.log('appWxLogin', '✅ JWT 签发成功');
+            const jwt = signJwt({ id, openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
+            AuthController.log('appWxLogin', '✅ JWT 签发成功', { id });
 
             // ⑤ 返回 token + 用户信息（前端存储 token，后续请求用 Authorization 头）
             createResponse(res, 200, 'success', {
@@ -220,7 +220,7 @@ export class AuthController {
         }
     }
 
-    private static async exchangeCodeForToken(code: string): Promise<any> {
+    static async exchangeCodeForToken(code: string): Promise<any> {
         const res = await fetch(
             `https://api.weixin.qq.com/sns/oauth2/access_token` +
             `?appid=${process.env.WECHAT_APPID}` +
@@ -231,7 +231,7 @@ export class AuthController {
         return res.json();
     }
 
-    private static async fetchWechatUserInfo(accessToken: string, openid: string): Promise<any> {
+    static async fetchWechatUserInfo(accessToken: string, openid: string): Promise<any> {
         const res = await fetch(
             `https://api.weixin.qq.com/sns/userinfo` +
             `?access_token=${accessToken}` +
@@ -241,14 +241,17 @@ export class AuthController {
         return res.json();
     }
 
-    private static async upsertUser(openid: string, nickname: string, avatarUrl: string): Promise<void> {
-        await pool.query(
-            `INSERT INTO users (openid, nickname, avatar_url)
-             VALUES ($1, $2, $3)
+    /** UPSERT 微信用户并返回不可变主键 id（统一账户模型：openid 为可空唯一索引） */
+    private static async upsertUser(openid: string, nickname: string, avatarUrl: string): Promise<string> {
+        const result = await pool.query(
+            `INSERT INTO users (id, openid, nickname, avatar_url)
+             VALUES (gen_random_uuid(), $1, $2, $3)
              ON CONFLICT(openid) DO UPDATE SET
                  nickname = EXCLUDED.nickname,
-                 avatar_url = EXCLUDED.avatar_url`,
+                 avatar_url = EXCLUDED.avatar_url
+             RETURNING id`,
             [openid, nickname, avatarUrl],
         );
+        return result.rows[0].id as string;
     }
 }

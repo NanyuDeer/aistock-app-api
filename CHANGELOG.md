@@ -36,7 +36,112 @@
 ### 测试
 - `src/modules/prediction/publicRouter.test.ts`：版本过滤用例（2.0 计入 / 3.0 隔离 / 无版本兼容）+ 门禁断言 `hitRate === bucketStats.combined.hitRate`
 
+## [master] 2026-08-27 — 财报披露更新：disclosure_date 权威发现源 + 预披露提醒 + 四源增量架构
+
+**开发者**: Aria
+
+### 重构
+- `src/modules/monitor/PerformanceReportAutoUpdateService.ts`：放弃"候选池"方案（旧方案拉研报+自选股候选名单逐只查三接口，候选数×3 次调用，且依赖研报导致正式财报滞后——多氟多 8.18 披露 8.21 才发现），改为**按日期增量发现、各类型只查自己的发现源**：
+  - 业绩正式报告（formal）：`disclosure_date.actual_date`=昨日 全市场发现 → 对命中股票逐只拉 `income` 明细（income 不能批量只能按股，故只在 discovery 命中时拉）
+  - 业绩预告（express←forecast）：`forecast.ann_date`=昨日 批量发现（行内自带净利润范围+摘要）
+  - 业绩快报（express←express_vip）：`express_vip(end_date=最近两个报告期)` 全量分页，客户端过滤 `ann_date`=昨日（快报无法按 ann_date 批量）
+  - 研报评级（rating）：`report_rc.report_date`=昨日 批量发现
+  - 各源 INSERT+通知，已存在（symbol+report_type+ann_date）跳过，通知 sourceKey 幂等；昨日四源均无新增时用前 2 个自然日窗口重扫补漏
+  - `disclosure_date.pre_date` 额外推送"预计披露日"前瞻提醒（仅订阅者，sourceKey 按 symbol+end_date 幂等，occurredAt=pre_date）
+
+### 新增
+- `src/modules/quote/TushareService.ts`：新增 `getDisclosureDate`（`disclosure_date` 接口，可无 ts_code 全市场按 pre_date/actual_date/end_date 批查）、`getForecastByAnnDate`（`forecast` 按公告日批查）、`getExpressVip`（`express_vip` 按报告期全量分页）
+
+### 验证
+- 关键事实（实测）：`forecast`/`report_rc`/`disclosure_date` 可按日期全市场批查；`express_vip` 按 end_date 全量（不按 ann_date）；`income`/`cashflow`/`balancesheet`/`express` 必须传 ts_code。快报(express)与预告(forecast)目标公司基本不重叠（银行/券商常发快报但从不发预告），两者都需要
+- 实测：`disclosure_date actual_date=20260826` → 738 条，`pre_date=20260828` → 725 条（均未披露）；`npx tsc --noEmit` 通过
+
 ---
+
+## [xusiyun] 2026-08-27 — 文章接口完整发布前回归测试（35 用例全覆盖）
+
+**开发者**: Siyun
+
+### 测试
+- `src/core/routes/__tests__/event_article.spec.ts`：扩展至 **35 条**本地 mock 回归用例，覆盖 `GET /api/agent/event/:eventId/article` 所有正常/异常/降级路径（不连库、不部署、不入生产库）：
+  - **匹配规则**：财联社 newsId→payload.id 精确 / 非财联社 url 精确 / title 归一化及互为子串模糊匹配 / newsId 解析失败回落 url
+  - **正文形态**：空字符串 / null / payload 缺失 / payload 非对象 / content 非字符串（String 化）/ events 缺失或非数组 / events 含 null 子项
+  - **数据缺失**：source 空 / event_scrape 不存在 / 非财联社无命中 / content 整行为 null
+  - **多条记录**：多 event_scrape 跨日合并匹配 / 同一事件多份取最新 / events 内多事件不被无关项误匹配（newsId 精确）
+  - **日期**：PG Date 对象 / 'YYYY-MM-DD' / 时区 ISO / String(Date) / 非法日期跳过 SQL / 跨月 / 跨年 shift ∓1 天
+  - **SQL 异常**：event_scrape / event_conduction 查询异常仍正确 500；非法日期空窗口不构造 SQL
+  - **实时兜底**：mock ClsStockNewsService.getNewsFulltext 覆盖抓取成功 / 抛异常降级 / 返回空 content 降级
+  - **SQL 修复回归**：无 `= ANY($n)`、日期参数全标量、占位符数===参数数（42P18）；无 RangeError/Invalid time value
+- 回归确认：`event_conduction.spec.ts` 23 条用例全部通过；前端 `vue-tsc --noEmit` 零错误
+- 验证方式变更：既有 D 场景原本会触发真实 `getNewsFulltext` 网络调用，现改为 mock，消除测试不确定性
+
+---
+
+## [xusiyun] 2026-08-27 — 文章接口本地验证测试（42P18 / DATE / 匹配规则）
+
+**开发者**: Siyun
+
+### 测试
+- `src/core/routes/__tests__/event_article.spec.ts`：为 `GET /api/agent/event/:eventId/article` 新增 10 条本地 mock 验证用例（monkey-patch pool.query，不发真实 DB 连接，无需生产部署即可回归）：
+  - 财联社事件命中 event_scrape.payload.content → hasContent=true
+  - 非财联社事件按 url 精确命中 → hasContent=true
+  - event_scrape.payload.content 为空 → hasContent=false 降级（不 500）
+  - event_scrape 无命中 + 实时兜底失败 → hasContent=false（不 500）
+  - report_date 为 Date 对象 / 字符串 → normalizeArticleDate 均正常输出，无 Invalid Date / RangeError
+  - source 为空 → hasContent=false；eventId 不存在 → 404
+  - title 归一化匹配（含空白差异）
+  - SQL 回归：event_scrape 用 IN 标量展开、参数为标量（修复 42P18）
+- 回归确认：`event_conduction.spec.ts` 23 条用例全部通过
+
+---
+
+## [xusiyun] 2026-08-27 — 事件原文接口修复 PostgreSQL 42P18（event_scrape 匹配参数）
+
+**开发者**: Siyun
+
+### 修复
+- `src/core/routes/internal.ts`：`GET /api/agent/event/:eventId/article` 中 event_scrape 匹配查询，将 `= ANY($2)` 数组参数改为 IN 标量参数展开（`$1,$2,...`）。node-postgres 将 JS 字符串数组作为单个参数传给 `= ANY()` 时服务端无法推断参数类型（42P18），必然 500；改为标量参数后类型由 date 列推断，同时移除无用的 eventId 参数（event_scrape 按 report_date 分区，SQL 仅需 scrapeDates）
+
+---
+
+## [master] 2026-08-25 — 短信服务生产接入骨架（本期不真发）
+
+**开发者**: Aria
+
+### 变更
+- `src/core/sms/SmsService.ts`：生产接入骨架——从环境变量读取并校验短信配置（`SMS_PROVIDER=aliyun|tencent` + 凭证/签名/模板/region），`send` 按 dev（日志回显+测试码）/ 生产（未配置抛明确错误、已配置走渠道分发）分流
+- 阿里云 / 腾讯云渠道接入点（`sendViaAliyun` / `sendViaTencent`）已留 TODO 与官方 SDK 接入注释；本期不真发（需企业签名 + 验证码模板审核，见设计 §9），配置后仍抛"渠道未启用"由前端展示明确错误
+- `.env.example`：补充短信配置项注释说明
+
+---
+
+## [master] 2026-08-25 — 短信验证码登录 + 手机/微信统一账户模型（双向绑定）
+
+**开发者**: Aria
+
+### 背景
+- 此前仅支持微信测试号登录，用户以 openid 为唯一标识；新增「手机号 + 短信验证码登录」，且手机号账户与微信账户可双向绑定，保留原微信登录信息
+
+### 数据库（幂等迁移，启动时执行，index.ts ensureSchema 风格）
+- `users`：主键从 openid 切换为不可变 `id`（UUID，存量行回填 `gen_random_uuid()`）；`openid` 改可空并建非空唯一索引；新增可空唯一 `phone`；预留 `unionid`
+- 迁移前先摘除引用 `users(openid)` 的外键（user_notifications/user_subscriptions/user_stocks），重建主键后按原 ON DELETE 语义还原
+- `user_stocks`：新增可空 `user_id` 列；放宽 `openid` 非空；分别建 `(openid,symbol)` / `(user_id,symbol)` 部分唯一索引；回填老微信自选股到对应 `user_id`
+
+### 新增
+- `src/core/sms/SmsService.ts` + `src/core/sms/smsCodeStore.ts`：验证码生成/存储（Redis 优先 + 内存兜底，5 分钟 TTL、单次消费防重放、60s 同号限流 3 次）、SmsService 发送抽象（dev 日志回显 + 固定测试码 `SMS_DEV_TEST_CODE`=123456，生产预留接入真实服务商）
+- `src/modules/auth/SmsAuthController.ts`：`POST /api/auth/sms/send` 发码、`POST /api/auth/sms/login` 手机号登录（无账户自动创建，`ON CONFLICT (phone)` 原子处理并发首登，Web 端同设 httpOnly Cookie）、`POST /api/auth/bind/phone` 绑手机、`POST /api/auth/bind/wechat` 绑微信（手机+验证码证明归属）
+- `src/modules/auth/__tests__/sms-auth.spec.ts`：8 条用例覆盖发码/限流/登录/绑定/冲突 409/未登录 401
+
+### 变更
+- `src/shared/utils/jwt.ts`：JWT payload 增加 `id`（兼容旧 openid token，鉴权信任 JWT）
+- `src/modules/auth/controller.ts`、`scanLoginController.ts`：微信登录/扫码登录适配统一账户模型（UPSERT 返回 id、JWT 带 id、扫码登录设 httpOnly Cookie）
+- `src/modules/auth/userController.ts`：requireAuth 用 JWT `id` 定位用户（旧 token 回退 openid），`/users/me` 查库返回 id/phone
+
+### 冲突策略（设计 §5）
+- phone/openid 已属其他 id → 409 拒绝 + 引导文案，不做自动合并；老微信用户正路：先微信登录一次再绑手机号，即可保留原微信数据
+
+---
+
 
 ## [junliang] 2026-08-24 — 归因校验规则放宽 + 异动列表按最近触发时间排序
 
