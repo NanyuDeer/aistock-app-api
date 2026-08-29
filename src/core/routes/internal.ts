@@ -32,13 +32,14 @@ import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotServic
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
+import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
-    'chat_analysis', 'event_scrape', 'midday',
+    'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
 ]
 
 interface ChainSummaryItem {
@@ -180,6 +181,9 @@ router.get('/health', (_req: Request, res: Response) => {
 })
 
 router.use(verifyInternalToken)
+
+// GET /internal/fear-greed 只读镜像（恐贪指数；契约：无数据 → 200 + 空字段）
+router.use('/fear-greed', fearGreedInternalRouter)
 
 /**
  * GET /internal/ths/index-map
@@ -347,6 +351,7 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
     try {
         // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
         const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
+        // 加性透传 vol/amount（Tushare index_daily 已有字段；技术分支成交额条件数据源）
         const clean = rows.map((r) => ({
             trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
             open: r.open ?? r['开盘价'] ?? null,
@@ -354,6 +359,8 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
         // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
         const filtered =
