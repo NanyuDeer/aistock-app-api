@@ -24,6 +24,7 @@ import { StockListController } from './modules/quote/stockListController';
 import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
+import { StockMidLongAnalysisController } from './modules/quote/midLongAnalysisController';
 import { getSemiAnnualReport } from './modules/quote/TushareService';
 
 // internal 内部API（Python Agent 服务专用）
@@ -371,11 +372,11 @@ app.get('/api/config/public', (req, res, next) => ConfigController.getPublicConf
 
 // 手动触发 morning agent 晨报生成（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
 // handler 逻辑抽到 src/core/routes/morning_trigger_handler.ts，便于单元测试
-import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler.js';
+import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler';
 app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler());
 
 // 手动触发 review agent 复盘溯源（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
-import { createReviewTriggerHandler } from './core/routes/review_trigger_handler.js';
+import { createReviewTriggerHandler } from './core/routes/review_trigger_handler';
 app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
 
 // 手动触发趋势股批量评分（TrendBatchService.run，管理员 curl 后用 pm2 log 查看）
@@ -525,6 +526,23 @@ app.route('/api/cn/stocks/:symbol/analysis')
             return;
         }
         StockAnalysisController.handleStockAnalysis(req, res, next);
+    });
+
+// ==================== 中长线 AI 洞见路由 ====================
+app.route('/api/cn/stocks/:symbol/mid-long/:timeframe')
+    .get((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleGet(req, res, next);
+    })
+    .post((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleCreate(req, res, next);
     });
 
 app.get('/api/cn/stock/:symbol/profit-forecast', (req, res, next) => {
@@ -1396,6 +1414,37 @@ async function start() {
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
     } catch (err: unknown) {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 中长线 AI 洞见表
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS stock_mid_long_analysis (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(10) NOT NULL,
+                timeframe VARCHAR(10) NOT NULL CHECK (timeframe IN ('mid', 'long')),
+                analysis_time VARCHAR(30) NOT NULL,
+                conclusion VARCHAR(100) NOT NULL,
+                core_logic TEXT NOT NULL DEFAULT '',
+                risk_warning TEXT NOT NULL DEFAULT '',
+                advice TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        // 迁移旧表结构：删除旧字段，添加新字段
+        try {
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS logic`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS basis`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS advice`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS risk_tips`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS core_logic TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS risk_warning TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS advice TEXT NOT NULL DEFAULT ''`);
+        } catch {}
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_mid_long_symbol_timeframe ON stock_mid_long_analysis(symbol, timeframe)');
+        console.log('[DB] stock_mid_long_analysis table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] stock_mid_long_analysis table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
