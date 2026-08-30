@@ -19,12 +19,13 @@ const EMPTY = { index: null, label: '', indicators: [], history: { dates: [], sc
 export async function fearGreedMirrorHandler(_req: Request, res: Response): Promise<void> {
     try {
         const jq = await __fearGreedInternalDeps.getLatestJq(false, 'post')
+        // 信封 code 对齐 internal.ts 成功约定（200）；agent-py _request 仅接受 code==200，0 会恒降级（C1）
         if (!jq || typeof jq.composite !== 'number') {
-            res.json({ code: 0, data: EMPTY })
+            res.json({ code: 200, data: EMPTY })
             return
         }
         res.json({
-            code: 0,
+            code: 200,
             data: {
                 index: jq.composite,
                 label: jq.label ?? '',
@@ -34,7 +35,7 @@ export async function fearGreedMirrorHandler(_req: Request, res: Response): Prom
         })
     } catch (err) {
         console.error('[Internal] /fear-greed mirror error:', err)
-        res.json({ code: 0, data: EMPTY })
+        res.json({ code: 200, data: EMPTY })
     }
 }
 

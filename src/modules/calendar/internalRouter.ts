@@ -50,7 +50,8 @@ calendarInternalRouter.get('/events', async (req: Request, res: Response) => {
     const delivery = listDeliveryDates(dateFrom, dateTo)
     const rows = await listEvents(dateFrom, dateTo)
     const events = [...delivery, ...rows.map(toContractEvent)].sort((a, b) => String(a.date).localeCompare(String(b.date)))
-    res.json({ code: 0, data: { events } })
+    // 信封 code 对齐 internal.ts 成功约定（200）；agent-py _request 仅接受 code==200，0 会恒降级（C1）
+    res.json({ code: 200, data: { events } })
   } catch (err) {
     console.error('[Calendar] GET /events error:', err)
     res.status(502).json({ code: 502, message: String(err) })
@@ -103,7 +104,7 @@ calendarInternalRouter.get('/earnings-density', async (req: Request, res: Respon
        FROM performance_reports WHERE ann_date BETWEEN $1 AND $2 GROUP BY ann_date ORDER BY ann_date ASC`,
       [dateFrom, dateTo],
     )
-    res.json({ code: 0, data: { density: result.rows.map((r) => ({ date: r.ann_date, count: Number(r.count) })) } })
+    res.json({ code: 200, data: { density: result.rows.map((r) => ({ date: r.ann_date, count: Number(r.count) })) } })
   } catch (err) {
     console.error('[Calendar] GET /earnings-density error:', err)
     res.status(502).json({ code: 502, message: String(err) })

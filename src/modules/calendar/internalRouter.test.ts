@@ -67,6 +67,8 @@ test('GET /internal/calendar/events 鉴权 + 参数校验 + 空数组', async ()
   try {
     const ok = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05')
     assert.equal(ok.status, 200)
+    // C1 信封：成功必须 code===200（agent-py _request 仅接受 200），仅 HTTP 200 不够
+    assert.equal(ok.json.code, 200)
     assert.ok(Array.isArray(ok.json.data.events))
     const bad = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01')
     assert.equal(bad.status, 400)
@@ -103,6 +105,7 @@ test('US 隔夜事件 event_time>=15:00 顺延次一交易日（§4.5）', async
   const port = (server.address() as AddressInfo).port
   try {
     const res = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05')
+    assert.equal(res.json.code, 200)
     const overnight = res.json.data.events.find((e: any) => e.title.includes('英伟达'))
     assert.ok(overnight.date > '2026-09-02', '隔夜事件应顺延到次一交易日')
   } finally { server.close() }

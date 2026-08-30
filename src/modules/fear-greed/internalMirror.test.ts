@@ -37,6 +37,7 @@ test('GET /internal/fear-greed 镜像契约（index/indicators/history）', asyn
   try {
     const res = await get(port, '/internal/fear-greed')
     assert.equal(res.status, 200)
+    assert.equal(res.json.code, 200)
     assert.equal(res.json.data.index, 62.5)
     assert.equal(res.json.data.label, '贪婪')
     assert.equal(res.json.data.indicators[0].key, 'breadth')
@@ -54,6 +55,7 @@ test('无数据 → 200 + 空字段（不 500）', async () => {
   try {
     const res = await get(port, '/internal/fear-greed')
     assert.equal(res.status, 200)
+    assert.equal(res.json.code, 200)
     assert.equal(res.json.data.index, null)
     assert.deepEqual(res.json.data.indicators, [])
   } finally { server.close() }
