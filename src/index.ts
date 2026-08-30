@@ -89,6 +89,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
 
+// calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
+import { calendarInternalRouter } from './modules/calendar/internalRouter';
+import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
 import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
@@ -136,6 +140,10 @@ app.use(cors({
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
+
+// 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
+// 否则会被反代转发到 Python；对齐 publicRouter 挂载顺序先例）
+app.use('/api/agent', rhythmMasterPublicRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -607,6 +615,8 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use('/internal/insight', insightInternalRouter);
 
 app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
 
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
@@ -1118,6 +1128,28 @@ async function start() {
         console.log('[DB] prediction_records table ready');
     } catch (err: unknown) {
         console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 节奏大师：market_calendar_events（L1-L4 事件日历，spec §4.4；启动自动建表对齐 prediction_records 先例）
+    try {
+        await pool.query(`CREATE TABLE IF NOT EXISTS market_calendar_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_date DATE NOT NULL,
+  title TEXT NOT NULL,
+  importance TEXT NOT NULL DEFAULT 'medium',
+  market TEXT NOT NULL DEFAULT 'CN',
+  event_time TEXT,
+  source TEXT NOT NULL DEFAULT 'L4',
+  detail TEXT,
+  result TEXT,
+  dedup_hash VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`);
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_market_calendar_events_dedup ON market_calendar_events(event_date, dedup_hash)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_market_calendar_events_date ON market_calendar_events(event_date)');
+        console.log('[DB] market_calendar_events table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] market_calendar_events table check:', err instanceof Error ? err.message : String(err));
     }
 
     // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
