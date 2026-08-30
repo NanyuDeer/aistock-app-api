@@ -82,6 +82,7 @@ src/
 │   ├── quote/              # 行情模块
 │   ├── push/               # 推送模块
 │   ├── auth/               # 认证模块
+│   ├── calendar/           # 日历模块（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
 │   ├── monitor/            # 监控模块（异动/风口/十倍股/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫模块
 │   └── agent/              # Agent 反代模块（Phase 5）
@@ -96,6 +97,7 @@ src/
 | 行情 | modules/quote | 腾讯行情、K线、指数、个股分析 |
 | 推送 | modules/push | 微信模板消息、定时推送 |
 | 认证 | modules/auth | 扫码登录、微信授权 |
+| 日历 | modules/calendar | L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 报告读取 |
 | 监控 | modules/monitor | 股票异动监控、风口龙头、十倍股评分、知识图谱、机构调研热门股 |
 | 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
 | Agent | modules/agent | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） |
@@ -127,6 +129,7 @@ src/
 | `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
+| `/api/agent/rhythm-master/:date` | **节奏大师报告读取**（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） | date: YYYY-MM-DD |
 | `/api/predictions` | **历史预测列表**（公开，含命中率统计 + `bucketStats` 三桶分桶 + 分页；命中率按 `methodology_version` 版本过滤（默认 2.0 防跳变），档位进度全量；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
@@ -164,6 +167,10 @@ src/
 | `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
 | `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
 | `/internal/stocks/basic` | **全量 A 股基础信息**（symbol/name/industry，内存 6h 缓存，Python 股票名称实体匹配用） | 无参数，需 X-Internal-Token |
+| `GET /internal/calendar/events` | **事件日历查询**（L1 交割日规则 + market_calendar_events，rhythm-master 前瞻读取） | date/start_date/end_date 等，需 X-Internal-Token |
+| `POST /internal/calendar/events` | **事件日历写入**（market_calendar_events 幂等 upsert） | 事件记录 JSON，需 X-Internal-Token |
+| `GET /internal/calendar/earnings-density` | **业绩披露密度**（earnings-density，rhythm-master 择时用） | date: YYYY-MM-DD，需 X-Internal-Token |
+| `GET /internal/fear-greed` | **恐惧贪婪指数**（rhythm-master 情绪维度） | date: YYYY-MM-DD，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
@@ -178,6 +185,8 @@ src/
 > 更新（2026-08-10）：`GET /api/agent/event/list` 与 `GET /api/agent/event/:eventId` 响应新增 `chain_summary` 字段（从 `content.analysis_reports.event_transmission.chain` 提取，按 impactStrength 降序 Top5，过滤空行业，旧数据返回 []）。前端列表页直接消费，消除 N+1 详情补数。`extractChainSummary` 函数位于 `src/core/routes/internal.ts`。
 >
 > 新增（2026-08-05）：ChatAgent P9 会话管理 + P10 线 2 计费 — 新表 `chat_sessions`（会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at）与 `chat_token_usage`（用户维度 token 计费：prompt/completion/total_tokens、question、created_at），均启动时自动建表（`src/index.ts`）；新增公开接口 `/api/chat/sessions`（POST 幂等 upsert / GET 最近50个 / DELETE，JWT openid 鉴权）与 `/api/chat/usage/summary`，内部接口 `/internal/usage/records` 与 `/internal/usage/summary`（供 Python ws.py 计费回调）
+>
+> 新增（2026-08-30）：节奏大师（rhythm_master）三仓功能 — 新模块 `modules/calendar`（L1 交割日规则 + `market_calendar_events` 事件日历，启动时自动建表，见 `src/index.ts`）；新增内部接口 `GET/POST /internal/calendar/events`、`GET /internal/calendar/earnings-density`、`GET /internal/fear-greed`；新增公开接口 `GET /api/agent/rhythm-master/:date`（三时点 refresh_slot 版本读取，publicRouter 须在 createAgentProxy 之前挂载）
 
 ## Vibecoding 工作流
 
