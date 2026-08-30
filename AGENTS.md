@@ -30,6 +30,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 行情 | `modules/quote` | 腾讯行情、K线、指数、个股分析、龙头股 | [quote/AGENTS.md](./src/modules/quote/AGENTS.md) |
 | 推送 | `modules/push` | 微信模板消息、定时推送、事件订阅 | [push/AGENTS.md](./src/modules/push/AGENTS.md) |
 | 认证 | `modules/auth` | 扫码登录、微信授权、飞书登录 | [auth/AGENTS.md](./src/modules/auth/AGENTS.md) |
+| 日历 | `modules/calendar` | L1 交割日规则 + `market_calendar_events` 事件日历 + rhythm-master 报告读取 | [calendar/AGENTS.md](./src/modules/calendar/AGENTS.md) |
 | 监控 | `modules/monitor` | 风口龙头、异动监控、趋势股评分、知识图谱、机构调研、业绩预测、新闻 | [monitor/AGENTS.md](./src/modules/monitor/AGENTS.md) |
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
@@ -74,6 +75,7 @@ src/
 │   ├── quote/              # 行情
 │   ├── push/               # 推送
 │   ├── auth/               # 认证
+│   ├── calendar/           # 日历（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
 │   ├── chat/               # 会话元数据（P9）+ token 用量（P10 线 2）
 │   ├── monitor/            # 监控（异动/风口/趋势股评分/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫
@@ -208,8 +210,14 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
 | `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
 | `GET /internal/stocks/basic` | stocks 表 | 全量 A 股基础信息 [{symbol, name, industry}]，内存 TTL 6h 缓存，供 Python 股票名称实体匹配（stock_event_detector company_event_rule） |
+| `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取） |
+| `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert） |
+| `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
+| `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
 
 > `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified)/due_dates(JSONB)/created_at；status 仅 `{pending, verified}`（无 expired）；`appendVerification` 全档位覆盖自动置 verified。Python agent-py scheduler 每日 16:00 到期验证任务消费。
+>
+> `market_calendar_events` 表（事件日历，2026-08-30）：启动时自动建表（`src/index.ts`），承载 L1 交割日规则与事件日历，供 rhythm-master 前瞻读取；`POST /internal/calendar/events` 幂等 upsert。
 
 ### 7.2 Agent 分析报告持久化接口
 
@@ -225,6 +233,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 > 数据库表：`agent_analysis_reports`，`content` 字段为 JSONB，唯一索引使用 `COALESCE(user_id, '')` 解决 NULL 问题。
 > 建表脚本：`docs/sql/agent_analysis_reports.sql`
+>
+> **节奏大师（rhythm_master，2026-08-30）**：`VALID_REPORT_TYPES` 已含 `rhythm_master`；节奏大师报告按 `target_date + refresh_slot` 三元组存储（`user_id` 列承载 refresh_slot，slot ∈ morning/midday/after_close），GET 按 type + date + slot 取回对应版本。
 
 ### 7.3 Agent 公开接口（前端直接调用，无需 X-Internal-Token）
 
@@ -234,6 +244,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
 | `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
+| `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
