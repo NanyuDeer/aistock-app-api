@@ -42,6 +42,12 @@ export const VALID_REPORT_TYPES = [
     'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
 ]
 
+/** 报告保留期（design-debate A4/U1 裁决）：rhythm_master 需支撑 60 交易日日历热力图
+ *  聚合窗口，TTL 延长至 90 天；其余 report_type 维持建表默认 7 天，避免 03:00 清理过早删除。 */
+export function getReportTtlDays(report_type: string): number {
+    return report_type === 'rhythm_master' ? 90 : 7
+}
+
 interface ChainSummaryItem {
     industry: string
     direction: string
@@ -1097,14 +1103,16 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
     if (content === undefined || content === null) {
         return res.status(400).json({ code: 400, message: 'content is required' })
     }
+    // 报告保留期按类型参数化（design-debate A4/U1）：rhythm_master=90 天，其余 7 天
+    const ttlDays = getReportTtlDays(report_type)
 
     try {
         // upsert：COALESCE 处理 NULL user_id（公共报告）
         const result = await pool.query(
             `INSERT INTO agent_analysis_reports
                 (report_type, report_date, user_id, content, data_source, status,
-                 generation_time_ms, model_version, error_message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 generation_time_ms, model_version, error_message, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW() + make_interval(days => $10))
              ON CONFLICT (report_type, report_date, COALESCE(user_id, ''))
              DO UPDATE SET
                 content = EXCLUDED.content,
@@ -1113,11 +1121,11 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 model_version = EXCLUDED.model_version,
                 error_message = EXCLUDED.error_message,
-                expires_at = NOW() + INTERVAL '7 days',
+                expires_at = NOW() + make_interval(days => $10),
                 created_at = NOW()
              RETURNING id, report_type, report_date, created_at`,
             [report_type, report_date, user_id, JSON.stringify(content),
-             data_source, status, generation_time_ms, model_version, error_message]
+             data_source, status, generation_time_ms, model_version, error_message, ttlDays]
         )
 
         res.status(201).json({
