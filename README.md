@@ -130,6 +130,7 @@ src/
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
 | `/api/agent/rhythm-master/:date` | **节奏大师报告读取**（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） | date: YYYY-MM-DD |
+| `/api/agent/rhythm-master/calendar` | **节奏日历热力图聚合**（公开，契约 #7；最近 N 个交易日 after_close 收盘基准档位，SQL 级投影 level/score/basis_date，level 可空=灰格） | days: 交易日数（默认 60，≤60） |
 | `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
@@ -152,7 +153,7 @@ src/
 | `/internal/wind-leaders` | **长线风口数据**（供Python Agent调用） | limit: 返回板块数量（默认8，最大20） |
 | `/internal/institution-research` | **机构调研热门股**（供Python Agent调用） | hours: 最近N小时（默认6，最大72）, min_resonance: 最小共振数 |
 | `/internal/monitor/:symbol` | **个股监控事件**（供团队成员使用） | symbol: A股代码, cycle: 周期, limit: 返回数量 |
-| `/internal/analysis-reports` | **Agent 分析报告持久化**（POST upsert） | report_type, report_date, content(JSONB), user_id?, event_id?(event_conduction必填，复用 user_id 列做隔离), expires_at? |
+| `/internal/analysis-reports` | **Agent 分析报告持久化**（POST upsert；**TTL 按 report_type 参数化 2026-08-30**：rhythm_master=90 天支撑日历热力图窗口，其余类型 7 天默认） | report_type, report_date, content(JSONB), user_id?, event_id?(event_conduction必填，复用 user_id 列做隔离), expires_at? |
 | `/internal/analysis-reports/:type/:date` | **查询报告**（按类型+日期） | type: morning/wind_leader/hot_burst/review/event_conduction, date: YYYY-MM-DD |
 | `/internal/analysis-reports/:type/:date/:userId` | **查询用户专属报告** | userId: 用户ID |
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
