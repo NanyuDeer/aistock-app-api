@@ -59,9 +59,10 @@ export class SmsAuthController {
         return consumeCode(phone, code);
     }
 
-    /** 发送验证码：POST /api/auth/sms/send */
+    /** 发送验证码：POST /api/auth/sms/send（可选 body.scenario：login 默认 / bind 绑定前发送） */
     static async sendSms(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const phone = String(req.body?.phone ?? '').trim();
+        const scenario = (String(req.body?.scenario ?? '')).trim();
         if (!isValidMainlandPhone(phone)) {
             createResponse(res, 400, '手机号格式不正确');
             return;
@@ -73,7 +74,7 @@ export class SmsAuthController {
         const code = generateSmsCode();
         await setCode(phone, code);
         try {
-            await SmsService.send(phone, code);
+            await SmsService.send(phone, code, scenario === 'bind' ? 'bind' : 'login');
         } catch (err: unknown) {
             const errMsg = err instanceof Error ? err.message : String(err);
             SmsAuthController.log('send', '❌ 发送验证码失败', { phone, error: errMsg });

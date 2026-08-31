@@ -2,6 +2,23 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-08-31 — 短信验证码接入阿里云"号码认证·短信认证"（真实下发）
+
+**开发者**: Aria
+
+### 新增
+- `SmsService.sendViaAliyun` 由占位改为真实调用 `dypnsapi.SendSmsVerifyCode`（`src/core/sms/SmsService.ts`）：用 RAM 凭证 +「恒创联众」签名 + 预置模板，把本地生成的验证码经 `TemplateParam` 下发到手机（阿里云作发信通道，不在服务商侧自动生成）；`send` 新增 `scenario` 场景参数（`login`/`bind`），按场景选模板（登录 100001 / 绑定 100004）；新增 `resolveTemplate` 依场景解析模板 code
+- `sendSms` 支持可选 `body.scenario`（`src/modules/auth/SmsAuthController.ts`），`bind` 走绑定模板
+
+### 改进
+- 依赖：`package.json` 新增 `@alicloud/openapi-core`（dypnsapi 依赖其 `$OpenApiUtil.Config`）
+- `.env.production`：追加 `SMS_PROVIDER=aliyun` + RAM AccessKey/Secret + `SMS_SIGN_NAME=恒创联众` + `SMS_TEMPLATE_CODE=100001` + `SMS_TEMPLATE_BIND=100004`（该文件被 git 忽略，已在服务器直接修改并 `pm2 restart --update-env` 生效）；`.env.example` 补充说明
+
+### 测试
+- `tsc --noEmit` 通过；sms-auth 8 个测试全过（dev 分支不受影响，未真发短信）
+
+---
+
 ## [changer] 2026-08-30 — 节奏日历聚合接口 + 报告 TTL 参数化（design-debate）
 
 **开发者**: changer-collab

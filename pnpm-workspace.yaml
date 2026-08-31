@@ -1,3 +1,4 @@
 allowBuilds:
+  '@alicloud/openapi-core': false
   esbuild: true
   ffmpeg-static: true
