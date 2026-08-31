@@ -8,11 +8,17 @@ import pool from '../../core/db';
 
 export interface PredictionVerificationEntry {
   horizon: string;
-  result: 'hit' | 'miss' | 'insufficient';
-  actual: string;
-  reason: string;
-  verified_at: string;
+  /** early_exit 标记：type === 'early_exit' 的 entry 无 result，不参与 status=verified 判定（A1） */
+  type?: string;
+  result?: 'hit' | 'miss' | 'insufficient';
+  actual?: string;
+  reason?: string;
+  verified_at?: string;
+  early_exit?: Record<string, unknown>;
 }
+
+/** 合法验证结果（A1：状态判定只认 result ∈ 此集合；迁移到 service 避免 router→service 循环依赖） */
+export const VALID_RESULTS = ['hit', 'miss', 'insufficient'] as const;
 
 export interface PredictionRecordRow {
   id: number;
@@ -201,22 +207,38 @@ export class PredictionRecordService {
     const row = current.rows[0];
     if (!row) return null;
 
-    const verification = { ...(row.verification ?? {}) } as Record<string, PredictionVerificationEntry>;
-    verification[horizon] = entry;
-
-    // 全部档位已验证 → status=verified
+    // 状态判定在"合并后"的 verification 上进行（A1）：仅当全部档位均有
+    // result ∈ {hit, miss, insufficient} 才置 verified；early_exit-only entry
+    // （无 result，早退标记与最终结果分离存储）不参与 status 联动。
+    const merged = { ...(row.verification ?? {}), [horizon]: entry } as Record<
+      string,
+      PredictionVerificationEntry
+    >;
     const horizons: string[] = Array.isArray((row.prediction as { horizons?: Array<{ horizon: string }> })?.horizons)
       ? ((row.prediction as { horizons: Array<{ horizon: string }> }).horizons.map(h => h.horizon))
       : [];
-    const allVerified = horizons.length > 0 && horizons.every(h => Boolean(verification[h]));
+    const allVerified =
+      horizons.length > 0 &&
+      horizons.every(h => {
+        const e = merged[h];
+        return (
+          !!e &&
+          'result' in e &&
+          VALID_RESULTS.includes(e.result as (typeof VALID_RESULTS)[number])
+        );
+      });
     const status = allVerified ? 'verified' : 'pending';
 
+    // 原子合并写：verification 顶层 jsonb 合并，同档位 COALESCE 二次合并，
+    // 避免并发读-改-写覆盖其他档位（A1：Node 端只写本次 entry，不整段覆盖）。
     const updated = await pool.query<PredictionRecordRow>(
       `UPDATE prediction_records
-       SET verification = $2::jsonb, status = $3
-       WHERE id = $1
+       SET verification = verification
+         || jsonb_build_object($1, COALESCE(verification->$1, '{}'::jsonb) || $2::jsonb),
+           status = $3
+       WHERE id = $4
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
-      [id, JSON.stringify(verification), status],
+      [horizon, JSON.stringify(entry), status, id],
     );
     return updated.rows[0] ?? null;
   }
