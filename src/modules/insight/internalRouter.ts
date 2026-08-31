@@ -16,6 +16,12 @@ function param(req: Request, key: string): string {
     return Array.isArray(val) ? val[0] : (val || '');
 }
 
+/** query 安全取 string（Express 5 query 可能为 string | string[] | ParsedQs） */
+function queryStr(req: Request, key: string): string {
+    const val = req.query[key];
+    return Array.isArray(val) ? String(val[0] || '') : typeof val === 'string' ? val : '';
+}
+
 /** 从 unknown 错误中安全提取 message */
 function errMsg(err: unknown): string {
     return err instanceof Error ? err.message : String(err);
@@ -54,6 +60,85 @@ router.get('/events/:eventId/context', async (req: Request, res: Response) => {
         res.json({ code: 200, data: { ...rows[0], evidence_package: evidencePackage } });
     } catch (error: unknown) {
         res.status(502).json({ code: 502, message: errMsg(error) });
+    }
+});
+
+// ── 阶段 2.1：只读端点（insight 读层 skill 用，openid 走 query——internal 可信）──
+
+/** 登录用户自选股洞察列表（等价前端 controller.list，openid 过滤 + 可选 symbol/limit） */
+router.get('/events', async (req: Request, res: Response) => {
+    const openid = queryStr(req, 'openid');
+    if (!openid) {
+        res.status(400).json({ code: 400, message: 'openid is required' });
+        return;
+    }
+    const symbol = queryStr(req, 'symbol');
+    const limitRaw = Number.parseInt(queryStr(req, 'limit'), 10);
+    const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 50;
+    try {
+        const { rows } = await pool.query(
+            `SELECT e.event_id, e.symbol, e.stock_name, e.trade_date, e.event_type, e.direction, e.created_at,
+                    r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers, r.display_report,
+                    snap.move_bps, snap.change_pct, snap.open_price, snap.latest_price, snap.price_source
+             FROM watchlist_insight_events e
+             JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+             LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
+             LEFT JOIN LATERAL (
+                 SELECT move_bps, change_pct, open_price, latest_price, price_source
+                 FROM watchlist_price_snapshots ps
+                 WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
+                 ORDER BY ps.snapshot_time DESC LIMIT 1
+             ) snap ON true
+             WHERE ($2::text IS NULL OR e.symbol = $2)
+             ORDER BY e.created_at DESC LIMIT $3`,
+            [openid, symbol || null, limit],
+        );
+        res.json({ code: 200, data: rows });
+    } catch (error: unknown) {
+        res.status(500).json({ code: 500, message: errMsg(error) });
+    }
+});
+
+/** 登录用户自选股洞察详情（等价前端 controller.get：归属校验 + 追加最新证据包） */
+router.get('/events/:eventId', async (req: Request, res: Response) => {
+    const openid = queryStr(req, 'openid');
+    if (!openid) {
+        res.status(400).json({ code: 400, message: 'openid is required' });
+        return;
+    }
+    const eventId = param(req, 'eventId');
+    if (!eventId) {
+        res.status(404).json({ code: 404, message: 'not found' });
+        return;
+    }
+    try {
+        const { rows } = await pool.query(
+            `SELECT e.*, r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers,
+                    r.display_report, r.podcast_brief, s.title, s.keywords, s.source_url, s.published_at,
+                    snap.move_bps, snap.snap_direction, snap.open_price, snap.latest_price, snap.price_source
+             FROM watchlist_insight_events e
+             JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+             LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
+             LEFT JOIN watchlist_insight_sources s ON s.source_id = e.source_id
+             LEFT JOIN LATERAL (
+                 SELECT move_bps, change_pct, direction AS snap_direction, open_price, latest_price, price_source
+                 FROM watchlist_price_snapshots ps
+                 WHERE ps.symbol = e.symbol AND ps.trade_date = e.trade_date
+                 ORDER BY ps.snapshot_time DESC LIMIT 1
+             ) snap ON true
+             WHERE e.event_id = $2`,
+            [openid, eventId],
+        );
+        if (rows.length === 0) {
+            res.status(404).json({ code: 404, message: 'not found' });
+            return;
+        }
+        const pkg = await pool.query(
+            `SELECT evidence FROM watchlist_evidence_packages
+             WHERE event_id=$1 ORDER BY frozen_seq DESC LIMIT 1`, [eventId]);
+        res.json({ code: 200, data: { ...rows[0], evidence_package: pkg.rows[0]?.evidence ?? [] } });
+    } catch (error: unknown) {
+        res.status(500).json({ code: 500, message: errMsg(error) });
     }
 });
 

@@ -178,28 +178,53 @@ test('bindEmail Bearer 登录 + 测试码 → 200 + emailBound=true', async () =
     assert.strictEqual(data.email, EMAIL);
 });
 
-test('bindEmail 邮箱已绑非空账户（有微信/手机/自选股）→ 409', async () => {
+test('bindEmail 邮箱已绑非空账户（有自选股/VIP/微信/手机）→ 自动合并 200', async () => {
     ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
         if (String(sql).includes('SELECT id FROM users WHERE email = $1 AND id <> $2')) {
             return { rows: [{ id: 'other' }] } as never;
         }
         return { rows: [] } as never;
     };
-    // takeoverEmail 事务客户端：占户已绑微信 → 非空壳 → ROLLBACK → 409
-    const clientQuery = (async (sql: unknown) => {
+    // merge 事务客户端：副账户有数据（openid/phone/自选股/VIP）→ 自动合并而非 409
+    const tx: string[] = [];
+    const clientQuery = (async (sql: unknown, params?: unknown[]) => {
         const s = String(sql);
-        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [] } as never;
-        if (s.includes('FOR UPDATE')) return { rows: [{ openid: 'wx-other', phone: null }] } as never;
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+            tx.push(s);
+            return { rows: [] } as never;
+        }
+        // 副账户行锁（参数 0 = 'other'）
+        if (s.includes('FOR UPDATE')) return { rows: [{ id: 'other', openid: 'wx-other', email: EMAIL, phone: '13900000001', is_vip: true }] } as never;
+        // 主账户身份读取（参数 0 = 'u1'）
+        if (s.includes('SELECT openid, email, phone')) return { rows: [{ openid: null, email: null, phone: null }] } as never;
+        // 表存在性检查
+        if (s.includes('to_regclass')) return { rows: [{ t: 'user_settings', t2: 'user_notifications', t3: 'user_subscriptions' }] } as never;
+        // 自选股合并（并集）
+        if (s.includes('INSERT INTO user_stocks')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_stocks')) return { rows: [] } as never;
+        // 清理副账户引用（设置/通知/订阅以主账户为准）
+        if (s.includes('DELETE FROM user_settings')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_notifications')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_subscriptions')) return { rows: [] } as never;
+        // VIP 继承：主 OR 副（副 is_vip=true → 主变会员）
+        if (s.includes('UPDATE users SET is_vip')) return { rows: [] } as never;
+        // 主账户补身份（email + openid + phone 均转移）
+        if (s.includes('UPDATE users SET openid')) return { rows: [{ id: 'u1', openid: 'wx-other', email: EMAIL, phone: '13900000001', nickname: '张三', avatar_url: '' }] } as never;
         return { rows: [] } as never;
     }) as unknown as typeof pool.query;
     const client = { query: clientQuery, release: () => {} };
     ;(pool as unknown as { connect: unknown }).connect = async () => client;
     const app = buildApp();
     const r = await call(app, 'POST', '/api/auth/bind/email', { email: EMAIL, code: '123456' }, signToken('u1', ''));
-    assert.strictEqual(r.status, 409);
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { emailBound: boolean; email: string | null; openid: string | null };
+    assert.strictEqual(data.emailBound, true);
+    assert.strictEqual(data.email, EMAIL);
+    assert.strictEqual(data.openid, 'wx-other', '副账户微信身份应一并转移');
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
 });
 
-test('bindEmail 邮箱已绑空壳账户（无微信/手机/自选股）→ 自动接管 200', async () => {
+test('bindEmail 邮箱已绑空壳账户（无其他身份/自选股）→ 自动合并 200', async () => {
     ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
         if (String(sql).includes('SELECT id FROM users WHERE email = $1 AND id <> $2')) {
             return { rows: [{ id: 'abandoned' }] } as never;
@@ -207,15 +232,18 @@ test('bindEmail 邮箱已绑空壳账户（无微信/手机/自选股）→ 自�
         return { rows: [] } as never;
     };
     const tx: string[] = [];
-    const clientQuery = (async (sql: unknown) => {
+    const clientQuery = (async (sql: unknown, params?: unknown[]) => {
         const s = String(sql);
         if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
             tx.push(s);
             return { rows: [] } as never;
         }
-        if (s.includes('FOR UPDATE')) return { rows: [{ openid: null, phone: null }] } as never;
-        if (s.includes('FROM user_stocks')) return { rows: [] } as never;
-        if (s.includes('UPDATE users SET email = NULL')) return { rows: [] } as never;
+        if (s.includes('FOR UPDATE')) return { rows: [{ id: 'abandoned', openid: null, email: EMAIL, phone: null, is_vip: false }] } as never;
+        if (s.includes('SELECT openid, email, phone')) return { rows: [{ openid: null, email: null, phone: null }] } as never;
+        if (s.includes('to_regclass')) return { rows: [{ t: null, t2: null, t3: null }] } as never;
+        if (s.includes('INSERT INTO user_stocks')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_stocks')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET is_vip')) return { rows: [] } as never;
         if (s.includes('UPDATE users SET email')) return { rows: [{ id: 'u1', openid: null, email: EMAIL, nickname: '张三', avatar_url: '' }] } as never;
         return { rows: [] } as never;
     }) as unknown as typeof pool.query;
@@ -227,7 +255,7 @@ test('bindEmail 邮箱已绑空壳账户（无微信/手机/自选股）→ 自�
     const data = r.json?.data as { emailBound: boolean; email: string | null };
     assert.strictEqual(data.emailBound, true);
     assert.strictEqual(data.email, EMAIL);
-    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '接管事务应正常提交');
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
 });
 
 test('bindEmail 无 token → 401', async () => {
@@ -248,7 +276,7 @@ test('bindWechat 邮箱不属于当前账户 → 403', async () => {
     assert.strictEqual(r.status, 403);
 });
 
-test('bindWechat 微信已绑空壳账户（无邮箱/手机/自选股/设置）→ 自动接管 200', async () => {
+test('bindWechat 微信已绑空壳账户（无邮箱/手机/自选股/设置）→ 自动合并 200', async () => {
     mockWechatAuth('wx-u1');
     ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
         const s = String(sql);
@@ -261,15 +289,18 @@ test('bindWechat 微信已绑空壳账户（无邮箱/手机/自选股/设置）
         return { rows: [] } as never;
     };
     const tx: string[] = [];
-    const clientQuery = (async (sql: unknown) => {
+    const clientQuery = (async (sql: unknown, params?: unknown[]) => {
         const s = String(sql);
         if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
             tx.push(s);
             return { rows: [] } as never;
         }
-        if (s.includes('FOR UPDATE')) return { rows: [{ email: null, openid: 'wx-u1', phone: null }] } as never;
-        if (s.includes('FROM user_stocks') || s.includes('FROM user_settings')) return { rows: [] } as never;
-        if (s.includes('UPDATE users SET openid = NULL')) return { rows: [] } as never;
+        if (s.includes('FOR UPDATE')) return { rows: [{ id: 'abandoned-wx', openid: 'wx-u1', email: null, phone: null, is_vip: false }] } as never;
+        if (s.includes('SELECT openid, email, phone')) return { rows: [{ openid: null, email: EMAIL, phone: null }] } as never;
+        if (s.includes('to_regclass')) return { rows: [{ t: null, t2: null, t3: null }] } as never;
+        if (s.includes('INSERT INTO user_stocks')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_stocks')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET is_vip')) return { rows: [] } as never;
         if (s.includes('UPDATE users SET openid')) return { rows: [{ id: 'u1', openid: 'wx-u1', email: EMAIL, nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
         return { rows: [] } as never;
     }) as unknown as typeof pool.query;
@@ -281,10 +312,10 @@ test('bindWechat 微信已绑空壳账户（无邮箱/手机/自选股/设置）
     const data = r.json?.data as { wechatBound: boolean; openid: string | null };
     assert.strictEqual(data.wechatBound, true);
     assert.strictEqual(data.openid, 'wx-u1');
-    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '接管事务应正常提交');
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
 });
 
-test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 409', async () => {
+test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 自动合并 200', async () => {
     mockWechatAuth('wx-other');
     ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
         const s = String(sql);
@@ -296,15 +327,31 @@ test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 409', async ()
         }
         return { rows: [] } as never;
     };
-    const clientQuery = (async (sql: unknown) => {
+    // 副账户有邮箱绑定（非空壳）→ 自动合并：邮箱一并转移，而非 409
+    const tx: string[] = [];
+    const clientQuery = (async (sql: unknown, params?: unknown[]) => {
         const s = String(sql);
-        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') return { rows: [] } as never;
-        if (s.includes('FOR UPDATE')) return { rows: [{ email: 'other@163.com', openid: 'wx-other', phone: null }] } as never;
+        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+            tx.push(s);
+            return { rows: [] } as never;
+        }
+        if (s.includes('FOR UPDATE')) return { rows: [{ id: 'wx-other', openid: 'wx-other', email: 'other@163.com', phone: null, is_vip: false }] } as never;
+        if (s.includes('SELECT openid, email, phone')) return { rows: [{ openid: null, email: EMAIL, phone: null }] } as never;
+        if (s.includes('to_regclass')) return { rows: [{ t: null, t2: null, t3: null }] } as never;
+        if (s.includes('INSERT INTO user_stocks')) return { rows: [] } as never;
+        if (s.includes('DELETE FROM user_stocks')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET is_vip')) return { rows: [] } as never;
+        if (s.includes('UPDATE users SET openid')) return { rows: [{ id: 'u1', openid: 'wx-other', email: 'other@163.com', nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
         return { rows: [] } as never;
     }) as unknown as typeof pool.query;
     const client = { query: clientQuery, release: () => {} };
     ;(pool as unknown as { connect: unknown }).connect = async () => client;
     const app = buildApp();
     const r = await call(app, 'POST', '/api/auth/bind/wechat', { email: EMAIL, code: '123456', wxCode: 'wx' }, signToken('u1', ''));
-    assert.strictEqual(r.status, 409);
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { wechatBound: boolean; openid: string | null; email: string | null };
+    assert.strictEqual(data.wechatBound, true);
+    assert.strictEqual(data.openid, 'wx-other');
+    assert.strictEqual(data.email, 'other@163.com', '副账户邮箱应一并转移');
+    assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
 });
