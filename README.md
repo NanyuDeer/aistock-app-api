@@ -131,7 +131,7 @@ src/
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
 | `/api/agent/rhythm-master/:date` | **节奏大师报告读取**（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） | date: YYYY-MM-DD |
 | `/api/agent/rhythm-master/calendar` | **节奏日历热力图聚合**（公开，契约 #7；最近 N 个交易日 after_close 收盘基准档位，SQL 级投影 level/score/basis_date，level 可空=灰格） | days: 交易日数（默认 60，≤60） |
-| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + 分页；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
+| `/api/predictions` | **历史预测列表**（公开，含命中率统计 + `bucketStats` 三桶分桶 + 分页；命中率按 `methodology_version` 版本过滤（默认 2.0 防跳变），档位进度全量；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
 | `/api/chat/sessions/:id` | **删除会话**（DELETE，id+归属双条件防越权） | — |
@@ -159,9 +159,12 @@ src/
 | `/internal/analysis-reports/cleanup` | **清理过期报告**（DELETE，定时03:00） | — |
 | `/internal/briefing/generate-audio` | **生成双人播报音频**（POST） | date: YYYY-MM-DD，需 X-Internal-Token |
 | `/internal/push/market-event` | **市场事件重磅推送**（POST，Python Agent 调用） | market/direction/indices/cause/evidence_url/title 等，需 X-Internal-Token |
+| `/internal/insight/events?openid=&symbol=&limit=` | **洞察只读列表**（阶段 2.1 读层：自选股洞察/涨停雷达/价格异动归因，openid 归属过滤） | openid 必填 + symbol 可选 + limit 默认 50，需 X-Internal-Token |
+| `/internal/insight/events/:eventId?openid=` | **洞察只读详情**（阶段 2.1 读层：事件 + 归因结果 + 最新证据包） | eventId + openid，无归属 404，需 X-Internal-Token |
 | `/internal/insight/events/:eventId/context` | **洞察归因上下文**（事件 + LEFT JOIN 来源文章 + 最新证据包，Python 归因 Agent 专用） | eventId，需 X-Internal-Token |
 | `/internal/insight/jobs/:jobId` | **洞察任务状态回报**（PATCH，Python 消费端） | jobId + status，需 X-Internal-Token |
 | `/internal/insight/results/external` | **洞察归因结果回写**（POST upsert + 更新推送分支） | result: {event_id, analysis_version, attribution_status, ...}，需 X-Internal-Token |
+| `/internal/stock-trace/events?openid=&symbol=&limit=` | **个股异动溯源只读列表**（阶段 2.2 读层：价格异动/涨停雷达归因，复用 listUserEvents） | openid 必填 + symbol 可选（为空返回该用户全部）+ limit 默认 50 上限 100，需 X-Internal-Token |
 | `/internal/usage/records` | **Chat token 用量记录**（POST，Python ws.py 计费回调） | user_id(必填非空), session_id?, prompt_tokens/completion_tokens/total_tokens(非负整数), question? |
 | `/internal/usage/summary` | **用户累计 token 用量**（GET） | user_id: 必填 |
 | `/internal/stocks/basic` | **全量 A 股基础信息**（symbol/name/industry，内存 6h 缓存，Python 股票名称实体匹配用） | 无参数，需 X-Internal-Token |
