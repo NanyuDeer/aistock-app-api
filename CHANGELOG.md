@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-08-30 — 实时价格检测默认停用（自选股洞察仅保留午尾盘打点+涨停雷达）
+
+**开发者**: Aria
+
+### 变更
+- `src/index.ts`：`PriceTriggerDetector.start()` 启动条件由默认开启改为 **opt-in**（`STOCK_TRACE_TRIGGER_ENABLED === 'true'` 才启动）。盘中假动作多（每 5 秒轮询产生 9:15/9:16 等盘中任意时间戳事件），自选股洞察仅保留午尾盘打点（11:30/15:05 cron）与涨停雷达（runInsightCycle 10 分钟轮询）。
+- 手动触发接口保留：`POST /internal/stock-trace/detect`（绕过交易时段强制检测）、`POST /internal/stock-trace/jobs/publish`，作应急调试用。
+
+---
+
 ## [junliang] 2026-08-27 — 个股异动溯源只读端点（阶段 2.2 读层）
 
 **开发者**: Aria
