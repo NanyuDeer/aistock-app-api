@@ -208,14 +208,14 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/user-profile/:userId` | user_profiles | 用户画像检索（Phase 4-3；agent-py 对话入口按 user_id 拉取注入，Redis 5min 缓存；无记录返回 200 + 空对象，不 404） |
 | `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates） |
 | `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
-| `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果（horizon/result/actual/reason → 全档位覆盖自动置 verified） |
+| `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果；**2026-08-31 A1 起**：`type=early_exit` 时 result 可缺省（早退标记 entry 不参与 verified 判定），result 校验用 service 导出的 `VALID_RESULTS`（hit/miss/insufficient）；**透传扩展字段**（methodology_version/baseline_neutral/target_type 等——A3 统计 _filter_v2 口径依赖，不得截断） |
 | `GET /internal/stocks/basic` | stocks 表 | 全量 A 股基础信息 [{symbol, name, industry}]，内存 TTL 6h 缓存，供 Python 股票名称实体匹配（stock_event_detector company_event_rule） |
 | `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取） |
 | `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert） |
 | `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
 | `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
 
-> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified)/due_dates(JSONB)/created_at；status 仅 `{pending, verified}`（无 expired）；`appendVerification` 全档位覆盖自动置 verified。Python agent-py scheduler 每日 16:00 到期验证任务消费。
+> `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified)/due_dates(JSONB)/created_at；status 仅 `{pending, verified}`（无 expired）；**`appendVerification`（2026-08-31 起）改为 jsonb 按 horizon 原子合并写**（`verification || jsonb_build_object($1, COALESCE(verification->$1,'{}'::jsonb) || $2::jsonb)`，防并发读改写覆盖其他档位）；`status=verified` 只认各档位 entry 含合法 `result ∈ {hit,miss,insufficient}`（`PredictionVerificationEntry.result` 改可选 + 新增 `type`/`early_exit` 字段——早退标记与最终结果分离存储，early_exit-only entry 不置 verified）。Python agent-py scheduler 每日 16:00 到期验证任务消费。
 >
 > `market_calendar_events` 表（事件日历，2026-08-30）：启动时自动建表（`src/index.ts`），承载 L1 交割日规则与事件日历，供 rhythm-master 前瞻读取；`POST /internal/calendar/events` 幂等 upsert。
 

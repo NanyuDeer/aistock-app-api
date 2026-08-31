@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-31 — 预测验证写入改造（TradingVane 研报借鉴 v2 A1/A3）
+
+**开发者**: changer-collab
+
+### 改进
+- `appendVerification` 改顶层 `verification` 列 jsonb 按 horizon 原子合并写（`|| jsonb_build_object + COALESCE`，防并发读改写覆盖其他档位）（`PredictionRecordService.ts`）
+- PUT /internal/predictions/:id/verification 契约放宽：`type=early_exit` 时 result 可缺省（早退标记 entry 不参与 status=verified 判定；`VALID_RESULTS` 迁入 service 避免循环依赖）（`internalRouter.ts`）
+- 透传验证 entry 扩展字段（methodology_version/baseline_neutral/target_type 等，A3 命中率统计口径依赖，此前被截断）（`internalRouter.ts` + `PredictionVerificationEntry` 索引签名）
+
+### 测试
+- `internalRouter.test.ts` 新增 entry 扩展字段透传回归；`prediction-record-service.spec.ts` 原子合并写/early_exit 不置 verified/全 verified 翻牌
+
+### 文档
+- AGENTS.md：Internal API 表 PUT 行 + prediction_records 说明块更新
+
 ## [changer] 2026-08-30 — 节奏日历聚合接口 + 报告 TTL 参数化（design-debate）
 
 **开发者**: changer-collab
