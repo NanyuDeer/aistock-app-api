@@ -187,3 +187,88 @@ describe('GET /events/:eventId/context', () => {
         assert.deepEqual(body.data.evidence_package[0], { source_id: 'quant:sector:x:20260812' });
     });
 });
+
+// ── 阶段 2.1：只读端点（insight 读层 skill 用）──
+
+describe('GET /events 只读列表', () => {
+    it('openid 缺失 → 400', async () => {
+        let queryCalled = false;
+        mock.method(pool, 'query', (async () => {
+            queryCalled = true;
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+
+        const handler = getHandler('/events', 'get') as (
+            req: Request, res: Response, nxt: NextFunction,
+        ) => Promise<void>;
+        const req = { query: {} } as unknown as Request;
+        const resState = makeRes();
+        await handler(req, resState as unknown as Response, next);
+
+        assert.equal(resState.statusCode, 400);
+        assert.equal(queryCalled, false, 'openid 缺失不应触库');
+    });
+
+    it('正常返回列表：按 openid 过滤 user_stocks + 可选 symbol/limit', async () => {
+        let sql = '';
+        mock.method(pool, 'query', (async (text: string) => {
+            sql = String(text);
+            return {
+                rows: [
+                    { event_id: 'wi_1', symbol: '000001', stock_name: '测试股', event_type: 'limit_up_radar', direction: 'up', attribution_status: 'confirmed', primary_driver: { label: '涨停主因' } },
+                ],
+            };
+        }) as unknown as typeof pool.query);
+
+        const handler = getHandler('/events', 'get') as (
+            req: Request, res: Response, nxt: NextFunction,
+        ) => Promise<void>;
+        const req = { query: { openid: 'o_test', symbol: '000001', limit: '10' } } as unknown as Request;
+        const resState = makeRes();
+        await handler(req, resState as unknown as Response, next);
+
+        const body = resState.body as { code: number; data: Array<{ event_id: string }> };
+        assert.equal(body.code, 200);
+        assert.equal(body.data.length, 1);
+        assert.match(sql, /JOIN user_stocks us ON us\.symbol = e\.symbol AND us\.openid/, '按 openid 过滤自选股');
+        assert.match(sql, /e\.symbol = \$2/, 'symbol 过滤入参');
+    });
+});
+
+describe('GET /events/:eventId 只读详情', () => {
+    it('归属命中返回详情并追加最新证据包', async () => {
+        let call = 0;
+        mock.method(pool, 'query', (async (text: string) => {
+            call++;
+            if (call === 1) {
+                return { rows: [{ event_id: 'wi_1', symbol: '000001', stock_name: '测试股', primary_driver: { label: 'x' } }] };
+            }
+            return { rows: [{ evidence: [{ source_id: 'news:a' }] }] }; // 最新证据包
+        }) as unknown as typeof pool.query);
+
+        const handler = getHandler('/events/:eventId', 'get') as (
+            req: Request, res: Response, nxt: NextFunction,
+        ) => Promise<void>;
+        const req = { params: { eventId: 'wi_1' }, query: { openid: 'o_test' } } as unknown as Request;
+        const resState = makeRes();
+        await handler(req, resState as unknown as Response, next);
+
+        const body = resState.body as { code: number; data: { evidence_package: unknown[]; event_id: string } };
+        assert.equal(body.code, 200);
+        assert.equal(body.data.event_id, 'wi_1');
+        assert.equal(body.data.evidence_package.length, 1);
+    });
+
+    it('无归属（user_stocks JOIN 无行）→ 404', async () => {
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+
+        const handler = getHandler('/events/:eventId', 'get') as (
+            req: Request, res: Response, nxt: NextFunction,
+        ) => Promise<void>;
+        const req = { params: { eventId: 'wi_none' }, query: { openid: 'o_test' } } as unknown as Request;
+        const resState = makeRes();
+        await handler(req, resState as unknown as Response, next);
+
+        assert.equal(resState.statusCode, 404);
+    });
+});

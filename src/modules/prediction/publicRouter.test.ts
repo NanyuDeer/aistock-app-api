@@ -380,3 +380,76 @@ test('GET /api/predictions -> 200：bucketStats 旧记录无 target_type 归 ind
   assert.equal(body.data.stats.bucketStats.combined.n, 1)
   assert.equal(body.data.stats.bucketStats.combined.hits, 1)
 })
+
+// ============ 阶段 0：methodology_version 版本过滤（默认 2.0，防跳变/混桶） ============
+
+test('GET /api/predictions -> 200：版本过滤（默认 2.0）——3.0 命中不计入命中率但计入档位进度', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'verified',
+      source_id: 'review:2026-08-07',
+      due_dates: { short: '2026-08-17' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '2.0' as const, target_type: 'index' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+      },
+    }),
+    baseRow({
+      id: 2,
+      status: 'verified',
+      source_id: 'review:2026-08-08',
+      created_at: '2026-08-08T12:00:00.000Z',
+      due_dates: { short: '2026-08-18', mid: '2026-09-09' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '3.0' as const, target_type: 'index' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '3.0' as const, target_type: 'index' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as {
+    data: { stats: { verifiedHorizonCount: number; hitCount: number; missCount: number; hitRate: number | null; bucketStats: BucketStatsShape } }
+  }
+  // 进度全量（版本无关）：1(row1) + 2(row2) = 3 档
+  assert.equal(body.data.stats.verifiedHorizonCount, 3)
+  // 命中率只统计 2.0：row1 short hit → hitCount=1, missCount=0, hitRate=1（3.0 两档隔离）
+  assert.equal(body.data.stats.hitCount, 1)
+  assert.equal(body.data.stats.missCount, 0)
+  assert.equal(body.data.stats.hitRate, 1)
+  // bucketStats 同套版本过滤
+  assert.equal(body.data.stats.bucketStats.combined.n, 1)
+  assert.equal(body.data.stats.bucketStats.combined.hits, 1)
+  // 【阶段 0 门禁断言】同响应 hitRate === bucketStats.combined.hitRate
+  assert.equal(body.data.stats.hitRate, body.data.stats.bucketStats.combined.hitRate)
+})
+
+test('GET /api/predictions -> 200：无版本旧记录兼容视为 2.0（默认过滤，防跳变）', async () => {
+  // verification entry 缺 methodology_version（2.0 时代存量）→ 默认过滤 2.0 下计入
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'verified',
+      source_id: 'review:2026-08-07',
+      due_dates: { short: '2026-08-17' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, target_type: 'index' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  assert.equal(res.status, 200)
+  const body = res.body as {
+    data: { stats: { hitCount: number; hitRate: number | null; bucketStats: BucketStatsShape } }
+  }
+  assert.equal(body.data.stats.hitCount, 1)
+  assert.equal(body.data.stats.hitRate, 1)
+  assert.equal(body.data.stats.bucketStats.combined.n, 1)
+  assert.equal(body.data.stats.hitRate, body.data.stats.bucketStats.combined.hitRate)
+})

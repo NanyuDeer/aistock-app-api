@@ -5,6 +5,22 @@ const router: Router = Router();
 
 const VALID_STATUSES = ['pending', 'verified', 'skipped'] as const;
 
+/**
+ * 当前生产验证口径版本（阶段 0：默认过滤 2.0 防跳变/混桶）。
+ * 四处同步：agent-py prediction_stats._CURRENT_METHODOLOGY_VERSION、
+ * prediction_validator._METHODOLOGY_VERSION / _BACKFILL_METHODOLOGY_VERSION、本文件。
+ * 切换 3.0 为默认过滤版本时，将此处改为 '3.0'（存量无版本记录随之隔离）。
+ */
+const CURRENT_METHODOLOGY_VERSION = '2.0'
+
+/** verification entry 是否属于当前统计版本（旧记录无 methodology_version → 兼容视为 2.0） */
+function versionOk(e: unknown): boolean {
+  if (!e || typeof e !== 'object') return false
+  const mv = (e as { methodology_version?: unknown }).methodology_version
+  return mv === CURRENT_METHODOLOGY_VERSION
+    || (CURRENT_METHODOLOGY_VERSION === '2.0' && (mv === undefined || mv === null))
+}
+
 /** 测试注入点（tsx ESM live binding 无法 patch 模块私有函数，沿用仓库 __xxxDependencies 模式） */
 export const __predictionPublicDependencies = {
   list: (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) =>
@@ -64,11 +80,12 @@ function bucketStats(rows: PredictionRecordRow[]): {
   for (const r of rows) {
     // skipped 行即使带 verification 内容也不计入（与 computeStats 一致）
     if (r.status === 'skipped') continue
-    const v = r.verification as Record<string, { result?: string; target_type?: string; approximate?: boolean }> | null
+    const v = r.verification as Record<string, { result?: string; target_type?: string; approximate?: boolean; methodology_version?: string }> | null
     if (!v) continue
     for (const horizon of Object.keys(v)) {
       const e = v[horizon]
-      if (e?.result === 'hit' || e?.result === 'miss') {
+      // 版本分桶：只统计当前生产版本（2.0 默认；3.0 记录隔离，防混桶）
+      if ((e?.result === 'hit' || e?.result === 'miss') && versionOk(e)) {
         entries.push({
           result: e.result,
           target_type: e.target_type || 'index', // 旧记录兼容
@@ -116,12 +133,15 @@ function computeStats(rows: PredictionRecordRow[]) {
     for (const h of keys) {
       const entry = verification[h];
       if (!entry) continue;
+      // 档位进度全量（版本无关，反映验证覆盖度）
       verifiedHorizonCount += 1;
       if (approxSet.has(h)) {
         // 近似档：单独计数，不混入命中率分母（P2 分桶）
         approximateHorizonCount += 1;
         continue;
       }
+      // 命中率按版本过滤（阶段 0：默认 2.0，3.0 记录隔离防混桶）
+      if (!versionOk(entry)) continue;
       if (entry.result === 'hit') hitCount += 1;
       else if (entry.result === 'miss') missCount += 1;
     }

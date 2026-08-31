@@ -32,14 +32,21 @@ import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotServic
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
+import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
-    'chat_analysis', 'event_scrape', 'midday',
+    'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
 ]
+
+/** 报告保留期（design-debate A4/U1 裁决）：rhythm_master 需支撑 60 交易日日历热力图
+ *  聚合窗口，TTL 延长至 90 天；其余 report_type 维持建表默认 7 天，避免 03:00 清理过早删除。 */
+export function getReportTtlDays(report_type: string): number {
+    return report_type === 'rhythm_master' ? 90 : 7
+}
 
 interface ChainSummaryItem {
     industry: string
@@ -180,6 +187,9 @@ router.get('/health', (_req: Request, res: Response) => {
 })
 
 router.use(verifyInternalToken)
+
+// GET /internal/fear-greed 只读镜像（恐贪指数；契约：无数据 → 200 + 空字段）
+router.use('/fear-greed', fearGreedInternalRouter)
 
 /**
  * GET /internal/ths/index-map
@@ -347,6 +357,7 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
     try {
         // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
         const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
+        // 加性透传 vol/amount（Tushare index_daily 已有字段；技术分支成交额条件数据源）
         const clean = rows.map((r) => ({
             trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
             open: r.open ?? r['开盘价'] ?? null,
@@ -354,6 +365,8 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
         // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
         const filtered =
@@ -1221,14 +1234,16 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
     if (content === undefined || content === null) {
         return res.status(400).json({ code: 400, message: 'content is required' })
     }
+    // 报告保留期按类型参数化（design-debate A4/U1）：rhythm_master=90 天，其余 7 天
+    const ttlDays = getReportTtlDays(report_type)
 
     try {
         // upsert：COALESCE 处理 NULL user_id（公共报告）
         const result = await pool.query(
             `INSERT INTO agent_analysis_reports
                 (report_type, report_date, user_id, content, data_source, status,
-                 generation_time_ms, model_version, error_message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 generation_time_ms, model_version, error_message, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW() + make_interval(days => $10))
              ON CONFLICT (report_type, report_date, COALESCE(user_id, ''))
              DO UPDATE SET
                 content = EXCLUDED.content,
@@ -1237,11 +1252,11 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 model_version = EXCLUDED.model_version,
                 error_message = EXCLUDED.error_message,
-                expires_at = NOW() + INTERVAL '7 days',
+                expires_at = NOW() + make_interval(days => $10),
                 created_at = NOW()
              RETURNING id, report_type, report_date, created_at`,
             [report_type, report_date, user_id, JSON.stringify(content),
-             data_source, status, generation_time_ms, model_version, error_message]
+             data_source, status, generation_time_ms, model_version, error_message, ttlDays]
         )
 
         res.status(201).json({
