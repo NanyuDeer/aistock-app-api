@@ -265,6 +265,15 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
           reason: typeof body.reason === 'string' ? body.reason : '',
           verified_at: new Date().toISOString(),
         };
+  // A3 统计口径修复（2026-08-31）：透传 Python 验证器写入的扩展字段
+  // （methodology_version/baseline_neutral/target_type/approximate 等）——此前只透传固定 5 字段，
+  // 导致 methodology_version 不落库 → agent-py _filter_v2 恒 n=0 → A3 钳制与存量统计在生产不触发。
+  for (const [k, v] of Object.entries(body)) {
+    if (['horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
+      continue;
+    }
+    (entry as Record<string, unknown>)[k] = v;
+  }
   try {
     const record = await PredictionRecordService.appendVerification(id, body.horizon, entry);
     if (!record) {

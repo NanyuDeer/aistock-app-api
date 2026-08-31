@@ -15,6 +15,9 @@ export interface PredictionVerificationEntry {
   reason?: string;
   verified_at?: string;
   early_exit?: Record<string, unknown>;
+  /** 透传扩展字段（Python 验证器写入的 methodology_version/baseline_neutral/target_type/approximate 等，
+   *  2026-08-31 A3 统计 _filter_v2 与存量统计口径依赖——router 不得截断） */
+  [key: string]: unknown;
 }
 
 /** 合法验证结果（A1：状态判定只认 result ∈ 此集合；迁移到 service 避免 router→service 循环依赖） */
