@@ -52,7 +52,7 @@ router.get('/events', async (req: Request, res: Response) => {
     const limitRaw = Number.parseInt(queryStr(req, 'limit'), 10);
     const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 100) : 50;
     try {
-        const { items } = await StockTraceService.listUserEvents(openid, limit);
+        const { items } = await StockTraceService.listUserEvents('', openid, limit);
         const data = symbol ? items.filter((i) => i.symbol === symbol) : items;
         res.json({ code: 200, data });
     } catch (error: unknown) {

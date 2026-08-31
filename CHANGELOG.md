@@ -2,6 +2,24 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-08-30 — 节奏日历聚合接口 + 报告 TTL 参数化（design-debate）
+
+**开发者**: changer-collab
+
+### 新增
+- `GET /api/agent/rhythm-master/calendar?days=N` 节奏日历热力图聚合接口（契约 #7）：最近 N 个交易日（默认 60，≤60）after_close 收盘基准档位；SQL 级 JSONB 投影 level/score/basis_date；`(report_date AT TIME ZONE 'Asia/Shanghai')::date` 对齐上海日期；level 可空契约；纯函数 `mergeRhythmCalendarDays`（`publicRouter.ts`）
+
+### 改进
+- 报告持久化 TTL 按 report_type 参数化：rhythm_master=90 天（支撑日历窗口），其余类型维持 7 天；upsert SQL 双改（INSERT+DO UPDATE）`make_interval(days => $10)`（`internal.ts` `getReportTtlDays`）
+
+### 测试
+- `internal.report-type.test.ts`（TTL 90/7）、`calendar.rhythm-calendar.test.ts`（merge 补位/透传）
+
+### 文档
+- `README.md` 路由表 + internal 表同步
+
+---
+
 ## [junliang] 2026-08-27 — 个股异动溯源只读端点（阶段 2.2 读层）
 
 **开发者**: Aria
