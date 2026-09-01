@@ -290,7 +290,7 @@ JSON 结构如下：
 
     private static buildModelRequestBody(prompt: string, stream: boolean): Record<string, unknown> {
         return {
-            model: process.env.EVA_MODEL,
+            model: process.env.QWEN_MODEL,
             temperature: 0.2,
             ...(stream ? { stream: true } : {}),
             messages: [{ role: 'system', content: this.ANALYSIS_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
@@ -298,12 +298,13 @@ JSON 结构如下：
     }
 
     private static async requestModel(prompt: string): Promise<string> {
-        const apiBaseUrl = process.env.OPENAI_API_BASE_URL;
-        const apiKey = process.env.OPENAI_API_KEY;
-        const evaModel = process.env.EVA_MODEL;
-        if (!apiBaseUrl) throw new Error('缺少 OPENAI_API_BASE_URL 配置');
-        if (!apiKey) throw new Error('缺少 OPENAI_API_KEY 配置');
-        if (!evaModel) throw new Error('缺少 EVA_MODEL 配置');
+        const rawUrl = process.env.QWEN_BASE_URL || '';
+        const apiBaseUrl = rawUrl.replace(/\/+$/, '').replace(/(\/chat\/completions)?$/, '/chat/completions');
+        const apiKey = process.env.QWEN_API_KEY;
+        const evaModel = process.env.QWEN_MODEL;
+        if (!apiBaseUrl) throw new Error('缺少 QWEN_BASE_URL 配置');
+        if (!apiKey) throw new Error('缺少 QWEN_API_KEY 配置');
+        if (!evaModel) throw new Error('缺少 QWEN_MODEL 配置');
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 45_000);
@@ -323,12 +324,13 @@ JSON 结构如下：
     }
 
     private static async requestModelStream(prompt: string, attempt: number, onModelDelta: StockAnalysisModelDeltaHandler): Promise<string> {
-        const apiBaseUrl = process.env.OPENAI_API_BASE_URL;
-        const apiKey = process.env.OPENAI_API_KEY;
-        const evaModel = process.env.EVA_MODEL;
-        if (!apiBaseUrl) throw new Error('缺少 OPENAI_API_BASE_URL 配置');
-        if (!apiKey) throw new Error('缺少 OPENAI_API_KEY 配置');
-        if (!evaModel) throw new Error('缺少 EVA_MODEL 配置');
+        const rawUrl = process.env.QWEN_BASE_URL || '';
+        const apiBaseUrl = rawUrl.replace(/\/+$/, '').replace(/(\/chat\/completions)?$/, '/chat/completions');
+        const apiKey = process.env.QWEN_API_KEY;
+        const evaModel = process.env.QWEN_MODEL;
+        if (!apiBaseUrl) throw new Error('缺少 QWEN_BASE_URL 配置');
+        if (!apiKey) throw new Error('缺少 QWEN_API_KEY 配置');
+        if (!evaModel) throw new Error('缺少 QWEN_MODEL 配置');
 
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 45_000);
