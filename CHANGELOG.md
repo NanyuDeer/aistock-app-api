@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-09-01 — Spec B 个股 K 线数据源（验证环个股粒度接入）
+
+**开发者**: Aria
+
+### 改进
+- `src/core/routes/internal.ts`：GET `/internal/quote/:symbol/kline` 新增可选区间参数 `start_date`/`end_date`（YYYYMMDD）——存在时按区间过滤 rows、days 忽略（有边界时 `getKLine(limit=0)` 拉全量再按区间过滤，对齐 index 端点 H9 语义）；响应 rows 加性透传 `vol`/`amount`
+- 供 agent-py `prediction_validator._fetch_kline_window` stock 分支拉取 [due-20, due+10] 窗口
+
+### 测试
+- `tsc --noEmit` 通过
+
+---
+
 ## [changer] 2026-08-31 — 预测验证写入改造（TradingVane 研报借鉴 v2 A1/A3）
 
 **开发者**: changer-collab
