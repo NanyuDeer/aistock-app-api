@@ -71,6 +71,8 @@ import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { ForecastVersionStore } from './modules/monitor/ForecastVersionStore';
+import { PerformanceAiScoreVersionStore } from './modules/monitor/PerformanceAiScoreVersionStore';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
 import { StockTraceController } from './modules/stock-trace/controller';
 import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
@@ -980,6 +982,20 @@ async function start() {
             .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
     } catch (err: unknown) {
         console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ForecastVersionStore.ensureSchema();
+        console.log('[DB] earnings_forecast_versions table ready');
+    } catch (err: unknown) {
+        console.error('[ForecastVersion] CRITICAL: earnings_forecast_versions schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await PerformanceAiScoreVersionStore.ensureSchema();
+        console.log('[DB] performance_ai_score_versions table ready');
+    } catch (err: unknown) {
+        console.error('[PerformanceAiScoreVersion] CRITICAL: performance_ai_score_versions schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {
