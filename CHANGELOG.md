@@ -76,6 +76,21 @@
 ### 文档
 - `README.md` 路由表 + internal 表同步
 
+## [junliang] 2026-08-30 — 涨停雷达并入 stock-trace 链路（统一事件与归因）
+
+**开发者**: Aria
+
+### 变更
+- `InsightService.runCycle` 命中自选股不再建 `watchlist_insight_events`（存量保留），改拉腾讯行情构造 `PriceFact` 走 `StockTraceService.processPriceFact(security, fact, { immediateEnqueue: true })`——建 `stock_trace_events` mv 事件并**盘中立即归因**；行情缺失或涨跌幅 <7% 的命中跳过（当日由午尾盘打点兜底）。
+- `StockTraceService.processPriceFact` 新增可选第三参 `{ immediateEnqueue }`：true 时创建分支在 COMMIT 前入队（既有 publishPending 发布），默认 false 保持"事件落定后统一归因"策略。
+- `StockTraceSnapshotService` 快照采集新增 **insight_article 证据域**：读当日 `watchlist_insight_sources` 命中该股的同花顺涨停雷达文章（标题/正文/URL/关键词），并入 enriched/corrected 快照供五层归因参考；候选层仍强制五层不变。
+- 归因链路统一为 stock-trace 五层候选；"同股同向已归因（文章盘中触发）则午尾盘打点跳过"由 revision 幂等机制天然实现。
+
+### 测试
+- `processPriceFactImmediate.spec.ts`（immediateEnqueue 三场景）、`insightArticleEvidence.spec.ts`（insight_article 映射/复用）、`radarToStockTrace.spec.ts` + `runCycleEnqueue.spec.ts` 更新（runCycle 命中走 stock-trace）。
+
+---
+
 ## [junliang] 2026-08-30 — 实时价格检测默认停用（自选股洞察仅保留午尾盘打点+涨停雷达）
 
 **开发者**: Aria

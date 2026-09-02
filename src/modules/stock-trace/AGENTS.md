@@ -2,6 +2,13 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-08-30 更新：涨停雷达并入 stock-trace 链路（统一事件与归因）
+
+- **事件**：`InsightService.runCycle` 命中自选股（标题主体/涨停复盘汇总）改拉腾讯行情走 `processPriceFact(..., { immediateEnqueue: true })`，建 mv 事件并立即归因；`watchlist_insight_events` 不再新建（存量保留）。
+- **immediateEnqueue**（`StockTraceService.processPriceFact` 第三参，默认 false）：true 时创建分支事务内入队 revision1 job，COMMIT 后既有 `publishPending` 发布；默认 false 保持"落定后归因"。
+- **insight_article 证据域**：`StockTraceSnapshotService` 新增 `collectInsightArticleSources`（读当日 `watchlist_insight_sources` mentioned_symbols 命中该股的文章）+ 导出纯函数 `toInsightArticleSourceRecord`；kind=`insight_article`、provider=`ths_limit_up_radar`；入复用域（修订不重采）；`DataReadinessDomains`/`SourceKind` 增加 `article`/`insight_article`。候选层仍强制五层。
+- **去重**："同股同向已归因（文章盘中触发）则午尾盘打点跳过"由 `processPriceFact` revision 机制天然实现（`isRevisionNeeded` false → `unchanged`）。
+
 ### 2026-08-30 更新：实时检测默认停用（opt-in）
 
 - **决策**：自选股洞察仅保留午尾盘打点（11:30/15:05）与涨停雷达，`PriceTriggerDetector`（盘中每 5 秒实时价格检测）默认停用——盘中假动作多（产生 9:15/9:16 等盘中任意时间戳事件）。

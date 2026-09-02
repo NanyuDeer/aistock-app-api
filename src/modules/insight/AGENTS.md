@@ -6,8 +6,8 @@
 
 自选股洞察：对用户自选股生成异动洞察报告，涵盖一期（涨停雷达）与二期（午盘/尾盘价格异动）：
 
-- **一期（limit_up_radar）**：采集同花顺涨停雷达文章，命中自选股后创建事件、入队、Python 归因、推送。**2026-08-20 增强**：涨停复盘类汇总文章（标题无单一主体股票）从正文"涨停/涨超"语境提取个股（`parseLimitUpSymbolsFromSummary`，排除跌停/跌幅语境），命中自选股逐只建事件——防"涨停个股过多汇总进复盘文章"导致漏检（如近岸蛋白 08-20 案例）。
-- **二期（midday_price_move / close_price_move）**：午盘 11:30 / 尾盘 15:05 打点，触发改接 stocktrace 事件层（`emitStockTraceEvent`，`mv` 事件类型），`isEligiblePriceSecurity` 过滤，阈值 `changePct`；Node 侧价格快照与证据采集已迁移至 `modules/stock-trace`，Python 归因走 stocktrace 五层候选（company/sector/market/capital/technical）。**涨停雷达保留 insight 路径不变。**
+- **一期（limit_up_radar，2026-08-30 起并入 stock-trace）**：采集同花顺涨停雷达文章入库 `watchlist_insight_sources`（保留），命中自选股后**不再建 `watchlist_insight_events`**，改拉腾讯行情走 `StockTraceService.processPriceFact(..., { immediateEnqueue: true })` 建 `stock_trace_events` mv 事件并立即归因；同花顺文章作为 stock-trace 快照的 `insight_article` 额外证据域。**涨停复盘汇总文章解析（`parseLimitUpSymbolsFromSummary`）保留**，逐只命中自选股触发。存量 wi 事件保留在库、前端不再展示。
+- **二期（midday_price_move / close_price_move）**：午盘 11:30 / 尾盘 15:05 打点，触发改接 stocktrace 事件层（`emitStockTraceEvent`，`mv` 事件类型），`isEligiblePriceSecurity` 过滤，阈值 `changePct`；Node 侧价格快照与证据采集已迁移至 `modules/stock-trace`，Python 归因走 stocktrace 五层候选（company/sector/market/capital/technical）。同股同向已归因（文章盘中触发）则打点跳过（revision 幂等）。
 
 ## 核心文件与职责
 
