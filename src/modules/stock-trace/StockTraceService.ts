@@ -252,7 +252,11 @@ export class StockTraceService {
         }));
     }
 
-    static async processPriceFact(security: FavoriteSecurity, fact: PriceFact): Promise<PriceMutationResult> {
+    static async processPriceFact(
+        security: FavoriteSecurity,
+        fact: PriceFact,
+        options: { immediateEnqueue?: boolean } = {},
+    ): Promise<PriceMutationResult> {
         await this.ensureSchema();
         if (Math.abs(fact.changePct) < PRICE_TRIGGER_PERCENT) {
             await this.startRecovery(security.symbol, fact.observedAt);
@@ -374,7 +378,11 @@ export class StockTraceService {
             `, [eventId, security.symbol, eventRow.stock_name, tradingDate, direction, fact.observedAt, severity, previousClosed.rows[0]?.event_id || null]);
             await this.insertRevision(client, eventId, 1, direction, fact, severity, 'initial_trigger');
             const recipients = await this.createUserEvents(client, eventId, security.symbol);
-            // 不再即时入队归因：实时推送保留，最终归因等事件落定后统一触发一次
+            // 盘中立即归因（涨停雷达文章命中等强时效场景）：事务内入队，COMMIT 后由既有 publishPending 发布。
+            // 默认 false 保持"事件落定后统一归因"策略（8-21 决策）；enqueue 幂等（UNIQUE event_id+revision+analysis_version+kind）。
+            if (options.immediateEnqueue) {
+                await StockTraceJobService.enqueue(client, { eventId, triggerRevision: 1 });
+            }
             await client.query('COMMIT');
             void triggerEventScrape(eventRow).catch((error: unknown) => {
                 console.error('[StockTrace] event scrape trigger (create) failed:', error instanceof Error ? error.message : error);
