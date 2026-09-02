@@ -208,6 +208,36 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
 }
 
 /**
+ * watchlist_insight_sources 行 → StockSourceRecord（insight_article 证据域映射）。
+ * 涨停雷达文章映射，与 collectInsightArticleSources 内字段映射一致。
+ */
+export function toInsightArticleSourceRecord(
+    row: { article_id: string; source_url: string; title: string; keywords: unknown; content: string; published_at: Date },
+    symbol: string,
+    capturedAt: Date,
+): StockSourceRecord {
+    const published = asDate(row.published_at, capturedAt);
+    const keywords = Array.isArray(row.keywords)
+        ? row.keywords.filter((k): k is string => typeof k === 'string').slice(0, 8)
+        : [];
+    return sourceRecord({
+        sourceId: `ths-radar:${row.article_id}`,
+        kind: 'insight_article',
+        provider: 'ths_limit_up_radar',
+        sourceLevel: 'B',
+        title: row.title,
+        contentExcerpt: excerpt(row.content),
+        canonicalUrl: row.source_url || undefined,
+        sourceRef: row.article_id,
+        symbol,
+        occurredAt: published,
+        capturedAt,
+        freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - published.getTime()) / 1000)),
+        payload: { keywords },
+    });
+}
+
+/**
  * 读取当日事件库证据（stock_trace 证据源优先读事件库）。
  *
  * 调用 Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`
@@ -520,38 +550,22 @@ export class StockTraceSnapshotService {
      * 事件创建后 ~1s 的 enriched 采集必然可见。无文章/查错返回 []（不阻塞归因）。
      */
     private static async collectInsightArticleSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const result = await pool.query<{
-            article_id: string; source_url: string; title: string;
-            keywords: unknown; content: string; published_at: Date;
-        }>(`
-            SELECT article_id, source_url, title, keywords, content, published_at
-            FROM watchlist_insight_sources
-            WHERE trade_date = $1::date
-              AND EXISTS (SELECT 1 FROM jsonb_array_elements(mentioned_symbols) ms WHERE ms->>'symbol' = $2)
-            ORDER BY published_at DESC
-            LIMIT 10
-        `, [event.tradingDate, event.symbol]);
-        return result.rows.map((row) => {
-            const published = asDate(row.published_at, capturedAt);
-            const keywords = Array.isArray(row.keywords)
-                ? row.keywords.filter((k): k is string => typeof k === 'string').slice(0, 8)
-                : [];
-            return sourceRecord({
-                sourceId: `ths-radar:${row.article_id}`,
-                kind: 'insight_article',
-                provider: 'ths_limit_up_radar',
-                sourceLevel: 'B',
-                title: row.title,
-                contentExcerpt: excerpt(row.content),
-                canonicalUrl: row.source_url || undefined,
-                sourceRef: row.article_id,
-                symbol: event.symbol,
-                occurredAt: published,
-                capturedAt,
-                freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - published.getTime()) / 1000)),
-                payload: { keywords },
-            });
-        });
+        try {
+            const result = await pool.query<{
+                article_id: string; source_url: string; title: string;
+                keywords: unknown; content: string; published_at: Date;
+            }>(`
+                SELECT article_id, source_url, title, keywords, content, published_at
+                FROM watchlist_insight_sources
+                WHERE trade_date = $1::date
+                  AND EXISTS (SELECT 1 FROM jsonb_array_elements(mentioned_symbols) ms WHERE ms->>'symbol' = $2)
+                ORDER BY published_at DESC
+                LIMIT 10
+            `, [event.tradingDate, event.symbol]);
+            return result.rows.map((row) => toInsightArticleSourceRecord(row, event.symbol, capturedAt));
+        } catch {
+            return []; // 查错返回 []（不阻塞归因）
+        }
     }
 
     private static async collectSectorSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
