@@ -40,6 +40,7 @@ export const VALID_REPORT_TYPES = [
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
     'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
+    'sector_trace',
 ]
 
 /** 报告保留期（design-debate A4/U1 裁决）：rhythm_master 需支撑 60 交易日日历热力图
