@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-09-02 — 节奏大师事件日历稳定排序（锚点单一来源）
+
+**开发者**: changer-collab
+
+### 改进
+- `listEvents` 排序改为 `ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`（三键稳定排序；与 internalRouter GET /events 的 date 主键 JS 稳定排序共同构成 rhythm `high_events`/`next_event_anchor` 的单一来源）（`MarketCalendarEventService.ts`）
+
+### 测试
+- `internalRouter.test.ts`：SQL 排序契约正则 + GET /events 下发顺序 HTTP 实测（同日期保留 DB 行次序）2 用例
+
+### 文档
+- AGENTS.md：关键契约追加 listEvents 排序契约行
+
 ## [master] 2026-09-01 — Spec B 个股 K 线数据源（验证环个股粒度接入）
 
 **开发者**: Aria
