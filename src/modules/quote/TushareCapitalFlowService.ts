@@ -468,9 +468,10 @@ interface AiCapitalFlowResult {
 }
 
 async function requestAiAnalysis(symbol: string, stockName: string, data: CapitalFlowResult): Promise<AiCapitalFlowResult | null> {
-    const apiBaseUrl = process.env.OPENAI_API_BASE_URL;
-    const apiKey = process.env.OPENAI_API_KEY;
-    const evaModel = process.env.EVA_MODEL;
+    const rawUrl = process.env.QWEN_BASE_URL || '';
+    const apiBaseUrl = rawUrl.replace(/\/+$/, '').replace(/(\/chat\/completions)?$/, '/chat/completions');
+    const apiKey = process.env.QWEN_API_KEY;
+    const evaModel = process.env.QWEN_MODEL;
     if (!apiBaseUrl || !apiKey || !evaModel) return null;
 
     const w1 = data.windows.find(w => w.days === 1);

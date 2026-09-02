@@ -2,6 +2,64 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-09-02 — 节奏大师事件日历稳定排序（锚点单一来源）
+
+**开发者**: changer-collab
+
+### 改进
+- `listEvents` 排序改为 `ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`（三键稳定排序；与 internalRouter GET /events 的 date 主键 JS 稳定排序共同构成 rhythm `high_events`/`next_event_anchor` 的单一来源）（`MarketCalendarEventService.ts`）
+
+### 测试
+- `internalRouter.test.ts`：SQL 排序契约正则 + GET /events 下发顺序 HTTP 实测（同日期保留 DB 行次序）2 用例
+
+### 文档
+- AGENTS.md：关键契约追加 listEvents 排序契约行
+
+## [master] 2026-09-01 — Spec B 个股 K 线数据源（验证环个股粒度接入）
+
+**开发者**: Aria
+
+### 改进
+- `src/core/routes/internal.ts`：GET `/internal/quote/:symbol/kline` 新增可选区间参数 `start_date`/`end_date`（YYYYMMDD）——存在时按区间过滤 rows、days 忽略（有边界时 `getKLine(limit=0)` 拉全量再按区间过滤，对齐 index 端点 H9 语义）；响应 rows 加性透传 `vol`/`amount`
+- 供 agent-py `prediction_validator._fetch_kline_window` stock 分支拉取 [due-20, due+10] 窗口
+
+### 测试
+- `tsc --noEmit` 通过
+
+---
+
+## [changer] 2026-08-31 — 预测验证写入改造（TradingVane 研报借鉴 v2 A1/A3）
+
+**开发者**: changer-collab
+
+### 改进
+- `appendVerification` 改顶层 `verification` 列 jsonb 按 horizon 原子合并写（`|| jsonb_build_object + COALESCE`，防并发读改写覆盖其他档位）（`PredictionRecordService.ts`）
+- PUT /internal/predictions/:id/verification 契约放宽：`type=early_exit` 时 result 可缺省（早退标记 entry 不参与 status=verified 判定；`VALID_RESULTS` 迁入 service 避免循环依赖）（`internalRouter.ts`）
+- 透传验证 entry 扩展字段（methodology_version/baseline_neutral/target_type 等，A3 命中率统计口径依赖，此前被截断）（`internalRouter.ts` + `PredictionVerificationEntry` 索引签名）
+
+### 测试
+- `internalRouter.test.ts` 新增 entry 扩展字段透传回归；`prediction-record-service.spec.ts` 原子合并写/early_exit 不置 verified/全 verified 翻牌
+
+### 文档
+- AGENTS.md：Internal API 表 PUT 行 + prediction_records 说明块更新
+
+## [master] 2026-08-31 — 短信验证码接入阿里云"号码认证·短信认证"（真实下发）
+
+**开发者**: Aria
+
+### 新增
+- `SmsService.sendViaAliyun` 由占位改为真实调用 `dypnsapi.SendSmsVerifyCode`（`src/core/sms/SmsService.ts`）：用 RAM 凭证 +「恒创联众」签名 + 预置模板，把本地生成的验证码经 `TemplateParam` 下发到手机（阿里云作发信通道，不在服务商侧自动生成）；`send` 新增 `scenario` 场景参数（`login`/`bind`），按场景选模板（登录 100001 / 绑定 100004）；新增 `resolveTemplate` 依场景解析模板 code
+- `sendSms` 支持可选 `body.scenario`（`src/modules/auth/SmsAuthController.ts`），`bind` 走绑定模板
+
+### 改进
+- 依赖：`package.json` 新增 `@alicloud/openapi-core`（dypnsapi 依赖其 `$OpenApiUtil.Config`）
+- `.env.production`：追加 `SMS_PROVIDER=aliyun` + RAM AccessKey/Secret + `SMS_SIGN_NAME=恒创联众` + `SMS_TEMPLATE_CODE=100001` + `SMS_TEMPLATE_BIND=100004`（该文件被 git 忽略，已在服务器直接修改并 `pm2 restart --update-env` 生效）；`.env.example` 补充说明
+
+### 测试
+- `tsc --noEmit` 通过；sms-auth 8 个测试全过（dev 分支不受影响，未真发短信）
+
+---
+
 ## [junliang] 2026-08-30 — 涨停雷达并入 stock-trace 链路（统一事件与归因）
 
 **开发者**: Aria

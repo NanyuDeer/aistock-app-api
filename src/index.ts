@@ -30,6 +30,9 @@ import { getSemiAnnualReport } from './modules/quote/TushareService';
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
 
+// 板块四环聚合接口（/api/agent/sector-insight/:date，2026-09-02 板块四环前端 spec §6.2）
+import sectorInsightRouter from './core/routes/sectorInsightRouter';
+
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
@@ -71,6 +74,8 @@ import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { ForecastVersionStore } from './modules/monitor/ForecastVersionStore';
+import { PerformanceAiScoreVersionStore } from './modules/monitor/PerformanceAiScoreVersionStore';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
 import { StockTraceController } from './modules/stock-trace/controller';
 import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
@@ -144,6 +149,9 @@ app.use('/api/agent', publicRouter);
 // 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
 // 否则会被反代转发到 Python；对齐 publicRouter 挂载顺序先例）
 app.use('/api/agent', rhythmMasterPublicRouter);
+
+// 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
+app.use('/api/agent', sectorInsightRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -235,6 +243,7 @@ app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavori
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
 app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
+app.post('/api/users/me/notifications/read-all', (req, res, next) => UserController.markAllNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -980,6 +989,20 @@ async function start() {
             .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
     } catch (err: unknown) {
         console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ForecastVersionStore.ensureSchema();
+        console.log('[DB] earnings_forecast_versions table ready');
+    } catch (err: unknown) {
+        console.error('[ForecastVersion] CRITICAL: earnings_forecast_versions schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await PerformanceAiScoreVersionStore.ensureSchema();
+        console.log('[DB] performance_ai_score_versions table ready');
+    } catch (err: unknown) {
+        console.error('[PerformanceAiScoreVersion] CRITICAL: performance_ai_score_versions schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {

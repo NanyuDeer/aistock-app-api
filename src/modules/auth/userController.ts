@@ -488,8 +488,9 @@ export class UserController {
         }
         const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
         const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+        const unreadOnly = req.query.unread === 'true';
         try {
-            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor));
+            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor, unreadOnly));
         } catch (error) {
             UserController.respondNotificationError(res, error, '通知读取失败');
         }
@@ -517,6 +518,20 @@ export class UserController {
         try {
             await NotificationService.markRead(auth.openid, ids);
             createResponse(res, 200, 'success', { ids });
+        } catch (error) {
+            UserController.respondNotificationError(res, error, '通知状态更新失败');
+        }
+    }
+
+    static async markAllNotificationsRead(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        const auth = await UserController.requireAuth(req);
+        if (!auth.ok) {
+            createResponse(res, auth.code, auth.message);
+            return;
+        }
+        try {
+            const updated = await NotificationService.markAllRead(auth.openid);
+            createResponse(res, 200, 'success', { updated });
         } catch (error) {
             UserController.respondNotificationError(res, error, '通知状态更新失败');
         }

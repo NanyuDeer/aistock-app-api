@@ -24,6 +24,9 @@ import {
     type ExpressVipRow, type DisclosureDateRow,
 } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
+import { AiScoreService } from './AiScoreService';
+import { PerformanceAiScoreVersionStore } from './PerformanceAiScoreVersionStore';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -39,25 +42,32 @@ function annDateToIso(annDate: string): string | undefined {
     return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-/** 获取前一天的日期字符串 YYYY-MM-DD */
-function getYesterdayStr(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
+/** 上海时区偏移（毫秒） */
+const SHANGHAI_OFFSET_MS = 8 * 3600 * 1000;
+
+/**
+ * 获取上海时区日期字符串 YYYY-MM-DD（offsetDays 负数表示往前推 N 天）
+ * 注意：不能直接用 toISOString()（UTC），凌晨 0-8 点（北京时间）时 UTC 日期仍是前一天，会把"昨日"算成"前天"
+ */
+function getShanghaiDateStr(offsetDays = 0): string {
+    const d = new Date(Date.now() + SHANGHAI_OFFSET_MS);
+    d.setUTCDate(d.getUTCDate() + offsetDays);
     return d.toISOString().slice(0, 10);
 }
 
-/** 获取前一天的日期字符串 YYYYMMDD（Tushare格式） */
-function getYesterdayCompact(): string {
-    const d = new Date();
-    d.setDate(d.getDate() - 1);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+/** 获取前一天的日期字符串 YYYY-MM-DD（上海时区） */
+function getYesterdayStr(): string {
+    return getShanghaiDateStr(-1);
 }
 
-/** 获取N天前的日期 YYYYMMDD */
+/** 获取前一天的日期字符串 YYYYMMDD（Tushare格式，上海时区） */
+function getYesterdayCompact(): string {
+    return getShanghaiDateStr(-1).replace(/-/g, '');
+}
+
+/** 获取N天前的日期 YYYYMMDD（上海时区） */
 function getDaysAgoCompact(days: number): string {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10).replace(/-/g, '');
+    return getShanghaiDateStr(-days).replace(/-/g, '');
 }
 
 /** 报告期前后关系（0331→上年1231，其余回退一个季度） */
@@ -114,8 +124,8 @@ export class PerformanceReportAutoUpdateService {
             return { updated: 0, skipped: 0, errors: 0 };
         }
 
-        // 检查今天是否已经执行过
-        const today = new Date().toISOString().slice(0, 10);
+        // 检查今天是否已经执行过（按上海时区日期）
+        const today = getShanghaiDateStr(0);
         const lastRunDate = await CacheService.get<string>('performance_report:auto_update:date');
         if (lastRunDate === today) {
             console.log('[PerformanceReportAutoUpdate] 今天已执行过，跳过');
@@ -288,9 +298,27 @@ export class PerformanceReportAutoUpdateService {
                 payload,
                 occurredAt: annDateToIso(annDate),
             });
+            if (normalizedEndDate) {
+                this.persistAiScoreSnapshot(symbol, normalizedEndDate, reportType);
+            }
         } catch (error) {
             console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
         }
+    }
+
+    /** 评分存档独立执行，不影响财报入库和即时通知主流程。 */
+    private static persistAiScoreSnapshot(symbol: string, endDate: string, reportType: string): void {
+        void (async () => {
+            try {
+                const scoreData = await AiScoreService.analyze(symbol);
+                await PerformanceAiScoreVersionStore.upsert({ symbol, endDate, reportType, scoreData });
+            } catch (error) {
+                console.warn(
+                    `[PerformanceReportAutoUpdate] ${symbol} AI score snapshot failed:`,
+                    error instanceof Error ? error.message : String(error),
+                );
+            }
+        })();
     }
 
     /**
