@@ -2995,7 +2995,7 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
     }
 })
 
-export { publicRouter }
+export { publicRouter, getAnalysisReport }
 
 /**
  * POST /internal/push/market-event

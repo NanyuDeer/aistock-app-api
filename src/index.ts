@@ -30,6 +30,9 @@ import { getSemiAnnualReport } from './modules/quote/TushareService';
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
 
+// 板块四环聚合接口（/api/agent/sector-insight/:date，2026-09-02 板块四环前端 spec §6.2）
+import sectorInsightRouter from './core/routes/sectorInsightRouter';
+
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
@@ -146,6 +149,9 @@ app.use('/api/agent', publicRouter);
 // 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
 // 否则会被反代转发到 Python；对齐 publicRouter 挂载顺序先例）
 app.use('/api/agent', rhythmMasterPublicRouter);
+
+// 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
+app.use('/api/agent', sectorInsightRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req

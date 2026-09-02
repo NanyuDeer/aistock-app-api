@@ -187,6 +187,24 @@ export class PredictionRecordService {
     return result.rows;
   }
 
+  /**
+   * 板块预判记录按日查询（sector-insight 聚合接口用）。
+   * source_id 形如 `sector:{板块名}:{YYYY-MM-DD}`；date 由路由正则校验
+   * （^\d{4}-\d{2}-\d{2}$，无 %/_ 通配符），LIKE 后缀拼接无注入面。
+   * 同一板块名当日只有一条（source_type+source_id 唯一索引 upsert 覆盖）。
+   */
+  static async listSectorByDate(date: string): Promise<PredictionRecordRow[]> {
+    const result = await pool.query<PredictionRecordRow>(
+      `SELECT id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at
+       FROM prediction_records
+       WHERE source_type = 'sector_prediction'
+         AND source_id LIKE 'sector:%:' || $1
+       ORDER BY created_at DESC`,
+      [date],
+    );
+    return result.rows;
+  }
+
   /** 单条详情（public 路由） */
   static async getById(id: number): Promise<PredictionRecordRow | null> {
     const result = await pool.query<PredictionRecordRow>(

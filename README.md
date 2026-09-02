@@ -131,6 +131,7 @@ src/
 | `/api/agent/event/:eventId` | **事件传导报告详情**（公开，完整 analysis_reports；顶层含 chain_summary 行业影响摘要，旧数据返回 []） | eventId |
 | `/api/agent/rhythm-master/:date` | **节奏大师报告读取**（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） | date: YYYY-MM-DD |
 | `/api/agent/rhythm-master/calendar` | **节奏日历热力图聚合**（公开，契约 #7；最近 N 个交易日 after_close 收盘基准档位，SQL 级投影 level/score/basis_date，level 可空=灰格） | days: 交易日数（默认 60，≤60） |
+| `/api/agent/sector-insight/:date` | **板块四环聚合**（公开，spec 2026-09-02 §6.2：风口板块 ∪ 大盘溯源主因板块归一 ts_code，挂载 quote/溯源摘要/预判摘要；须在 createAgentProxy 之前挂载） | date: YYYY-MM-DD |
 | `/api/predictions` | **历史预测列表**（公开，含命中率统计 + `bucketStats` 三桶分桶 + 分页；命中率按 `methodology_version` 版本过滤（默认 2.0 防跳变），档位进度全量；支持 `source_id=review:YYYY-MM-DD` 定向溯源报告，`status` 含 skipped） | status=all\|pending\|verified\|skipped, source_id, page, pageSize |
 | `/api/predictions/:id` | **历史预测详情**（公开） | id |
 | `/api/chat/sessions` | **会话元数据**（POST 幂等 upsert / GET 最近50个，JWT openid 鉴权） | session_id, question |
