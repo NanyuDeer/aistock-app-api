@@ -57,7 +57,7 @@ export function isOvernightEvent(eventTime: string | null): boolean {
 export async function listEvents(dateFrom: string, dateTo: string): Promise<CalendarEventRow[]> {
   const result = await pool.query<CalendarEventRow>(
     `SELECT id, to_char(event_date, 'YYYY-MM-DD') AS event_date, title, importance, market, event_time, source, detail, result
-     FROM market_calendar_events WHERE event_date BETWEEN $1 AND $2 ORDER BY event_date ASC`,
+     FROM market_calendar_events WHERE event_date BETWEEN $1 AND $2 ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`,
     [dateFrom, dateTo],
   )
   return result.rows
