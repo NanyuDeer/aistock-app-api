@@ -3077,7 +3077,7 @@ router.post('/push/market-event', json(), async (req: Request, res: Response) =>
 /**
  * POST /internal/mail/notify
  * 迭代完成通知邮件（2026-09-02）：agent-py 在 iterate 报告持久化后调用。
- * 复用 EMAIL_SMTP_*（QQ 邮箱）配置；收件人默认 EMAIL_FROM（env 中已配置的 QQ 邮箱）。
+ * SMTP：优先独立 QQ 通道（ITERATE_SMTP_*，收件 ITERATE_MAIL_TO），否则回退 EMAIL_SMTP_* 与 EMAIL_FROM。
  * 未配置收件/发件不抛错 → 返回 sent:false（agent 侧仅记日志，不阻断迭代链路）。
  * body: { report_type?, report_date?, summary? }
  */
@@ -3087,7 +3087,7 @@ router.post('/mail/notify', async (req: Request, res: Response) => {
         const reportType = typeof body.report_type === 'string' && body.report_type ? body.report_type : 'iterate'
         const reportDate = typeof body.report_date === 'string' ? body.report_date : ''
         const summary = typeof body.summary === 'string' ? body.summary : ''
-        const to = (process.env.EMAIL_FROM ?? '').trim()
+        const to = (process.env.ITERATE_MAIL_TO ?? process.env.EMAIL_FROM ?? '').trim()
         const subject = `【AI迭代完成】${reportType}${reportDate ? ` ${reportDate}` : ''}`
         const text = [
             `${reportType} 迭代报告已生成。`,
@@ -3097,10 +3097,20 @@ router.post('/mail/notify', async (req: Request, res: Response) => {
         ].filter(Boolean).join('\n')
 
         if (!to) {
-            console.log('[Internal] mail/notify skipped: EMAIL_FROM 未配置')
-            return res.json({ code: 0, data: { sent: false, reason: 'EMAIL_FROM not configured' } })
+            console.log('[Internal] mail/notify skipped: ITERATE_MAIL_TO / EMAIL_FROM 未配置')
+            return res.json({ code: 0, data: { sent: false, reason: 'recipient not configured' } })
         }
-        await EmailService.sendPlain(subject, text, to)
+        const smtpPort = Number(process.env.ITERATE_SMTP_PORT ?? 0)
+        const overrides = process.env.ITERATE_SMTP_USER
+            ? {
+                  host: process.env.ITERATE_SMTP_HOST || 'smtp.qq.com',
+                  port: smtpPort || 465,
+                  user: process.env.ITERATE_SMTP_USER,
+                  pass: process.env.ITERATE_SMTP_PASS ?? '',
+                  from: process.env.ITERATE_SMTP_USER,
+              }
+            : undefined
+        await EmailService.sendPlain(subject, text, to, overrides)
         res.json({ code: 0, data: { sent: true, to } })
     } catch (err: unknown) {
         console.error('[Internal] mail/notify error:', errMsg(err))

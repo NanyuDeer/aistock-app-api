@@ -24,14 +24,15 @@ interface EmailConfig {
     from: string;
 }
 
-/** 读取生产 SMTP 配置。未设置 EMAIL_SMTP_USER 返回 null（视为未接入） */
-function readEmailConfig(): EmailConfig | null {
-    const user = process.env.EMAIL_SMTP_USER ?? '';
+/** 读取生产 SMTP 配置。未设置 EMAIL_SMTP_USER 返回 null（视为未接入）。
+ *  overrides 可整体替换（iterate 通知走独立 QQ SMTP，不影响 163 验证码通道）。 */
+function readEmailConfig(overrides?: Partial<EmailConfig>): EmailConfig | null {
+    const user = overrides?.user ?? process.env.EMAIL_SMTP_USER ?? '';
     if (!user) return null;
-    const host = process.env.EMAIL_SMTP_HOST ?? 'smtp.163.com';
-    const port = Number(process.env.EMAIL_SMTP_PORT ?? 465);
-    const pass = process.env.EMAIL_SMTP_PASS ?? '';
-    const from = process.env.EMAIL_FROM ?? user;
+    const host = overrides?.host ?? process.env.EMAIL_SMTP_HOST ?? 'smtp.163.com';
+    const port = overrides?.port ?? Number(process.env.EMAIL_SMTP_PORT ?? 465);
+    const pass = overrides?.pass ?? process.env.EMAIL_SMTP_PASS ?? '';
+    const from = overrides?.from ?? process.env.EMAIL_FROM ?? user;
     if (!pass) {
         throw new Error('EMAIL_SMTP_PASS 未配置（163 邮箱授权码，非登录密码）');
     }
@@ -73,16 +74,21 @@ export class EmailService {
 
     /**
      * 通用文本通知（迭代完成等场景，2026-09-02）。
-     * dev 仅日志回显；生产按 EMAIL_SMTP_* 发送。to 缺省发给自己（EMAIL_FROM），
-     * 便于"每次 iterate 完成后推送邮箱"复用同一套 SMTP 配置。
+     * dev 仅日志回显；生产按 EMAIL_SMTP_* 或 overrides（独立 SMTP，如 iterate QQ 通道）发送。
+     * to 缺省依次取 ITERATE_MAIL_TO / EMAIL_FROM（发给自己），便于"每次 iterate 完成后推送邮箱"。
      */
-    static async sendPlain(subject: string, text: string, to?: string): Promise<void> {
+    static async sendPlain(
+        subject: string,
+        text: string,
+        to?: string,
+        overrides?: Partial<Pick<EmailConfig, 'host' | 'port' | 'user' | 'pass' | 'from'>>,
+    ): Promise<void> {
         const isDev = process.env.NODE_ENV !== 'production';
         if (isDev) {
             console.log(`[Email][dev] ${subject} -> ${to ?? ''}（开发环境不真发邮件）`);
             return;
         }
-        const cfg = readEmailConfig();
+        const cfg = readEmailConfig(overrides);
         if (!cfg) {
             throw new Error('邮箱服务未配置：请在环境变量设置 EMAIL_SMTP_USER / EMAIL_SMTP_PASS（见 .env.example）');
         }
@@ -94,7 +100,7 @@ export class EmailService {
         });
         await transporter.sendMail({
             from: cfg.from,
-            to: to || cfg.from,
+            to: to || process.env.ITERATE_MAIL_TO || cfg.from,
             subject,
             text,
         });
