@@ -15,11 +15,11 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
-import test, { after, afterEach, before } from 'node:test'
+import test, { after, afterEach, before, mock } from 'node:test'
 import express from 'express'
 
 import predictionInternalRouter, { __internalPredictionDependencies } from './internalRouter'
-import { PredictionRecordService } from './PredictionRecordService'
+import { PredictionRecordService, type PredictionRecordRow, type PredictionVerificationEntry } from './PredictionRecordService'
 import redis from '../../core/redis'
 import pool from '../../core/db'
 
@@ -45,6 +45,7 @@ afterEach(() => {
     ;(redis as unknown as { incr: unknown }).incr = ORIG_REDIS_INCR
     ;(redis as unknown as { expire: unknown }).expire = ORIG_REDIS_EXPIRE
     globalThis.fetch = ORIG_FETCH
+    mock.restoreAll()  // 还原本文件内 node:test mock.method（appendVerification 透传测试）
 })
 
 /** Redis 限流 mock：incr 返回指定计数（默认 1 放行），同时 patch expire——避免测试触达真实 Redis */
@@ -167,6 +168,54 @@ test('PUT /internal/predictions/1/verification invalid result -> 400', async () 
     assert.equal(res.status, 400)
     const body = res.body as { code: number }
     assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification passes through extended entry fields (A3 stats)', async () => {
+    // A3 统计口径修复回归：Python 验证器写入的扩展字段（methodology_version/baseline_neutral
+    // /target_type/approximate 等）必须完整透传到 appendVerification 的 entry——
+    // 否则 agent-py _filter_v2 恒 n=0，A3 钳制与存量统计在生产不触发。
+    let captured: unknown
+    mock.method(
+        PredictionRecordService,
+        'appendVerification',
+        async (id: number, horizon: string, entry: PredictionVerificationEntry) => {
+            captured = entry
+            return {
+                id,
+                source_type: 'review',
+                source_id: 'review:2026-08-28',
+                schema_version: '2.0',
+                prediction: { horizons: [{ horizon }] },
+                verification: { [horizon]: entry },
+                status: 'pending',
+                due_dates: { [horizon]: '2026-09-15' },
+                created_at: new Date().toISOString(),
+            } as PredictionRecordRow
+        },
+    )
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        {
+            horizon: 'short',
+            result: 'hit',
+            methodology_version: '2.0',
+            baseline_neutral: true,
+            target_type: 'index',
+            approximate: false,
+        },
+    )
+
+    assert.equal(res.status, 200)
+    const entry = captured as Record<string, unknown>
+    assert.equal(entry.methodology_version, '2.0')
+    assert.equal(entry.baseline_neutral, true)
+    assert.equal(entry.target_type, 'index')
+    assert.equal(entry.approximate, false)
+    assert.equal(entry.result, 'hit')
 })
 
 test('GET /internal/predictions?status=all -> 400 (unsupported status filter)', async () => {

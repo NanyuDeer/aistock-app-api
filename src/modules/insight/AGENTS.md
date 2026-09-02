@@ -21,7 +21,7 @@
 | `SectorMarketEvidenceService.ts` | L2 量化联动证据（板块强度 ≥3% / 同行同步 ≥3 只且 ≥5% / 市场冲击 ±1.5%，腾讯免积分） |
 | `InsightJobService.ts` | 任务队列（jobs + outbox → Redis Stream），`enqueue(eventId, {force?})`，`publishPending`，`reportStatus` |
 | `InsightPushService.ts` | 三通道推送（WS/微信/飞书），`pushWithKind(kind)`，`isSubstantiveChange` 判定，push_records 去重 |
-| `internalRouter.ts` | Python 归因专用 internal API：context / jobs 状态 / results 回写（UPSERT 前判定 changed） |
+| `internalRouter.ts` | Python 归因专用 internal API：context / jobs 状态 / results 回写（UPSERT 前判定 changed）+ **阶段 2.1 只读端点（读层，openid 归属过滤）：`GET /events?openid=&symbol=&limit=` 列表、`GET /events/:eventId?openid=` 详情（含证据包）** |
 | `controller.ts` | 前端列表/详情（详情 LATERAL join 最新价格快照） |
 
 ## 数据模型（016/017 迁移）

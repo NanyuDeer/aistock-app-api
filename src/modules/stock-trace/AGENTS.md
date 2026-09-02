@@ -53,6 +53,10 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - **抓取重试**：`triggerEventScrape` 失败指数退避重试（500ms/2s，共 3 次），仍失败仅告警不阻断。
 - **revision 增量采集**：`StockTraceSnapshotService.captureEnriched/captureCorrected` 增加 `incremental` 分支——修订时复用上一 enriched 快照中"盘面基本不变"域（news/announcement/sector_fact/market_fact，`pickReusableSources`），仅重采 capital/technical 与当期 baseSources，压减 Tushare/东财请求量；`reusedDomainAvailability` 保证被复用域在 `dataReadiness`/`missingFields` 中如实报告可用（而非缺失）；无上一 enriched 快照时 fallback 原全量五域采集，创建（created）仍走全量。
 
+### 2026-08-27 更新：Python 读层只读列表端点（阶段 2.2）
+
+- `internalRouter.ts` 新增只读列表端点 `GET /internal/stock-trace/events?openid=&symbol=&limit=`：openid 走 query（internal 可信，需 `X-Internal-Token`），复用 `StockTraceService.listUserEvents` 后按 `symbol` 内存过滤（symbol 可空——为空返回该用户全部异动溯源）；`limit` 默认 50、上限 100。供 Python agent-py 的 `stock_trace_lookup` skill 对话查询使用（只读，无写入副作用）。
+
 - `StockTraceJobService` writes a PostgreSQL job and transactional Outbox before publishing to Redis Stream `stock-trace.jobs`.
 - Stream messages contain `job_id`, `event_id`, `trigger_revision`, `analysis_version`, and `job_kind` only; never include user data or source content.
 - Redis publish failure must leave the Outbox record pending and must not affect TriggerEvent persistence or the initial alert.

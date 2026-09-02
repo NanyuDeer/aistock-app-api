@@ -8,15 +8,18 @@
  *
  * 与 SmsAuthController 平行（复制其 setAuthCookie / resolveAuth / verifyCode 私有逻辑，
  * 保持独立解耦，短信控制器完全不动）。邮箱统一 toLowerCase 归一化，防大小写重复建户。
+ *
+ * 绑定冲突（2026-08-31 起）：目标身份已属另一账户时调用 accountMerge.mergeConflictAccount
+ * 自动合并（自选股并集 / 设置以主账户为准 / VIP 继承 / 身份转移），不再 409 拒绝。
  */
 import { Request, Response, NextFunction } from 'express';
-import type { PoolClient } from 'pg';
 import { signJwt, verifyJwt } from '../../shared/utils/jwt';
 import { createResponse } from '../../shared/utils/response';
 import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import pool from '../../core/db';
 import { EmailService, EMAIL_DEV_TEST_CODE, isValidEmail } from '../../core/email/EmailService';
 import { generateSmsCode, setCode, consumeCode, isRateLimited } from '../../core/sms/smsCodeStore';
+import { mergeConflictAccount } from './accountMerge';
 import { AuthController } from './controller';
 
 type AuthResult = { ok: true; id: string; openid: string } | { ok: false; code: number; message: string };
@@ -29,11 +32,6 @@ type UserRow = {
     nickname: string | null;
     avatar_url: string | null;
 };
-
-/** 邮箱接管结果 */
-type TakeoverResult =
-    | { ok: true; row: UserRow }
-    | { ok: false; reason: 'notAbandoned' | 'noAccount' | 'error' };
 
 /** 邮箱归一化：去空格 + 小写（同一邮箱不同大小写视为同一账户） */
 function normalizeEmail(email: string): string {
@@ -162,77 +160,6 @@ export class EmailAuthController {
         });
     }
 
-    /**
-     * 空壳账户接管：目标身份（邮箱 / 微信 openid）已被另一账户占用时调用。
-     *
-     * 若占户为空壳账户（除被接管身份外无邮箱/微信/手机绑定、无自选股、无设置），且调用方
-     * 已通过验证码证明当前用户持有该身份，则在事务内释放旧账户对应身份并绑定到当前账户——
-     * 这是通用方案，适用于任何用户遇到"身份已绑空账户"的场景，而非一次性修数据。
-     * 行锁（SELECT ... FOR UPDATE）防止检查与释放之间旧账户数据变化。
-     *
-     * @param identityColumn 被接管释放的 users 列（'email' 或 'openid'）
-     * @param conflictId     当前占用该身份的账户 id
-     * @param currentId      当前登录账户 id
-     * @param bindSql        绑定当前账户的 SET 片段（首个占位符即身份值）
-     * @param bindParams     绑定参数（身份值 + 可选附加列，如微信昵称/头像）
-     */
-    private static async takeoverIdentity(
-        identityColumn: 'email' | 'openid',
-        conflictId: string,
-        currentId: string,
-        bindSql: string,
-        bindParams: unknown[],
-    ): Promise<TakeoverResult> {
-        let client: PoolClient;
-        try {
-            client = await pool.connect();
-        } catch (err: unknown) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            EmailAuthController.log('bind', '❌ 身份接管连接失败', { conflictId, error: errMsg });
-            return { ok: false, reason: 'error' };
-        }
-        try {
-            await client.query('BEGIN');
-            // 行锁旧账户，确认其空壳性
-            const locked = await client.query('SELECT email, openid, phone FROM users WHERE id = $1 FOR UPDATE', [conflictId]);
-            const holder = locked.rows[0] as { email: string | null; openid: string | null; phone: string | null } | undefined;
-            if (holder) {
-                const hasStocks = await client.query('SELECT 1 FROM user_stocks WHERE user_id = $1 LIMIT 1', [conflictId]);
-                const hasSettings = await client.query('SELECT 1 FROM user_settings WHERE openid = $1 LIMIT 1', [holder.openid]);
-                // 空壳判定：除被接管身份外无其他绑定（邮箱/微信/手机）+ 无自选股/设置
-                const otherIdentityNull = identityColumn === 'email' ? holder.openid === null : holder.email === null;
-                const abandoned = otherIdentityNull && holder.phone === null
-                    && hasStocks.rows.length === 0 && hasSettings.rows.length === 0;
-                if (!abandoned) {
-                    await client.query('ROLLBACK');
-                    return { ok: false, reason: 'notAbandoned' };
-                }
-                // 释放旧账户的该身份（该账户无任何可保留数据）
-                await client.query(`UPDATE users SET ${identityColumn} = NULL WHERE id = $1`, [conflictId]);
-            }
-            // 绑定到当前账户
-            const updated = await client.query(
-                `UPDATE users SET ${bindSql} WHERE id = $${bindParams.length + 1}
-                 RETURNING id, openid, email, nickname, avatar_url`,
-                [...bindParams, currentId],
-            );
-            const row = updated.rows[0] as UserRow | undefined;
-            if (!row) {
-                await client.query('ROLLBACK');
-                return { ok: false, reason: 'noAccount' };
-            }
-            await client.query('COMMIT');
-            return { ok: true, row };
-        } catch (err: unknown) {
-            await client.query('ROLLBACK').catch(() => { /* 连接可能已断，忽略回滚失败 */ });
-            const errMsg = err instanceof Error ? err.message : String(err);
-            EmailAuthController.log('bind', '❌ 身份接管事务失败', { conflictId, error: errMsg });
-            return { ok: false, reason: 'error' };
-        } finally {
-            client.release();
-        }
-    }
-
     /** 绑定邮箱：POST /api/auth/bind/email（Bearer 已登录） */
     static async bindEmail(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const auth = await EmailAuthController.resolveAuth(req);
@@ -255,29 +182,19 @@ export class EmailAuthController {
             return;
         }
 
-        // 归属冲突：该邮箱已属其他账户
+        // 归属冲突：该邮箱已属其他账户 → 验证码已证明邮箱归属，自动合并进当前账户
         const conflict = await pool.query('SELECT id FROM users WHERE email = $1 AND id <> $2', [email, auth.id]);
         let row: UserRow;
         if (conflict.rows.length > 0) {
-            // 占户为空壳账户时，验证码已证明邮箱归属 → 自动接管；否则 409 拒绝
-            const result = await EmailAuthController.takeoverIdentity(
-                'email',
-                String(conflict.rows[0].id),
-                auth.id,
-                'email = $1',
-                [email],
-            );
+            const result = await mergeConflictAccount(String(conflict.rows[0].id), auth.id);
             if (!result.ok) {
-                const code = result.reason === 'notAbandoned' ? 409 : result.reason === 'noAccount' ? 404 : 500;
-                const message =
-                    result.reason === 'notAbandoned' ? '该邮箱已绑定其他账户'
-                    : result.reason === 'noAccount' ? '账户不存在'
-                    : '绑定失败，请稍后再试';
+                const code = result.reason === 'noAccount' ? 404 : 500;
+                const message = result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
                 createResponse(res, code, message);
                 return;
             }
             row = result.row;
-            EmailAuthController.log('bindEmail', '✅ 邮箱接管成功（旧空账户已释放）', { id: auth.id, email, oldId: conflict.rows[0].id });
+            EmailAuthController.log('bindEmail', '✅ 邮箱绑定成功（冲突账户已自动合并）', { id: auth.id, email, oldId: conflict.rows[0].id });
         } else {
             const updated = await pool.query(
                 `UPDATE users SET email = $1 WHERE id = $2
@@ -349,28 +266,19 @@ export class EmailAuthController {
             return;
         }
 
-        // 归属冲突：该微信已属其他账户 → 占户为空壳账户时自动接管；否则 409 + 引导
+        // 归属冲突：该微信已属其他账户 → 验证码已证明归属，自动合并（微信昵称/头像随 openid 转移）
         const conflict = await pool.query('SELECT id FROM users WHERE openid = $1 AND id <> $2', [openid, auth.id]);
         let row: UserRow;
         if (conflict.rows.length > 0) {
-            const result = await EmailAuthController.takeoverIdentity(
-                'openid',
-                String(conflict.rows[0].id),
-                auth.id,
-                `openid = $1, nickname = COALESCE(NULLIF(nickname, ''), $2), avatar_url = COALESCE(NULLIF(avatar_url, ''), $3)`,
-                [openid, nickname, avatarUrl],
-            );
+            const result = await mergeConflictAccount(String(conflict.rows[0].id), auth.id, { nickname, avatarUrl });
             if (!result.ok) {
-                const code = result.reason === 'notAbandoned' ? 409 : result.reason === 'noAccount' ? 404 : 500;
-                const message =
-                    result.reason === 'notAbandoned'
-                        ? '该微信已绑定其他账户。若该账户有数据，请先用该微信登录一次，在「账号与安全」页绑定邮箱，即可保留原微信数据'
-                        : result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
+                const code = result.reason === 'noAccount' ? 404 : 500;
+                const message = result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
                 createResponse(res, code, message);
                 return;
             }
             row = result.row;
-            EmailAuthController.log('bindWechat', '✅ 微信接管成功（旧空账户已释放）', { id: auth.id, openid, oldId: conflict.rows[0].id });
+            EmailAuthController.log('bindWechat', '✅ 微信绑定成功（冲突账户已自动合并）', { id: auth.id, openid, oldId: conflict.rows[0].id });
         } else {
             const updated = await pool.query(
                 `UPDATE users SET openid = $1,

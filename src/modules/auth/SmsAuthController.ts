@@ -6,7 +6,8 @@
  * - POST /api/auth/bind/phone   Bearer 登录态下给当前账户绑定手机号
  * - POST /api/auth/bind/wechat  Bearer 登录态下给当前账户绑定微信（需手机+验证码证明归属）
  *
- * 冲突策略（设计 §5）：phone / openid 已属其他 id 时返回 409 拒绝 + 引导文案，不做自动合并。
+ * 冲突策略（2026-08-31 起）：phone / openid 已属其他 id 时调用 accountMerge.mergeConflictAccount
+ * 自动合并（自选股并集 / 设置以主账户为准 / VIP 继承 / 身份转移），不再 409 拒绝。
  * dev 环境放行固定测试码 SMS_DEV_TEST_CODE（登录/绑定校验共用）。
  */
 import { Request, Response, NextFunction } from 'express';
@@ -16,6 +17,7 @@ import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../
 import pool from '../../core/db';
 import { SmsService, SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { generateSmsCode, isValidMainlandPhone, setCode, consumeCode, isRateLimited } from '../../core/sms/smsCodeStore';
+import { mergeConflictAccount } from './accountMerge';
 import { AuthController } from './controller';
 
 type AuthResult = { ok: true; id: string; openid: string } | { ok: false; code: number; message: string };
@@ -59,9 +61,10 @@ export class SmsAuthController {
         return consumeCode(phone, code);
     }
 
-    /** 发送验证码：POST /api/auth/sms/send */
+    /** 发送验证码：POST /api/auth/sms/send（可选 body.scenario：login 默认 / bind 绑定前发送） */
     static async sendSms(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const phone = String(req.body?.phone ?? '').trim();
+        const scenario = (String(req.body?.scenario ?? '')).trim();
         if (!isValidMainlandPhone(phone)) {
             createResponse(res, 400, '手机号格式不正确');
             return;
@@ -73,7 +76,7 @@ export class SmsAuthController {
         const code = generateSmsCode();
         await setCode(phone, code);
         try {
-            await SmsService.send(phone, code);
+            await SmsService.send(phone, code, scenario === 'bind' ? 'bind' : 'login');
         } catch (err: unknown) {
             const errMsg = err instanceof Error ? err.message : String(err);
             SmsAuthController.log('send', '❌ 发送验证码失败', { phone, error: errMsg });
@@ -165,25 +168,33 @@ export class SmsAuthController {
             return;
         }
 
-        // 归属冲突：该手机号已属其他账户 → 409 拒绝 + 引导（不做自动合并）
+        // 归属冲突：该手机号已属其他账户 → 验证码已证明手机号归属，自动合并进当前账户
         const conflict = await pool.query('SELECT id FROM users WHERE phone = $1 AND id <> $2', [phone, auth.id]);
+        let row: { id: string; openid: string | null; phone: string | null; nickname: string | null; avatar_url: string | null };
         if (conflict.rows.length > 0) {
-            createResponse(res, 409, '该手机号已绑定其他账户');
-            return;
+            const result = await mergeConflictAccount(String(conflict.rows[0].id), auth.id);
+            if (!result.ok) {
+                const code = result.reason === 'noAccount' ? 404 : 500;
+                const message = result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
+                createResponse(res, code, message);
+                return;
+            }
+            row = result.row;
+            SmsAuthController.log('bindPhone', '✅ 手机号绑定成功（冲突账户已自动合并）', { id: auth.id, phone, oldId: conflict.rows[0].id });
+        } else {
+            const updated = await pool.query(
+                `UPDATE users SET phone = $1 WHERE id = $2
+                 RETURNING id, openid, phone, nickname, avatar_url`,
+                [phone, auth.id],
+            );
+            row = updated.rows[0];
+            if (!row) {
+                createResponse(res, 404, '账户不存在');
+                return;
+            }
+            SmsAuthController.log('bindPhone', '✅ 手机号绑定成功', { id: auth.id, phone });
         }
 
-        const updated = await pool.query(
-            `UPDATE users SET phone = $1 WHERE id = $2
-             RETURNING id, openid, phone, nickname, avatar_url`,
-            [phone, auth.id],
-        );
-        const row = updated.rows[0];
-        if (!row) {
-            createResponse(res, 404, '账户不存在');
-            return;
-        }
-
-        SmsAuthController.log('bindPhone', '✅ 手机号绑定成功', { id: auth.id, phone });
         createResponse(res, 200, 'success', {
             id: row.id,
             openid: row.openid ?? null,
@@ -241,28 +252,36 @@ export class SmsAuthController {
             return;
         }
 
-        // 归属冲突：该微信已属其他账户 → 409 + 明确引导（老微信用户正路：先微信登录一次再绑手机，保留原数据）
+        // 归属冲突：该微信已属其他账户 → 验证码已证明归属，自动合并（微信昵称/头像随 openid 转移）
         const conflict = await pool.query('SELECT id FROM users WHERE openid = $1 AND id <> $2', [openid, auth.id]);
+        let row: { id: string; openid: string | null; phone: string | null; nickname: string | null; avatar_url: string | null };
         if (conflict.rows.length > 0) {
-            createResponse(res, 409, '该微信已绑定其他账户。请先用该微信登录一次，在「账号与安全」页绑定手机号，即可保留原微信数据');
-            return;
+            const result = await mergeConflictAccount(String(conflict.rows[0].id), auth.id, { nickname, avatarUrl });
+            if (!result.ok) {
+                const code = result.reason === 'noAccount' ? 404 : 500;
+                const message = result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
+                createResponse(res, code, message);
+                return;
+            }
+            row = result.row;
+            SmsAuthController.log('bindWechat', '✅ 微信绑定成功（冲突账户已自动合并）', { id: auth.id, openid, oldId: conflict.rows[0].id });
+        } else {
+            const updated = await pool.query(
+                `UPDATE users SET openid = $1,
+                     nickname = COALESCE(NULLIF(nickname, ''), $2),
+                     avatar_url = COALESCE(NULLIF(avatar_url, ''), $3)
+                 WHERE id = $4
+                 RETURNING id, openid, phone, nickname, avatar_url`,
+                [openid, nickname, avatarUrl, auth.id],
+            );
+            row = updated.rows[0];
+            if (!row) {
+                createResponse(res, 404, '账户不存在');
+                return;
+            }
+            SmsAuthController.log('bindWechat', '✅ 微信绑定成功', { id: auth.id, openid });
         }
 
-        const updated = await pool.query(
-            `UPDATE users SET openid = $1,
-                 nickname = COALESCE(NULLIF(nickname, ''), $2),
-                 avatar_url = COALESCE(NULLIF(avatar_url, ''), $3)
-             WHERE id = $4
-             RETURNING id, openid, phone, nickname, avatar_url`,
-            [openid, nickname, avatarUrl, auth.id],
-        );
-        const row = updated.rows[0];
-        if (!row) {
-            createResponse(res, 404, '账户不存在');
-            return;
-        }
-
-        SmsAuthController.log('bindWechat', '✅ 微信绑定成功', { id: auth.id, openid });
         createResponse(res, 200, 'success', {
             id: row.id,
             openid: row.openid ?? null,

@@ -49,5 +49,6 @@ export interface AgentAnalysisResult {
   '结论': string;
   '核心逻辑': string;
   '风险提示': string;
+  '投资建议'?: string;
   '十倍股指标打分'?: Record<string, number>;
 }

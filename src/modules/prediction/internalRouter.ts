@@ -1,5 +1,9 @@
 import { Router, type Request, type Response } from 'express';
-import { PredictionRecordService, type PredictionVerificationEntry } from './PredictionRecordService';
+import {
+  PredictionRecordService,
+  VALID_RESULTS,
+  type PredictionVerificationEntry,
+} from './PredictionRecordService';
 import redis from '../../core/redis';
 
 const router: Router = Router();
@@ -38,8 +42,6 @@ function param(req: Request, key: string): string {
   const val = req.params[key];
   return Array.isArray(val) ? val[0] : (val || '');
 }
-
-const VALID_RESULTS = ['hit', 'miss', 'insufficient'] as const;
 
 router.post('/', async (req: Request, res: Response) => {
   const body = req.body as {
@@ -234,25 +236,44 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   const id = Number(param(req, 'id'));
   const body = req.body as {
     horizon?: unknown;
+    type?: unknown;
     result?: unknown;
     actual?: unknown;
     reason?: unknown;
+    early_exit?: unknown;
   };
   if (!Number.isInteger(id) || id < 1 || typeof body.horizon !== 'string' || !body.horizon.trim()) {
     res.status(400).json({ code: 400, message: 'valid id and horizon are required' });
     return;
   }
-  if (!VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
+  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法
+  if (body.type !== 'early_exit' && !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
     res.status(400).json({ code: 400, message: 'result must be hit|miss|insufficient' });
     return;
   }
-  const entry: PredictionVerificationEntry = {
-    horizon: body.horizon,
-    result: body.result as PredictionVerificationEntry['result'],
-    actual: typeof body.actual === 'string' ? body.actual : '',
-    reason: typeof body.reason === 'string' ? body.reason : '',
-    verified_at: new Date().toISOString(),
-  };
+  const entry: PredictionVerificationEntry =
+    body.type === 'early_exit'
+      ? {
+          horizon: body.horizon,
+          type: 'early_exit',
+          early_exit: (body.early_exit as Record<string, unknown>) ?? {},
+        }
+      : {
+          horizon: body.horizon,
+          result: body.result as 'hit' | 'miss' | 'insufficient',
+          actual: typeof body.actual === 'string' ? body.actual : '',
+          reason: typeof body.reason === 'string' ? body.reason : '',
+          verified_at: new Date().toISOString(),
+        };
+  // A3 统计口径修复（2026-08-31）：透传 Python 验证器写入的扩展字段
+  // （methodology_version/baseline_neutral/target_type/approximate 等）——此前只透传固定 5 字段，
+  // 导致 methodology_version 不落库 → agent-py _filter_v2 恒 n=0 → A3 钳制与存量统计在生产不触发。
+  for (const [k, v] of Object.entries(body)) {
+    if (['horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
+      continue;
+    }
+    (entry as Record<string, unknown>)[k] = v;
+  }
   try {
     const record = await PredictionRecordService.appendVerification(id, body.horizon, entry);
     if (!record) {

@@ -32,14 +32,21 @@ import * as MarketSnapshotService from '../../modules/quote/MarketSnapshotServic
 import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapshotService'
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
+import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
     'morning', 'wind_leader', 'stock', 'alert', 'hot_burst', 'review', 'iterate',
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
-    'chat_analysis', 'event_scrape', 'midday',
+    'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
 ]
+
+/** 报告保留期（design-debate A4/U1 裁决）：rhythm_master 需支撑 60 交易日日历热力图
+ *  聚合窗口，TTL 延长至 90 天；其余 report_type 维持建表默认 7 天，避免 03:00 清理过早删除。 */
+export function getReportTtlDays(report_type: string): number {
+    return report_type === 'rhythm_master' ? 90 : 7
+}
 
 interface ChainSummaryItem {
     industry: string
@@ -181,6 +188,9 @@ router.get('/health', (_req: Request, res: Response) => {
 
 router.use(verifyInternalToken)
 
+// GET /internal/fear-greed 只读镜像（恐贪指数；契约：无数据 → 200 + 空字段）
+router.use('/fear-greed', fearGreedInternalRouter)
+
 /**
  * GET /internal/ths/index-map
  * 同花顺 885/886 板块指数全表（板块名 → ts_code 映射，进程缓存 + 6h TTL）。
@@ -293,8 +303,16 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
     if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
         return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
     }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（对齐 index 端点 H9）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
     try {
-        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // 指定 start_date 时拉全量（limit=0 不切片，getKLine 语义）后按区间过滤，否则原 days 语义
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: startDate ? 0 : days })
         // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
         // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
         // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
@@ -305,8 +323,18 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
-        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { symbol, klt: 101, days: filtered.length, rows: filtered } })
     } catch (err: unknown) {
         console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
@@ -347,6 +375,7 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
     try {
         // 指定 start_date 时拉大窗口全量后过滤（index_daily 一次全量返回，成本不变）；否则原 days 语义
         const rows = await TushareKlineService.getIndexKLine(tsCode, startDate ? 5000 : days)
+        // 加性透传 vol/amount（Tushare index_daily 已有字段；技术分支成交额条件数据源）
         const clean = rows.map((r) => ({
             trade_date: r.trade_date ?? r.tradeDate ?? r['时间'] ?? '',
             open: r.open ?? r['开盘价'] ?? null,
@@ -354,6 +383,8 @@ router.get('/index/:code/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
         // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
         const filtered =
@@ -1221,14 +1252,16 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
     if (content === undefined || content === null) {
         return res.status(400).json({ code: 400, message: 'content is required' })
     }
+    // 报告保留期按类型参数化（design-debate A4/U1）：rhythm_master=90 天，其余 7 天
+    const ttlDays = getReportTtlDays(report_type)
 
     try {
         // upsert：COALESCE 处理 NULL user_id（公共报告）
         const result = await pool.query(
             `INSERT INTO agent_analysis_reports
                 (report_type, report_date, user_id, content, data_source, status,
-                 generation_time_ms, model_version, error_message)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 generation_time_ms, model_version, error_message, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW() + make_interval(days => $10))
              ON CONFLICT (report_type, report_date, COALESCE(user_id, ''))
              DO UPDATE SET
                 content = EXCLUDED.content,
@@ -1237,11 +1270,11 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
                 generation_time_ms = EXCLUDED.generation_time_ms,
                 model_version = EXCLUDED.model_version,
                 error_message = EXCLUDED.error_message,
-                expires_at = NOW() + INTERVAL '7 days',
+                expires_at = NOW() + make_interval(days => $10),
                 created_at = NOW()
              RETURNING id, report_type, report_date, created_at`,
             [report_type, report_date, user_id, JSON.stringify(content),
-             data_source, status, generation_time_ms, model_version, error_message]
+             data_source, status, generation_time_ms, model_version, error_message, ttlDays]
         )
 
         res.status(201).json({

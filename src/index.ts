@@ -24,6 +24,7 @@ import { StockListController } from './modules/quote/stockListController';
 import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
+import { StockMidLongAnalysisController } from './modules/quote/midLongAnalysisController';
 import { getSemiAnnualReport } from './modules/quote/TushareService';
 
 // internal 内部API（Python Agent 服务专用）
@@ -88,6 +89,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
 
+// calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
+import { calendarInternalRouter } from './modules/calendar/internalRouter';
+import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
 import { ensureFearGreedSchema, refreshJq } from './modules/fear-greed/FearGreedService';
@@ -135,6 +140,10 @@ app.use(cors({
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
+
+// 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
+// 否则会被反代转发到 Python；对齐 publicRouter 挂载顺序先例）
+app.use('/api/agent', rhythmMasterPublicRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -371,11 +380,11 @@ app.get('/api/config/public', (req, res, next) => ConfigController.getPublicConf
 
 // 手动触发 morning agent 晨报生成（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
 // handler 逻辑抽到 src/core/routes/morning_trigger_handler.ts，便于单元测试
-import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler.js';
+import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler';
 app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler());
 
 // 手动触发 review agent 复盘溯源（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
-import { createReviewTriggerHandler } from './core/routes/review_trigger_handler.js';
+import { createReviewTriggerHandler } from './core/routes/review_trigger_handler';
 app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
 
 // 手动触发趋势股批量评分（TrendBatchService.run，管理员 curl 后用 pm2 log 查看）
@@ -527,6 +536,23 @@ app.route('/api/cn/stocks/:symbol/analysis')
         StockAnalysisController.handleStockAnalysis(req, res, next);
     });
 
+// ==================== 中长线 AI 洞见路由 ====================
+app.route('/api/cn/stocks/:symbol/mid-long/:timeframe')
+    .get((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleGet(req, res, next);
+    })
+    .post((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleCreate(req, res, next);
+    });
+
 app.get('/api/cn/stock/:symbol/profit-forecast', (req, res, next) => {
     if (!isValidAShareSymbol(req.params.symbol)) {
         res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
@@ -589,6 +615,8 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use('/internal/insight', insightInternalRouter);
 
 app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
 
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
@@ -1102,6 +1130,28 @@ async function start() {
         console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // 节奏大师：market_calendar_events（L1-L4 事件日历，spec §4.4；启动自动建表对齐 prediction_records 先例）
+    try {
+        await pool.query(`CREATE TABLE IF NOT EXISTS market_calendar_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_date DATE NOT NULL,
+  title TEXT NOT NULL,
+  importance TEXT NOT NULL DEFAULT 'medium',
+  market TEXT NOT NULL DEFAULT 'CN',
+  event_time TEXT,
+  source TEXT NOT NULL DEFAULT 'L4',
+  detail TEXT,
+  result TEXT,
+  dedup_hash VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`);
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_market_calendar_events_dedup ON market_calendar_events(event_date, dedup_hash)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_market_calendar_events_date ON market_calendar_events(event_date)');
+        console.log('[DB] market_calendar_events table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] market_calendar_events table check:', err instanceof Error ? err.message : String(err));
+    }
+
     // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
     try {
         await pool.query(`
@@ -1396,6 +1446,37 @@ async function start() {
         console.log('[DB] trend_scores table ready (ma60_excluded column ensured)');
     } catch (err: unknown) {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 中长线 AI 洞见表
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS stock_mid_long_analysis (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(10) NOT NULL,
+                timeframe VARCHAR(10) NOT NULL CHECK (timeframe IN ('mid', 'long')),
+                analysis_time VARCHAR(30) NOT NULL,
+                conclusion VARCHAR(100) NOT NULL,
+                core_logic TEXT NOT NULL DEFAULT '',
+                risk_warning TEXT NOT NULL DEFAULT '',
+                advice TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        // 迁移旧表结构：删除旧字段，添加新字段
+        try {
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS logic`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS basis`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS advice`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS risk_tips`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS core_logic TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS risk_warning TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS advice TEXT NOT NULL DEFAULT ''`);
+        } catch {}
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_mid_long_symbol_timeframe ON stock_mid_long_analysis(symbol, timeframe)');
+        console.log('[DB] stock_mid_long_analysis table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] stock_mid_long_analysis table check:', err instanceof Error ? err.message : String(err));
     }
 
     // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
