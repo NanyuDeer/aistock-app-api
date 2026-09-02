@@ -1570,12 +1570,13 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        // stock_trace 实时价格异动为主链路（保底实时层，不依赖外部新闻源）：
-        // 默认启动，仅显式 STOCK_TRACE_TRIGGER_ENABLED === 'false' 时关闭。
-        // 自选股洞察（insight）只作辅助补充层，不承担主事件源职责。
-        if (process.env.STOCK_TRACE_TRIGGER_ENABLED !== 'false') {
+        // stock_trace 实时价格检测（盘中每 5 秒轮询自选股行情）：
+        // 2026-08-30 决策：自选股洞察仅保留午尾盘打点（11:30/15:05）与涨停雷达，实时检测默认停用——
+        // 盘中假动作多（产生 9:15/9:16 等盘中任意时间戳事件）。改为 opt-in：显式
+        // STOCK_TRACE_TRIGGER_ENABLED === 'true' 才启动；手动触发接口（/detect）保留作应急调试。
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
             PriceTriggerDetector.start();
-            console.log('[StockTrace] PriceTriggerDetector 已启动（实时价格异动为主链路）');
+            console.log('[StockTrace] PriceTriggerDetector 已启动（实时价格异动，opt-in）');
         }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);

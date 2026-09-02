@@ -94,7 +94,7 @@ describe('GET /events 只读列表（阶段 2.2）', () => {
     it('正常返回列表（openid 过滤 + limit 透传），无 symbol 不过滤', async () => {
         let capturedOpenid = '';
         let capturedLimit = 0;
-        mock.method(StockTraceService, 'listUserEvents', (async (openid: string, limit: number) => {
+        mock.method(StockTraceService, 'listUserEvents', (async (_id: string, openid: string, limit: number) => {
             capturedOpenid = openid;
             capturedLimit = limit;
             return { items: [item('000001'), item('600519', '培育钻石概念')], nextCursor: null };

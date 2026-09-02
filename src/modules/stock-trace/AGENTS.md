@@ -2,6 +2,12 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-08-30 更新：实时检测默认停用（opt-in）
+
+- **决策**：自选股洞察仅保留午尾盘打点（11:30/15:05）与涨停雷达，`PriceTriggerDetector`（盘中每 5 秒实时价格检测）默认停用——盘中假动作多（产生 9:15/9:16 等盘中任意时间戳事件）。
+- 启动条件改为 opt-in：`STOCK_TRACE_TRIGGER_ENABLED === 'true'` 才 `start()`（`src/index.ts`）；手动触发接口 `POST /internal/stock-trace/detect`（`runOnceForce`）与 `POST /internal/stock-trace/jobs/publish` 保留作应急调试。
+- 午尾盘打点（`PriceMoveService` cron 11:30/15:05）与涨停雷达（`InsightService.runCycle`）不受影响。
+
 ### 2026-08-15 更新：价格异动触发接入 + 五域证据采集
 
 - **价格异动触发接入**：`PriceMoveService`（insight 模块）的 11:30/15:05 打点触发改接本模块事件层（`emitStockTraceEvent`），使用 `mv` 事件类型，经由 `isEligiblePriceSecurity` 过滤非 A 股/ST/退市，阈值改为 `changePct`（原 `moveBps` 映射）。11:50 补抓 cron 已停用。
