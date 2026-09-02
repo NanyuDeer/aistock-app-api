@@ -297,6 +297,70 @@ export class PerformanceReportController {
     }
 
     /**
+     * 重算并回写四维评分缓存，保证列表卡片分数与详情页 ai-analysis 一致
+     * 策略：仅对缓存缺失或非当天刷新的股票实时调用 AiScoreService 重算并回写；
+     * partial/insufficient 等无评分状态写入 NULL（卡片不显示分数，与详情页一致）。
+     */
+    private static async refreshAiScores(rows: ReportRow[], list: Record<string, unknown>[]): Promise<void> {
+        const symbols = [...new Set(rows.map(r => r.symbol))];
+        if (!symbols.length) return;
+
+        // 1. 缓存当天已刷新的直接使用，其余需要重算
+        const cacheRes = await pool.query(
+            `SELECT symbol FROM stock_ai_scores
+             WHERE symbol = ANY($1) AND updated_at >= date_trunc('day', now())`,
+            [symbols]
+        );
+        const freshSet = new Set<string>(cacheRes.rows.map(r => r.symbol as string));
+        const needRefresh = symbols.filter(s => !freshSet.has(s));
+
+        // 2. 并发重算并回写缓存（限制并发避免触发 Tushare 限频）
+        const CONCURRENCY = 5;
+        for (let i = 0; i < needRefresh.length; i += CONCURRENCY) {
+            const chunk = needRefresh.slice(i, i + CONCURRENCY);
+            await Promise.all(chunk.map(async (symbol) => {
+                try {
+                    const result = await AiScoreService.analyze(symbol);
+                    await pool.query(
+                        `INSERT INTO stock_ai_scores
+                           (symbol, total_score, rating, dimensions, strengths, risks, data_period, report_count, updated_at)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+                         ON CONFLICT (symbol) DO UPDATE SET
+                           total_score = EXCLUDED.total_score,
+                           rating = EXCLUDED.rating,
+                           dimensions = EXCLUDED.dimensions,
+                           strengths = EXCLUDED.strengths,
+                           risks = EXCLUDED.risks,
+                           data_period = EXCLUDED.data_period,
+                           report_count = EXCLUDED.report_count,
+                           updated_at = NOW()`,
+                        [symbol, result.score, result.rating,
+                         JSON.stringify(result.dimensions),
+                         result.strengths, result.risks,
+                         result.dataPeriod, result.reportCount]
+                    );
+                } catch (e: any) {
+                    console.warn(`[AiScore] 重算 ${symbol} 失败:`, e.message);
+                }
+            }));
+        }
+
+        // 3. 读取最新缓存分数，覆盖列表的 AI评分（与详情页实时计算保持一致）
+        const scoreRes = await pool.query(
+            `SELECT symbol, total_score FROM stock_ai_scores WHERE symbol = ANY($1)`,
+            [symbols]
+        );
+        const scoreMap = new Map<string, number | null>();
+        for (const row of scoreRes.rows) {
+            scoreMap.set(row.symbol as string, row.total_score == null ? null : Number(row.total_score));
+        }
+        for (const item of list) {
+            const symbol = String(item['股票代码'] || '');
+            item['AI评分'] = scoreMap.has(symbol) ? scoreMap.get(symbol) : null;
+        }
+    }
+
+    /**
      * GET /api/cn/stocks/performance-reports
      * 业绩报告列表
      */
@@ -333,6 +397,8 @@ export class PerformanceReportController {
             const dataResult = await pool.query(dataQuery, [pageSize, offset]);
 
             const list = dataResult.rows.map(item => this.mapReportRow(item as ReportRow));
+            // 重算并回写四维评分缓存，保证卡片分数与详情页一致
+            await this.refreshAiScores(dataResult.rows as ReportRow[], list);
             createResponse(res, 200, 'success', {
                 '数据源': 'PostgreSQL (Tushare)',
                 '排序字段': sortBy,
@@ -400,6 +466,8 @@ export class PerformanceReportController {
             const dataResult = await pool.query(dataQuery, [keywordPattern, pageSize, offset]);
 
             const list = dataResult.rows.map(item => this.mapReportRow(item as ReportRow));
+            // 重算并回写四维评分缓存，保证卡片分数与详情页一致
+            await this.refreshAiScores(dataResult.rows as ReportRow[], list);
             createResponse(res, 200, 'success', {
                 '数据源': 'PostgreSQL (Tushare)',
                 '关键词': keyword,

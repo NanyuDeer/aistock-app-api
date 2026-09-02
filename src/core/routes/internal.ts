@@ -303,8 +303,16 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
     if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
         return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
     }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（对齐 index 端点 H9）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
     try {
-        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // 指定 start_date 时拉全量（limit=0 不切片，getKLine 语义）后按区间过滤，否则原 days 语义
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: startDate ? 0 : days })
         // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
         // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
         // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
@@ -315,8 +323,18 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
-        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { symbol, klt: 101, days: filtered.length, rows: filtered } })
     } catch (err: unknown) {
         console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
