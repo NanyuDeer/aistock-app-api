@@ -82,10 +82,11 @@ export class EmailService {
         text: string,
         to?: string,
         overrides?: Partial<Pick<EmailConfig, 'host' | 'port' | 'user' | 'pass' | 'from'>>,
+        attachment?: { filename: string; content: string },
     ): Promise<void> {
         const isDev = process.env.NODE_ENV !== 'production';
         if (isDev) {
-            console.log(`[Email][dev] ${subject} -> ${to ?? ''}（开发环境不真发邮件）`);
+            console.log(`[Email][dev] ${subject} -> ${to ?? ''}${attachment ? `（附件 ${attachment.filename}）` : ''}（开发环境不真发邮件）`);
             return;
         }
         const cfg = readEmailConfig(overrides);
@@ -103,6 +104,9 @@ export class EmailService {
             to: to || process.env.ITERATE_MAIL_TO || cfg.from,
             subject,
             text,
+            ...(attachment
+                ? { attachments: [{ filename: attachment.filename, content: attachment.content }] }
+                : {}),
         });
     }
 }

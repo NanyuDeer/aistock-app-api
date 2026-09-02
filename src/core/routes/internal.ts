@@ -3087,6 +3087,11 @@ router.post('/mail/notify', async (req: Request, res: Response) => {
         const reportType = typeof body.report_type === 'string' && body.report_type ? body.report_type : 'iterate'
         const reportDate = typeof body.report_date === 'string' ? body.report_date : ''
         const summary = typeof body.summary === 'string' ? body.summary : ''
+        const rawAtt = body.attachment as { filename?: unknown; content?: unknown } | undefined
+        const attachment =
+            rawAtt && typeof rawAtt.filename === 'string' && rawAtt.filename && typeof rawAtt.content === 'string'
+                ? { filename: rawAtt.filename, content: rawAtt.content }
+                : undefined
         const to = (process.env.ITERATE_MAIL_TO ?? process.env.EMAIL_FROM ?? '').trim()
         const subject = `【AI迭代完成】${reportType}${reportDate ? ` ${reportDate}` : ''}`
         const text = [
@@ -3110,7 +3115,7 @@ router.post('/mail/notify', async (req: Request, res: Response) => {
                   from: process.env.ITERATE_SMTP_USER,
               }
             : undefined
-        await EmailService.sendPlain(subject, text, to, overrides)
+        await EmailService.sendPlain(subject, text, to, overrides, attachment)
         res.json({ code: 0, data: { sent: true, to } })
     } catch (err: unknown) {
         console.error('[Internal] mail/notify error:', errMsg(err))
