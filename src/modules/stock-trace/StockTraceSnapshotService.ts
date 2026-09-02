@@ -50,7 +50,7 @@ function hash(value: unknown): string {
 }
 
 // 增量采集复用域：盘中基本不变，修订时复用上一版本 enriched 快照；价格相关域重采
-const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'market_fact']);
+const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'market_fact', 'insight_article']);
 
 export function pickReusableSources(records: StockSourceRecord[]): StockSourceRecord[] {
     return records.filter((record) => INCREMENTAL_REUSE_KINDS.has(record.kind));
@@ -67,6 +67,7 @@ export function reusedDomainAvailability(reused: StockSourceRecord[]): Array<{ l
     if (kinds.has('news') || kinds.has('announcement')) counts.push({ layer: 'company', count: 1 });
     if (kinds.has('sector_fact')) counts.push({ layer: 'sector', count: 1 });
     if (kinds.has('market_fact')) counts.push({ layer: 'market', count: 1 });
+    if (kinds.has('insight_article')) counts.push({ layer: 'article', count: 1 });
     return counts;
 }
 
@@ -120,7 +121,7 @@ function sourceRecord(input: Omit<StockSourceRecord, 'contentHash'>): StockSourc
 // 数据就绪判定：count=0 → missing；capital 域 count>=1 → partial（当日可能滞后，不设 complete 高门槛）
 export function buildDataReadiness(counts: Array<{ layer: DataReadinessDomains; count: number }>): Record<DataReadinessDomains, DataReadiness> {
     const base: Record<DataReadinessDomains, DataReadiness> = {
-        company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing',
+        company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing',
     };
     for (const { layer, count } of counts) {
         if (count <= 0) continue;
@@ -332,7 +333,7 @@ export class StockTraceSnapshotService {
         return this.persist({
             event, stage: 'initial', capturedAt, sourceRecords: [trigger, quote],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing' },
+            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' },
         });
     }
 
@@ -384,7 +385,7 @@ export class StockTraceSnapshotService {
         });
         return this.persist({ event, stage, capturedAt, sourceRecords: [trigger, quote],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing' } });
+            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' } });
     }
 
     static scheduleEnriched(event: TriggerEvent, incremental = false): void {
@@ -427,12 +428,13 @@ export class StockTraceSnapshotService {
                 return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
         }
-        const [company, sector, market, capital, technical] = await Promise.allSettled([
+        const [company, sector, market, capital, technical, article] = await Promise.allSettled([
             withinEnrichedBudget(this.collectCompanySources(event, capturedAt)),
             withinEnrichedBudget(this.collectSectorSources(event, capturedAt)),
             withinEnrichedBudget(this.collectMarketSources(event, capturedAt)),
             withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
             withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
+            withinEnrichedBudget(this.collectInsightArticleSources(event, capturedAt)),
         ]);
         const sourceRecords = [
             ...this.baseSources(event, capturedAt),
@@ -441,6 +443,7 @@ export class StockTraceSnapshotService {
             ...(market.status === 'fulfilled' ? market.value : []),
             ...(capital.status === 'fulfilled' ? capital.value : []),
             ...(technical.status === 'fulfilled' ? technical.value : []),
+            ...(article.status === 'fulfilled' ? article.value : []),
         ];
         const readiness = buildDataReadiness([
             { layer: 'company', count: company.status === 'fulfilled' ? company.value.length : 0 },
@@ -448,6 +451,7 @@ export class StockTraceSnapshotService {
             { layer: 'market', count: market.status === 'fulfilled' ? market.value.length : 0 },
             { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
             { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
+            { layer: 'article', count: article.status === 'fulfilled' ? article.value.length : 0 },
         ]);
         const missingFields = Object.entries(readiness).filter(([, value]) => value !== 'complete').map(([key]) => `${key}_context`);
         return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
@@ -508,6 +512,46 @@ export class StockTraceSnapshotService {
             }
         }
         return records;
+    }
+
+    /**
+     * insight_article 域（2026-08-30 合并涨停雷达链路）：读当日 watchlist_insight_sources 中
+     * mentioned_symbols 命中该股的涨停雷达文章作为额外证据源。文章入库在 runCycle 内先于建事件，
+     * 事件创建后 ~1s 的 enriched 采集必然可见。无文章/查错返回 []（不阻塞归因）。
+     */
+    private static async collectInsightArticleSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
+        const result = await pool.query<{
+            article_id: string; source_url: string; title: string;
+            keywords: unknown; content: string; published_at: Date;
+        }>(`
+            SELECT article_id, source_url, title, keywords, content, published_at
+            FROM watchlist_insight_sources
+            WHERE trade_date = $1::date
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(mentioned_symbols) ms WHERE ms->>'symbol' = $2)
+            ORDER BY published_at DESC
+            LIMIT 10
+        `, [event.tradingDate, event.symbol]);
+        return result.rows.map((row) => {
+            const published = asDate(row.published_at, capturedAt);
+            const keywords = Array.isArray(row.keywords)
+                ? row.keywords.filter((k): k is string => typeof k === 'string').slice(0, 8)
+                : [];
+            return sourceRecord({
+                sourceId: `ths-radar:${row.article_id}`,
+                kind: 'insight_article',
+                provider: 'ths_limit_up_radar',
+                sourceLevel: 'B',
+                title: row.title,
+                contentExcerpt: excerpt(row.content),
+                canonicalUrl: row.source_url || undefined,
+                sourceRef: row.article_id,
+                symbol: event.symbol,
+                occurredAt: published,
+                capturedAt,
+                freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - published.getTime()) / 1000)),
+                payload: { keywords },
+            });
+        });
     }
 
     private static async collectSectorSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {

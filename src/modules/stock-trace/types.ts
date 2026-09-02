@@ -55,7 +55,8 @@ export type DataReadiness = 'complete' | 'partial' | 'missing';
 
 export type SourceKind =
     | 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'market_fact'
-    | 'announcement' | 'news' | 'capital_fact' | 'technical_fact';
+    | 'announcement' | 'news' | 'capital_fact' | 'technical_fact'
+    | 'insight_article';
 
 export interface StockSourceRecord {
     sourceId: string;
@@ -91,7 +92,7 @@ export interface StockTraceSnapshot {
     sourceRecords: StockSourceRecord[];
 }
 
-export type DataReadinessDomains = 'company' | 'sector' | 'market' | 'capital' | 'technical';
+export type DataReadinessDomains = 'company' | 'sector' | 'market' | 'capital' | 'technical' | 'article';
 export type AttributionStatus = 'confirmed' | 'hypothesis' | 'insufficient' | 'not_applicable';
 export type CandidateLayer = 'company' | 'sector' | 'market' | 'capital' | 'technical';
 export type CandidateStatus = 'supported' | 'weak' | 'rejected' | 'insufficient';
