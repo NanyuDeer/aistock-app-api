@@ -38,14 +38,32 @@ Create `d:\aistock\aistock-app-api\src\modules\stock-trace\__tests__\processPric
 /**
  * processPriceFact immediateEnqueue：immediateEnqueue=true 时创建分支应写入
  * stock_trace_jobs + stock_trace_outbox（幂等），默认 false 不写。
+ * Mock 策略（仓库惯例，参照 listAnalysisStatus.spec.ts）：mock pool.connect 返回
+ * fake client（BEGIN/COMMIT/ROLLBACK 空操作，其余 SQL 空 rows）+ mock pool.query。
  * 运行：node --import tsx --test src/modules/stock-trace/__tests__/processPriceFactImmediate.spec.ts
  */
-import { describe, it, mock } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import type { PoolClient } from 'pg';
+import pool from '../../../core/db';
 import { StockTraceService } from '../StockTraceService';
 import { StockTraceJobService } from '../StockTraceJobService';
 import { PRICE_TRIGGER_PERCENT } from '../types';
+
+afterEach(() => {
+    mock.restoreAll();
+});
+
+/** fake client：BEGIN/COMMIT/ROLLBACK 空操作，其余 SQL 返回空 rows（创建分支无历史事件） */
+function fakeClient() {
+    return {
+        async query(text: string | { text: string }, _params?: unknown[]): Promise<{ rows: unknown[] }> {
+            const sql = typeof text === 'string' ? text : text.text;
+            if (/^BEGIN|^COMMIT|^ROLLBACK/i.test(sql)) return { rows: [] };
+            return { rows: [] };
+        },
+        async release(): Promise<void> {},
+    };
+}
 
 describe('processPriceFact immediateEnqueue', () => {
     const security = { symbol: '600000', stockName: '浦发银行', market: 'SH', listDate: null };
@@ -54,15 +72,21 @@ describe('processPriceFact immediateEnqueue', () => {
         latestPrice: 10.8, previousClose: 10, changePct: 8, observedAt: new Date('2026-08-30T03:00:00Z'),
     };
 
+    function mockDbLayer(): void {
+        // ensureSchema 的 DDL 与快照/来源查询全部返回空 rows；事务走 fake client
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        mock.method(pool, 'connect', (async () => fakeClient()) as unknown as typeof pool.connect);
+    }
+
     it('immediateEnqueue=true 时创建分支调用 enqueue', async () => {
+        mockDbLayer();
         let enqueued: Array<{ eventId: string; triggerRevision: number }> = [];
-        mock.method(StockTraceJobService, 'enqueue', (async (_client: PoolClient, input: { eventId: string; triggerRevision: number }) => {
+        mock.method(StockTraceJobService, 'enqueue', (async (_client: unknown, input: { eventId: string; triggerRevision: number }) => {
             enqueued.push(input);
             return 'job-1';
         }) as unknown as typeof StockTraceJobService.enqueue);
         // publishPending 置空防外部 Redis 依赖
         mock.method(StockTraceJobService, 'publishPending', (async () => ({ published: 0, failed: 0 })) as unknown as typeof StockTraceJobService.publishPending);
-        mock.method(StockTraceService as never, 'ensureSchema', (async () => {}) as never);
 
         const result = await StockTraceService.processPriceFact(security, fact, { immediateEnqueue: true });
         assert.equal(result.mutation, 'created');
@@ -72,19 +96,19 @@ describe('processPriceFact immediateEnqueue', () => {
     });
 
     it('默认（无 options）不调用 enqueue', async () => {
+        mockDbLayer();
         let enqueued = 0;
         mock.method(StockTraceJobService, 'enqueue', (async () => { enqueued += 1; return 'job-x'; }) as unknown as typeof StockTraceJobService.enqueue);
         mock.method(StockTraceJobService, 'publishPending', (async () => ({ published: 0, failed: 0 })) as unknown as typeof StockTraceJobService.publishPending);
-        mock.method(StockTraceService as never, 'ensureSchema', (async () => {}) as never);
 
         await StockTraceService.processPriceFact(security, fact);
         assert.equal(enqueued, 0, '默认不应入队（保持落定后归因策略）');
     });
 
     it('涨跌幅低于阈值仍 ignored，不建事件不入队', async () => {
+        mockDbLayer();
         let enqueued = 0;
         mock.method(StockTraceJobService, 'enqueue', (async () => { enqueued += 1; return 'job-x'; }) as unknown as typeof StockTraceJobService.enqueue);
-        mock.method(StockTraceService as never, 'ensureSchema', (async () => {}) as never);
         const lowFact = { ...fact, changePct: PRICE_TRIGGER_PERCENT - 1 };
         const result = await StockTraceService.processPriceFact(security, lowFact, { immediateEnqueue: true });
         assert.equal(result.mutation, 'ignored');
@@ -93,7 +117,7 @@ describe('processPriceFact immediateEnqueue', () => {
 });
 ```
 
-> 注：本测试依赖真实 DB（`core/db`），与仓库现有 `StockTraceService` 集成测试（如 `__tests__/listAnalysisStatus.spec.ts`）同模式——需要本机 PG 隧道（15432）。若 CI 无 DB，则改走现有 spec 的 mock 策略（mock `pool.query` 链），实施时以仓库既有 `priceEventService.spec.ts` 的可运行方式为准。
+> `processPriceFact` 创建分支会触发 `captureSnapshots`（异步，mock pool.query 后内部 INSERT 返回空 rows 不抛错）与 `triggerEventScrape`/`sendInitialPush`（无 env token / recipients 空时安全跳过），不影响断言。
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -449,13 +473,12 @@ export async function radarHitToPriceEvent(
     // 2026-08-30 链路合并：命中自选股 → stock-trace mv 事件（immediateEnqueue 立即归因）；
     // 不再创建 watchlist_insight_events（存量保留）。重复触发由 stock_trace revision 机制天然去重。
     const securities = await StockTraceService.getFavoriteSecurities();
-    const securitiesBySymbol = new Map(securities.map((s) => [s.symbol, s]));
     let events = 0;
     for (const a of enriched) {
         const handleHit = async (s: MentionedSymbol): Promise<void> => {
             if (!watchlist.has(s.symbol)) return;
             try {
-                const { triggered } = await radarHitToPriceEvent(s.symbol, securitiesBySymbol.has(s.symbol) ? [securitiesBySymbol.get(s.symbol)!] : securities);
+                const { triggered } = await radarHitToPriceEvent(s.symbol, securities);
                 if (triggered) events++;
             } catch (e) {
                 // 单股触发失败（行情抖动等）只记日志，不中断整轮；下轮重复文章会被 sources 幂等跳过
@@ -476,7 +499,7 @@ export async function radarHitToPriceEvent(
     }
 ```
 
-> 需要核对 `MentionedSymbol` 类型是否含 `symbol`（是的，`parseLimitUpSymbolsFromSummary` 输出含 symbol）。`securities` 一次全量取出并复用；`radarHitToPriceEvent` 内部 find 匹配。若 `getFavoriteSecurities()` 返回全部自选股即可，简化传 `securities` 数组。
+> `MentionedSymbol` 类型含 `symbol` 字段（`parseLimitUpSymbolsFromSummary` 输出同型）。`securities` 循环外全量取一次，`radarHitToPriceEvent` 内部按 symbol find 匹配后走触发；`getFavoriteSecurities()` 返回全部自选股（含 market/listDate），供 `isEligiblePriceSecurity` 过滤。
 
 - [ ] **Step 4: Run test to verify it passes + 回归**
 
