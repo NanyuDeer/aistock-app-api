@@ -5,6 +5,7 @@ import pool from '../../core/db';
 import { CacheService } from '../../shared/utils/CacheService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { shanghaiDateStr, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
+import { ForecastVersionStore } from './ForecastVersionStore';
 
 interface EarningsForecastRow {
     update_time: string;
@@ -217,6 +218,28 @@ export class ProfitForecastController {
 
         try {
             if (req.method === 'GET') {
+                const versionDate = new URL(req.originalUrl, `http://${req.get('host')}`).searchParams.get('version')?.trim() || '';
+                if (versionDate && !/^\d{4}-\d{2}-\d{2}$/.test(versionDate)) {
+                    createResponse(res, 400, 'version 必须是 YYYY-MM-DD 格式');
+                    return;
+                }
+                if (versionDate) {
+                    const version = await ForecastVersionStore.find(symbol, versionDate);
+                    if (!version) {
+                        createResponse(res, 404, `未找到该股票在 ${versionDate} 的盈利预测版本`);
+                        return;
+                    }
+                    createResponse(res, 200, 'success', {
+                        '股票代码': symbol,
+                        '来源': source,
+                        '版本日期': versionDate,
+                        '更新时间': version.update_time,
+                        '摘要': version.summary || '',
+                        '净利润同比(%)': this.parseForecastNetProfitYoy(version.forecast_netprofit_yoy),
+                        '业绩预测详表_详细指标预测': this.parseForecastDetail(version.forecast_detail),
+                    });
+                    return;
+                }
                 const result = await pool.query(
                     `SELECT update_time, summary, forecast_detail, forecast_netprofit_yoy
                      FROM earnings_forecast
@@ -266,6 +289,17 @@ export class ProfitForecastController {
                         forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
                     [symbol, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                 );
+                await ForecastVersionStore.upsert({
+                    symbol,
+                    versionDate: shanghaiDateStr(new Date(now)),
+                    updateTime,
+                    summary,
+                    forecastDetail: data['业绩预测详表_详细指标预测'] ?? [],
+                    forecastNetprofitYoy: forecastNetProfitYoy,
+                    forecastNetprofit,
+                    forecastEps,
+                    forecastEpsYoy,
+                });
 
                 createResponse(res, 200, 'success', {
                     '股票代码': symbol,
@@ -535,6 +569,17 @@ export class ProfitForecastController {
                                 forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
                             [sym, updateTime, summary, JSON.stringify(data['业绩预测详表_详细指标预测'] ?? []), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                         );
+                        await ForecastVersionStore.upsert({
+                            symbol: sym,
+                            versionDate: shanghaiDateStr(),
+                            updateTime,
+                            summary,
+                            forecastDetail: data['业绩预测详表_详细指标预测'] ?? [],
+                            forecastNetprofitYoy: forecastNetProfitYoy,
+                            forecastNetprofit,
+                            forecastEps,
+                            forecastEpsYoy,
+                        });
                         ok = true;
                         break;
                     } catch (err: any) {

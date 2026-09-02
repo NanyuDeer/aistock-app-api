@@ -71,6 +71,8 @@ import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { ForecastVersionStore } from './modules/monitor/ForecastVersionStore';
+import { PerformanceAiScoreVersionStore } from './modules/monitor/PerformanceAiScoreVersionStore';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
 import { StockTraceController } from './modules/stock-trace/controller';
 import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
@@ -235,6 +237,7 @@ app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavori
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
 app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
+app.post('/api/users/me/notifications/read-all', (req, res, next) => UserController.markAllNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -980,6 +983,20 @@ async function start() {
             .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
     } catch (err: unknown) {
         console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ForecastVersionStore.ensureSchema();
+        console.log('[DB] earnings_forecast_versions table ready');
+    } catch (err: unknown) {
+        console.error('[ForecastVersion] CRITICAL: earnings_forecast_versions schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await PerformanceAiScoreVersionStore.ensureSchema();
+        console.log('[DB] performance_ai_score_versions table ready');
+    } catch (err: unknown) {
+        console.error('[PerformanceAiScoreVersion] CRITICAL: performance_ai_score_versions schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {
