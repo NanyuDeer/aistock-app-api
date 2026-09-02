@@ -70,4 +70,33 @@ export class EmailService {
             text: `您的验证码是 ${code}，5 分钟内有效。若非本人操作请忽略本邮件。`,
         });
     }
+
+    /**
+     * 通用文本通知（迭代完成等场景，2026-09-02）。
+     * dev 仅日志回显；生产按 EMAIL_SMTP_* 发送。to 缺省发给自己（EMAIL_FROM），
+     * 便于"每次 iterate 完成后推送邮箱"复用同一套 SMTP 配置。
+     */
+    static async sendPlain(subject: string, text: string, to?: string): Promise<void> {
+        const isDev = process.env.NODE_ENV !== 'production';
+        if (isDev) {
+            console.log(`[Email][dev] ${subject} -> ${to ?? ''}（开发环境不真发邮件）`);
+            return;
+        }
+        const cfg = readEmailConfig();
+        if (!cfg) {
+            throw new Error('邮箱服务未配置：请在环境变量设置 EMAIL_SMTP_USER / EMAIL_SMTP_PASS（见 .env.example）');
+        }
+        const transporter = nodemailer.createTransport({
+            host: cfg.host,
+            port: cfg.port,
+            secure: cfg.port === 465,
+            auth: { user: cfg.user, pass: cfg.pass },
+        });
+        await transporter.sendMail({
+            from: cfg.from,
+            to: to || cfg.from,
+            subject,
+            text,
+        });
+    }
 }

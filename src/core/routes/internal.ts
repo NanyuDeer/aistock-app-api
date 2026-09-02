@@ -33,6 +33,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
+import { EmailService } from '../email/EmailService'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -3069,6 +3070,40 @@ router.post('/push/market-event', json(), async (req: Request, res: Response) =>
         })
     } catch (err: unknown) {
         console.error('[Internal] market-event push error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/mail/notify
+ * 迭代完成通知邮件（2026-09-02）：agent-py 在 iterate 报告持久化后调用。
+ * 复用 EMAIL_SMTP_*（QQ 邮箱）配置；收件人默认 EMAIL_FROM（env 中已配置的 QQ 邮箱）。
+ * 未配置收件/发件不抛错 → 返回 sent:false（agent 侧仅记日志，不阻断迭代链路）。
+ * body: { report_type?, report_date?, summary? }
+ */
+router.post('/mail/notify', async (req: Request, res: Response) => {
+    try {
+        const body = (req.body ?? {}) as Record<string, unknown>
+        const reportType = typeof body.report_type === 'string' && body.report_type ? body.report_type : 'iterate'
+        const reportDate = typeof body.report_date === 'string' ? body.report_date : ''
+        const summary = typeof body.summary === 'string' ? body.summary : ''
+        const to = (process.env.EMAIL_FROM ?? '').trim()
+        const subject = `【AI迭代完成】${reportType}${reportDate ? ` ${reportDate}` : ''}`
+        const text = [
+            `${reportType} 迭代报告已生成。`,
+            reportDate ? `日期：${reportDate}` : '',
+            summary ? `\n摘要：\n${summary}` : '',
+            `\n详情请前往 App 查看。`,
+        ].filter(Boolean).join('\n')
+
+        if (!to) {
+            console.log('[Internal] mail/notify skipped: EMAIL_FROM 未配置')
+            return res.json({ code: 0, data: { sent: false, reason: 'EMAIL_FROM not configured' } })
+        }
+        await EmailService.sendPlain(subject, text, to)
+        res.json({ code: 0, data: { sent: true, to } })
+    } catch (err: unknown) {
+        console.error('[Internal] mail/notify error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
