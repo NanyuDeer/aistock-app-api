@@ -1,15 +1,14 @@
 // src/modules/insight/InsightService.ts
-// 自选股洞察：来源文章采集 → 自选股筛选 → 洞察事件创建 → 任务入队
+// 自选股洞察：来源文章采集 → 自选股筛选 → stock-trace mv 事件
 //
 // 数据流：
 //   fetchLatest（增量抓取，跳过已知文章）→ fetchDetail + parseTitleKeywords 组装
-//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → createEvent（幂等）
-//   → enqueue 接入任务队列（outbox → Redis Stream）→ 推进高水位
+//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → radarHitToPriceEvent
+//   → StockTraceService.processPriceFact(immediateEnqueue=true) → stock_trace mv 事件
 import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { fetchLatest, fetchDetail, parseTitleKeywords, parseTitleStockName, parseLimitUpSymbolsFromSummary } from './LimitUpRadarCrawler';
 import { upsertSources, getHighWatermark, setHighWatermark } from './InsightSourceService';
-import { enqueue } from './InsightJobService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { StockTraceService } from '../stock-trace/StockTraceService';
 import { isEligiblePriceSecurity, PRICE_TRIGGER_PERCENT, type FavoriteSecurity } from '../stock-trace/types';
@@ -20,8 +19,9 @@ import type { MentionedSymbol } from './types';
  * 执行一轮采集：
  * 1. 冷启动回溯 2 个交易日，此后从上一高水位开始增量抓取；
  * 2. 详情解析并入库；
- * 3. 文章提及标的中命中用户自选股的，创建洞察事件（业务唯一键幂等）；
- * 4. 命中事件接入任务队列（enqueue，幂等），供 Python 消费端经 Redis Stream 消费；
+ * 3. 文章提及标的中命中用户自选股的，调用 radarHitToPriceEvent 拉行情；
+ * 4. 行情满足触发条件 → StockTraceService.processPriceFact(immediateEnqueue=true)
+ *    → stock_trace mv 事件（不再走 watchlist_insight_events/enqueue）；
  * 5. 推进高水位，供下次增量回溯。
  * @returns 新入库文章数与新建事件数
  */
