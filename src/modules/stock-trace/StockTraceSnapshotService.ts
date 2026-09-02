@@ -563,7 +563,11 @@ export class StockTraceSnapshotService {
                 LIMIT 10
             `, [event.tradingDate, event.symbol]);
             return result.rows.map((row) => toInsightArticleSourceRecord(row, event.symbol, capturedAt));
-        } catch {
+        } catch (err) {
+            console.warn('[StockTraceSnapshot] collectInsightArticleSources failed', {
+                symbol: event.symbol,
+                error: err instanceof Error ? err.message : String(err),
+            });
             return []; // 查错返回 []（不阻塞归因）
         }
     }
