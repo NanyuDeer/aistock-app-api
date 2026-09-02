@@ -237,6 +237,7 @@ app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavori
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
 app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
+app.post('/api/users/me/notifications/read-all', (req, res, next) => UserController.markAllNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
