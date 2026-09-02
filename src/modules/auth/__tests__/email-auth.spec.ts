@@ -355,3 +355,41 @@ test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 自动合并 2
     assert.strictEqual(data.email, 'other@163.com', '副账户邮箱应一并转移');
     assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
 });
+
+test('bindWechat 手机号账户（无邮箱）→ 手机号+验证码证明归属 → 200', async () => {
+    mockWechatAuth('wx-mobile');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        const s = String(sql);
+        if (s.includes('SELECT id FROM users WHERE phone = $1 AND id = $2')) {
+            return { rows: [{ id: 'u1' }] } as never;
+        }
+        if (s.includes('SELECT id FROM users WHERE openid = $1 AND id <> $2')) {
+            return { rows: [] } as never;
+        }
+        if (s.includes('UPDATE users SET openid')) {
+            return { rows: [{ id: 'u1', openid: 'wx-mobile', email: null, phone: '13900000001', nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    const app = buildApp();
+    // 手机号账户绑定微信：传 body.phone + 短信验证码（dev 测试码 123456）+ wxCode
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { phone: '13900000001', code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { wechatBound: boolean; openid: string | null; phone: string | null };
+    assert.strictEqual(data.wechatBound, true);
+    assert.strictEqual(data.openid, 'wx-mobile');
+    assert.strictEqual(data.phone, '13900000001', '手机号保留在当前账户');
+});
+
+test('bindWechat 手机号不属于当前账户 → 403', async () => {
+    mockWechatAuth('wx-x');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        if (String(sql).includes('SELECT id FROM users WHERE phone = $1 AND id = $2')) {
+            return { rows: [] } as never; // 手机号不在当前账户
+        }
+        return { rows: [] } as never;
+    };
+    const app = buildApp();
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { phone: '13900000002', code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 403);
+});

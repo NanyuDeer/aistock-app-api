@@ -1,12 +1,12 @@
 /**
- * 短信验证码登录 + 手机/微信双向绑定（统一账户模型，2026-08-25）
+ * 短信验证码登录 + 手机号绑定（统一账户模型，2026-08-25）
  *
  * - POST /api/auth/sms/send     发送验证码（Redis 缓存 + 限流，dev 回显日志）
  * - POST /api/auth/sms/login    手机号 + 验证码登录（无账户自动创建）
  * - POST /api/auth/bind/phone   Bearer 登录态下给当前账户绑定手机号
- * - POST /api/auth/bind/wechat  Bearer 登录态下给当前账户绑定微信（需手机+验证码证明归属）
+ *   （绑定微信统一走 EmailAuthController.bindWechat，支持 email|phone 双身份证明）
  *
- * 冲突策略（2026-08-31 起）：phone / openid 已属其他 id 时调用 accountMerge.mergeConflictAccount
+ * 冲突策略（2026-08-31 起）：phone 已属其他 id 时调用 accountMerge.mergeConflictAccount
  * 自动合并（自选股并集 / 设置以主账户为准 / VIP 继承 / 身份转移），不再 409 拒绝。
  * dev 环境放行固定测试码 SMS_DEV_TEST_CODE（登录/绑定校验共用）。
  */
@@ -18,7 +18,6 @@ import pool from '../../core/db';
 import { SmsService, SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { generateSmsCode, isValidMainlandPhone, setCode, consumeCode, isRateLimited } from '../../core/sms/smsCodeStore';
 import { mergeConflictAccount } from './accountMerge';
-import { AuthController } from './controller';
 
 type AuthResult = { ok: true; id: string; openid: string } | { ok: false; code: number; message: string };
 
@@ -206,90 +205,6 @@ export class SmsAuthController {
         });
     }
 
-    /** 绑定微信：POST /api/auth/bind/wechat（Bearer 登录态手机账户，手机+验证码证明归属） */
-    static async bindWechat(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await SmsAuthController.resolveAuth(req);
-        if (!auth.ok) {
-            createResponse(res, auth.code, auth.message);
-            return;
-        }
-        const phone = String(req.body?.phone ?? '').trim();
-        const code = String(req.body?.code ?? '').trim();
-        const wxCode = String(req.body?.wxCode ?? '').trim();
-        if (!isValidMainlandPhone(phone) || !code || !wxCode) {
-            createResponse(res, 400, '参数不完整：需 phone、code、wxCode');
-            return;
-        }
-        if (!(await SmsAuthController.verifyCode(phone, code))) {
-            createResponse(res, 400, '验证码错误或已过期');
-            return;
-        }
-        // 手机号须属于当前账户（证明该手机归本人，防把他人微信绑到自己名下）
-        const ownPhone = await pool.query('SELECT id FROM users WHERE phone = $1 AND id = $2', [phone, auth.id]);
-        if (ownPhone.rows.length === 0) {
-            createResponse(res, 403, '该手机号不属于当前账户');
-            return;
-        }
-
-        // 用 wxCode 换 openid + 昵称/头像
-        let openid: string;
-        let nickname = '';
-        let avatarUrl = '';
-        try {
-            const tokenData = await AuthController.exchangeCodeForToken(wxCode);
-            if (tokenData.errcode) {
-                createResponse(res, 400, `微信授权失败: ${tokenData.errmsg}`);
-                return;
-            }
-            openid = String(tokenData.openid);
-            const userInfo = await AuthController.fetchWechatUserInfo(tokenData.access_token, openid);
-            nickname = userInfo.nickname || '';
-            avatarUrl = userInfo.headimgurl || '';
-        } catch (err: unknown) {
-            const errMsg = err instanceof Error ? err.message : String(err);
-            SmsAuthController.log('bindWechat', '❌ 微信换 openid 失败', { error: errMsg });
-            createResponse(res, 500, `微信授权失败: ${errMsg}`);
-            return;
-        }
-
-        // 归属冲突：该微信已属其他账户 → 验证码已证明归属，自动合并（微信昵称/头像随 openid 转移）
-        const conflict = await pool.query('SELECT id FROM users WHERE openid = $1 AND id <> $2', [openid, auth.id]);
-        let row: { id: string; openid: string | null; phone: string | null; nickname: string | null; avatar_url: string | null };
-        if (conflict.rows.length > 0) {
-            const result = await mergeConflictAccount(String(conflict.rows[0].id), auth.id, { nickname, avatarUrl });
-            if (!result.ok) {
-                const code = result.reason === 'noAccount' ? 404 : 500;
-                const message = result.reason === 'noAccount' ? '账户不存在' : '绑定失败，请稍后再试';
-                createResponse(res, code, message);
-                return;
-            }
-            row = result.row;
-            SmsAuthController.log('bindWechat', '✅ 微信绑定成功（冲突账户已自动合并）', { id: auth.id, openid, oldId: conflict.rows[0].id });
-        } else {
-            const updated = await pool.query(
-                `UPDATE users SET openid = $1,
-                     nickname = COALESCE(NULLIF(nickname, ''), $2),
-                     avatar_url = COALESCE(NULLIF(avatar_url, ''), $3)
-                 WHERE id = $4
-                 RETURNING id, openid, phone, nickname, avatar_url`,
-                [openid, nickname, avatarUrl, auth.id],
-            );
-            row = updated.rows[0];
-            if (!row) {
-                createResponse(res, 404, '账户不存在');
-                return;
-            }
-            SmsAuthController.log('bindWechat', '✅ 微信绑定成功', { id: auth.id, openid });
-        }
-
-        createResponse(res, 200, 'success', {
-            id: row.id,
-            openid: row.openid ?? null,
-            phone: row.phone ?? null,
-            nickname: row.nickname ?? '',
-            avatar: row.avatar_url ?? '',
-            wechatBound: !!row.openid,
-            phoneBound: !!row.phone,
-        });
-    }
+    /** 绑定微信：POST /api/auth/bind/wechat 已并入 EmailAuthController.bindWechat（2026-08-31 泛化支持 email|phone 双身份证明），
+     *  手机号账户绑定微信传 body.phone + 短信验证码（scenario=bind）即可，此处不再保留重复实现。 */
 }

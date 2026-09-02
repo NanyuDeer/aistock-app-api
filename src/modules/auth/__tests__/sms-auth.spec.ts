@@ -4,7 +4,8 @@
  * Mock strategy: monkey-patch pool.query（仓库惯例）。
  * - sendSms / smsLogin：dev 放行固定测试码 SMS_DEV_TEST_CODE，验证码不依赖 Redis；
  *   限流走内存兜底（Redis 不可用）。
- * - bind/phone：先校验码（测试码放行）→ 归属冲突查询（空）→ UPDATE。
+ * - bind/phone：先校验码（测试码放行）→ 归属冲突查询（空）→ UPDATE / 冲突自动合并。
+ * 绑定微信（email|phone 双证明）测试在 email-auth.spec.ts。
  * 鉴权用 signJwt 真实签发（payload 带 id）；isTokenRevoked fail-open 返回 false。
  */
 import { test, before, after } from 'node:test';
@@ -13,7 +14,6 @@ import http from 'http';
 import type { AddressInfo } from 'net';
 import express, { type Express } from 'express';
 import { SmsAuthController } from '../SmsAuthController';
-import { AuthController } from '../controller';
 import { signJwt } from '../../../shared/utils/jwt';
 import pool from '../../../core/db';
 import redis from '../../../core/redis';
@@ -21,8 +21,6 @@ import { CacheService } from '../../../shared/utils/CacheService';
 
 const origQuery = pool.query.bind(pool);
 const origConnect = pool.connect.bind(pool);
-const origExchange = AuthController.exchangeCodeForToken;
-const origFetchUserInfo = AuthController.fetchWechatUserInfo;
 const origGet = (CacheService as unknown as { get: unknown }).get;
 const PHONE = '13800000000';
 
@@ -37,16 +35,8 @@ after(() => {
     (CacheService as unknown as { get: unknown }).get = origGet;
     ;(pool as unknown as { query: typeof pool.query }).query = origQuery;
     ;(pool as unknown as { connect: unknown }).connect = origConnect;
-    AuthController.exchangeCodeForToken = origExchange;
-    AuthController.fetchWechatUserInfo = origFetchUserInfo;
     redis.disconnect();
 });
-
-/** mock 微信授权换取 openid（避免真实 HTTP 调用） */
-function mockWechatAuth(openid = 'wx-u1'): void {
-    AuthController.exchangeCodeForToken = (async () => ({ openid, access_token: 'at', errcode: 0 })) as never;
-    AuthController.fetchWechatUserInfo = (async () => ({ nickname: '微信用户', headimgurl: 'http://avatar' })) as never;
-}
 
 function buildApp(): Express {
     const app = express();
@@ -54,7 +44,6 @@ function buildApp(): Express {
     app.post('/api/auth/sms/send', (req, res, next) => SmsAuthController.sendSms(req, res, next));
     app.post('/api/auth/sms/login', (req, res, next) => SmsAuthController.smsLogin(req, res, next));
     app.post('/api/auth/bind/phone', (req, res, next) => SmsAuthController.bindPhone(req, res, next));
-    app.post('/api/auth/bind/wechat', (req, res, next) => SmsAuthController.bindWechat(req, res, next));
     return app;
 }
 
@@ -209,53 +198,6 @@ test('bindPhone 手机号已属他人（有数据）→ 自动合并 200', async
     assert.ok(tx.some(s => s.includes('UPDATE users SET email = NULL')), '副账户应释放已转移邮箱');
     assert.ok(tx.some(s => s.includes('UPDATE users SET is_vip')), 'VIP 应继承');
     assert.ok(!tx.some(s => s.includes('UPDATE users SET openid')), '主账户已有 openid 不应被覆盖');
-    assert.ok(tx.includes('COMMIT'), '合并事务应正常提交');
-});
-
-test('bindWechat 微信已属他人（有数据）→ 自动合并 200', async () => {
-    mockWechatAuth('wx-other');
-    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
-        const s = String(sql);
-        if (s.includes('SELECT id FROM users WHERE phone = $1 AND id = $2')) {
-            return { rows: [{ id: 'u1' }] } as never;
-        }
-        if (s.includes('SELECT id FROM users WHERE openid = $1 AND id <> $2')) {
-            return { rows: [{ id: 'wx-other' }] } as never;
-        }
-        return { rows: [] } as never;
-    };
-    // merge 事务：副账户有 phone/email/VIP → 全部转移合并，而非 409
-    const tx: string[] = [];
-    const clientQuery = (async (sql: unknown, _params?: unknown[]) => {
-        const s = String(sql);
-        if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
-            tx.push(s);
-            return { rows: [] } as never;
-        }
-        tx.push(s);
-        if (s.includes('FOR UPDATE')) return { rows: [{ id: 'wx-other', openid: 'wx-other', email: 'other@163.com', phone: '13900000001', is_vip: true }] } as never;
-        if (s.includes('SELECT openid, email, phone')) return { rows: [{ openid: null, email: null, phone: PHONE }] } as never;
-        if (s.includes('to_regclass')) return { rows: [{ t: null, t2: null, t3: null }] } as never;
-        if (s.includes('INSERT INTO user_stocks')) return { rows: [] } as never;
-        if (s.includes('DELETE FROM user_stocks')) return { rows: [] } as never;
-        if (s.includes('UPDATE users SET is_vip')) return { rows: [] } as never;
-        if (s.includes('UPDATE users SET openid')) return { rows: [{ id: 'u1', openid: 'wx-other', email: 'other@163.com', phone: PHONE, nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
-        return { rows: [] } as never;
-    }) as unknown as typeof pool.query;
-    const client = { query: clientQuery, release: () => {} };
-    ;(pool as unknown as { connect: unknown }).connect = async () => client;
-    const app = buildApp();
-    const r = await call(app, 'POST', '/api/auth/bind/wechat', { phone: PHONE, code: '123456', wxCode: 'wx' }, signToken('u1', ''));
-    assert.strictEqual(r.status, 200);
-    const data = r.json?.data as { wechatBound: boolean; openid: string | null; phone: string | null };
-    assert.strictEqual(data.wechatBound, true);
-    assert.strictEqual(data.openid, 'wx-other');
-    assert.strictEqual(data.phone, PHONE, '主账户原手机号保留');
-    // 转移 openid+email 到主账户、副账户释放已转移身份、VIP 继承 SQL 均须执行
-    assert.ok(tx.some(s => s.includes('UPDATE users SET openid') && s.includes('= $1')), '副账户微信应转移给主账户');
-    assert.ok(tx.some(s => s.includes('UPDATE users SET openid = NULL')), '副账户应释放已转移微信');
-    assert.ok(tx.some(s => s.includes('UPDATE users SET is_vip')), 'VIP 应继承');
-    assert.ok(!tx.some(s => s.includes('UPDATE users SET phone = ')), '主账户已有 phone 不应被覆盖');
     assert.ok(tx.includes('COMMIT'), '合并事务应正常提交');
 });
 
