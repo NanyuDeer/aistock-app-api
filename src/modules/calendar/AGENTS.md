@@ -31,6 +31,7 @@
 - 对外事件：`{date, type: delivery|earnings|seed|macro, title, importance, source, event_time?, result?}`
 - `typeFromSource`：L1→delivery；L2/L3 标题命中 `/(发布日程|CPI|PPI|PMI|社融|FOMC|议息)/` →macro，否则 earnings；L4→seed
 - **US 隔夜事件**（`market='US_OVERNIGHT'` 且 `event_time>=15:00`）：对外 `date` 顺延次一交易日（`TradingCalendarService.getNextTradingDay`，§4.5）；交易日历未覆盖年份 fail-close 保留原始日期（不抛 502）
+- **listEvents 排序契约**（2026-09-02，rhythm 锚点单一来源）：`ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`（三键稳定排序）；`internalRouter` GET /events 再按 date 主键 JS 稳定排序（同日期保留 DB 行次序）；Python 侧 `high_events`/`next_event_anchor` 取首条顺序唯一继承此下发序，Python 不重排
 - `upsertEvent` 默认值：importance=medium、market=CN、source=L3、event_time/detail/result=null；返回 `{id, upserted}`（`xmax=0` 判断新插入）
 - `dedupHash`：`sha256(event_date|normalizeTitle(title))` 前 16 位；`normalizeTitle` = 去 `[\s\W_]+` + 小写
 - internal 鉴权：`x-internal-token` 必须等于 `INTERNAL_API_TOKEN || INTERNAL_TOKEN || 'change-me-in-production'`（**请求时动态求值**，非模块加载期常量——避免 core/db 的 dotenv 抢先固化导致测试/热更新后 token 失效）
