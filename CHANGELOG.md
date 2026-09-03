@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-node] 2026-09-03 — 修复 sectors 软失败入缓存冻结 + 统一降级返回结构
+
+**开发者**: superpowers-implementer（评审修复）
+
+### 修复
+- `src/modules/fear-greed/FearGreedService.ts` `getSectorBoardData`：仅 `availability:true` 的健康结果写入 10 分钟缓存；双源软失败（`availability:false`，非异常）不再写缓存——此前会把降级结果冻结 10 分钟、前端建议一直卡在静态 fallback，现在失败数据直接透传、下次请求自然重试；同时增加可选 `loaders` 参数（默认 `defaultLoaders`）便于测试注入 stub
+- `src/modules/fear-greed/sectorBoard.ts`：新增统一兜底 `unavailableBoard()`（EMPTY_BOARD + tradeDate 填当日），`buildSectorBoardData` 软失败路径复用
+- `src/modules/fear-greed/controller.ts` `sectors` catch：删除硬编码空结构，改经 service 复用 `unavailableBoard()`，两层降级 tradeDate 语义一致（填当日）
+
+### 测试
+- `tests/fear-greed.sector-cache.test.ts`（新增）：软失败不写缓存（随后健康调用真正重取）/ 10 分钟内命中缓存不重取 / TTL 过期重取 / 失败体 `availability:false` 且 `source:''`，共 4 用例；用 `node:test` `mock.timers(apis:['Date'])` 控制时间免真实等待
+
+---
+
 ## [feat/fear-greed-node] 2026-09-03 — 新增 GET /api/fear-greed/sectors（板块行情榜，配置方向数据源）
 
 **开发者**: 林晓研

@@ -6,7 +6,9 @@ import pool from '../../core/db';
 import redis from '../../core/redis';
 import { tushareRequest } from '../quote/TushareService';
 import { computeJq, type BreadthCache, type DailyLimit, type JqResult, type LimitCache } from './calculator';
-import { buildSectorBoardData, EMPTY_BOARD, type FgSectorBoardData } from './sectorBoard';
+import { buildSectorBoardData, defaultLoaders, unavailableBoard, type FgSectorBoardData, type FgSectorLoaders } from './sectorBoard';
+// 供 controller.sectors 的降级兜底复用同一失败结构（与 service 内部降级 tradeDate 语义一致）
+export { unavailableBoard };
 
 const CACHE_TTL_SECONDS = 30 * 60; // 30 分钟（与 Python 版一致）
 
@@ -349,18 +351,20 @@ export async function getCachedFromRedis(): Promise<string | null> {
 const SECTOR_CACHE_TTL_SECONDS = 10 * 60; // 板块行情与恐贪 30min 缓存解耦，盘中更及时
 let sectorBoardCache: { ts: number; data: FgSectorBoardData } | null = null;
 
-/** 板块行情（10 分钟缓存；失败返回 availability:false，不抛错） */
-export async function getSectorBoardData(): Promise<FgSectorBoardData> {
+/** 板块行情（10 分钟缓存；失败返回 availability:false 不抛错；仅健康结果写缓存） */
+export async function getSectorBoardData(loaders: FgSectorLoaders = defaultLoaders): Promise<FgSectorBoardData> {
     const now = Date.now();
     if (sectorBoardCache && now - sectorBoardCache.ts < SECTOR_CACHE_TTL_SECONDS * 1000) {
         return sectorBoardCache.data;
     }
     try {
-        const data = await buildSectorBoardData();
-        sectorBoardCache = { ts: now, data };
+        const data = await buildSectorBoardData(loaders);
+        // 软失败（双源不可用）是正常返回而非异常：不得写缓存，否则会把 availability:false
+        // 冻结 10 分钟、前端建议一直卡在静态 fallback。失败数据直接透传，下次调用自然重试。
+        if (data.availability) sectorBoardCache = { ts: now, data };
         return data;
     } catch (err) {
         console.error('[FearGreed] sector board failed:', err instanceof Error ? err.message : String(err));
-        return { ...EMPTY_BOARD, tradeDate: new Date().toISOString().slice(0, 10) };
+        return unavailableBoard();
     }
 }

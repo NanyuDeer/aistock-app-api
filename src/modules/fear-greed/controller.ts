@@ -3,7 +3,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { createResponse } from '../../shared/utils/response';
-import { buildDashboard, getHistory, getLatestJq, getSectorBoardData, refreshJq } from './FearGreedService';
+import { buildDashboard, getHistory, getLatestJq, getSectorBoardData, refreshJq, unavailableBoard } from './FearGreedService';
 
 /** GET /api/fear-greed/dashboard?index=jq — 首页主面板数据 */
 export async function dashboard(req: Request, res: Response): Promise<void> {
@@ -66,8 +66,9 @@ export async function sectors(_req: Request, res: Response): Promise<void> {
         const data = await getSectorBoardData();
         createResponse(res, 200, 'success', data);
     } catch (err) {
+        // getSectorBoardData 内部已兜底，此处为最后防线：与 service 降级共用同一失败结构（tradeDate 填当日）
         console.error('[FearGreed] sectors failed:', err instanceof Error ? err.message : String(err));
-        createResponse(res, 200, 'success', { availability: false, tradeDate: '', source: '', sectors: { topGainers: [], topInflows: [], topLosers: [], topOutflows: [] } });
+        createResponse(res, 200, 'success', unavailableBoard());
     }
 }
 

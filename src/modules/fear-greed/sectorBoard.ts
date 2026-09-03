@@ -55,6 +55,14 @@ export const EMPTY_BOARD: FgSectorBoardData = {
     sectors: { topGainers: [], topInflows: [], topLosers: [], topOutflows: [] },
 };
 
+/**
+ * 兜底失败返回体（双源不可用/异常降级时统一使用）：结构同 EMPTY_BOARD，tradeDate 填当日。
+ * service 与 controller 降级路径共用，避免各处手写空结构导致 tradeDate 语义漂移。
+ */
+export function unavailableBoard(): FgSectorBoardData {
+    return { ...EMPTY_BOARD, tradeDate: pickTradeDate([]) };
+}
+
 /** 生产默认 loaders（包住现有快照服务的异常，避免整次组装抛错） */
 export const defaultLoaders: FgSectorLoaders = {
     concept: async () => {
@@ -110,5 +118,5 @@ export async function buildSectorBoardData(loaders: FgSectorLoaders = defaultLoa
         };
     }
 
-    return { ...EMPTY_BOARD, tradeDate: pickTradeDate([]) };
+    return unavailableBoard();
 }
