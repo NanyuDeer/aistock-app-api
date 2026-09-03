@@ -8,7 +8,7 @@ import {
     labelOf,
     levelOf,
     pctRankOrNeutral,
-    percentileRank,
+    compositeOfRawAvgs,
     sparkline,
 } from './indicators';
 
@@ -55,6 +55,16 @@ function todayYyyymmdd(): string {
     const day = String(d.getDate()).padStart(2, '0');
     return `${y}${m}${day}`;
 }
+
+/**
+ * 双层百分位排名聚合：
+ * 1. 先对各指标百分位等权平均得到每日 rawAvg
+ * 2. 再对 rawAvg 序列做百分位排名 → composite
+ *
+ * 背景：9 指标等权平均后方差被压缩（σ/√9），综合指数天然收窄到 [33,67]。
+ * 对均值序列再做百分位排名后，分布自动覆盖 0-100 全区间，
+ * 历史最恐惧日 → composite≈0，历史最贪婪日 → composite≈100，无需手工调参数。
+ */
 
 function daysAgoYyyymmdd(days: number): string {
     const d = new Date();
@@ -175,19 +185,39 @@ async function breadth(client: TushareClient, cache: BreadthCache): Promise<JqIn
 
         const up = new Map<string, number>();
         const total = new Map<string, number>();
-        const batchSize = 20; // 20 只 × 约 500 交易日 ≈ 1 万行，低于 daily 单次上限
+
+        // daily 单次调用有行数上限（实测 ~6000 行/次）。若整窗请求（20 只 × 500 交易日 ≈ 1 万行），
+        // 超出部分会被静默截断（只返回最近 300 天），早期日期 total=0 → 落库成默认 50 的假中性值。
+        // 因此按缺失区间切成 ≤120 自然日的段：20 只 × ~85 交易日 ≈ ≤1800 行/次，远低于上限。
+        // 同时只请求缺失区间 [lo, hi]，避免每次全窗重拉。
+        const toDate = (s: string) => new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+        const toYmd = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+        const slices: [string, string][] = [];
+        {
+            const lo = toDate(missing[0]);
+            const hi = toDate(missing[missing.length - 1]);
+            for (let cur = new Date(lo); cur <= hi; cur.setDate(cur.getDate() + 121)) {
+                const sliceEnd = new Date(cur);
+                sliceEnd.setDate(sliceEnd.getDate() + 120);
+                slices.push([toYmd(cur), toYmd(sliceEnd > hi ? hi : sliceEnd)]);
+            }
+        }
+
+        const batchSize = 20;
         for (let i = 0; i < members.length; i += batchSize) {
             const batch = members.slice(i, i + batchSize).join(',');
-            const rows = await client.request(
-                'daily',
-                { ts_code: batch, start_date: start, end_date: end },
-                'ts_code,trade_date,pct_chg',
-            );
-            for (const r of rows) {
-                const d = String(r.trade_date);
-                const p = Number(r.pct_chg ?? 0);
-                total.set(d, (total.get(d) ?? 0) + 1);
-                if (p > 0) up.set(d, (up.get(d) ?? 0) + 1);
+            for (const [s, e] of slices) {
+                const rows = await client.request(
+                    'daily',
+                    { ts_code: batch, start_date: s, end_date: e },
+                    'ts_code,trade_date,pct_chg',
+                );
+                for (const r of rows) {
+                    const d = String(r.trade_date);
+                    const p = Number(r.pct_chg ?? 0);
+                    total.set(d, (total.get(d) ?? 0) + 1);
+                    if (p > 0) up.set(d, (up.get(d) ?? 0) + 1);
+                }
             }
         }
 
@@ -496,19 +526,13 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         }
     })();
 
-    // 综合指数 = 有真实数据的指标等权（杠杆水平不计入，与韭圈儿口径扩展）
-    // 中性兜底指标（数据源不可用/样本不足，history 为空）不参与平均，
-    // 否则缺失的微观指标恒为 50 会把指数往中性拉，掩盖真实恐惧/贪婪
+    // 综合指数 = 双层百分位排名（杠杆水平不计入）
+    // 中性兜底指标（数据源不可用/样本不足，history 为空）不参与聚合
     const compositeInds = [
         inds.volatility, inds.north_flow, inds.breadth,
         inds.futures, inds.equity_bond,
         micro.seal_rate, micro.break_rate, micro.limit_ratio, micro.streak,
     ].filter((k) => k.history.scores.length > 0);
-    const composite = compositeInds.length > 0
-        ? Math.round(
-            compositeInds.reduce((s, k) => s + k.score, 0) / compositeInds.length * 100,
-        ) / 100
-        : 50;
 
     const indicators: JqIndicator[] = [
         inds.volatility, inds.north_flow, inds.breadth, inds.futures, inds.equity_bond,
@@ -516,14 +540,17 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
         inds.margin,
     ];
 
-    // 综合指数历史（只用有历史的指标等权，避免 fallback 中性指标的空 history 导致历史断裂）
+    // 第一步：逐日等权平均各指标百分位 → rawAvg 序列
     const histKeys = compositeInds.filter(k => k.history.scores.length > 0);
     const histLen = Math.min(...histKeys.map((k) => k.history.scores.length));
-    const histScores: number[] = [];
+    const rawAvgs: number[] = [];
     for (let i = 0; i < histLen; i++) {
-        const avg = histKeys.reduce((s, k) => s + k.history.scores[i], 0) / histKeys.length;
-        histScores.push(Math.round(avg * 100) / 100);
+        const dayScores = histKeys.map((k) => k.history.scores[i]);
+        rawAvgs.push(dayScores.reduce((s, v) => s + v, 0) / dayScores.length);
     }
+
+    // 第二步：对 rawAvg 序列做百分位排名 → composite 和历史序列（双层百分位，展开被压缩的分布）
+    const { composite, scores: histScores } = compositeOfRawAvgs(rawAvgs);
     const histDates = inds.breadth.history.dates.slice(0, histLen);
 
     return {

@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-node] 2026-08-24 — 综合指数双层百分位排名（展开被压缩的分布）
+
+**开发者**: 林晓研
+
+### 重构
+- `src/modules/fear-greed/indicators.ts`：新增纯函数 `compositeOfRawAvgs`——对逐日 rawAvg（各指标百分位等权平均）序列再做百分位排名，返回 `{ composite, scores }`（scores 与输入同序，`composite = scores[0]` 即最新日在其余历史日中的排名；样本 <30 时退回 rawAvg 防抖）
+- `src/modules/fear-greed/calculator.ts`：`computeJq` 综合指数从「平均直出」改为双层百分位：`rawAvg = average(各指标当日百分位)` → `composite = percentileRank(rawAvg)`。背景：9 指标等权平均后方差被压缩（σ/√9），直出指数天然收窄到 [33,67]（中性附近失真）；二次百分位后历史最恐惧日 → ≈0、最贪婪日 → ≈100，分布自动覆盖 0-100，无需手工调参
+
+### 验证
+- `tests/fear-greed.indicators.test.ts`：新增 `compositeOfRawAvgs` 用例（压缩序列 [46,54] 中历史极值日被展开到 ≈0/≈100、composite==scores[0]、空序列中性 50）
+- `tests/fear-greed.calculator.test.ts`：补充集成断言 composite == history.scores[0] 且历史两端覆盖 ≤10/≥90（2/5 新增；全套 5/5 通过）
+
+---
+
 ## [changer] 2026-09-02 — 节奏日历聚合接口扩展逐日建议仓位（position_band）
 
 **开发者**: changer-collab

@@ -12,110 +12,154 @@ const CACHE_TTL_SECONDS = 30 * 60; // 30 分钟（与 Python 版一致）
 // 内存缓存：{ key: { ts, result } }
 const memoryCache = new Map<string, { ts: number; result: JqResult }>();
 
-/** breadth 指标缓存：PG 表 breadth_daily */
+/**
+ * 数据源瞬时网络抖动重试。Tushare 接口偶发 TLS 断开/请求中止（沙箱网络不稳定），
+ * 而一次 computeJq 需串行调用数十次外部接口，任一次失败都会让整次刷新失败。
+ * 仅对网络类错误重试（业务拒绝如无权限不重试，避免无谓重复调用与日志噪音）。
+ */
+async function withNetRetry<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
+    let lastErr: unknown;
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await fn();
+        } catch (err) {
+            lastErr = err;
+            if (err instanceof Error && err.message.includes('业务错误')) throw err;
+            await new Promise((r) => setTimeout(r, 1200 * (i + 1)));
+        }
+    }
+    throw lastErr;
+}
+
+/** PG 不可用时的内存降级缓存 */
+const memBreadth = new Map<string, number>();
+const memLimit = new Map<string, DailyLimit>();
+
+/** breadth 指标缓存：PG 表 breadth_daily（PG 不可用时降级为内存 Map） */
 const breadthCache: BreadthCache = {
     async getAll(): Promise<Map<string, number>> {
-        const { rows } = await pool.query('SELECT trade_date, up_ratio FROM breadth_daily');
-        const map = new Map<string, number>();
-        for (const r of rows as { trade_date: string; up_ratio: number }[]) {
-            map.set(String(r.trade_date).replace(/-/g, ''), Number(r.up_ratio));
+        try {
+            const { rows } = await pool.query('SELECT trade_date, up_ratio FROM breadth_daily');
+            const map = new Map<string, number>();
+            for (const r of rows as { trade_date: string; up_ratio: number }[]) {
+                map.set(String(r.trade_date).replace(/-/g, ''), Number(r.up_ratio));
+            }
+            // 合并内存缓存（PG 缺失的日期用内存补齐）
+            for (const [k, v] of memBreadth) if (!map.has(k)) map.set(k, v);
+            return map;
+        } catch {
+            return new Map(memBreadth);
         }
-        return map;
     },
     async upsert(rows: { tradeDate: string; upRatio: number }[]): Promise<void> {
+        for (const r of rows) memBreadth.set(r.tradeDate, r.upRatio);
         if (!rows.length) return;
-        const values = rows
-            .map((r) => `('${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}', ${r.upRatio})`)
-            .join(',');
-        await pool.query(`
-            INSERT INTO breadth_daily (trade_date, up_ratio) VALUES ${values}
-            ON CONFLICT (trade_date) DO UPDATE SET up_ratio = EXCLUDED.up_ratio
-        `);
+        try {
+            const values = rows
+                .map((r) => `('${r.tradeDate.slice(0, 4)}-${r.tradeDate.slice(4, 6)}-${r.tradeDate.slice(6, 8)}', ${r.upRatio})`)
+                .join(',');
+            await pool.query(`
+                INSERT INTO breadth_daily (trade_date, up_ratio) VALUES ${values}
+                ON CONFLICT (trade_date) DO UPDATE SET up_ratio = EXCLUDED.up_ratio
+            `);
+        } catch { /* PG 不可用时仅写内存 */ }
     },
 };
 
-/** limit 指标缓存：PG 表 limit_daily（seal_codes JSONB 供连板回放） */
+/** limit 指标缓存：PG 表 limit_daily（PG 不可用时降级为内存 Map） */
 const limitCache: LimitCache = {
     async getAll(): Promise<Map<string, DailyLimit>> {
-        const { rows } = await pool.query(
-            `SELECT trade_date, seal_count, break_count, down_count, seal_codes FROM limit_daily`,
-        );
-        const map = new Map<string, DailyLimit>();
-        for (const r of rows as { trade_date: string; seal_count: number; break_count: number; down_count: number; seal_codes: string | string[] }[]) {
-            const date = String(r.trade_date).replace(/-/g, '');
-            map.set(date, {
-                date,
-                sealCount: Number(r.seal_count),
-                breakCount: Number(r.break_count),
-                downCount: Number(r.down_count),
-                maxStreak: 0, // 连板由 calculator 按封板序列回放，不落库
-                sealCodes: typeof r.seal_codes === 'string'
-                    ? JSON.parse(r.seal_codes || '[]')
-                    : (r.seal_codes ?? []),
-            });
+        try {
+            const { rows } = await pool.query(
+                `SELECT trade_date, seal_count, break_count, down_count, seal_codes FROM limit_daily`,
+            );
+            const map = new Map<string, DailyLimit>();
+            for (const r of rows as { trade_date: string; seal_count: number; break_count: number; down_count: number; seal_codes: string | string[] }[]) {
+                const date = String(r.trade_date).replace(/-/g, '');
+                map.set(date, {
+                    date,
+                    sealCount: Number(r.seal_count),
+                    breakCount: Number(r.break_count),
+                    downCount: Number(r.down_count),
+                    maxStreak: 0,
+                    sealCodes: typeof r.seal_codes === 'string'
+                        ? JSON.parse(r.seal_codes || '[]')
+                        : (r.seal_codes ?? []),
+                });
+            }
+            for (const [k, v] of memLimit) if (!map.has(k)) map.set(k, v);
+            return map;
+        } catch {
+            return new Map(memLimit);
         }
-        return map;
     },
     async upsert(rows: DailyLimit[]): Promise<void> {
+        for (const r of rows) memLimit.set(r.date, r);
         if (!rows.length) return;
-        const values = rows
-            .map((r) => {
-                const d = `${r.date.slice(0, 4)}-${r.date.slice(4, 6)}-${r.date.slice(6, 8)}`;
-                return `('${d}', ${r.sealCount}, ${r.breakCount}, ${r.downCount}, '${JSON.stringify(r.sealCodes)}')`;
-            })
-            .join(',');
-        await pool.query(`
-            INSERT INTO limit_daily (trade_date, seal_count, break_count, down_count, seal_codes)
-            VALUES ${values}
-            ON CONFLICT (trade_date) DO UPDATE SET
-              seal_count = EXCLUDED.seal_count,
-              break_count = EXCLUDED.break_count,
-              down_count = EXCLUDED.down_count,
-              seal_codes = EXCLUDED.seal_codes
-        `);
+        try {
+            const values = rows
+                .map((r) => {
+                    const d = `${r.date.slice(0, 4)}-${r.date.slice(4, 6)}-${r.date.slice(6, 8)}`;
+                    return `('${d}', ${r.sealCount}, ${r.breakCount}, ${r.downCount}, '${JSON.stringify(r.sealCodes)}')`;
+                })
+                .join(',');
+            await pool.query(`
+                INSERT INTO limit_daily (trade_date, seal_count, break_count, down_count, seal_codes)
+                VALUES ${values}
+                ON CONFLICT (trade_date) DO UPDATE SET
+                  seal_count = EXCLUDED.seal_count,
+                  break_count = EXCLUDED.break_count,
+                  down_count = EXCLUDED.down_count,
+                  seal_codes = EXCLUDED.seal_codes
+            `);
+        } catch { /* PG 不可用时仅写内存 */ }
     },
 };
 
-/** 建表（幂等，启动时调用） */
+/** 建表（幂等，启动时调用；PG 不可用时安全跳过） */
 export async function ensureFearGreedSchema(): Promise<void> {
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS fear_greed_snapshot (
-            id SERIAL PRIMARY KEY,
-            index_key VARCHAR(10) NOT NULL,
-            trade_date DATE NOT NULL,
-            composite NUMERIC(6,2) NOT NULL,
-            label VARCHAR(20) NOT NULL,
-            indicators_json TEXT NOT NULL DEFAULT '[]',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(index_key, trade_date)
-        )
-    `);
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS breadth_daily (
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fear_greed_snapshot (
+                id SERIAL PRIMARY KEY,
+                index_key VARCHAR(10) NOT NULL,
+                trade_date DATE NOT NULL,
+                composite NUMERIC(6,2) NOT NULL,
+                label VARCHAR(20) NOT NULL,
+                indicators_json TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(index_key, trade_date)
+            )
+        `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS breadth_daily (
             trade_date DATE PRIMARY KEY,
             up_ratio NUMERIC(6,2) NOT NULL
         )
     `);
-    await pool.query(`
-        CREATE TABLE IF NOT EXISTS limit_daily (
-            trade_date DATE PRIMARY KEY,
-            seal_count INT NOT NULL DEFAULT 0,
-            break_count INT NOT NULL DEFAULT 0,
-            down_count INT NOT NULL DEFAULT 0,
-            seal_codes JSONB NOT NULL DEFAULT '[]'
-        )
-    `);
-    // 迁移：添加 time_slot 列 + 改唯一约束（支持每日3次快照）
-    await pool.query(`ALTER TABLE fear_greed_snapshot ADD COLUMN IF NOT EXISTS time_slot VARCHAR(10) DEFAULT 'post'`);
-    await pool.query(`ALTER TABLE fear_greed_snapshot DROP CONSTRAINT IF EXISTS fear_greed_snapshot_index_key_trade_date_key`);
-    await pool.query(`
-        DO $$
-        BEGIN
-            ALTER TABLE fear_greed_snapshot ADD CONSTRAINT fear_greed_snapshot_idx_date_slot_key UNIQUE (index_key, trade_date, time_slot);
-        EXCEPTION WHEN duplicate_object THEN
-            NULL;
-        END $$
-    `);
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS limit_daily (
+                trade_date DATE PRIMARY KEY,
+                seal_count INT NOT NULL DEFAULT 0,
+                break_count INT NOT NULL DEFAULT 0,
+                down_count INT NOT NULL DEFAULT 0,
+                seal_codes JSONB NOT NULL DEFAULT '[]'
+            )
+        `);
+        // 迁移：添加 time_slot 列 + 改唯一约束（支持每日3次快照）
+        await pool.query(`ALTER TABLE fear_greed_snapshot ADD COLUMN IF NOT EXISTS time_slot VARCHAR(10) DEFAULT 'post'`);
+        await pool.query(`ALTER TABLE fear_greed_snapshot DROP CONSTRAINT IF EXISTS fear_greed_snapshot_index_key_trade_date_key`);
+        await pool.query(`
+            DO $$
+            BEGIN
+                ALTER TABLE fear_greed_snapshot ADD CONSTRAINT fear_greed_snapshot_idx_date_slot_key UNIQUE (index_key, trade_date, time_slot);
+            EXCEPTION WHEN duplicate_object THEN
+                NULL;
+            END $$
+        `);
+    } catch (e) {
+        console.warn('[FearGreed] PG schema init skipped (PG unavailable):', e instanceof Error ? e.message : String(e));
+    }
 }
 
 /** 计算并返回最新结果（优先内存缓存；可选强制刷新） */
@@ -126,7 +170,11 @@ export async function getLatestJq(force = false, timeSlot = 'post'): Promise<JqR
         if (hit && now - hit.ts < CACHE_TTL_SECONDS * 1000) return hit.result;
     }
 
-    const result = await computeJq({ request: tushareRequest }, breadthCache, limitCache);
+    // 注入带网络重试的 request：一次 computeJq 串行调用数十次外部接口，
+    // 数据源瞬时抖动（TLS 断开等）不应让整次刷新失败
+    const request = (apiName: string, params: Record<string, unknown>, fields?: string) =>
+        withNetRetry(() => tushareRequest(apiName, params, fields));
+    const result = await computeJq({ request }, breadthCache, limitCache);
     memoryCache.set('jq', { ts: now, result });
 
     // PG 快照落库（按 index_key + trade_date + time_slot 去重）
@@ -173,11 +221,11 @@ async function shIndexSeries(datesYyyymmdd: string[]): Promise<{ dates: string[]
 }
 
 function colorFor(score: number): string {
-    if (score < 25) return '#FF3B30';
+    if (score < 20) return '#00C853';
     if (score < 45) return '#FF9500';
     if (score < 55) return '#FFCC00';
     if (score < 80) return '#34C759';
-    return '#00C853';
+    return '#FF3B30';
 }
 
 /** 组装首页主面板数据（对齐原 /api/fear-greed/dashboard） */
@@ -188,8 +236,8 @@ export async function buildDashboard(): Promise<Record<string, unknown>> {
 
     // 饼图：恐惧侧 vs 贪婪侧
     const pie = [
-        { name: '极度恐惧', value: Math.round((100 - composite) * 10) / 10, color: '#FF3B30' },
-        { name: '极度贪婪', value: Math.round(composite * 10) / 10, color: '#18a058' },
+        { name: '极度恐惧', value: Math.round((100 - composite) * 10) / 10, color: '#00C853' },
+        { name: '极度贪婪', value: Math.round(composite * 10) / 10, color: '#FF3B30' },
     ];
 
     // 柱状图：历史对比（1日前 / 1周前 / 1月前 / 1年前）
