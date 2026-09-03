@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { listDeliveryDates } from './CalendarRuleService'
-import { listEvents, upsertEvent, typeFromSource, isOvernightEvent, type CalendarEventRow } from './MarketCalendarEventService'
-import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { listEvents, upsertEvent, toContractEvent } from './MarketCalendarEventService'
 
 export const calendarInternalRouter: Router = Router()
 
@@ -21,24 +20,6 @@ calendarInternalRouter.use((req: Request, res: Response, next) => {
   }
   next()
 })
-
-function toISODate(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-/** 事件 → 对外契约（US 隔夜 ≥15:00 顺延次一交易日，§4.5；日历未覆盖年份 fail-close 保留原日期）。 */
-function toContractEvent(row: CalendarEventRow): Record<string, unknown> {
-  let date = row.event_date
-  if (row.market === 'US_OVERNIGHT' && isOvernightEvent(row.event_time)) {
-    try {
-      date = toISODate(TradingCalendarService.getNextTradingDay(new Date(`${row.event_date}T00:00:00Z`)))
-    } catch (err) {
-      // 交易日历未覆盖年份（§16 开放问题 6）：fail-close 保留原始日期，不抛 502
-      console.warn('[Calendar] overnight mapping skipped (calendar uncovered):', err)
-    }
-  }
-  return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result }
-}
 
 calendarInternalRouter.get('/events', async (req: Request, res: Response) => {
   try {
