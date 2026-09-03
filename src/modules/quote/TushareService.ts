@@ -1027,6 +1027,83 @@ export async function getReportRc(params: { ts_code?: string; report_date?: stri
     return rows as unknown as ReportRcRow[];
 }
 
+// ==================== 业绩报告自动更新（批量发现源） ====================
+
+/**
+ * Tushare 批量接口分页拉全量。
+ * 部分接口单次返回有行数上限（如 express_vip / disclosure_date 单次最大 6000 行），
+ * 通过 limit/offset 循环取完，避免单日公告量大时漏数据。
+ */
+export async function tushareRequestAll(
+    apiName: string,
+    params: Record<string, any>,
+    requestedFields: string = '',
+    pageSize: number = 6000,
+): Promise<Record<string, any>[]> {
+    const all: Record<string, any>[] = [];
+    let offset = 0;
+    for (let i = 0; i < 100; i++) { // 上限保护，避免异常时死循环
+        const rows = await tushareRequest(apiName, { ...params, limit: pageSize, offset }, requestedFields);
+        all.push(...rows);
+        if (rows.length < pageSize) break;
+        offset += pageSize;
+    }
+    return all;
+}
+
+export interface ExpressVipRow {
+    ts_code: string;
+    ann_date: string;   // 公告日期 YYYYMMDD
+    end_date: string;   // 报告期 YYYYMMDD
+    revenue: number;            // 营业收入(元)
+    operate_profit: number;     // 营业利润(元)
+    total_profit: number;       // 利润总额(元)
+    n_income: number;           // 净利润(元)
+    total_assets: number;       // 总资产(元)
+    diluted_eps: number;        // 每股收益(摊薄)(元)
+    yoy_net_profit: number;     // 去年同期修正后净利润
+    yoy_sales: number;          // 同比增长率:营业收入
+    perf_summary: string;       // 业绩简要说明
+    is_audit: number;           // 是否审计：1是 0否
+}
+
+/**
+ * 业绩快报（Tushare express_vip, doc_id=46）
+ * 按 period（报告期）一次返回该报告期全部公司（全量分页），不支持按 ann_date 过滤
+ * → 需整报告期拉全量、客户端筛 ann_date
+ * 权限：需 5000 积分
+ */
+export async function getExpressVip(period: string): Promise<ExpressVipRow[]> {
+    const rows = await tushareRequestAll(
+        'express_vip',
+        { period },
+        'ts_code,ann_date,end_date,revenue,operate_profit,total_profit,n_income,total_assets,diluted_eps,yoy_net_profit,yoy_sales,perf_summary,is_audit',
+    );
+    return rows as ExpressVipRow[];
+}
+
+export interface DisclosureDateRow {
+    ts_code: string;
+    ann_date: string;       // 最新披露公告日
+    end_date: string;       // 报告期
+    pre_date: string;       // 预计披露日期
+    actual_date: string;    // 实际披露日期
+    modify_date: string;    // 披露日期修正记录
+}
+
+/**
+ * 财报披露计划（Tushare disclosure_date, doc_id=162）
+ * 支持按 actual_date 批量查"当天实际披露的公司"，作为正式报告 formal 的发现源
+ */
+export async function getDisclosureDate(params: { actual_date?: string; pre_date?: string; end_date?: string }): Promise<DisclosureDateRow[]> {
+    const rows = await tushareRequestAll(
+        'disclosure_date',
+        params,
+        'ts_code,ann_date,end_date,pre_date,actual_date,modify_date',
+    );
+    return rows as DisclosureDateRow[];
+}
+
 // ==================== 半年报数据 ====================
 
 export interface SemiAnnualReportRow {

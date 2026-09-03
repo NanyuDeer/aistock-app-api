@@ -24,10 +24,14 @@ import { StockListController } from './modules/quote/stockListController';
 import { TagLeaderController } from './modules/quote/tagLeaderController';
 import { CapitalFlowController } from './modules/quote/capitalFlowController';
 import { StockAnalysisController } from './modules/quote/analysisController';
+import { StockMidLongAnalysisController } from './modules/quote/midLongAnalysisController';
 import { getSemiAnnualReport } from './modules/quote/TushareService';
 
 // internal 内部API（Python Agent 服务专用）
 import internalRouter, { publicRouter } from './core/routes/internal';
+
+// 板块四环聚合接口（/api/agent/sector-insight/:date，2026-09-02 板块四环前端 spec §6.2）
+import sectorInsightRouter from './core/routes/sectorInsightRouter';
 
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
@@ -43,6 +47,8 @@ import { SessionUsageController } from './modules/chat/sessionUsageController';
 import { AuthController } from './modules/auth/controller';
 import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
+import { SmsAuthController } from './modules/auth/SmsAuthController';
+import { EmailAuthController } from './modules/auth/EmailAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
@@ -68,6 +74,8 @@ import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
 import { ProfitForecastAutoUpdateService } from './modules/monitor/ProfitForecastAutoUpdateService';
+import { ForecastVersionStore } from './modules/monitor/ForecastVersionStore';
+import { PerformanceAiScoreVersionStore } from './modules/monitor/PerformanceAiScoreVersionStore';
 import { PerformanceReportAutoUpdateService } from './modules/monitor/PerformanceReportAutoUpdateService';
 import { StockTraceController } from './modules/stock-trace/controller';
 import stockTraceInternalRouter from './modules/stock-trace/internalRouter';
@@ -85,6 +93,10 @@ import { NotificationRetryService } from './core/notification/NotificationRetryS
 // prediction 预测能力模块（大盘溯源预测 + 到期验证历史）
 import predictionInternalRouter from './modules/prediction/internalRouter';
 import predictionPublicRouter from './modules/prediction/publicRouter';
+
+// calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
+import { calendarInternalRouter } from './modules/calendar/internalRouter';
+import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -133,6 +145,13 @@ app.use(cors({
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
 app.use('/api/agent', publicRouter);
+
+// 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
+// 否则会被反代转发到 Python；对齐 publicRouter 挂载顺序先例）
+app.use('/api/agent', rhythmMasterPublicRouter);
+
+// 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
+app.use('/api/agent', sectorInsightRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -198,6 +217,16 @@ app.get('/api/auth/wechat/login/scan', (req, res, next) => ScanLoginController.g
 app.get('/api/auth/wechat/login/scan/poll', (req, res, next) => ScanLoginController.poll(req, res, next));
 app.post('/api/auth/wx-login', (req, res, next) => AuthController.appWxLogin(req, res, next));
 app.post('/api/auth/logout', (req, res, next) => AuthController.logout(req, res, next));
+// 短信验证码登录 + 双向绑定（统一账户模型，2026-08-25）
+app.post('/api/auth/sms/send', (req, res, next) => SmsAuthController.sendSms(req, res, next));
+app.post('/api/auth/sms/login', (req, res, next) => SmsAuthController.smsLogin(req, res, next));
+app.post('/api/auth/bind/phone', (req, res, next) => SmsAuthController.bindPhone(req, res, next));
+// 邮箱验证码登录（替代短信登录；短信路由保留，仅前端不再暴露短信入口）
+app.post('/api/auth/email/send', (req, res, next) => EmailAuthController.sendEmail(req, res, next));
+app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailLogin(req, res, next));
+app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
+// 微信绑定改走邮箱证明归属（前端仅邮箱入口）
+app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
@@ -214,6 +243,7 @@ app.post('/api/users/me/favorites', (req, res, next) => UserController.addFavori
 app.delete('/api/users/me/favorites', (req, res, next) => UserController.removeFavorites(req, res, next));
 app.get('/api/users/me/notifications', (req, res, next) => UserController.listNotifications(req, res, next));
 app.post('/api/users/me/notifications/read', (req, res, next) => UserController.markNotificationsRead(req, res, next));
+app.post('/api/users/me/notifications/read-all', (req, res, next) => UserController.markAllNotificationsRead(req, res, next));
 app.get('/api/chat/usage/summary', (req, res, next) => UsageController.summary(req, res, next));
 // 会话维度用量（P10 线 4；鉴权同 /api/users/me，JWT openid；静态路由先于参数化）
 app.get('/api/chat/usage/sessions', (req, res, next) => SessionUsageController.listBySessions(req, res, next));
@@ -359,11 +389,11 @@ app.get('/api/config/public', (req, res, next) => ConfigController.getPublicConf
 
 // 手动触发 morning agent 晨报生成（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
 // handler 逻辑抽到 src/core/routes/morning_trigger_handler.ts，便于单元测试
-import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler.js';
+import { createMorningTriggerHandler } from './core/routes/morning_trigger_handler';
 app.post('/api/internal/trigger-morning-briefing', createMorningTriggerHandler());
 
 // 手动触发 review agent 复盘溯源（调用 Python FastAPI，管理员 curl 后用 pm2 log 查看）
-import { createReviewTriggerHandler } from './core/routes/review_trigger_handler.js';
+import { createReviewTriggerHandler } from './core/routes/review_trigger_handler';
 app.post('/api/internal/trigger-review-briefing', createReviewTriggerHandler());
 
 // 手动触发趋势股批量评分（TrendBatchService.run，管理员 curl 后用 pm2 log 查看）
@@ -453,6 +483,7 @@ app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => Perform
 app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
 app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
 app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
+app.get('/api/cn/stocks/performance-reports/ranking', (req, res, next) => PerformanceReportController.getPerformanceRanking(req, res, next));
 
 app.get('/api/cn/tags/:tagCode/leaders', (req, res, next) => TagLeaderController.getTagLeaders(req, res, next));
 
@@ -512,6 +543,23 @@ app.route('/api/cn/stocks/:symbol/analysis')
             return;
         }
         StockAnalysisController.handleStockAnalysis(req, res, next);
+    });
+
+// ==================== 中长线 AI 洞见路由 ====================
+app.route('/api/cn/stocks/:symbol/mid-long/:timeframe')
+    .get((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleGet(req, res, next);
+    })
+    .post((req, res, next) => {
+        if (!isValidAShareSymbol(req.params.symbol)) {
+            res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
+            return;
+        }
+        StockMidLongAnalysisController.handleCreate(req, res, next);
     });
 
 app.get('/api/cn/stock/:symbol/profit-forecast', (req, res, next) => {
@@ -576,6 +624,8 @@ app.use('/internal/stock-trace', stockTraceInternalRouter);
 app.use('/internal/insight', insightInternalRouter);
 
 app.use('/internal/predictions', predictionInternalRouter);
+
+app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
 
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
@@ -942,6 +992,20 @@ async function start() {
     }
 
     try {
+        await ForecastVersionStore.ensureSchema();
+        console.log('[DB] earnings_forecast_versions table ready');
+    } catch (err: unknown) {
+        console.error('[ForecastVersion] CRITICAL: earnings_forecast_versions schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await PerformanceAiScoreVersionStore.ensureSchema();
+        console.log('[DB] performance_ai_score_versions table ready');
+    } catch (err: unknown) {
+        console.error('[PerformanceAiScoreVersion] CRITICAL: performance_ai_score_versions schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
         await pool.query(`ALTER TABLE stocks ADD COLUMN IF NOT EXISTS industry TEXT DEFAULT ''`);
         console.log('[DB] stocks.industry column ready');
     } catch (err: unknown) {
@@ -1089,6 +1153,28 @@ async function start() {
         console.warn('[DB] prediction_records table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // 节奏大师：market_calendar_events（L1-L4 事件日历，spec §4.4；启动自动建表对齐 prediction_records 先例）
+    try {
+        await pool.query(`CREATE TABLE IF NOT EXISTS market_calendar_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_date DATE NOT NULL,
+  title TEXT NOT NULL,
+  importance TEXT NOT NULL DEFAULT 'medium',
+  market TEXT NOT NULL DEFAULT 'CN',
+  event_time TEXT,
+  source TEXT NOT NULL DEFAULT 'L4',
+  detail TEXT,
+  result TEXT,
+  dedup_hash VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`);
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_market_calendar_events_dedup ON market_calendar_events(event_date, dedup_hash)');
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_market_calendar_events_date ON market_calendar_events(event_date)');
+        console.log('[DB] market_calendar_events table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] market_calendar_events table check:', err instanceof Error ? err.message : String(err));
+    }
+
     // Phase 4-3：user_profiles 用户画像表（user_id 主键，均允许 NULL；投资偏好 JSONB 数组整体替换）
     try {
         await pool.query(`
@@ -1111,6 +1197,106 @@ async function start() {
         console.log('[DB] users.is_vip ready');
     } catch (err: unknown) {
         console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
+    // 主键从 openid 切换为不可变 id(UUID)；openid/phone/unionid 均可空唯一。
+    // 切主键前必须摘除所有 REFERENCES users(openid) 的外键（user_notifications/user_subscriptions/user_stocks），
+    // 否则 DROP CONSTRAINT users_pkey 会被依赖拦截；重建后由 openid 非空唯一索引承载，保持既有语义零破坏。
+    try {
+        // ① 摘除引用 users(openid) 的外键（记录定义与 ON DELETE 语义，重建时还原）
+        const fkRows = await pool.query<{ name: string; table_name: string; columns: string[]; on_delete: string }>(`
+            SELECT
+                c.conname AS name,
+                ct.relname AS table_name,
+                c.confdeltype::text AS on_delete,
+                array_agg(att.attname ORDER BY ord.ordinality) AS columns
+            FROM pg_constraint c
+            JOIN pg_class ct ON ct.oid = c.conrelid
+            JOIN pg_class rt ON rt.oid = c.confrelid
+            CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS ord(attnum, ordinality)
+            JOIN pg_attribute att ON att.attrelid = c.conrelid AND att.attnum = ord.attnum
+            WHERE c.contype = 'f'
+              AND rt.relname = 'users'
+              AND (SELECT a.attnum FROM pg_attribute a
+                   WHERE a.attrelid = rt.oid AND a.attname = 'openid') = ANY(c.confkey)
+            GROUP BY c.conname, ct.relname, c.confdeltype::text
+        `);
+        const fks = fkRows.rows;
+        for (const fk of fks) {
+            await pool.query(`ALTER TABLE ${fk.table_name} DROP CONSTRAINT IF EXISTS ${fk.name}`);
+        }
+        if (fks.length > 0) {
+            console.log('[DB] users: 摘除引用 openid 的外键', fks.map(f => `${f.table_name}(${f.columns.join(',')})`).join('; '));
+        }
+
+        // ② users 新增不可变主键 id（UUID）并回填存量行
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS id UUID');
+        await pool.query('UPDATE users SET id = gen_random_uuid() WHERE id IS NULL');
+        await pool.query('ALTER TABLE users ALTER COLUMN id SET NOT NULL');
+
+        // ③ openid 建立非空唯一索引（承载被摘除外键的引用；允许多个 NULL 手机号账户）
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_openid_key ON users (openid)');
+
+        // ④ 主键切换 openid → id（约束名可能非默认，按 pg_constraint 实测名删除）
+        const pkRow = await pool.query<{ conname: string }>(
+            `SELECT conname FROM pg_constraint WHERE conrelid = 'users'::regclass AND contype = 'p' LIMIT 1`,
+        );
+        const pkName = pkRow.rows[0]?.conname;
+        if (pkName) await pool.query(`ALTER TABLE users DROP CONSTRAINT IF EXISTS ${pkName}`);
+        await pool.query('ALTER TABLE users ALTER COLUMN openid DROP NOT NULL');
+        await pool.query('ALTER TABLE users ADD CONSTRAINT users_pkey PRIMARY KEY (id)');
+
+        // ⑤ 重建被摘除的外键（仍指向 users(openid)，由 ③ 的唯一索引承载）
+        const odMap: Record<string, string> = { c: 'CASCADE', n: 'SET NULL', r: 'RESTRICT', a: 'NO ACTION', d: 'SET DEFAULT' };
+        for (const fk of fks) {
+            const onDelete = odMap[fk.on_delete] || 'NO ACTION';
+            const cols = fk.columns.join(', ');
+            await pool.query(
+                `ALTER TABLE ${fk.table_name} ADD CONSTRAINT ${fk.name} FOREIGN KEY (${cols}) REFERENCES users(openid) ON DELETE ${onDelete}`,
+            );
+        }
+
+        // ⑥ phone / unionid（可空唯一；unionid 预留跨 appid 合并）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_phone_key ON users (phone)');
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS unionid VARCHAR(128)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_unionid_key ON users (unionid)');
+
+        // ⑦ email（可空唯一；邮箱验证码登录）
+        await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(254)');
+        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS users_email_key ON users (email)');
+
+        console.log('[DB] users 统一账户模型 ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users 统一账户模型 migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // user_stocks：手机号用户自选股（openid 可空 + user_id 双通道）
+    try {
+        const stockTable = await pool.query(
+            `SELECT 1 FROM information_schema.tables WHERE table_name = 'user_stocks' LIMIT 1`,
+        );
+        if (stockTable.rows.length > 0) {
+            await pool.query('ALTER TABLE user_stocks ADD COLUMN IF NOT EXISTS user_id UUID');
+            // 旧主键 (openid, symbol) 强制 openid NOT NULL 且无法承载手机号用户 → 先摘除再放宽
+            const pkRow2 = await pool.query<{ conname: string }>(
+                `SELECT conname FROM pg_constraint WHERE conrelid = 'user_stocks'::regclass AND contype = 'p' LIMIT 1`,
+            );
+            const pkName2 = pkRow2.rows[0]?.conname;
+            if (pkName2) await pool.query(`ALTER TABLE user_stocks DROP CONSTRAINT IF EXISTS ${pkName2}`);
+            await pool.query('ALTER TABLE user_stocks ALTER COLUMN openid DROP NOT NULL');
+            // 微信用户（openid 非空）与手机号用户（user_id 非空）各自去重
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_openid_symbol ON user_stocks (openid, symbol) WHERE openid IS NOT NULL');
+            await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS uq_user_stocks_userid_symbol ON user_stocks (user_id, symbol) WHERE user_id IS NOT NULL');
+            // 回填：老微信自选股挂到对应 user_id，实现按 id 统一读取
+            await pool.query(`UPDATE user_stocks us SET user_id = u.id FROM users u WHERE us.openid = u.openid AND us.user_id IS NULL`);
+            console.log('[DB] user_stocks.user_id ready');
+        } else {
+            console.warn('[DB] user_stocks 表不存在，跳过 user_id 迁移（待手工建表后重跑）');
+        }
+    } catch (err: unknown) {
+        console.warn('[DB] user_stocks.user_id migration:', err instanceof Error ? err.message : String(err));
     }
 
     // 业绩预测表
@@ -1285,6 +1471,37 @@ async function start() {
         console.warn('[DB] trend_scores table check:', err instanceof Error ? err.message : String(err));
     }
 
+    // 中长线 AI 洞见表
+    try {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS stock_mid_long_analysis (
+                id SERIAL PRIMARY KEY,
+                symbol VARCHAR(10) NOT NULL,
+                timeframe VARCHAR(10) NOT NULL CHECK (timeframe IN ('mid', 'long')),
+                analysis_time VARCHAR(30) NOT NULL,
+                conclusion VARCHAR(100) NOT NULL,
+                core_logic TEXT NOT NULL DEFAULT '',
+                risk_warning TEXT NOT NULL DEFAULT '',
+                advice TEXT NOT NULL DEFAULT '',
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        `);
+        // 迁移旧表结构：删除旧字段，添加新字段
+        try {
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS logic`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS basis`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS advice`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis DROP COLUMN IF EXISTS risk_tips`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS core_logic TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS risk_warning TEXT NOT NULL DEFAULT ''`);
+            await pool.query(`ALTER TABLE stock_mid_long_analysis ADD COLUMN IF NOT EXISTS advice TEXT NOT NULL DEFAULT ''`);
+        } catch {}
+        await pool.query('CREATE INDEX IF NOT EXISTS idx_mid_long_symbol_timeframe ON stock_mid_long_analysis(symbol, timeframe)');
+        console.log('[DB] stock_mid_long_analysis table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] stock_mid_long_analysis table check:', err instanceof Error ? err.message : String(err));
+    }
+
     // 自选股洞察：建表由 016_watchlist_insights.sql 负责，这里仅验证已执行
     try {
         await pool.query('SELECT 1 FROM watchlist_insight_sources LIMIT 1');
@@ -1353,10 +1570,12 @@ async function start() {
         }
         // 启动飞书定时推送调度器
         MessagePushService.startScheduler();
-        // 旧 stock_trace 事件发现/价格触发：默认停用，仅 STOCK_TRACE_TRIGGER_ENABLED === 'true' 时启动
-        // （保留代码路径便于回滚；新自选股洞察已由 insight 模块替代旧 stock_trace 写入）
-        if (process.env.STOCK_TRACE_TRIGGER_ENABLED === 'true') {
+        // stock_trace 实时价格异动为主链路（保底实时层，不依赖外部新闻源）：
+        // 默认启动，仅显式 STOCK_TRACE_TRIGGER_ENABLED === 'false' 时关闭。
+        // 自选股洞察（insight）只作辅助补充层，不承担主事件源职责。
+        if (process.env.STOCK_TRACE_TRIGGER_ENABLED !== 'false') {
             PriceTriggerDetector.start();
+            console.log('[StockTrace] PriceTriggerDetector 已启动（实时价格异动为主链路）');
         }
         StockSyncService.sync().catch((err: unknown) => {
             console.error('[Startup] stock basic data sync failed:', err instanceof Error ? err.message : err);

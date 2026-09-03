@@ -59,3 +59,11 @@
 - 趋势股批量评分由 cron 调度（凌晨 2 点），含60日均线剔除规则（连续两日跌破60日线→从Top列表剔除）
 - 趋势股评分技术面 K 线展示数据用腾讯**前复权**日K（`TencentKlineService.getKLine` + `parseTencentKlineToTrendKline`，fqt=1，近120日），消除除权/除息导致的不复权价格断裂假跳变（如源杰科技 2026-05-18 除权后 40% 断裂）；获取失败回退 Tushare 不复权数据
 - 业绩预测自动更新由 cron 调度（凌晨 0 点）
+- 业绩报告自动更新（`PerformanceReportAutoUpdateService`，凌晨 0 点）：**无候选池**，按日期增量发现四类数据，各类型只查自己的发现源：
+  - 业绩正式报告（formal）：`disclosure_date.actual_date`=昨日 全市场发现 → 对命中的股票逐只拉 `income` 明细（income 不能批量只能按股，故只在 discovery 命中时拉）
+  - 业绩预告（express）：`forecast.ann_date`=昨日 批量发现（行内自带净利润范围+摘要）
+  - 业绩快报（express）：`express_vip(end_date=最近两个报告期)` 全量分页，客户端过滤 `ann_date`=昨日（快报无法按 ann_date 批量）
+  - 研报评级（rating）：`report_rc.report_date`=昨日 批量发现
+  - 各源 INSERT+通知，已存在跳过；昨日四源均无新增时用前 2 个自然日窗口重扫补漏
+  - `disclosure_date.pre_date` 额外推送"预计披露日"前瞻提醒（仅订阅者）
+  - 事实（实测）：`forecast`/`report_rc`/`disclosure_date` 可按日期全市场批查；`express_vip` 按 end_date 全量（不支持按 ann_date）；`income`/`cashflow`/`balancesheet`/`express` 必须传 ts_code。快报(express)与预告(forecast)目标公司基本不重叠（银行/券商常发快报但从不发预告），两者都需要。TushareService 提供 `getForecastByAnnDate`（forecast 按公告日批查）、`getExpressVip`（express_vip 按报告期全量分页）

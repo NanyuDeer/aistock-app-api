@@ -1,5 +1,9 @@
 import { Router, type Request, type Response } from 'express';
-import { PredictionRecordService, type PredictionVerificationEntry } from './PredictionRecordService';
+import {
+  PredictionRecordService,
+  VALID_RESULTS,
+  type PredictionVerificationEntry,
+} from './PredictionRecordService';
 import redis from '../../core/redis';
 
 const router: Router = Router();
@@ -22,8 +26,17 @@ function shanghaiToday(): string {
 export const __internalPredictionDependencies = {
   create: (input: Parameters<typeof PredictionRecordService.create>[0]) => PredictionRecordService.create(input),
   list: (params: Parameters<typeof PredictionRecordService.list>[0]) => PredictionRecordService.list(params),
+  listPending: (limit: number, beforeId?: number) => PredictionRecordService.listPending(limit, beforeId),
+  listByStatus: (status: string, limit: number, beforeId?: number) =>
+    PredictionRecordService.listByStatus(status, limit, beforeId),
   regenerateTimeoutMs: REGENERATE_TIMEOUT_MS,
 };
+
+/** DB 行 → 响应项：id 归一为数字（pg 对 BIGSERIAL 返回 string；publicRouter 已归一，internal 对齐——
+ *  2026-09-03 D2：Python run_once 以 isinstance(record_id,int) 门禁，未归一时全量跳过） */
+function toInternalRow<T extends { id: number | string }>(row: T): T {
+  return { ...row, id: Number(row.id) };
+}
 
 router.use((req, res, next) => {
   if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
@@ -38,8 +51,6 @@ function param(req: Request, key: string): string {
   const val = req.params[key];
   return Array.isArray(val) ? val[0] : (val || '');
 }
-
-const VALID_RESULTS = ['hit', 'miss', 'insufficient'] as const;
 
 router.post('/', async (req: Request, res: Response) => {
   const body = req.body as {
@@ -203,7 +214,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
     try {
       const { rows } = await __internalPredictionDependencies.list({ source_id: sourceId, page: 1, pageSize: 50 });
-      res.json({ code: 200, data: rows });
+      res.json({ code: 200, data: rows.map(toInternalRow) });
     } catch (err) {
       res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
     }
@@ -222,9 +233,9 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const rows =
       status === 'pending'
-        ? await PredictionRecordService.listPending(limit, beforeId)
-        : await PredictionRecordService.listByStatus(status, limit, beforeId);
-    res.json({ code: 200, data: rows });
+        ? await __internalPredictionDependencies.listPending(limit, beforeId)
+        : await __internalPredictionDependencies.listByStatus(status, limit, beforeId);
+    res.json({ code: 200, data: rows.map(toInternalRow) });
   } catch (err) {
     res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
   }
@@ -234,25 +245,52 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   const id = Number(param(req, 'id'));
   const body = req.body as {
     horizon?: unknown;
+    anchor_horizon?: unknown;
+    type?: unknown;
     result?: unknown;
     actual?: unknown;
     reason?: unknown;
+    early_exit?: unknown;
   };
   if (!Number.isInteger(id) || id < 1 || typeof body.horizon !== 'string' || !body.horizon.trim()) {
     res.status(400).json({ code: 400, message: 'valid id and horizon are required' });
     return;
   }
-  if (!VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
+  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法
+  if (body.type !== 'early_exit' && !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
     res.status(400).json({ code: 400, message: 'result must be hit|miss|insufficient' });
     return;
   }
-  const entry: PredictionVerificationEntry = {
-    horizon: body.horizon,
-    result: body.result as PredictionVerificationEntry['result'],
-    actual: typeof body.actual === 'string' ? body.actual : '',
-    reason: typeof body.reason === 'string' ? body.reason : '',
-    verified_at: new Date().toISOString(),
-  };
+  // D5（2026-09-03）：jsonb key（body.horizon）与 entry 内档位字段解耦——condition 路径
+  // key=c{i}、entry.horizon=anchor 档位（short/mid）。Python 经 anchor_horizon 透传 anchor，
+  // 写回 entry.horizon 供统计按档位分桶；缺省回退 body.horizon（horizon 档位 key=档位名）。
+  const entryHorizon =
+    typeof body.anchor_horizon === 'string' && body.anchor_horizon.trim()
+      ? body.anchor_horizon
+      : body.horizon;
+  const entry: PredictionVerificationEntry =
+    body.type === 'early_exit'
+      ? {
+          horizon: entryHorizon,
+          type: 'early_exit',
+          early_exit: (body.early_exit as Record<string, unknown>) ?? {},
+        }
+      : {
+          horizon: entryHorizon,
+          result: body.result as 'hit' | 'miss' | 'insufficient',
+          actual: typeof body.actual === 'string' ? body.actual : '',
+          reason: typeof body.reason === 'string' ? body.reason : '',
+          verified_at: new Date().toISOString(),
+        };
+  // A3 统计口径修复（2026-08-31）：透传 Python 验证器写入的扩展字段
+  // （methodology_version/baseline_neutral/target_type/approximate 等）——此前只透传固定 5 字段，
+  // 导致 methodology_version 不落库 → agent-py _filter_v2 恒 n=0 → A3 钳制与存量统计在生产不触发。
+  for (const [k, v] of Object.entries(body)) {
+    if (['horizon', 'anchor_horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
+      continue;
+    }
+    (entry as Record<string, unknown>)[k] = v;
+  }
   try {
     const record = await PredictionRecordService.appendVerification(id, body.horizon, entry);
     if (!record) {

@@ -43,12 +43,27 @@ test('evidence published after the trigger window is rejected', () => {
   assert.ok(validateStockTraceResult(input).some((error) => error.includes('evidence_after_window')))
 })
 
-test('opposite-direction sector facts require counter evidence to be retained', () => {
+test('opposite-direction sector facts require a supported sector claim to cite counter evidence', () => {
   const sector = source('sector-down', 'sector_fact', 'B', now, { pct_change: -2 })
   const input = validInput(source('announcement', 'announcement', 'A'), [sector])
+  input.candidates[1].status = 'supported'
   assert.ok(validateStockTraceResult(input).includes('candidate:sector:missing_counter_evidence'))
   input.candidates[1].counterEvidenceIds = [sector.sourceId]
   assert.deepEqual(validateStockTraceResult(input), [])
+})
+
+test('non-supported sector candidate with an opposite fact is not blocked', () => {
+  const sector = source('sector-down', 'sector_fact', 'B', now, { pct_change: -2 })
+  const input = validInput(source('announcement', 'announcement', 'A'), [sector])
+  // sector 候选默认 insufficient（未声称板块驱动），存在反向板块事实也不强制反证
+  assert.deepEqual(validateStockTraceResult(input), [])
+})
+
+test('capital_flow_disabled skips counter-evidence requirement for a supported sector claim', () => {
+  const sector = source('sector-down', 'sector_fact', 'B', now, { pct_change: -2 })
+  const input = validInput(source('announcement', 'announcement', 'A'), [sector])
+  input.candidates[1].status = 'supported'
+  assert.deepEqual(validateStockTraceResult({ ...input, missingCapabilities: ['capital_flow_disabled'] }), [])
 })
 
 test('opposite-direction facts captured after the event window do not block artifact publication', () => {

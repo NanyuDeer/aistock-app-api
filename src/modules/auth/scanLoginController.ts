@@ -208,24 +208,28 @@ export class ScanLoginController {
 
             const now = Math.floor(Date.now() / 1000);
             const exp = now + 7 * 24 * 3600;
-            const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
 
             try {
-                await pool.query(
-                    `INSERT INTO users (openid, nickname, avatar_url)
-                     VALUES ($1, $2, $3)
+                // 先 UPSERT 用户并取回不可变主键 id（统一账户模型），再签发携带 id 的 JWT
+                const userResult = await pool.query(
+                    `INSERT INTO users (id, openid, nickname, avatar_url)
+                     VALUES (gen_random_uuid(), $1, $2, $3)
                      ON CONFLICT(openid) DO UPDATE SET
                          nickname = CASE WHEN EXCLUDED.nickname != '' THEN EXCLUDED.nickname ELSE users.nickname END,
-                         avatar_url = CASE WHEN EXCLUDED.avatar_url != '' THEN EXCLUDED.avatar_url ELSE users.avatar_url END`,
+                         avatar_url = CASE WHEN EXCLUDED.avatar_url != '' THEN EXCLUDED.avatar_url ELSE users.avatar_url END
+                     RETURNING id`,
                     [openid, nickname, avatarUrl],
                 );
+                const userId = userResult.rows[0]?.id as string | undefined;
+                const jwt = signJwt({ id: userId, openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
                 await pool.query(
                     `UPDATE scan_login_states SET status = 'confirmed', openid = $1, jwt = $2 WHERE state = $3`,
                     [openid, jwt, state],
                 );
             } catch (dbErr) {
-                // 数据库不可用时，更新内存 Map
+                // 数据库不可用时，更新内存 Map（内存态取不到 id，签发回退仅 openid，requireAuth 自动回填）
                 ScanLoginController.log('scanEvent', '⚠️ 数据库不可用，更新内存 Map', { state });
+                const jwt = signJwt({ openid, nickname, iat: now, exp }, process.env.JWT_SECRET!);
                 ScanLoginController.memoryStates.set(state, {
                     status: 'confirmed',
                     openid,

@@ -50,26 +50,55 @@ function mockMainQuery(rows: Record<string, unknown>[]): void {
 describe('StockTraceService.listUserEvents analysis_status', () => {
     it('有 artifact 时派生 completed', async () => {
         mockMainQuery([row('completed')]);
-        const page = await StockTraceService.listUserEvents('openid-1', 5);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
         assert.equal(page.items[0]?.analysis_status, 'completed');
     });
 
     it('最新 result 被拒或失败时派生 unavailable', async () => {
         mockMainQuery([row('unavailable')]);
-        const page = await StockTraceService.listUserEvents('openid-1', 5);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
         assert.equal(page.items[0]?.analysis_status, 'unavailable');
     });
 
     it('无 artifact/result 时派生 processing', async () => {
         mockMainQuery([row('processing')]);
-        const page = await StockTraceService.listUserEvents('openid-1', 5);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
         assert.equal(page.items[0]?.analysis_status, 'processing');
     });
 
     it('analysis_status 缺失时回退 processing', async () => {
         mockMainQuery([row()]);
-        const page = await StockTraceService.listUserEvents('openid-1', 5);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
         assert.equal(page.items[0]?.analysis_status, 'processing');
+    });
+
+    it('SQL 用统一账户双通道过滤自选股（user_id 优先 + openid 兜底老微信数据）', async () => {
+        let captured: { text: string; params: unknown[] } | null = null;
+        mock.method(pool, 'query', (async (text: string, params?: unknown[]) => {
+            if (String(text).includes('JOIN user_stocks')) {
+                captured = { text: String(text), params: params ?? [] };
+                return { rows: [] };
+            }
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+
+        await StockTraceService.listUserEvents('email-user-id', '', 5);
+
+        assert.ok(captured, 'listUserEvents 应发起主查询');
+        const sql = captured as { text: string; params: unknown[] };
+        assert.match(
+            sql.text,
+            /INNER JOIN user_stocks us ON us\.symbol = e\.symbol AND \(us\.user_id = \$1 OR \(us\.user_id IS NULL AND us\.openid = \$2\)\)/,
+            'JOIN 条件应 user_id 优先、openid 兜底',
+        );
+        assert.match(
+            sql.text,
+            /WHERE \(us\.user_id = \$1 OR \(us\.user_id IS NULL AND us\.openid = \$2\)\)/,
+            'WHERE 应同样双通道过滤',
+        );
+        assert.equal(sql.params[0], 'email-user-id', '第一个参数应为统一账户 id（邮箱用户）');
+        assert.equal(sql.params[1], '', '第二个参数应为 openid（邮箱用户为空串）');
+        assert.equal(sql.params[2], 6, '第三个参数应为 limit+1');
     });
 });
 
