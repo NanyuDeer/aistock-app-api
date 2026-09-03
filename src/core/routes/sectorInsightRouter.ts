@@ -62,6 +62,8 @@ export interface SectorInsightCondition {
   label?: string
   /** 简洁展示用关键词（2026-09-02 起新数据携带：1~2 个）；旧记录无则省略 */
   keywords?: string[]
+  /** 预判关键词（2026-09-03 起新数据携带：scenario 摘要，侧重方向+幅度）；旧记录无则省略 */
+  scenario_keywords?: string[]
 }
 
 export interface SectorInsightPrediction {
@@ -286,6 +288,13 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
         ...(Array.isArray(c.keywords) && c.keywords.length > 0
           ? {
               keywords: c.keywords.filter((k): k is string => typeof k === 'string' && k.trim() !== ''),
+            }
+          : {}),
+        ...(Array.isArray(c.scenario_keywords) && c.scenario_keywords.length > 0
+          ? {
+              scenario_keywords: c.scenario_keywords.filter(
+                (k): k is string => typeof k === 'string' && k.trim() !== '',
+              ),
             }
           : {}),
         ...(metByIndex.has(i) ? { met: metByIndex.get(i) ?? null } : {}),

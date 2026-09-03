@@ -160,7 +160,7 @@ test('toPredictionSummary: horizons/conditions/验证聚合/dueLabel/方向置�
         { horizon: 'short', remaining_estimate: '1-5 交易日', phase: 'building', direction: 'bullish', target: '半导体板块', metric_projection: '+3%', confidence: 'medium', confidence_source: 'llm', label: '缩量修复走强' },
       ],
       conditions: [
-        { condition: '成交额放量至 500 亿', scenario: '板块继续上攻', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], anchor: { horizon: 'short', threshold: '+3%', metric: 'close', direction: 'bullish' } },
+        { condition: '成交额放量至 500 亿', scenario: '板块继续上攻，涨幅上看 +3%', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], scenario_keywords: ['续攻+3%'], anchor: { horizon: 'short', threshold: '+3%', metric: 'close', direction: 'bullish' } },
         { condition: '跌破 30 日均线', scenario: '转入震荡调整', anchor: { horizon: 'mid', threshold: '-5%', metric: 'close', direction: 'bearish' } },
       ],
       evolution_narrative: '',
@@ -188,7 +188,7 @@ test('toPredictionSummary: horizons/conditions/验证聚合/dueLabel/方向置�
     { horizon: 'long', remaining: '1-6 月', direction: 'neutral', confidence: 'low', label: '震荡磨底' },
   ]); // short→long 有序，mid 无档位；label 随档透传
   assert.deepEqual(s.conditions, [
-    { horizon: 'short', direction: 'bullish', condition: '成交额放量至 500 亿', scenario: '板块继续上攻', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], met: true },
+    { horizon: 'short', direction: 'bullish', condition: '成交额放量至 500 亿', scenario: '板块继续上攻，涨幅上看 +3%', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], scenario_keywords: ['续攻+3%'], met: true },
     { horizon: 'mid', direction: 'bearish', condition: '跌破 30 日均线', scenario: '转入震荡调整', met: null },
   ]); // 第二条旧形态无 label/keywords → 键省略（回退长句），不输出空串
 });
