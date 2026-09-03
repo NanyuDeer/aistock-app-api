@@ -26,8 +26,17 @@ function shanghaiToday(): string {
 export const __internalPredictionDependencies = {
   create: (input: Parameters<typeof PredictionRecordService.create>[0]) => PredictionRecordService.create(input),
   list: (params: Parameters<typeof PredictionRecordService.list>[0]) => PredictionRecordService.list(params),
+  listPending: (limit: number, beforeId?: number) => PredictionRecordService.listPending(limit, beforeId),
+  listByStatus: (status: string, limit: number, beforeId?: number) =>
+    PredictionRecordService.listByStatus(status, limit, beforeId),
   regenerateTimeoutMs: REGENERATE_TIMEOUT_MS,
 };
+
+/** DB 行 → 响应项：id 归一为数字（pg 对 BIGSERIAL 返回 string；publicRouter 已归一，internal 对齐——
+ *  2026-09-03 D2：Python run_once 以 isinstance(record_id,int) 门禁，未归一时全量跳过） */
+function toInternalRow<T extends { id: number | string }>(row: T): T {
+  return { ...row, id: Number(row.id) };
+}
 
 router.use((req, res, next) => {
   if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
@@ -205,7 +214,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
     try {
       const { rows } = await __internalPredictionDependencies.list({ source_id: sourceId, page: 1, pageSize: 50 });
-      res.json({ code: 200, data: rows });
+      res.json({ code: 200, data: rows.map(toInternalRow) });
     } catch (err) {
       res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
     }
@@ -224,9 +233,9 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const rows =
       status === 'pending'
-        ? await PredictionRecordService.listPending(limit, beforeId)
-        : await PredictionRecordService.listByStatus(status, limit, beforeId);
-    res.json({ code: 200, data: rows });
+        ? await __internalPredictionDependencies.listPending(limit, beforeId)
+        : await __internalPredictionDependencies.listByStatus(status, limit, beforeId);
+    res.json({ code: 200, data: rows.map(toInternalRow) });
   } catch (err) {
     res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
   }

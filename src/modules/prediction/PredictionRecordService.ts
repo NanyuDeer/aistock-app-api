@@ -252,10 +252,14 @@ export class PredictionRecordService {
 
     // 原子合并写：verification 顶层 jsonb 合并，同档位 COALESCE 二次合并，
     // 避免并发读-改-写覆盖其他档位（A1：Node 端只写本次 entry，不整段覆盖）。
+    // 回归修复（D1，2026-09-03）：jsonb_build_object($1, ...) 的 key 参数与
+    // COALESCE(verification->$1, ...) 的 -> 下标在 variadic/多态上下文无法推断类型，
+    // 每次回写 HTTP 500（could not determine data type of parameter $1）。
+    // 显式 $1::text + 改用 ->>（取 text 再 ::jsonb cast）消除歧义。
     const updated = await pool.query<PredictionRecordRow>(
       `UPDATE prediction_records
        SET verification = verification
-         || jsonb_build_object($1, COALESCE(verification->$1, '{}'::jsonb) || $2::jsonb),
+         || jsonb_build_object($1::text, COALESCE(verification->>$1, '{}')::jsonb || $2::jsonb),
            status = $3
        WHERE id = $4
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
