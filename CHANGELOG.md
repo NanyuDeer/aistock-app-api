@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-node] 2026-09-03 — 新增 GET /api/fear-greed/sectors（板块行情榜，配置方向数据源）
+
+**开发者**: 林晓研
+
+### 新增
+- `GET /api/fear-greed/sectors`：返回当日板块 top 涨幅/主力净流入/跌幅/净流出榜（camel 契约）；主源东财概念板块 clist（`EmSnapshotService.getConceptFlow`），腾讯板块榜兜底（`TencentSnapshotService.fetchTencentSectors`），独立 10 分钟缓存；失败返回 `availability:false` 不阻塞主数据（`sectorBoard.ts` + `FearGreedService.getSectorBoardData` + `controller.sectors`）
+
+### 测试
+- `tests/fear-greed.sector-board.test.ts`：东财四榜/腾讯兜底/双源失败降级 3 用例
+
+---
+
 ## [feat/fear-greed-node] 2026-08-24 — 综合指数双层百分位排名（展开被压缩的分布）
 
 **开发者**: 林晓研
