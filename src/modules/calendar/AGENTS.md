@@ -47,7 +47,7 @@
 | `/internal/calendar/events` | POST | x-internal-token | upsert 事件（event_date+title 必填，importance/market/source 枚举校验） |
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET | x-internal-token | performance_reports 按 ann_date 聚合 `{date, count}` |
 | `/api/agent/rhythm-master/:date` | GET | 无 | 三时点版本（user_id ∈ after_close/morning/midday），按 refresh_slot 优先级排序 |
-| `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行新增可选 `events`（macro，CN + US_OVERNIGHT 按对外契约顺延；无事件 = `[]`，恒下发） |
+| `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（macro，CN + US_OVERNIGHT 按对外契约顺延；无事件 = `[]`） |
 
 ## 依赖
 
