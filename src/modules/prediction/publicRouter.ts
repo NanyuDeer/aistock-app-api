@@ -4,6 +4,8 @@ import { PredictionRecordService, type PredictionRecordRow } from './PredictionR
 const router: Router = Router();
 
 const VALID_STATUSES = ['pending', 'verified', 'skipped'] as const;
+/** 历史跟踪页可选的记录类型（大盘溯源 vs 板块预判）；缺省返回全部（兼容调用方） */
+const VALID_SOURCE_TYPES = ['market_trace', 'sector_prediction'] as const;
 
 /**
  * 当前生产验证口径版本（阶段 0：默认过滤 2.0 防跳变/混桶）。
@@ -23,10 +25,10 @@ function versionOk(e: unknown): boolean {
 
 /** 测试注入点（tsx ESM live binding 无法 patch 模块私有函数，沿用仓库 __xxxDependencies 模式） */
 export const __predictionPublicDependencies = {
-  list: (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; page: number; pageSize: number }) =>
+  list: (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; source_type?: 'market_trace' | 'sector_prediction'; page: number; pageSize: number }) =>
     PredictionRecordService.list(params),
-  listAllForStats: (status?: 'pending' | 'verified' | 'skipped', source_id?: string) =>
-    PredictionRecordService.listAllForStats(status, source_id),
+  listAllForStats: (status?: 'pending' | 'verified' | 'skipped', source_id?: string, source_type?: 'market_trace' | 'sector_prediction') =>
+    PredictionRecordService.listAllForStats(status, source_id, source_type),
   getById: (id: number) => PredictionRecordService.getById(id),
 };
 
@@ -180,13 +182,22 @@ router.get('/', async (req: Request, res: Response) => {
     }
     sourceId = req.query.source_id;
   }
+  // source_type 过滤（大盘 market_trace / 板块 sector_prediction，白名单）
+  let sourceType: 'market_trace' | 'sector_prediction' | undefined;
+  if (req.query.source_type !== undefined) {
+    if (typeof req.query.source_type !== 'string' || !VALID_SOURCE_TYPES.includes(req.query.source_type as typeof VALID_SOURCE_TYPES[number])) {
+      res.status(400).json({ code: 400, message: 'source_type must be market_trace|sector_prediction' });
+      return;
+    }
+    sourceType = req.query.source_type as 'market_trace' | 'sector_prediction';
+  }
   const page = Math.max(1, Number.parseInt(String(req.query.page ?? '1'), 10) || 1);
   const pageSize = Math.min(50, Math.max(1, Number.parseInt(String(req.query.pageSize ?? '20'), 10) || 20));
 
   try {
-    const allRows = await __predictionPublicDependencies.listAllForStats(status, sourceId);
+    const allRows = await __predictionPublicDependencies.listAllForStats(status, sourceId, sourceType);
     const stats = computeStats(allRows);
-    const { rows, total } = await __predictionPublicDependencies.list({ status, source_id: sourceId, page, pageSize });
+    const { rows, total } = await __predictionPublicDependencies.list({ status, source_id: sourceId, source_type: sourceType, page, pageSize });
     res.json({
       code: 200,
       data: {

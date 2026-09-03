@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     clamp,
     percentileRank,
+    compositeOfRawAvgs,
     labelOf,
     pctRankOrNeutral,
     sparkline,
@@ -60,4 +61,25 @@ test('sparkline reverse=true 取反（100 - 百分位）', () => {
     const series = [10, 20, 30, 40, 50];
     const out = sparkline(series, ['d1', 'd2', 'd3', 'd4', 'd5'], 500, true);
     assert.equal(out.scores[0], Math.round((100 - percentileRank(50, series)) * 100) / 100);
+});
+
+test('compositeOfRawAvgs 二次百分位把压缩均值序列展开到 0-100', () => {
+    // 各指标百分位等权平均后被压缩在 46-54（σ/√9），若 avg 直出则最新日仅 54（近中性），
+    // 二次百分位应把「历史最高均值日」排名到 ≈100、历史最低日 ≈0
+    const high = compositeOfRawAvgs([54, ...Array.from({ length: 39 }, (_, i) => 46 + (i % 8))]);
+    assert.ok(high.composite >= 95, `历史最高日应被展开到极贪婪，实际 ${high.composite}`);
+    const low = compositeOfRawAvgs([46, ...Array.from({ length: 39 }, (_, i) => 47 + (i % 8))]);
+    assert.ok(low.composite <= 5, `历史最低日应被展开到极恐惧，实际 ${low.composite}`);
+});
+
+test('compositeOfRawAvgs 返回与历史序列首位一致 + 空序列中性', () => {
+    // rawAvgs[0]=最新日；composite 应等于最新日在其余历史日中的百分位排名（scores[0]）
+    const values = Array.from({ length: 50 }, (_, i) => 30 + (i % 41));
+    const { composite, scores } = compositeOfRawAvgs(values);
+    assert.equal(scores.length, 50);
+    assert.equal(composite, scores[0]);
+    for (const s of scores) assert.ok(s >= 0 && s <= 100);
+    // 空序列 → 中性 50
+    assert.equal(compositeOfRawAvgs([]).composite, 50);
+    assert.deepEqual(compositeOfRawAvgs([]).scores, []);
 });

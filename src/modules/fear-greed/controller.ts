@@ -3,7 +3,7 @@
  */
 import { Router, type Request, type Response } from 'express';
 import { createResponse } from '../../shared/utils/response';
-import { buildDashboard, getHistory, getLatestJq, refreshJq } from './FearGreedService';
+import { buildDashboard, getHistory, getLatestJq, getSectorBoardData, refreshJq, unavailableBoard } from './FearGreedService';
 
 /** GET /api/fear-greed/dashboard?index=jq — 首页主面板数据 */
 export async function dashboard(req: Request, res: Response): Promise<void> {
@@ -60,6 +60,18 @@ export async function refresh(_req: Request, res: Response): Promise<void> {
     }
 }
 
+/** GET /api/fear-greed/sectors — 当日板块行情榜（配置方向数据源；失败返回 availability:false 不 500） */
+export async function sectors(_req: Request, res: Response): Promise<void> {
+    try {
+        const data = await getSectorBoardData();
+        createResponse(res, 200, 'success', data);
+    } catch (err) {
+        // getSectorBoardData 内部已兜底，此处为最后防线：与 service 降级共用同一失败结构（tradeDate 填当日）
+        console.error('[FearGreed] sectors failed:', err instanceof Error ? err.message : String(err));
+        createResponse(res, 200, 'success', unavailableBoard());
+    }
+}
+
 /**
  * 恐贪指数公开路由（无需鉴权，前端温度计/主面板调用）。
  * 需在 index.ts 挂载到 /api/fear-greed（此前漏挂，导致前端恒 404、退化为默认值）。
@@ -69,3 +81,4 @@ fearGreedRouter.get('/dashboard', dashboard);
 fearGreedRouter.get('/indexes', indexes);
 fearGreedRouter.get('/history', history);
 fearGreedRouter.post('/refresh', refresh);
+fearGreedRouter.get('/sectors', sectors);

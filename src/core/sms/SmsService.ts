@@ -123,7 +123,7 @@ export class SmsService {
         );
 
         const req = new SendSmsVerifyCodeRequest({
-            phoneNumber: `86${phone}`,
+            phoneNumber: phone, // 纯 11 位大陆号：SendSmsVerifyCode 要求不带国家码（countryCode=86 已表达），拼 "86" 前缀会被判 ILLEGAL_MOBILE
             countryCode: '86', // 仅支持中国大陆号码
             signName: cfg.signName, // 短信认证签名（号码认证工作台）
             templateCode: resolveTemplate(cfg, scenario), // 预置验证码模板（登录 100001 / 绑定 100004）
@@ -138,8 +138,17 @@ export class SmsService {
         const resp = await client.sendSmsVerifyCode(req);
         const body = resp?.body;
         if (!body || body.success !== true || body.code !== 'OK') {
+            const aliyunCode = body?.code ?? 'unknown';
+            // 频控 / 号码非法错误给用户可读提示（号码认证短信频控：同号 60s 1 条 / 5 条每小时 / 10 条每天）
+            const friendly =
+                aliyunCode === 'biz.FREQUENCY' || aliyunCode === 'FREQUENCY_FAIL' ? '发送过于频繁，请约 60 秒后再试'
+                : aliyunCode === 'BUSINESS_LIMIT_CONTROL' || aliyunCode === 'isv.BUSINESS_LIMIT_CONTROL'
+                    ? '该手机号今日发送已达上限，请明天再试'
+                    : aliyunCode === 'ILLEGAL_MOBILE' || aliyunCode === 'MOBILE_NUMBER_ILLEGAL'
+                        ? '手机号无法识别，请确认号码正确'
+                        : '';
             throw new Error(
-                `阿里云短信发送失败：code=${body?.code ?? 'unknown'} message=${body?.message ?? ''}${body?.model?.bizId ? ` bizId=${body.model.bizId}` : ''}`,
+                `阿里云短信发送失败：code=${aliyunCode}${friendly ? `（${friendly}）` : ` message=${body?.message ?? ''}`}${body?.model?.bizId ? ` bizId=${body.model.bizId}` : ''}`,
             );
         }
     }

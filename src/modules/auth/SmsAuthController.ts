@@ -16,7 +16,7 @@ import { createResponse } from '../../shared/utils/response';
 import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import pool from '../../core/db';
 import { SmsService, SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
-import { generateSmsCode, isValidMainlandPhone, setCode, consumeCode, isRateLimited } from '../../core/sms/smsCodeStore';
+import { generateSmsCode, isValidMainlandPhone, setCode, consumeCode, isRateLimited, setSentAt, isSentLimited } from '../../core/sms/smsCodeStore';
 import { mergeConflictAccount } from './accountMerge';
 
 type AuthResult = { ok: true; id: string; openid: string } | { ok: false; code: number; message: string };
@@ -72,8 +72,13 @@ export class SmsAuthController {
             createResponse(res, 429, '发送过于频繁，请稍后再试');
             return;
         }
+        // 生产：距上次成功下发不足 60s → 本地直接 429（与阿里云 SendSmsVerifyCode interval 对齐，
+        // 避免把请求打到阿里云被 biz.FREQUENCY 拦截；dev 不真发无此限制）
+        if (process.env.NODE_ENV === 'production' && (await isSentLimited(phone))) {
+            createResponse(res, 429, '发送过于频繁，请约 60 秒后再试');
+            return;
+        }
         const code = generateSmsCode();
-        await setCode(phone, code);
         try {
             await SmsService.send(phone, code, scenario === 'bind' ? 'bind' : 'login');
         } catch (err: unknown) {
@@ -82,7 +87,11 @@ export class SmsAuthController {
             createResponse(res, 500, `验证码发送失败: ${errMsg}`);
             return;
         }
-        SmsAuthController.log('send', '✅ 验证码已发送（dev 回显）', { phone });
+        // 阿里云真实下发成功后才写入本地校验码（失败不写，避免产生"界面报错却能登录"的伪可用码）
+        await setCode(phone, code);
+        // 下发成功才记录 60s 锁（失败不锁，允许稍后重试）
+        if (process.env.NODE_ENV === 'production') await setSentAt(phone);
+        SmsAuthController.log('send', '✅ 验证码已发送', { phone });
         createResponse(res, 200, 'success', { expireSeconds: 300 });
     }
 
