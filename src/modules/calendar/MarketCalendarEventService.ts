@@ -93,8 +93,9 @@ export function toContractEvent(row: CalendarEventRow): Record<string, unknown> 
       date = TradingCalendarService.getNextTradingDay(new Date(`${row.event_date}T00:00:00Z`))
         .toISOString()
         .slice(0, 10)
-    } catch {
-      /* 日历未覆盖：保留原日期 */
+    } catch (err) {
+      // 交易日历未覆盖年份（§4.5 fail-close）：保留原日期，不抛 502
+      console.warn('[Calendar] overnight mapping skipped (calendar uncovered):', err)
     }
   }
   return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result }

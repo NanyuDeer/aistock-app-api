@@ -5,6 +5,7 @@ import type { AddressInfo } from 'node:net'
 import http from 'node:http'
 import { rhythmMasterPublicRouter } from './publicRouter'
 import pool from '../../core/db'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 
 const ORIGINAL_QUERY = pool.query
 function get(port: number, path: string) {
@@ -28,11 +29,14 @@ before(async () => {
       ], rowCount: 2 }
     }
     if (String(sql).includes('market_calendar_events')) {
+      // 窗口随当前日期滚动（getRecentTradingDays 降序、长度 5）→ 用动态日期防测试日期漂移（C1）
+      const windowDays = TradingCalendarService.getRecentTradingDays(new Date(), 5).map((d) => d.toISOString().slice(0, 10))
       return { rows: [
         // 窗口内 CN macro（含 US 隔夜顺延入窗口 + 非 macro 财报排除）
-        { id: 1, event_date: '2026-09-02', title: '中国 8 月 CPI 年率', importance: 'high', market: 'CN', event_time: '09:30', source: 'L2', detail: null, result: null },
-        { id: 2, event_date: '2026-09-02', title: '美联储 9 月 FOMC 议息', importance: 'high', market: 'US_OVERNIGHT', event_time: '15:30', source: 'L3', detail: null, result: null },
-        { id: 3, event_date: '2026-09-02', title: '宁德时代中报披露日程', importance: 'medium', market: 'CN', event_time: null, source: 'L2', detail: null, result: null }, // earnings → 排除
+        // CN CPI：windowDays[1]（CN 不走顺延，原日命中窗口）；FOMC：windowDays[1] 15:30 → 顺延次一交易日 = windowDays[0]，仍入窗口
+        { id: 1, event_date: windowDays[1], title: '中国 8 月 CPI 年率', importance: 'high', market: 'CN', event_time: '09:30', source: 'L2', detail: null, result: null },
+        { id: 2, event_date: windowDays[1], title: '美联储 9 月 FOMC 议息', importance: 'high', market: 'US_OVERNIGHT', event_time: '15:30', source: 'L3', detail: null, result: null },
+        { id: 3, event_date: windowDays[2], title: '宁德时代中报披露日程', importance: 'medium', market: 'CN', event_time: null, source: 'L2', detail: null, result: null }, // earnings → 排除
       ], rowCount: 3 }
     }
     return { rows: [], rowCount: 0 }
