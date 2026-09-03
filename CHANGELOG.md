@@ -2,6 +2,46 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/fear-greed-node] 2026-09-03 — 修复 sectors 软失败入缓存冻结 + 统一降级返回结构
+
+**开发者**: superpowers-implementer（评审修复）
+
+### 修复
+- `src/modules/fear-greed/FearGreedService.ts` `getSectorBoardData`：仅 `availability:true` 的健康结果写入 10 分钟缓存；双源软失败（`availability:false`，非异常）不再写缓存——此前会把降级结果冻结 10 分钟、前端建议一直卡在静态 fallback，现在失败数据直接透传、下次请求自然重试；同时增加可选 `loaders` 参数（默认 `defaultLoaders`）便于测试注入 stub
+- `src/modules/fear-greed/sectorBoard.ts`：新增统一兜底 `unavailableBoard()`（EMPTY_BOARD + tradeDate 填当日），`buildSectorBoardData` 软失败路径复用
+- `src/modules/fear-greed/controller.ts` `sectors` catch：删除硬编码空结构，改经 service 复用 `unavailableBoard()`，两层降级 tradeDate 语义一致（填当日）
+
+### 测试
+- `tests/fear-greed.sector-cache.test.ts`（新增）：软失败不写缓存（随后健康调用真正重取）/ 10 分钟内命中缓存不重取 / TTL 过期重取 / 失败体 `availability:false` 且 `source:''`，共 4 用例；用 `node:test` `mock.timers(apis:['Date'])` 控制时间免真实等待
+
+---
+
+## [feat/fear-greed-node] 2026-09-03 — 新增 GET /api/fear-greed/sectors（板块行情榜，配置方向数据源）
+
+**开发者**: 林晓研
+
+### 新增
+- `GET /api/fear-greed/sectors`：返回当日板块 top 涨幅/主力净流入/跌幅/净流出榜（camel 契约）；主源东财概念板块 clist（`EmSnapshotService.getConceptFlow`），腾讯板块榜兜底（`TencentSnapshotService.fetchTencentSectors`），独立 10 分钟缓存；失败返回 `availability:false` 不阻塞主数据（`sectorBoard.ts` + `FearGreedService.getSectorBoardData` + `controller.sectors`）
+
+### 测试
+- `tests/fear-greed.sector-board.test.ts`：东财四榜/腾讯兜底/双源失败降级 3 用例
+
+---
+
+## [feat/fear-greed-node] 2026-08-24 — 综合指数双层百分位排名（展开被压缩的分布）
+
+**开发者**: 林晓研
+
+### 重构
+- `src/modules/fear-greed/indicators.ts`：新增纯函数 `compositeOfRawAvgs`——对逐日 rawAvg（各指标百分位等权平均）序列再做百分位排名，返回 `{ composite, scores }`（scores 与输入同序，`composite = scores[0]` 即最新日在其余历史日中的排名；样本 <30 时退回 rawAvg 防抖）
+- `src/modules/fear-greed/calculator.ts`：`computeJq` 综合指数从「平均直出」改为双层百分位：`rawAvg = average(各指标当日百分位)` → `composite = percentileRank(rawAvg)`。背景：9 指标等权平均后方差被压缩（σ/√9），直出指数天然收窄到 [33,67]（中性附近失真）；二次百分位后历史最恐惧日 → ≈0、最贪婪日 → ≈100，分布自动覆盖 0-100，无需手工调参
+
+### 验证
+- `tests/fear-greed.indicators.test.ts`：新增 `compositeOfRawAvgs` 用例（压缩序列 [46,54] 中历史极值日被展开到 ≈0/≈100、composite==scores[0]、空序列中性 50）
+- `tests/fear-greed.calculator.test.ts`：补充集成断言 composite == history.scores[0] 且历史两端覆盖 ≤10/≥90（2/5 新增；全套 5/5 通过）
+
+---
+
 ## [changer] 2026-09-02 — 节奏日历聚合接口扩展逐日建议仓位（position_band）
 
 **开发者**: changer-collab
