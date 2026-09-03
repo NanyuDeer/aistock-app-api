@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr, shanghaiDateTimeParts } from '../../shared/utils/shanghaiTime'
 import { listEvents, toContractEvent } from './MarketCalendarEventService'
 
 export const rhythmMasterPublicRouter: Router = Router()
@@ -78,12 +79,15 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
     const naturalDays = Number.isFinite(naturalDaysParam) ? Math.max(0, Math.floor(naturalDaysParam)) : 0
     if (naturalDays > 0) {
       // 自然日模式：生成最近 naturalDays 个自然日（含周末），降序（新到老）
+      // 用上海时区分量构造日期（shanghaiDateTimeParts + Date.UTC），避免 toISOString()
+      // 在 00:00–08:00 上海时间错位到前一天（UTC drift），保证 grid 与周末归属对齐。
       const dates: string[] = []
       const now = new Date()
+      const today = shanghaiDateTimeParts(now)
+      if (!today) return res.status(500).json({ code: 500, message: 'Invalid date' })
       for (let i = 0; i < naturalDays; i++) {
-        const d = new Date(now)
-        d.setDate(now.getDate() - i)
-        dates.push(d.toISOString().slice(0, 10))
+        const d = new Date(Date.UTC(today.year, today.month - 1, today.day - i))
+        dates.push(shanghaiDateStr(d))
       }
       const result = await pool.query(
         `SELECT (report_date AT TIME ZONE 'Asia/Shanghai')::date::text AS report_date,

@@ -6,6 +6,7 @@ import http from 'node:http'
 import { rhythmMasterPublicRouter } from './publicRouter'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
 
 const ORIGINAL_QUERY = pool.query
 function get(port: number, path: string) {
@@ -104,6 +105,8 @@ test('GET /rhythm-master/calendar naturalDays 含周末且 level=null', async ()
     assert.equal(res.status, 200)
     const days: any[] = res.json.data.days
     assert.equal(days.length, 15)
+    // 网格首日应等于上海时区今天（无 UTC drift；旧 toISOString 在 00:00–08:00 上海会错位到昨天）
+    assert.equal(days[0].date, shanghaiDateStr(new Date()), 'naturalDays 网格首日应等于上海时区今天')
     // 自然日模式应含周末（周六/周日）行，且这些行 level === null（无节奏档）
     const weekendDay = days.find((d: any) => {
       const dt = new Date(d.date + 'T00:00:00')
