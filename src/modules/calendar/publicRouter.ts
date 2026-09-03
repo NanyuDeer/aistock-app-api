@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { listEvents, toContractEvent } from './MarketCalendarEventService'
 
 export const rhythmMasterPublicRouter: Router = Router()
 
@@ -51,6 +52,23 @@ export function mergeRhythmCalendarDays(
     })
 }
 
+/** 窗口内 macro 事件按日分组（对外契约，仅 type==='macro'；无则空数组，后端恒下发 events 字段）。 */
+async function loadMacroEventsByDate(dates: string[]): Promise<Map<string, Array<Record<string, unknown>>>> {
+  if (!dates.length) return new Map()
+  const from = dates[dates.length - 1]
+  const to = dates[0]
+  const rows = await listEvents(from, to)
+  const byDate = new Map<string, Array<Record<string, unknown>>>()
+  for (const row of rows) {
+    const ev = toContractEvent(row)
+    if (ev.type !== 'macro') continue
+    const list = byDate.get(String(ev.date)) ?? []
+    list.push(ev)
+    byDate.set(String(ev.date), list)
+  }
+  return byDate
+}
+
 /** GET /api/agent/rhythm-master/calendar?days=N — 节奏日历热力图聚合（契约 #7）。
  *  N=交易日数量（默认 60，上限 60）；服务端按交易日历展开日期序列，前端不依赖交易日历。
  *  SQL 级 JSONB 投影 level/score/basis_date/position_band，不整行读 content（防响应膨胀）。 */
@@ -72,7 +90,9 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
              ORDER BY report_date DESC`,
             [dates],
         )
-        res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows) } })
+        const eventsByDate = await loadMacroEventsByDate(dates)
+        // 返回行时带上 events
+        res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows).map((d) => ({ ...d, events: eventsByDate.get(d.date) ?? [] })) } })
     } catch (err) {
         console.error('[Calendar] GET /rhythm-master/calendar error:', err)
         res.status(500).json({ code: 500, message: String(err) })

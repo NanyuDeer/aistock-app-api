@@ -18,7 +18,7 @@
 | 文件 | 职责 |
 |------|------|
 | `CalendarRuleService.ts` | L1 规则层：`nthWeekday(year, month, weekday=4, n=3)`（每月第 n 个星期几）、`listDeliveryDates(dateFrom, dateTo)`（窗口内交割日，升序）；`CalendarEvent` 对外契约类型 |
-| `MarketCalendarEventService.ts` | 表读写：`listEvents(dateFrom, dateTo)`、`upsertEvent(input)`（ON CONFLICT (event_date, dedup_hash)）；`normalizeTitle`（去空白标点小写）、`dedupHash`（sha256 前 16 位）、`typeFromSource`（source→type 推导）、`isOvernightEvent`（time≥15:00） |
+| `MarketCalendarEventService.ts` | 表读写：`listEvents(dateFrom, dateTo)`、`upsertEvent(input)`（ON CONFLICT (event_date, dedup_hash)）；`normalizeTitle`（去空白标点小写）、`dedupHash`（sha256 前 16 位）、`typeFromSource`（source→type 推导）、`isOvernightEvent`（time≥15:00）、`toContractEvent`（对外契约生成，两 router 共用） |
 | `internalRouter.ts` | Python/爬虫专用 internal API：GET/POST `/events`、GET `/earnings-density`；独立 `x-internal-token` 鉴权 |
 | `publicRouter.ts` | 前端公开 API：GET `/rhythm-master/:date` 三版本读取（无需 token） |
 
@@ -32,6 +32,7 @@
 - 对外事件：`{date, type: delivery|earnings|seed|macro, title, importance, source, event_time?, result?}`
 - `typeFromSource`：L1→delivery；L2/L3 标题命中 `/(发布日程|CPI|PPI|PMI|社融|FOMC|议息)/` →macro，否则 earnings；L4→seed
 - **US 隔夜事件**（`market='US_OVERNIGHT'` 且 `event_time>=15:00`）：对外 `date` 顺延次一交易日（`TradingCalendarService.getNextTradingDay`，§4.5）；交易日历未覆盖年份 fail-close 保留原始日期（不抛 502）
+- **对外契约生成 `toContractEvent(row)`**：服务层（MarketCalendarEventService）导出，internalRouter 与 publicRouter 共用；US 隔夜顺延/fail-close 逻辑见上一条
 - **listEvents 排序契约**（2026-09-02，rhythm 锚点单一来源）：`ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`（三键稳定排序）；`internalRouter` GET /events 再按 date 主键 JS 稳定排序（同日期保留 DB 行次序）；Python 侧 `high_events`/`next_event_anchor` 取首条顺序唯一继承此下发序，Python 不重排
 - `upsertEvent` 默认值：importance=medium、market=CN、source=L3、event_time/detail/result=null；返回 `{id, upserted}`（`xmax=0` 判断新插入）
 - `dedupHash`：`sha256(event_date|normalizeTitle(title))` 前 16 位；`normalizeTitle` = 去 `[\s\W_]+` + 小写
@@ -46,7 +47,7 @@
 | `/internal/calendar/events` | POST | x-internal-token | upsert 事件（event_date+title 必填，importance/market/source 枚举校验） |
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET | x-internal-token | performance_reports 按 ann_date 聚合 `{date, count}` |
 | `/api/agent/rhythm-master/:date` | GET | 无 | 三时点版本（user_id ∈ after_close/morning/midday），按 refresh_slot 优先级排序 |
-| `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content |
+| `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（macro，CN + US_OVERNIGHT 按对外契约顺延；无事件 = `[]`） |
 
 ## 依赖
 

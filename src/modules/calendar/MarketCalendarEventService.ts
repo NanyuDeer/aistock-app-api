@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import pool from '../../core/db'
 import type { CalendarEvent } from './CalendarRuleService'
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 
 export interface CalendarEventRow {
   id: number
@@ -82,4 +83,20 @@ export async function upsertEvent(input: CalendarEventInput): Promise<{ id: numb
   )
   const row = dbResult.rows[0]
   return { id: Number(row.id), upserted: row.inserted === true }
+}
+
+/** 事件行 → 对外契约（US 隔夜 ≥15:00 顺延次一交易日，§4.5；日历未覆盖年份 fail-close 保留原日期）。 */
+export function toContractEvent(row: CalendarEventRow): Record<string, unknown> {
+  let date = row.event_date
+  if (row.market === 'US_OVERNIGHT' && isOvernightEvent(row.event_time)) {
+    try {
+      date = TradingCalendarService.getNextTradingDay(new Date(`${row.event_date}T00:00:00Z`))
+        .toISOString()
+        .slice(0, 10)
+    } catch (err) {
+      // 交易日历未覆盖年份（§4.5 fail-close）：保留原日期，不抛 502
+      console.warn('[Calendar] overnight mapping skipped (calendar uncovered):', err)
+    }
+  }
+  return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result }
 }
