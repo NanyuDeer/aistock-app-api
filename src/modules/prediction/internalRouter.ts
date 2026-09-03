@@ -245,6 +245,7 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   const id = Number(param(req, 'id'));
   const body = req.body as {
     horizon?: unknown;
+    anchor_horizon?: unknown;
     type?: unknown;
     result?: unknown;
     actual?: unknown;
@@ -260,15 +261,22 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
     res.status(400).json({ code: 400, message: 'result must be hit|miss|insufficient' });
     return;
   }
+  // D5（2026-09-03）：jsonb key（body.horizon）与 entry 内档位字段解耦——condition 路径
+  // key=c{i}、entry.horizon=anchor 档位（short/mid）。Python 经 anchor_horizon 透传 anchor，
+  // 写回 entry.horizon 供统计按档位分桶；缺省回退 body.horizon（horizon 档位 key=档位名）。
+  const entryHorizon =
+    typeof body.anchor_horizon === 'string' && body.anchor_horizon.trim()
+      ? body.anchor_horizon
+      : body.horizon;
   const entry: PredictionVerificationEntry =
     body.type === 'early_exit'
       ? {
-          horizon: body.horizon,
+          horizon: entryHorizon,
           type: 'early_exit',
           early_exit: (body.early_exit as Record<string, unknown>) ?? {},
         }
       : {
-          horizon: body.horizon,
+          horizon: entryHorizon,
           result: body.result as 'hit' | 'miss' | 'insufficient',
           actual: typeof body.actual === 'string' ? body.actual : '',
           reason: typeof body.reason === 'string' ? body.reason : '',
@@ -278,7 +286,7 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   // （methodology_version/baseline_neutral/target_type/approximate 等）——此前只透传固定 5 字段，
   // 导致 methodology_version 不落库 → agent-py _filter_v2 恒 n=0 → A3 钳制与存量统计在生产不触发。
   for (const [k, v] of Object.entries(body)) {
-    if (['horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
+    if (['horizon', 'anchor_horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
       continue;
     }
     (entry as Record<string, unknown>)[k] = v;
