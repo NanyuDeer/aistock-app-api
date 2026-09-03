@@ -69,10 +69,49 @@ async function loadMacroEventsByDate(dates: string[]): Promise<Map<string, Array
   return byDate
 }
 
-/** GET /api/agent/rhythm-master/calendar?days=N — 节奏日历热力图聚合（契约 #7）。
- *  N=交易日数量（默认 60，上限 60）；服务端按交易日历展开日期序列，前端不依赖交易日历。
- *  SQL 级 JSONB 投影 level/score/basis_date/position_band，不整行读 content（防响应膨胀）。 */
+/** GET /api/agent/rhythm-master/calendar?naturalDays=N — 自然日网格（契约 #7 扩展）。
+ *  N=自然日数量（含周末/节假日）；无 report 的日期 level=null（周末/无档如实展示）。
+ *  事件仍按自然日 loadMacroEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
+ *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadMacroEventsByDate 的 from=dates[last]、to=dates[0]）。 */
 rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res: Response) => {
+    const naturalDaysParam = Number(req.query.naturalDays ?? 0)
+    const naturalDays = Number.isFinite(naturalDaysParam) ? Math.max(0, Math.floor(naturalDaysParam)) : 0
+    if (naturalDays > 0) {
+      // 自然日模式：生成最近 naturalDays 个自然日（含周末），降序（新到老）
+      const dates: string[] = []
+      const now = new Date()
+      for (let i = 0; i < naturalDays; i++) {
+        const d = new Date(now)
+        d.setDate(now.getDate() - i)
+        dates.push(d.toISOString().slice(0, 10))
+      }
+      const result = await pool.query(
+        `SELECT (report_date AT TIME ZONE 'Asia/Shanghai')::date::text AS report_date,
+                content->'rhythm_card'->>'level' AS level,
+                content->'rhythm_card'->>'score' AS score,
+                content->>'basis_date' AS basis_date,
+                content->'rhythm_card'->'position_band' AS position_band
+         FROM agent_analysis_reports
+         WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
+           AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])
+         ORDER BY report_date DESC`,
+        [dates],
+      )
+      const eventsByDate = await loadMacroEventsByDate(dates)
+      const merged = dates.map((d) => {
+        const row = result.rows.find((r: any) => r.report_date === d)
+        return {
+          date: d,
+          refresh_slot: 'after_close',
+          level: row?.level ?? null,
+          score: row?.score != null ? Number(row.score) : null,
+          basis_date: row?.basis_date ?? null,
+          position_band: row?.position_band ?? null,
+          events: eventsByDate.get(d) ?? [],
+        }
+      })
+      return res.json({ code: 0, data: { days: merged } })
+    }
     const daysParam = Number(req.query.days ?? 60)
     const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(Math.floor(daysParam), 60) : 60
     try {
