@@ -17,10 +17,14 @@ const TTL = 300; // 5 分钟
 const RATE_PREFIX = 'sms:rate:';
 const RATE_MAX = 3;
 const RATE_WINDOW = 60;
+const SENT_PREFIX = 'sms:sent:';
+/** 与阿里云 SendSmsVerifyCode Interval 对齐：同号同场景 60s 内最多 1 条（biz.FREQUENCY 频控源） */
+const SENT_TTL = 60;
 
 // 本地内存兜底（Redis 不可用）
 const memoryCodes = new Map<string, { code: string; expiresAt: number }>();
 const memoryRates = new Map<string, { count: number; windowStart: number }>();
+const memorySent = new Map<string, number>();
 
 /** 写入验证码（覆盖写，TTL 5 分钟；Redis + 本地双写） */
 export async function setCode(phone: string, code: string): Promise<void> {
@@ -92,6 +96,34 @@ export async function isRateLimited(phone: string): Promise<boolean> {
 /** 生成 6 位数字验证码 */
 export function generateSmsCode(): string {
     return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/** 记录某手机号刚成功下发过验证码（TTL 60s；Redis + 本地双写） */
+export async function setSentAt(phone: string): Promise<void> {
+    if (redisAvailable) {
+        try {
+            await redis.set(`${SENT_PREFIX}${phone}`, String(Date.now()), 'EX', SENT_TTL);
+        } catch {
+            // 降级本地
+        }
+    }
+    memorySent.set(phone, Date.now());
+}
+
+/** 60s 内是否已成功下发过（命中则本地直接 429，避免请求打到阿里云被 biz.FREQUENCY 拦截） */
+export async function isSentLimited(phone: string): Promise<boolean> {
+    if (redisAvailable) {
+        try {
+            const v = await redis.get(`${SENT_PREFIX}${phone}`);
+            if (v) return true;
+        } catch {
+            // 降级本地
+        }
+    }
+    const t = memorySent.get(phone);
+    if (t && Date.now() - t < SENT_TTL * 1000) return true;
+    if (t) memorySent.delete(phone); // 过期清理
+    return false;
 }
 
 /** 中国大陆手机号格式校验 */

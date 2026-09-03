@@ -138,8 +138,15 @@ export class SmsService {
         const resp = await client.sendSmsVerifyCode(req);
         const body = resp?.body;
         if (!body || body.success !== true || body.code !== 'OK') {
+            const aliyunCode = body?.code ?? 'unknown';
+            // 频控错误给用户可读提示（号码认证短信频控：同号 60s 1 条 / 5 条每小时 / 10 条每天）
+            const friendly =
+                aliyunCode === 'biz.FREQUENCY' ? '发送过于频繁，请约 60 秒后再试'
+                : aliyunCode === 'BUSINESS_LIMIT_CONTROL' || aliyunCode === 'isv.BUSINESS_LIMIT_CONTROL'
+                    ? '该手机号今日发送已达上限，请明天再试'
+                    : '';
             throw new Error(
-                `阿里云短信发送失败：code=${body?.code ?? 'unknown'} message=${body?.message ?? ''}${body?.model?.bizId ? ` bizId=${body.model.bizId}` : ''}`,
+                `阿里云短信发送失败：code=${aliyunCode}${friendly ? `（${friendly}）` : ` message=${body?.message ?? ''}`}${body?.model?.bizId ? ` bizId=${body.model.bizId}` : ''}`,
             );
         }
     }
