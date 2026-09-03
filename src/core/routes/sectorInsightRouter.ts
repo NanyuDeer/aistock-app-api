@@ -48,6 +48,8 @@ export interface SectorInsightHorizon {
   remaining?: string
   direction?: string
   confidence?: string
+  /** 基准走势短语（4~6 字，2026-09-03 起新数据携带；旧记录无则省略） */
+  label?: string
 }
 
 export interface SectorInsightCondition {
@@ -56,6 +58,10 @@ export interface SectorInsightCondition {
   condition: string
   scenario: string
   met?: boolean | null
+  /** 路径短语名（两段式“状态 · 走势”，2026-09-03 起新数据携带；旧记录无则省略） */
+  label?: string
+  /** 简洁展示用关键词（2026-09-02 起新数据携带：1~2 个）；旧记录无则省略 */
+  keywords?: string[]
 }
 
 export interface SectorInsightPrediction {
@@ -240,6 +246,7 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
         ...(typeof h.confidence === 'string' && h.confidence
           ? { confidence: h.confidence }
           : {}),
+        ...(typeof h.label === 'string' && h.label.trim() ? { label: h.label.trim() } : {}),
       }
     },
   )
@@ -273,6 +280,12 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
           : {}),
         condition: typeof c.condition === 'string' ? c.condition : '',
         scenario: typeof c.scenario === 'string' ? c.scenario : '',
+        ...(typeof c.label === 'string' && c.label.trim() ? { label: c.label.trim() } : {}),
+        ...(Array.isArray(c.keywords) && c.keywords.length > 0
+          ? {
+              keywords: c.keywords.filter((k): k is string => typeof k === 'string' && k.trim() !== ''),
+            }
+          : {}),
         ...(metByIndex.has(i) ? { met: metByIndex.get(i) ?? null } : {}),
       }
     })
