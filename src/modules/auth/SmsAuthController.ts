@@ -79,7 +79,6 @@ export class SmsAuthController {
             return;
         }
         const code = generateSmsCode();
-        await setCode(phone, code);
         try {
             await SmsService.send(phone, code, scenario === 'bind' ? 'bind' : 'login');
         } catch (err: unknown) {
@@ -88,9 +87,11 @@ export class SmsAuthController {
             createResponse(res, 500, `验证码发送失败: ${errMsg}`);
             return;
         }
+        // 阿里云真实下发成功后才写入本地校验码（失败不写，避免产生"界面报错却能登录"的伪可用码）
+        await setCode(phone, code);
         // 下发成功才记录 60s 锁（失败不锁，允许稍后重试）
         if (process.env.NODE_ENV === 'production') await setSentAt(phone);
-        SmsAuthController.log('send', '✅ 验证码已发送（dev 回显）', { phone });
+        SmsAuthController.log('send', '✅ 验证码已发送', { phone });
         createResponse(res, 200, 'success', { expireSeconds: 300 });
     }
 
