@@ -134,6 +134,17 @@ export async function mergeConflictAccount(
             params.push(opts.avatarUrl);
             sets.push(`avatar_url = COALESCE(NULLIF(avatar_url, ''), $${params.length})`);
         }
+        // ⑦ 先释放副账户已转移身份（置 NULL，保留空壳行防外键断裂/历史报告失去关联）。
+        //    必须先释放再给主账户补身份：否则主账户补入 email/openid 时副账户仍持有同值，
+        //    触发唯一索引冲突（users_email_key / users_openid_key），事务回滚。
+        if (transfer.length > 0) {
+            await client.query(
+                `UPDATE users SET ${transfer.map(t => `${t.col} = NULL`).join(', ')} WHERE id = $1`,
+                [conflictId],
+            );
+        }
+
+        // ⑥ 主账户补身份：副账户释放后才可补入（无唯一冲突）
         let row: MergeUserRow | undefined;
         if (sets.length > 0) {
             params.push(currentId);
@@ -153,14 +164,6 @@ export async function mergeConflictAccount(
         if (!row) {
             await client.query('ROLLBACK');
             return { ok: false, reason: 'noAccount' };
-        }
-
-        // ⑦ 副账户释放已转移身份（保留空壳行，防外键断裂 / 历史报告失去关联）
-        if (transfer.length > 0) {
-            await client.query(
-                `UPDATE users SET ${transfer.map(t => `${t.col} = NULL`).join(', ')} WHERE id = $1`,
-                [conflictId],
-            );
         }
 
         await client.query('COMMIT');
