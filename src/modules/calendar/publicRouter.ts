@@ -7,21 +7,36 @@ export const rhythmMasterPublicRouter: Router = Router()
 // refresh_slot 展示优先级（前端展示最新）
 const SLOT_PRIORITY: Record<string, number> = { midday: 2, morning: 1, after_close: 0 }
 
+/** 每日收盘基准建议仓位（rhythm_card.position_band；行缺失/无仓位语义 = null，前端如实展示）。 */
+export interface RhythmPositionBand {
+    min?: number | null
+    max?: number | null
+    text?: string
+}
+
 /** 日历聚合行（契约 #7）：level 可空——行缺失/沿用前值 → null（前端灰格）。 */
 export interface RhythmCalendarRow {
     report_date: string
     level: string | null
     score: string | null
     basis_date: string | null
+    position_band: RhythmPositionBand | null
 }
 
 /** 日历聚合纯函数（design-debate R7 裁决）：把"最近 N 个交易日"与"after_close 行"
- *  合并为补位网格。行缺失日期 → level=null（灰格），有行透传 level/score/basis_date。
+ *  合并为补位网格。行缺失日期 → level=null（灰格），有行透传 level/score/basis_date/position_band。
  *  恒取 after_close（三时点 level 恒等，删 slot 参数）。 */
 export function mergeRhythmCalendarDays(
     dates: string[],
     rows: RhythmCalendarRow[],
-): Array<{ date: string; refresh_slot: string; level: string | null; score: number | null; basis_date: string | null }> {
+): Array<{
+    date: string
+    refresh_slot: string
+    level: string | null
+    score: number | null
+    basis_date: string | null
+    position_band: RhythmPositionBand | null
+}> {
     const byDate = new Map(rows.map((r) => [r.report_date, r]))
     return dates.map((d) => {
         const row = byDate.get(d)
@@ -31,13 +46,14 @@ export function mergeRhythmCalendarDays(
             level: row?.level ?? null,
             score: row?.score != null ? Number(row.score) : null,
             basis_date: row?.basis_date ?? null,
+            position_band: row?.position_band ?? null,
         }
     })
 }
 
 /** GET /api/agent/rhythm-master/calendar?days=N — 节奏日历热力图聚合（契约 #7）。
  *  N=交易日数量（默认 60，上限 60）；服务端按交易日历展开日期序列，前端不依赖交易日历。
- *  SQL 级 JSONB 投影 level/score/basis_date，不整行读 content（防响应膨胀）。 */
+ *  SQL 级 JSONB 投影 level/score/basis_date/position_band，不整行读 content（防响应膨胀）。 */
 rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res: Response) => {
     const daysParam = Number(req.query.days ?? 60)
     const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(Math.floor(daysParam), 60) : 60
@@ -48,7 +64,8 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
             `SELECT (report_date AT TIME ZONE 'Asia/Shanghai')::date::text AS report_date,
                     content->'rhythm_card'->>'level' AS level,
                     content->'rhythm_card'->>'score' AS score,
-                    content->>'basis_date' AS basis_date
+                    content->>'basis_date' AS basis_date,
+                    content->'rhythm_card'->'position_band' AS position_band
              FROM agent_analysis_reports
              WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
                AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])

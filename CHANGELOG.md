@@ -2,6 +2,16 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-09-02 — 节奏日历聚合接口扩展逐日建议仓位（position_band）
+
+**开发者**: changer-collab
+
+### 新增
+- `publicRouter.ts` GET `/api/agent/rhythm-master/calendar` SQL 级 JSONB 投影追加 `position_band`（`content->'rhythm_card'->'position_band'`，向后兼容：旧行/缺失返回 null）；`mergeRhythmCalendarDays` 透传 `RhythmPositionBand`——供前端详情页顶部日期条与首页近 5 日节奏卡展示建议仓位
+
+### 文档
+- `src/modules/calendar/AGENTS.md`：职责与接口表补充日历聚合行 + `position_band` 契约
+
 ## [changer] 2026-09-02 — 节奏大师事件日历稳定排序（锚点单一来源）
 
 **开发者**: changer-collab

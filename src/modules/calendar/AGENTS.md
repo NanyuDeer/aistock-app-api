@@ -11,6 +11,7 @@
 - **L4 种子事件**：默认 `source='L4'`（种子事件由其他链路写入）
 - **存量披露密度**：`GET /internal/calendar/earnings-density` 聚合 `performance_reports` 作"披露高峰"辅助信号
 - **前端三版本读取**：`GET /api/agent/rhythm-master/:date` 按 refresh_slot 优先级返回三时点节奏卡
+- **日历聚合**：`GET /api/agent/rhythm-master/calendar?days=N` 按最近 N 交易日展开网格，逐日返回 after_close 收盘基准 `level/score/basis_date` + **`position_band`**（2026-09-02 扩展：建议仓位 `{min?, max?, text?}`，行缺失/null = 无仓位语义）——供详情页顶部日期条、首页近几日节奏卡消费
 
 ## 核心文件与职责
 
@@ -45,6 +46,7 @@
 | `/internal/calendar/events` | POST | x-internal-token | upsert 事件（event_date+title 必填，importance/market/source 枚举校验） |
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET | x-internal-token | performance_reports 按 ann_date 聚合 `{date, count}` |
 | `/api/agent/rhythm-master/:date` | GET | 无 | 三时点版本（user_id ∈ after_close/morning/midday），按 refresh_slot 优先级排序 |
+| `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content |
 
 ## 依赖
 
