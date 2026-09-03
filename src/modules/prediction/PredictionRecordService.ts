@@ -127,10 +127,11 @@ export class PredictionRecordService {
     return result.rows;
   }
 
-  /** 列表（public 路由）：status/source_id 可选过滤（可组合），created_at DESC 分页 */
+  /** 列表（public 路由）：status/source_id/source_type 可选过滤（可组合），created_at DESC 分页 */
   static async list(params: {
     status?: 'pending' | 'verified' | 'skipped';
     source_id?: string;
+    source_type?: 'market_trace' | 'sector_prediction';
     page: number;
     pageSize: number;
   }): Promise<{ rows: PredictionRecordRow[]; total: number }> {
@@ -143,6 +144,10 @@ export class PredictionRecordService {
     if (params.source_id) {
       conditions.push(`source_id = $${filterValues.length + 1}`);
       filterValues.push(params.source_id);
+    }
+    if (params.source_type) {
+      conditions.push(`source_type = $${filterValues.length + 1}`);
+      filterValues.push(params.source_type);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const countResult = await pool.query<{ count: string }>(
@@ -166,6 +171,7 @@ export class PredictionRecordService {
   static async listAllForStats(
     status?: 'pending' | 'verified' | 'skipped',
     source_id?: string,
+    source_type?: 'market_trace' | 'sector_prediction',
   ): Promise<PredictionRecordRow[]> {
     const conditions: string[] = [];
     const filterValues: unknown[] = [];
@@ -176,6 +182,10 @@ export class PredictionRecordService {
     if (source_id) {
       conditions.push(`source_id = $${filterValues.length + 1}`);
       filterValues.push(source_id);
+    }
+    if (source_type) {
+      conditions.push(`source_type = $${filterValues.length + 1}`);
+      filterValues.push(source_type);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await pool.query<PredictionRecordRow>(

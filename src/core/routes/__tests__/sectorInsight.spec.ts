@@ -153,13 +153,14 @@ test('toPredictionSummary: horizons/conditions/验证聚合/dueLabel/方向置�
     prediction: {
       schema_version: '3.0',
       prediction_status: 'hypothesis',
+      attribution_summary: '半导体板块量能放大资金回流，短线有望延续修复，谨防高位分歧回落。',
       target: { kind: 'sector', internal_id: '881121.TI', code: '881121.TI', name: '半导体' },
       horizons: [
-        { horizon: 'long', remaining_estimate: '1-6 月', phase: 'building', direction: 'neutral', target: '半导体板块', metric_projection: '+8%', confidence: 'low', confidence_source: 'deterministic' },
-        { horizon: 'short', remaining_estimate: '1-5 交易日', phase: 'building', direction: 'bullish', target: '半导体板块', metric_projection: '+3%', confidence: 'medium', confidence_source: 'llm' },
+        { horizon: 'long', remaining_estimate: '1-6 月', phase: 'building', direction: 'neutral', target: '半导体板块', metric_projection: '+8%', confidence: 'low', confidence_source: 'deterministic', label: '震荡磨底' },
+        { horizon: 'short', remaining_estimate: '1-5 交易日', phase: 'building', direction: 'bullish', target: '半导体板块', metric_projection: '+3%', confidence: 'medium', confidence_source: 'llm', label: '缩量修复走强' },
       ],
       conditions: [
-        { condition: '成交额放量至 500 亿', scenario: '板块继续上攻', anchor: { horizon: 'short', threshold: '+3%', metric: 'close', direction: 'bullish' } },
+        { condition: '成交额放量至 500 亿', scenario: '板块继续上攻', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], anchor: { horizon: 'short', threshold: '+3%', metric: 'close', direction: 'bullish' } },
         { condition: '跌破 30 日均线', scenario: '转入震荡调整', anchor: { horizon: 'mid', threshold: '-5%', metric: 'close', direction: 'bearish' } },
       ],
       evolution_narrative: '',
@@ -181,20 +182,22 @@ test('toPredictionSummary: horizons/conditions/验证聚合/dueLabel/方向置�
   assert.equal(s.verification, 'hit');
   assert.equal(s.direction, 'bullish'); // short 档优先
   assert.equal(s.confidence, 'medium');
+  assert.equal(s.attribution_summary, '半导体板块量能放大资金回流，短线有望延续修复，谨防高位分歧回落。'); // 一句话研判透传
   assert.deepEqual(s.horizons, [
-    { horizon: 'short', remaining: '1-5 交易日', direction: 'bullish', confidence: 'medium' },
-    { horizon: 'long', remaining: '1-6 月', direction: 'neutral', confidence: 'low' },
-  ]); // short→long 有序，mid 无档位
+    { horizon: 'short', remaining: '1-5 交易日', direction: 'bullish', confidence: 'medium', label: '缩量修复走强' },
+    { horizon: 'long', remaining: '1-6 月', direction: 'neutral', confidence: 'low', label: '震荡磨底' },
+  ]); // short→long 有序，mid 无档位；label 随档透传
   assert.deepEqual(s.conditions, [
-    { horizon: 'short', direction: 'bullish', condition: '成交额放量至 500 亿', scenario: '板块继续上攻', met: true },
+    { horizon: 'short', direction: 'bullish', condition: '成交额放量至 500 亿', scenario: '板块继续上攻', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], met: true },
     { horizon: 'mid', direction: 'bearish', condition: '跌破 30 日均线', scenario: '转入震荡调整', met: null },
-  ]);
+  ]); // 第二条旧形态无 label/keywords → 键省略（回退长句），不输出空串
 });
 
 test('toPredictionSummary: 无验证/全 insufficient/无 target 旧记录防御', () => {
   const pending = toPredictionSummary(makeRec({ status: 'pending', verification: {} }));
   assert.equal(pending.verification, 'pending');
   assert.equal(pending.status, 'pending');
+  assert.equal(pending.attribution_summary, undefined); // 旧记录无 attribution_summary → 键省略
 
   const insuff = toPredictionSummary(
     makeRec({ status: 'verified', verification: { long: { horizon: 'long', result: 'insufficient' } } }),
