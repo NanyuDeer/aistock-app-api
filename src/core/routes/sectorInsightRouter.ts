@@ -71,6 +71,8 @@ export interface SectorInsightPrediction {
   verification?: 'pending' | 'hit' | 'miss'
   direction?: string | null
   confidence?: string | null
+  /** 一句话研判结论（LLM 30~40 字，如 板块回调缩量无亮点，短期预计弱势整理；洞见卡标题用） */
+  attribution_summary?: string | null
   horizons?: SectorInsightHorizon[]
   conditions?: SectorInsightCondition[]
 }
@@ -294,6 +296,9 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
   return {
     present: true,
     status,
+    ...(typeof p.attribution_summary === 'string' && p.attribution_summary.trim()
+      ? { attribution_summary: p.attribution_summary.trim() }
+      : {}),
     ...(dueLabelOf(record.due_dates) !== null
       ? { dueLabel: dueLabelOf(record.due_dates) }
       : {}),
