@@ -6,6 +6,7 @@ import pool from '../../core/db';
 import redis from '../../core/redis';
 import { tushareRequest } from '../quote/TushareService';
 import { computeJq, type BreadthCache, type DailyLimit, type JqResult, type LimitCache } from './calculator';
+import { buildSectorBoardData, EMPTY_BOARD, type FgSectorBoardData } from './sectorBoard';
 
 const CACHE_TTL_SECONDS = 30 * 60; // 30 分钟（与 Python 版一致）
 
@@ -342,5 +343,24 @@ export async function getCachedFromRedis(): Promise<string | null> {
         return await redis.get('fear_greed:jq');
     } catch {
         return null;
+    }
+}
+
+const SECTOR_CACHE_TTL_SECONDS = 10 * 60; // 板块行情与恐贪 30min 缓存解耦，盘中更及时
+let sectorBoardCache: { ts: number; data: FgSectorBoardData } | null = null;
+
+/** 板块行情（10 分钟缓存；失败返回 availability:false，不抛错） */
+export async function getSectorBoardData(): Promise<FgSectorBoardData> {
+    const now = Date.now();
+    if (sectorBoardCache && now - sectorBoardCache.ts < SECTOR_CACHE_TTL_SECONDS * 1000) {
+        return sectorBoardCache.data;
+    }
+    try {
+        const data = await buildSectorBoardData();
+        sectorBoardCache = { ts: now, data };
+        return data;
+    } catch (err) {
+        console.error('[FearGreed] sector board failed:', err instanceof Error ? err.message : String(err));
+        return { ...EMPTY_BOARD, tradeDate: new Date().toISOString().slice(0, 10) };
     }
 }
