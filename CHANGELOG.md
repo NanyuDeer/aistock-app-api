@@ -2,6 +2,19 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-09-04 — 节奏日历聚合自然日模式（含周末）
+
+**开发者**: 37588
+
+### 新增
+- `modules/calendar/publicRouter.ts` GET `/api/agent/rhythm-master/calendar` 新增 `naturalDays=N` 查询模式：返回最近 N **自然日**网格（含周末/节假日），逐日 `{date, refresh_slot:'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（macro，含 US 隔夜顺延后的反应日）；dates 降序（新→老），与 `loadMacroEventsByDate`（from=dates[last]/to=dates[0]）方向一致
+
+### 修复
+- `modules/calendar/publicRouter.ts` naturalDays 分支日期生成改用上海本地日期格式化（`shanghaiTime`），消除 `toISOString()` 的 UTC 漂移（东八 00:00-08:00 窗口日期偏移一天，导致周末/今日归属错标）
+
+### 文档
+- `modules/calendar/AGENTS.md`：补充 naturalDays 模式契约说明；既有 `days=` 交易日模式保持不变（向后兼容）
+
 ## [feat/fear-greed-node] 2026-09-03 — 修复 sectors 软失败入缓存冻结 + 统一降级返回结构
 
 **开发者**: superpowers-implementer（评审修复）

@@ -48,6 +48,7 @@
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET | x-internal-token | performance_reports 按 ann_date 聚合 `{date, count}` |
 | `/api/agent/rhythm-master/:date` | GET | 无 | 三时点版本（user_id ∈ after_close/morning/midday），按 refresh_slot 优先级排序 |
 | `/api/agent/rhythm-master/calendar?days=N` | GET | 无 | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（macro，CN + US_OVERNIGHT 按对外契约顺延；无事件 = `[]`） |
+| `/api/agent/rhythm-master/calendar?naturalDays=N` | GET | 无 | **自然日模式（2026-09-03）**：最近 N 自然日网格（**含周末/节假日**），逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（macro，含 US 隔夜顺延后的反应日）；dates 降序（新到老），与 `loadMacroEventsByDate`（from=dates[last]/to=dates[0]）及既有 days 分支方向一致。既有 `days=` 交易日模式保持不变（向后兼容，首页近 5 日摘要走交易日） |
 
 ## 依赖
 

@@ -6,6 +6,7 @@ import http from 'node:http'
 import { rhythmMasterPublicRouter } from './publicRouter'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
 
 const ORIGINAL_QUERY = pool.query
 function get(port: number, path: string) {
@@ -22,6 +23,17 @@ function get(port: number, path: string) {
 
 before(async () => {
   ;(pool as any).query = async (sql: string, params?: unknown[]) => {
+    // naturalDays/days 均用 = ANY($1::date[])：params[0] 为 dates 数组。
+    // 工作日有档，周末/节假日无档 → level=null（naturalDays 语义，需在 rhythm_master 分支之前匹配）
+    if (String(sql).includes('agent_analysis_reports') && String(sql).includes('= ANY')) {
+      const dates: string[] = (params?.[0] as string[] | undefined) ?? []
+      const weekdayLevels: Record<string, string> = {}
+      for (const d of dates) {
+        const dow = new Date(d + 'T00:00:00').getDay()
+        if (dow !== 0 && dow !== 6) weekdayLevels[d] = 'active'
+      }
+      return { rows: Object.keys(weekdayLevels).map((d) => ({ report_date: d, level: 'active', score: '60', basis_date: d, position_band: { min: 6, max: 8, text: '6~8 成，顺势持有' } })), rowCount: Object.keys(weekdayLevels).length }
+    }
     if (String(sql).includes('agent_analysis_reports') && String(sql).includes('rhythm_master')) {
       return { rows: [
         { report_type: 'rhythm_master', report_date: params?.[0], user_id: 'after_close', content: { refresh_slot: 'after_close', rhythm_card: { score: 60, level: 'active' } }, created_at: new Date('2026-08-29T16:10:00+08:00') },
@@ -79,5 +91,37 @@ test('GET /rhythm-master/calendar 每行含 events：仅 macro、US 隔夜顺延
     assert.ok(res.json.data.days.every((d: any) => Array.isArray(d.events)))
     // 向后兼容：原有 level/score/position_band 仍存在
     assert.ok('level' in dayWithEvents && 'position_band' in dayWithEvents)
+  } finally { server.close() }
+})
+
+test('GET /rhythm-master/calendar naturalDays 含周末且 level=null', async () => {
+  const app = express()
+  app.use('/api/agent', rhythmMasterPublicRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await get(port, '/api/agent/rhythm-master/calendar?naturalDays=15')
+    assert.equal(res.status, 200)
+    const days: any[] = res.json.data.days
+    assert.equal(days.length, 15)
+    // 网格首日应等于上海时区今天（无 UTC drift；旧 toISOString 在 00:00–08:00 上海会错位到昨天）
+    assert.equal(days[0].date, shanghaiDateStr(new Date()), 'naturalDays 网格首日应等于上海时区今天')
+    // 自然日模式应含周末（周六/周日）行，且这些行 level === null（无节奏档）
+    const weekendDay = days.find((d: any) => {
+      const dt = new Date(d.date + 'T00:00:00')
+      const dow = dt.getDay()
+      return (dow === 0 || dow === 6) && d.level === null
+    })
+    assert.ok(weekendDay, 'naturalDays 模式应包含周末且 level=null')
+    // 工作日行应有档（level !== null）——锁住"周末无档但自然日仍展示"语义
+    const weekdayDay = days.find((d: any) => {
+      const dt = new Date(d.date + 'T00:00:00')
+      const dow = dt.getDay()
+      return dow !== 0 && dow !== 6
+    })
+    assert.ok(weekdayDay && weekdayDay.level !== null, '工作日行应 level 非空')
+    // 每行都有 events 字段
+    assert.ok(days.every((d: any) => Array.isArray(d.events)))
   } finally { server.close() }
 })
