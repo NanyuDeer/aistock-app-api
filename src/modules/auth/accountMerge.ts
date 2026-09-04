@@ -76,22 +76,24 @@ export async function mergeConflictAccount(
             return { ok: false, reason: 'noAccount' };
         }
 
-        // ③ 合并自选股（并集去重）：user_id 通道
+        // ③ 合并自选股（并集去重）：user_id 通道。
+        //    user_stocks 无 id 列（复合唯一走 uq_user_stocks_userid_symbol / uq_user_stocks_openid_symbol
+        //    两个 partial 索引），INSERT 不带 id、统一挂主账户 user_id 并置 openid NULL
         await client.query(
-            `INSERT INTO user_stocks (id, user_id, symbol, sort_order)
-             SELECT gen_random_uuid(), $1, symbol, sort_order
+            `INSERT INTO user_stocks (user_id, openid, symbol, sort_order)
+             SELECT $1, NULL, symbol, sort_order
              FROM user_stocks WHERE user_id = $2
-             ON CONFLICT (user_id, symbol) DO NOTHING`,
+             ON CONFLICT (user_id, symbol) WHERE user_id IS NOT NULL DO NOTHING`,
             [currentId, conflictId],
         );
         await client.query('DELETE FROM user_stocks WHERE user_id = $1', [conflictId]);
         // ③' 旧数据 openid 通道（user_id IS NULL 的老自选股）
         if (secondary.openid) {
             await client.query(
-                `INSERT INTO user_stocks (id, user_id, symbol, sort_order)
-                 SELECT gen_random_uuid(), $1, symbol, sort_order
+                `INSERT INTO user_stocks (user_id, openid, symbol, sort_order)
+                 SELECT $1, NULL, symbol, sort_order
                  FROM user_stocks WHERE openid = $2 AND user_id IS NULL
-                 ON CONFLICT (user_id, symbol) DO NOTHING`,
+                 ON CONFLICT (user_id, symbol) WHERE user_id IS NOT NULL DO NOTHING`,
                 [currentId, secondary.openid],
             );
             await client.query('DELETE FROM user_stocks WHERE openid = $1 AND user_id IS NULL', [secondary.openid]);
@@ -134,6 +136,17 @@ export async function mergeConflictAccount(
             params.push(opts.avatarUrl);
             sets.push(`avatar_url = COALESCE(NULLIF(avatar_url, ''), $${params.length})`);
         }
+        // ⑦ 先释放副账户已转移身份（置 NULL，保留空壳行防外键断裂/历史报告失去关联）。
+        //    必须先释放再给主账户补身份：否则主账户补入 email/openid 时副账户仍持有同值，
+        //    触发唯一索引冲突（users_email_key / users_openid_key），事务回滚。
+        if (transfer.length > 0) {
+            await client.query(
+                `UPDATE users SET ${transfer.map(t => `${t.col} = NULL`).join(', ')} WHERE id = $1`,
+                [conflictId],
+            );
+        }
+
+        // ⑥ 主账户补身份：副账户释放后才可补入（无唯一冲突）
         let row: MergeUserRow | undefined;
         if (sets.length > 0) {
             params.push(currentId);
@@ -153,14 +166,6 @@ export async function mergeConflictAccount(
         if (!row) {
             await client.query('ROLLBACK');
             return { ok: false, reason: 'noAccount' };
-        }
-
-        // ⑦ 副账户释放已转移身份（保留空壳行，防外键断裂 / 历史报告失去关联）
-        if (transfer.length > 0) {
-            await client.query(
-                `UPDATE users SET ${transfer.map(t => `${t.col} = NULL`).join(', ')} WHERE id = $1`,
-                [conflictId],
-            );
         }
 
         await client.query('COMMIT');

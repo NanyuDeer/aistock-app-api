@@ -193,6 +193,7 @@ test('bindEmail 邮箱已绑非空账户（有自选股/VIP/微信/手机）→ 
             tx.push(s);
             return { rows: [] } as never;
         }
+        tx.push(s);
         // 副账户行锁（参数 0 = 'other'）
         if (s.includes('FOR UPDATE')) return { rows: [{ id: 'other', openid: 'wx-other', email: EMAIL, phone: '13900000001', is_vip: true }] } as never;
         // 主账户身份读取（参数 0 = 'u1'）
@@ -222,6 +223,11 @@ test('bindEmail 邮箱已绑非空账户（有自选股/VIP/微信/手机）→ 
     assert.strictEqual(data.email, EMAIL);
     assert.strictEqual(data.openid, 'wx-other', '副账户微信身份应一并转移');
     assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
+    // 顺序约束：必须"先释放副账户身份（置 NULL）→ 再补主账户身份"，否则 email/openid 唯一索引冲突
+    const releaseIdx = tx.findIndex(s => s.includes('email = NULL') && s.includes('UPDATE users'));
+    const grantIdx = tx.findIndex(s => s.includes('UPDATE users SET openid') && !s.includes('NULL'));
+    assert.ok(releaseIdx >= 0 && grantIdx >= 0, '应同时存在释放与补身份 SQL');
+    assert.ok(releaseIdx < grantIdx, '副账户身份应先在唯一约束上释放，主账户才可补入同值');
 });
 
 test('bindEmail 邮箱已绑空壳账户（无其他身份/自选股）→ 自动合并 200', async () => {
