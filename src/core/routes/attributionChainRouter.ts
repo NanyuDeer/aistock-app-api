@@ -22,6 +22,22 @@ function param(req: Request, key: string): string {
     return Array.isArray(val) ? val[0] : (val || '')
 }
 
+// 内部写接口鉴权 token：对齐仓库统一读取惯例（internal.ts / agent.proxy.ts 同源）
+// 优先 INTERNAL_API_TOKEN（agent-py 用变量名），兼容 INTERNAL_TOKEN（旧约定）
+const INTERNAL_TOKEN =
+    process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production'
+
+/** 校验 X-Internal-Token（对齐 judgementController/windLeaderController 同款：header 优先 + Bearer 兜底） */
+function verifyInternalToken(req: Request): boolean {
+    const headerToken = req.headers['x-internal-token']
+    const bearerToken = req.headers.authorization?.replace('Bearer ', '')
+    const token = String(Array.isArray(headerToken) ? headerToken[0] : headerToken || '') || bearerToken || ''
+    return token === INTERNAL_TOKEN
+}
+
+/** :date 路径参数格式（对齐 sectorInsightRouter DATE_RE 防御：YYYY-MM-DD） */
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+
 interface AttributionChainBody {
     date?: unknown
     chain?: { root?: { type?: unknown }; children?: unknown }
@@ -32,6 +48,11 @@ attributionChainRouter.post(
     jsonBodyParser(),
     async (req: Request, res: Response) => {
         try {
+            // 内部写接口：先鉴权再落库（无/错 token → 401，不触达 DB）
+            if (!verifyInternalToken(req)) {
+                res.status(401).json({ error: 'invalid internal token' })
+                return
+            }
             const body = req.body as AttributionChainBody | undefined
             const date = body?.date
             const chain = body?.chain
@@ -63,6 +84,10 @@ attributionChainRouter.post(
 attributionChainRouter.get('/agent/attribution-chain/:date', async (req: Request, res: Response) => {
     try {
         const date = param(req, 'date')
+        if (!DATE_RE.test(date)) {
+            res.status(400).json({ error: `invalid date format: ${date}（需要 YYYY-MM-DD）` })
+            return
+        }
         const { rows } = await pool.query('SELECT content FROM attribution_chains WHERE date = $1', [date])
         const row = rows[0] as { content?: unknown } | undefined
         res.json({ date, chain: row?.content ?? null })

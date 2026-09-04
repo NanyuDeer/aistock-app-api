@@ -7,6 +7,8 @@
  * 2. POST 有效 → {ok:true}；GET 同 date 读回 chain 内容一致
  * 3. POST 同 date 二次（不同 content）→ 覆盖更新
  * 4. GET 无该 date → {date, chain:null}（200，不报错）
+ * 5. POST 无/错 X-Internal-Token → 401 且不触达 DB（Task4 审查 Important 补鉴权）
+ * 6. GET :date 非 YYYY-MM-DD → 400 且不触达 DB（Task4 审查顺带 date 防御）
  *
  * Mock strategy（沿仓库既有惯例，见 internal_user_profile.spec.ts / event_conduction.spec.ts）：
  * monkey-patch pool.query（router 持有同一 pool 对象引用），不建立真实 DB 连接；
@@ -52,6 +54,11 @@ const store = new Map<string, unknown>();
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
+// 对齐仓库路由测试惯例（internal_user_profile.spec.ts 等）：token 不另设 env，
+// 直接取 env 或与路由同款兜底值（'change-me-in-production'）——路由与测试同进程读取即匹配。
+const INTERNAL_TOKEN =
+    process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'change-me-in-production';
+const POST_HEADERS = { 'content-type': 'application/json', 'x-internal-token': INTERNAL_TOKEN };
 
 const DATE = '2026-09-03';
 
@@ -151,11 +158,35 @@ after(() => {
 });
 
 describe('POST /api/internal/attribution-chain', () => {
-    it('缺 date → 400，且不触达 DB', async () => {
+    it('无 X-Internal-Token → 401，且不触达 DB', async () => {
         const res = await call(buildApp(), {
             method: 'POST',
             path: '/api/internal/attribution-chain',
             headers: JSON_HEADERS,
+            body: CHAIN_V1,
+        });
+        assert.strictEqual(res.status, 401);
+        assert.deepStrictEqual(res.json, { error: 'invalid internal token' });
+        assert.strictEqual(mockCalls.length, 0, '未鉴权请求应在落库前拦截');
+    });
+
+    it('错误 X-Internal-Token → 401，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: { 'content-type': 'application/json', 'x-internal-token': 'wrong-token' },
+            body: CHAIN_V1,
+        });
+        assert.strictEqual(res.status, 401);
+        assert.deepStrictEqual(res.json, { error: 'invalid internal token' });
+        assert.strictEqual(mockCalls.length, 0, '错误 token 请求应在落库前拦截');
+    });
+
+    it('缺 date → 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
             body: { chain: CHAIN_V1.chain },
         });
         assert.strictEqual(res.status, 400);
@@ -166,7 +197,7 @@ describe('POST /api/internal/attribution-chain', () => {
         const res = await call(buildApp(), {
             method: 'POST',
             path: '/api/internal/attribution-chain',
-            headers: JSON_HEADERS,
+            headers: POST_HEADERS,
             body: {
                 date: DATE,
                 chain: { date: DATE, root: { type: 'sector', date: DATE }, children: [] },
@@ -180,7 +211,7 @@ describe('POST /api/internal/attribution-chain', () => {
         const res = await call(buildApp(), {
             method: 'POST',
             path: '/api/internal/attribution-chain',
-            headers: JSON_HEADERS,
+            headers: POST_HEADERS,
             body: {
                 date: DATE,
                 chain: { date: DATE, root: { type: 'market', date: DATE }, children: 'not-array' },
@@ -195,7 +226,7 @@ describe('POST /api/internal/attribution-chain', () => {
         const postRes = await call(app, {
             method: 'POST',
             path: '/api/internal/attribution-chain',
-            headers: JSON_HEADERS,
+            headers: POST_HEADERS,
             body: CHAIN_V1,
         });
         assert.strictEqual(postRes.status, 200);
@@ -220,13 +251,13 @@ describe('POST /api/internal/attribution-chain', () => {
         await call(app, {
             method: 'POST',
             path: '/api/internal/attribution-chain',
-            headers: JSON_HEADERS,
+            headers: POST_HEADERS,
             body: CHAIN_V1,
         });
         const post2 = await call(app, {
             method: 'POST',
             path: '/api/internal/attribution-chain',
-            headers: JSON_HEADERS,
+            headers: POST_HEADERS,
             body: CHAIN_V2,
         });
         assert.strictEqual(post2.status, 200);
@@ -241,6 +272,16 @@ describe('POST /api/internal/attribution-chain', () => {
 });
 
 describe('GET /api/agent/attribution-chain/:date', () => {
+    it('date 非 YYYY-MM-DD → 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'GET',
+            path: '/api/agent/attribution-chain/2026-09-3',
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'invalid date format: 2026-09-3（需要 YYYY-MM-DD）' });
+        assert.strictEqual(mockCalls.length, 0, '非法 date 应在查询前拦截');
+    });
+
     it('无该 date → 200 + {date, chain:null}（降级，不报错）', async () => {
         const res = await call(buildApp(), {
             method: 'GET',
