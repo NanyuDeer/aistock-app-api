@@ -76,22 +76,24 @@ export async function mergeConflictAccount(
             return { ok: false, reason: 'noAccount' };
         }
 
-        // ③ 合并自选股（并集去重）：user_id 通道
+        // ③ 合并自选股（并集去重）：user_id 通道。
+        //    user_stocks 无 id 列（复合唯一走 uq_user_stocks_userid_symbol / uq_user_stocks_openid_symbol
+        //    两个 partial 索引），INSERT 不带 id、统一挂主账户 user_id 并置 openid NULL
         await client.query(
-            `INSERT INTO user_stocks (id, user_id, symbol, sort_order)
-             SELECT gen_random_uuid(), $1, symbol, sort_order
+            `INSERT INTO user_stocks (user_id, openid, symbol, sort_order)
+             SELECT $1, NULL, symbol, sort_order
              FROM user_stocks WHERE user_id = $2
-             ON CONFLICT (user_id, symbol) DO NOTHING`,
+             ON CONFLICT (user_id, symbol) WHERE user_id IS NOT NULL DO NOTHING`,
             [currentId, conflictId],
         );
         await client.query('DELETE FROM user_stocks WHERE user_id = $1', [conflictId]);
         // ③' 旧数据 openid 通道（user_id IS NULL 的老自选股）
         if (secondary.openid) {
             await client.query(
-                `INSERT INTO user_stocks (id, user_id, symbol, sort_order)
-                 SELECT gen_random_uuid(), $1, symbol, sort_order
+                `INSERT INTO user_stocks (user_id, openid, symbol, sort_order)
+                 SELECT $1, NULL, symbol, sort_order
                  FROM user_stocks WHERE openid = $2 AND user_id IS NULL
-                 ON CONFLICT (user_id, symbol) DO NOTHING`,
+                 ON CONFLICT (user_id, symbol) WHERE user_id IS NOT NULL DO NOTHING`,
                 [currentId, secondary.openid],
             );
             await client.query('DELETE FROM user_stocks WHERE openid = $1 AND user_id IS NULL', [secondary.openid]);
