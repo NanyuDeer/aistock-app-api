@@ -33,6 +33,9 @@ import internalRouter, { publicRouter } from './core/routes/internal';
 // 板块四环聚合接口（/api/agent/sector-insight/:date，2026-09-02 板块四环前端 spec §6.2）
 import sectorInsightRouter from './core/routes/sectorInsightRouter';
 
+// 归因链存储/读取（2026-09-03 P1 chain-attribution Task 4：/api/internal/attribution-chain + /api/agent/attribution-chain/:date）
+import { attributionChainRouter } from './core/routes/attributionChainRouter';
+
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
@@ -152,6 +155,11 @@ app.use('/api/agent', rhythmMasterPublicRouter);
 
 // 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
 app.use('/api/agent', sectorInsightRouter);
+
+// 归因链：POST /api/internal/attribution-chain（agent 落库）+ GET /api/agent/attribution-chain/:date
+// （前端读取；GET 路径同上必须在反代之前，否则被转发到 Python。POST 路由自带 json parser，
+// 因为全局 express.json() 在反代之后注册，见 attributionChainRouter.ts）
+app.use('/api', attributionChainRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
