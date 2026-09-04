@@ -168,6 +168,8 @@ export async function radarHitToPriceEvent(
     await StockTraceService.processPriceFact(security, {
         symbol, stockName: name || security.stockName, latestPrice: latest,
         previousClose: prevClose, changePct, observedAt: new Date(),
+        // 涨停雷达文章命中 → 事件标记 is_limit_up（阶段 2 落库；行情打点不猜板阈值）
+        isLimitUp: true,
     }, { immediateEnqueue: true });
     return { triggered: true };
 }

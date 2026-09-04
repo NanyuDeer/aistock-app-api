@@ -1,4 +1,5 @@
 import { Router, type Request, type Response } from 'express';
+import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 import { StockTraceService } from './StockTraceService';
 import { StockTraceSnapshotService } from './StockTraceSnapshotService';
@@ -236,6 +237,43 @@ router.get('/artifacts/:eventId', async (req: Request, res: Response) => {
         return;
     }
     res.json({ code: 200, data: artifact });
+});
+
+// ── 阶段 2：轻量预判任务端点（agent-py 定时消费，2026-09-03）──
+
+/** 当日自选股"异动/涨停 ∪ 重大利好/利空资讯"候选（symbol 去重）；trade_date 缺省为上海当日 */
+router.get('/light-predict-targets', async (req: Request, res: Response) => {
+    const tradeDate = queryStr(req, 'trade_date') || shanghaiDateStr(new Date());
+    try {
+        const targets = await StockTraceService.listLightPredictTargets(tradeDate);
+        res.json({ code: 200, data: { trade_date: tradeDate, targets } });
+    } catch (error: unknown) {
+        res.status(500).json({ code: 500, message: errMsg(error) });
+    }
+});
+
+/** 事件 forecast slot 级回写（midday/close 互不覆盖，slot 内覆盖）；事件不存在 404 */
+router.patch('/events/:eventId/forecast', async (req: Request, res: Response) => {
+    const eventId = Array.isArray(req.params.eventId) ? req.params.eventId[0] : req.params.eventId;
+    const body = req.body as { slot?: unknown; forecast?: unknown };
+    if (!eventId || (body.slot !== 'midday' && body.slot !== 'close')) {
+        res.status(400).json({ code: 400, message: 'eventId and slot (midday|close) are required' });
+        return;
+    }
+    if (!body.forecast || typeof body.forecast !== 'object' || Array.isArray(body.forecast)) {
+        res.status(400).json({ code: 400, message: 'forecast object is required' });
+        return;
+    }
+    try {
+        const updated = await StockTraceService.upsertEventForecast(eventId, body.slot, body.forecast as Record<string, unknown>);
+        if (!updated) {
+            res.status(404).json({ code: 404, message: 'Event not found' });
+            return;
+        }
+        res.json({ code: 200, data: { event_id: eventId, slot: body.slot } });
+    } catch (error: unknown) {
+        res.status(500).json({ code: 500, message: errMsg(error) });
+    }
 });
 
 export default router;

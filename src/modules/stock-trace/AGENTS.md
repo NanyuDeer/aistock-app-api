@@ -76,3 +76,11 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - Python Workers consume jobs idempotently. They may only read Node Stock Trace context by `event_id` / `snapshot_id` and must not fetch A-share sources directly.
 - User APIs remain in `controller.ts`; Python-facing routes remain in `internalRouter.ts` and require `X-Internal-Token`.
 - Company-context evidence is read from the unified event store first (`loadEventStoreEvidence` → Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`, via `AGENT_PY_URL || PYTHON_AGENT_URL` + `X-Internal-Token`, Shanghai-today date); on empty/miss/failure `collectCompanySources` falls back to the original CLS stock news + stock-info announcement collection (2026-08-12).
+
+### 2026-09-03 更新：is_limit_up + forecast slot 分存（阶段 2 轻量预判）
+
+- `stock_trace_events` 新增 `is_limit_up BOOLEAN NOT NULL DEFAULT FALSE`（涨停雷达文章命中标记）与 `forecast JSONB NOT NULL DEFAULT '{}'`（slot 级分存，midday/close 互不覆盖）。
+- `listUserEvents`/`listRecentEvents` 返回体补 `is_limit_up`/`forecast`（纯增量）。
+- `StockTraceService.listLightPredictTargets(tradeDate)`：按 symbol 去重返回当日预判候选。
+- `StockTraceService.upsertEventForecast(eventId, slot, forecast)`：slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
+- Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。

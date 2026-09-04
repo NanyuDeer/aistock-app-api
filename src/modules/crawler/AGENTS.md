@@ -43,3 +43,8 @@
 - 东方财富不允许对外暴露，仅限内部爬虫使用
 - 爬虫调度由 cron 管理（每天 8:00 和 15:00）
 - AI 研判使用 LLM，失败时跳过返回纯数据
+
+### 2026-09-03 更新：资讯 forecast 回写端点
+
+- 新增 `PATCH /internal/stock-info/judgements/:id/forecast`——重大资讯（无 stock_trace 事件）股票轻量预判 slot 级回写（`internalRouter.ts` 新子路由）。
+- `StockInfoService.upsertJudgementForecast(id, slot, forecast)` + `ensureSchema` 幂等 ALTER（`stock_info_judgements` 补 `forecast JSONB`）。

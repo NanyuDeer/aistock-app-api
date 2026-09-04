@@ -214,3 +214,5 @@ pm2 logs aistock-api
 - [aistock-app-frontend](../aistock-app-frontend) — App 前端
 - [aistock-agent-py](../aistock-agent-py) — Python Agent 推理服务
 - [aistock-api](../aistock-api) — 原 PC Web 后端
+
+> 新增（2026-09-03）：自选股洞察阶段 2 — `stock_trace_events` 增加 `is_limit_up`/`forecast` 列（迁移 018）；新增 `GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast` 三个 Internal 端点；涨停雷达命中自动置 `is_limit_up` + `immediateEnqueue`。

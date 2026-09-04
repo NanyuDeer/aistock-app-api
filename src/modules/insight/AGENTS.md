@@ -64,3 +64,7 @@
 - 运行：`node --import tsx --test src/modules/insight/__tests__/*.spec.ts`
 - 类型检查：`npx tsc --noEmit`
 - 仓库惯例：node:test + mock.method 拦截 pool.query / pool.connect / redis.xadd；禁止触碰真实数据库与 Redis
+
+### 2026-09-03 更新：涨停命中打点
+
+- `radarHitToPriceEvent` 调 `processPriceFact` 传 `{ isLimitUp: true, immediateEnqueue: true }`——涨停文章命中自动置 `is_limit_up` 并立即入队归因。
