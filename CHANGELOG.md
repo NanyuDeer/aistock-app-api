@@ -2,6 +2,15 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [changer] 2026-09-04 — 修复 attributionChainRouter TS2742 编译错误
+
+**开发者**: 37588
+
+### 修复
+- `src/core/routes/attributionChainRouter.ts`：`export const attributionChainRouter = Router()` 补显式类型注解为 `export const attributionChainRouter: Router = Router()`（对齐仓库既有 router 声明惯例），消除 TS2742（pnpm 隔离 `@types/express-serve-static-core` 下推断类型不可移植）；`npx tsc --noEmit` 0 errors。
+
+---
+
 ## [changer] 2026-09-04 — 节奏日历聚合自然日模式（含周末）
 
 **开发者**: 37588
