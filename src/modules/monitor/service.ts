@@ -38,6 +38,7 @@ export interface MonitorEventItem {
     ai_horizon: string;
     ai_keywords: string[];
     source: string;
+    forecast: Record<string, unknown> | null;
 }
 
 export interface StockMonitorStats {
@@ -135,6 +136,7 @@ function mapJudgementToEvent(row: StockInfoJudgementRow): MonitorEventItem {
         ai_horizon: row.ai_horizon,
         ai_keywords: row.ai_keywords,
         source: row.source || '',
+        forecast: row.forecast ?? null,
     };
 }
 
@@ -233,7 +235,7 @@ export class StockMonitorService {
         const listValues = [...values, limit, offset];
         const result = await pool.query(
             `SELECT id, symbol, stock_name, info_type, source, source_id, title, url, published_at,
-                    ai_impact, ai_horizon, ai_keywords, ai_summary, created_at
+                    ai_impact, ai_horizon, ai_keywords, ai_summary, forecast, created_at
              FROM stock_info_judgements
              ${whereClause}
              ORDER BY published_at DESC, id DESC

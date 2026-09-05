@@ -1,15 +1,17 @@
 // src/modules/insight/InsightService.ts
-// 自选股洞察：来源文章采集 → 自选股筛选 → 洞察事件创建 → 任务入队
+// 自选股洞察：来源文章采集 → 自选股筛选 → stock-trace mv 事件
 //
 // 数据流：
 //   fetchLatest（增量抓取，跳过已知文章）→ fetchDetail + parseTitleKeywords 组装
-//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → createEvent（幂等）
-//   → enqueue 接入任务队列（outbox → Redis Stream）→ 推进高水位
+//   → upsertSources 入库 → 文章提及标的 ∩ 用户自选股 → radarHitToPriceEvent
+//   → StockTraceService.processPriceFact(immediateEnqueue=true) → stock_trace mv 事件
 import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { fetchLatest, fetchDetail, parseTitleKeywords, parseTitleStockName, parseLimitUpSymbolsFromSummary } from './LimitUpRadarCrawler';
 import { upsertSources, getHighWatermark, setHighWatermark } from './InsightSourceService';
-import { enqueue } from './InsightJobService';
+import { TencentQuoteService } from '../quote/TencentQuoteService';
+import { StockTraceService } from '../stock-trace/StockTraceService';
+import { isEligiblePriceSecurity, PRICE_TRIGGER_PERCENT, type FavoriteSecurity } from '../stock-trace/types';
 import type { SourceArticle } from './InsightSourceService';
 import type { MentionedSymbol } from './types';
 
@@ -17,8 +19,9 @@ import type { MentionedSymbol } from './types';
  * 执行一轮采集：
  * 1. 冷启动回溯 2 个交易日，此后从上一高水位开始增量抓取；
  * 2. 详情解析并入库；
- * 3. 文章提及标的中命中用户自选股的，创建洞察事件（业务唯一键幂等）；
- * 4. 命中事件接入任务队列（enqueue，幂等），供 Python 消费端经 Redis Stream 消费；
+ * 3. 文章提及标的中命中用户自选股的，调用 radarHitToPriceEvent 拉行情；
+ * 4. 行情满足触发条件 → StockTraceService.processPriceFact(immediateEnqueue=true)
+ *    → stock_trace mv 事件（不再走 watchlist_insight_events/enqueue）；
  * 5. 推进高水位，供下次增量回溯。
  * @returns 新入库文章数与新建事件数
  */
@@ -57,22 +60,20 @@ export async function runCycle(): Promise<{ collected: number; events: number }>
     // 自选股筛选：事件股票必须与标题主体股票一致（详情页推荐链接的股票不建事件），
     // 且该主体股票命中用户自选股 —— 防止事件挂到页面推荐/相关股票上（数据错配根因）
     const watchlist = await getWatchlistSymbols();
+    // 2026-08-30 链路合并：命中自选股 → stock-trace mv 事件（immediateEnqueue 立即归因）；
+    // 不再创建 watchlist_insight_events（存量保留）。重复触发由 stock_trace revision 机制天然去重。
+    const securities = await StockTraceService.getFavoriteSecurities();
     let events = 0;
     for (const a of enriched) {
-        // 命中自选股 → 建事件 + 入队（createEvent/enqueue 均幂等，重复调用安全且具自愈能力）
         const handleHit = async (s: MentionedSymbol): Promise<void> => {
             if (!watchlist.has(s.symbol)) return;
-            const created = await createEvent(s.symbol, s.name, a.articleId, a.tradeDate);
-            const eventId = buildEventId(s.symbol, a.tradeDate, 'limit_up');
             try {
-                await enqueue(eventId);
+                const { triggered } = await radarHitToPriceEvent(s.symbol, securities);
+                if (triggered) events++;
             } catch (e) {
-                // 单事件入队失败（如 DB 抖动）只记日志后跳过，不中断整轮循环：
-                // 一旦中断，该事件已建但 job 缺失成为孤儿（文章已入 known 集合，下轮不会重建），
-                // 且高水位不推进；本轮其余事件仍正常入队，孤儿可经下轮幂等路径补入队
-                console.warn('[insight] enqueue failed:', e instanceof Error ? e.message : String(e));
+                // 单股触发失败（行情抖动等）只记日志，不中断整轮；下轮重复文章会被 sources 幂等跳过
+                console.warn('[insight] radar→stock-trace emit failed:', e instanceof Error ? e.message : String(e));
             }
-            if (created) events++;
         };
         const titleStock = parseTitleStockName(a.title);
         if (titleStock) {
@@ -130,6 +131,47 @@ export async function createEvent(
         [eventId, symbol, stockName, tradeDate, sourceId],
     );
     return res.rows.length > 0;
+}
+
+/** activity 行情字段（中文键）→ 数值（undefined/NaN → null）。 */
+export function parseActivityQuote(row: Record<string, unknown>): {
+    latest: number | null; prevClose: number | null; changePct: number | null; name: string;
+} {
+    const numeric = (value: unknown): number | null => {
+        const numberValue = typeof value === 'number' ? value : Number(value);
+        return Number.isFinite(numberValue) ? numberValue : null;
+    };
+    return {
+        latest: numeric(row['最新价']),
+        prevClose: numeric(row['昨收价']),
+        changePct: numeric(row['涨跌幅']),
+        name: typeof row['股票简称'] === 'string' ? row['股票简称'] : '',
+    };
+}
+
+/**
+ * 涨停雷达文章命中 → 拉行情 → processPriceFact（immediateEnqueue 盘中立即归因）。
+ * 行情缺失或 |changePct| < PRICE_TRIGGER_PERCENT → 跳过不建事件（防假数据，当日由午尾盘打点兜底）。
+ */
+export async function radarHitToPriceEvent(
+    symbol: string,
+    securities: FavoriteSecurity[],
+): Promise<{ triggered: boolean }> {
+    const security = securities.find((s) => s.symbol === symbol);
+    if (!security || !isEligiblePriceSecurity(security, new Date())) return { triggered: false };
+    const quotes = await TencentQuoteService.getBatchQuotes([symbol], 'activity');
+    const row = quotes.find((q) => String(q['股票代码']) === symbol);
+    if (!row) return { triggered: false };
+    const { latest, prevClose, changePct, name } = parseActivityQuote(row as Record<string, unknown>);
+    if (latest === null || prevClose === null || prevClose <= 0 || changePct === null) return { triggered: false };
+    if (Math.abs(changePct) < PRICE_TRIGGER_PERCENT) return { triggered: false };
+    await StockTraceService.processPriceFact(security, {
+        symbol, stockName: name || security.stockName, latestPrice: latest,
+        previousClose: prevClose, changePct, observedAt: new Date(),
+        // 涨停雷达文章命中 → 事件标记 is_limit_up（阶段 2 落库；行情打点不猜板阈值）
+        isLimitUp: true,
+    }, { immediateEnqueue: true });
+    return { triggered: true };
 }
 
 /** 冷启动回溯起点：最近交易日向前数 2 个交易日的日期（复用 TradingCalendarService，不自写周末/节假日判断） */
