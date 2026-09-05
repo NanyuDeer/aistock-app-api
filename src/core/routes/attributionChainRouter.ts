@@ -14,7 +14,7 @@
 import { Router, json as jsonBodyParser, type Request, type Response } from 'express'
 import pool from '../../core/db'
 
-export const attributionChainRouter = Router()
+export const attributionChainRouter: Router = Router()
 
 /** Express 5 params 可能为 string | string[]，安全取 string（对齐 internal.ts param helper） */
 function param(req: Request, key: string): string {
