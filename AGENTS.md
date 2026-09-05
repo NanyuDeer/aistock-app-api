@@ -324,3 +324,15 @@ pm2 logs aistock-api      # 查看日志
 - [aistock-app-frontend](../aistock-app-frontend) — App 前端（uni-app）
 - [aistock-agent-py](../aistock-agent-py) — Python Agent 推理服务
 - [aistock-api](../aistock-api) — 原 PC Web 后端（兼容参照）
+
+### 2026-09-03 更新：自选股洞察阶段 2（轻量预判 forecast 落库）
+
+| 端点 | 表 | 说明 |
+|------|------|------|
+| `GET /internal/stock-trace/light-predict-targets?trade_date=` | stock_trace_events | 轻量预判候选（按 symbol 去重：当日 active 事件 ∪ 重大资讯；trade_date 必填，需 X-Internal-Token） |
+| `PATCH /internal/stock-trace/events/:eventId/forecast` | stock_trace_events | 事件 forecast slot 级回写（slot=midday|close，JSONB 互不覆盖；slot 非法 400、事件不存在 404） |
+| `PATCH /internal/stock-info/judgements/:id/forecast` | stock_info_judgements | 资讯事件 forecast slot 级回写（crawler 子路由，仅重大资讯且无 stock_trace 事件；行不存在 404） |
+
+- `stock_trace_events` 新增 `is_limit_up BOOLEAN DEFAULT FALSE`、`forecast JSONB DEFAULT '{}'`；`stock_info_judgements` 新增 `forecast JSONB`。forecast 为 slot 级分存（`{midday?: ..., close?: ...}`），upsert 只覆盖目标 slot。
+- `types.ts`：`PriceFact.isLimitUp?: boolean`（涨停文章命中标记，行情打点不猜板阈值）、`ForecastSlot`、`LightPredictTarget { symbol, stockName, event?, intel? }`。
+- 定时预判（11:40/15:20）由 agent-py 调度，slot 级回写本仓库端点。
