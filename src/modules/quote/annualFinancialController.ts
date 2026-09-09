@@ -122,10 +122,13 @@ async function buildAnnualFinancial(symbol: string): Promise<AnnualFinancialData
 
     const reportPeriod = latestReport?.end_date || fina?.end_date || cash?.end_date || null;
 
-    // 年报对比 6 项
-    const rdExpense: AnnualItem = latestReport?.rd_exp != null
-        ? { value: formatMoney(latestReport.rd_exp), note: `报告期 ${latestReport.end_date || '--'}` }
-        : { value: '--', note: '待接半年报' };
+    // 研发费用：优先用 income 的 rd_exp，为空/0 时回退到 fina_indicator 的 research_exp
+    const rdExpValue = (latestReport?.rd_exp && latestReport.rd_exp !== 0)
+        ? latestReport.rd_exp
+        : (fina?.research_exp && fina.research_exp !== 0 ? fina.research_exp : null);
+    const rdExpense: AnnualItem = rdExpValue != null
+        ? { value: formatMoney(rdExpValue), note: `报告期 ${latestReport?.end_date || fina?.end_date || '--'}` }
+        : { value: '--', note: '该股票未单列研发费用' };
 
     const shareholder: AnnualItem = holder
         ? {

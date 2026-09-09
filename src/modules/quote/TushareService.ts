@@ -79,6 +79,7 @@ export interface FinaIndicatorRow {
     roe: number; roic: number; grossprofit_margin: number;
     netprofit_margin: number; current_ratio: number; quick_ratio: number;
     debt_to_assets: number; ocfps: number; eps: number;
+    research_exp: number;  // 研发费用（元），Tushare fina_indicator 接口
 }
 
 export async function getFinaIndicator(symbol: string, startDate?: string): Promise<FinaIndicatorRow[]> {
@@ -87,7 +88,7 @@ export async function getFinaIndicator(symbol: string, startDate?: string): Prom
     const rows = await tushareRequest(
         'fina_indicator',
         params,
-        'ts_code,ann_date,end_date,roe,roe_dt,roic,grossprofit_margin,netprofit_margin,current_ratio,quick_ratio,debt_to_assets,ocfps,eps',
+        'ts_code,ann_date,end_date,roe,roe_dt,roic,grossprofit_margin,netprofit_margin,current_ratio,quick_ratio,debt_to_assets,ocfps,eps,research_exp',
     );
     return rows as unknown as FinaIndicatorRow[];
 }
@@ -1067,14 +1068,21 @@ export async function getSemiAnnualReport(symbol: string): Promise<SemiAnnualRep
         {
             ts_code: tsCode,
             start_date: startPeriod,
-            report_type: '2',  // 半年度报表
+            report_type: '1',  // 合并报表（半年报累计值）
         },
         'ts_code,ann_date,end_date,total_revenue,n_income,n_income_attr_p,total_profit,rd_exp,basic_eps,revenue_ps',
     );
 
     // 过滤出半年报（end_date 以 0630 结尾）并按报告期降序排列
+    // 同一报告期可能有多条（不同公告日），去重取第一条
+    const seenEndDates = new Set<string>();
     const reports = (rows as unknown as SemiAnnualReportRow[])
         .filter(r => r.end_date && r.end_date.endsWith('0630'))
+        .filter(r => {
+            if (seenEndDates.has(r.end_date)) return false;
+            seenEndDates.add(r.end_date);
+            return true;
+        })
         .sort((a, b) => b.end_date.localeCompare(a.end_date));
 
     // 计算同比增长率（最新 vs 上年同期）

@@ -508,7 +508,10 @@ async function requestAiAnalysis(symbol: string, stockName: string, data: Capita
             }),
             signal: controller.signal,
         });
-        if (!response.ok) return null;
+        if (!response.ok) {
+            console.warn(`[CapitalFlowAI] ${symbol} HTTP ${response.status}`);
+            return null;
+        }
         const result: any = await response.json();
         let content = '';
         if (result.choices?.[0]?.message?.content) {
@@ -518,10 +521,22 @@ async function requestAiAnalysis(symbol: string, stockName: string, data: Capita
         } else if (typeof result.content === 'string') {
             content = result.content.trim();
         }
-        if (!content) return null;
+        if (!content) {
+            console.warn(`[CapitalFlowAI] ${symbol} 空内容: ${JSON.stringify(result).slice(0, 200)}`);
+            return null;
+        }
         const jsonStr = content.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
-        const parsed = JSON.parse(jsonStr);
-        if (!parsed.tag || !parsed.analysis || !parsed.risk || !parsed.trend) return null;
+        let parsed: any;
+        try {
+            parsed = JSON.parse(jsonStr);
+        } catch (e: any) {
+            console.warn(`[CapitalFlowAI] ${symbol} JSON解析失败: ${jsonStr.slice(0, 200)}`);
+            return null;
+        }
+        if (!parsed.tag || !parsed.analysis || !parsed.risk || !parsed.trend) {
+            console.warn(`[CapitalFlowAI] ${symbol} 缺字段: ${jsonStr.slice(0, 200)}`);
+            return null;
+        }
         return {
             tag: String(parsed.tag),
             analysis: String(parsed.analysis),
@@ -529,7 +544,8 @@ async function requestAiAnalysis(symbol: string, stockName: string, data: Capita
             trend: String(parsed.trend),
             summary: parsed.summary ? String(parsed.summary) : String(parsed.analysis),
         };
-    } catch {
+    } catch (err: any) {
+        console.warn(`[CapitalFlowAI] ${symbol} 异常:`, err?.message || err);
         return null;
     } finally {
         clearTimeout(timeout);
@@ -557,5 +573,48 @@ export async function getCapitalFlowWithAi(symbol: string): Promise<CapitalFlowR
         data.trendBadge = `趋势：${ai.trend}`;
         data.summary = ai.summary;
     }
+    return data;
+}
+
+/**
+ * 资金流向异步 AI 补全。
+ *
+ * 策略：立即返回纯规则数据（约 0.3s，不阻塞请求），AI 结论在后台异步计算。
+ * 后台完成后通过 onAiReady 回调（通常写入缓存）交付，供后续访问命中。
+ *
+ * 使用 per-symbol 去重锁，避免并发访问时重复触发千问调用。
+ */
+const capitalFlowAiInflight = new Set<string>();
+
+export async function getCapitalFlowDataWithAsyncAi(
+    symbol: string,
+    onAiReady?: (fresh: CapitalFlowResult) => void | Promise<void>
+): Promise<CapitalFlowResult> {
+    const data = await getCapitalFlow(symbol);
+    // 无交易数据（如北交所、停牌等）时直接返回，不触发 AI
+    if (!data.tradeDate) return data;
+
+    // 已在该 symbol 上触发过 AI 计算，直接返回当前数据
+    if (capitalFlowAiInflight.has(symbol)) return data;
+
+    capitalFlowAiInflight.add(symbol);
+    setImmediate(async () => {
+        try {
+            const ai = await requestAiAnalysis(symbol, await getStockName(symbol), data);
+            if (ai) {
+                data.tag = ai.tag;
+                data.narrative = ai.analysis;
+                data.risk = ai.risk;
+                data.trendBadge = `趋势：${ai.trend}`;
+                data.summary = ai.summary;
+                if (onAiReady) await onAiReady(data);
+            }
+        } catch (err: any) {
+            console.warn(`[CapitalFlowAI] ${symbol} 后台补全失败:`, err?.message || err);
+        } finally {
+            capitalFlowAiInflight.delete(symbol);
+        }
+    });
+
     return data;
 }
