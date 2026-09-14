@@ -1,11 +1,20 @@
 import { Router, type Request, type Response } from 'express'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { shanghaiDateStr, shanghaiDateTimeParts } from '../../shared/utils/shanghaiTime'
+import { listEvents, toContractEvent } from './MarketCalendarEventService'
 
 export const rhythmMasterPublicRouter: Router = Router()
 
 // refresh_slot 展示优先级（前端展示最新）
 const SLOT_PRIORITY: Record<string, number> = { midday: 2, morning: 1, after_close: 0 }
+
+/** 每日收盘基准建议仓位（rhythm_card.position_band；行缺失/无仓位语义 = null，前端如实展示）。 */
+export interface RhythmPositionBand {
+    min?: number | null
+    max?: number | null
+    text?: string
+}
 
 /** 日历聚合行（契约 #7）：level 可空——行缺失/沿用前值 → null（前端灰格）。 */
 export interface RhythmCalendarRow {
@@ -13,15 +22,23 @@ export interface RhythmCalendarRow {
     level: string | null
     score: string | null
     basis_date: string | null
+    position_band: RhythmPositionBand | null
 }
 
 /** 日历聚合纯函数（design-debate R7 裁决）：把"最近 N 个交易日"与"after_close 行"
- *  合并为补位网格。行缺失日期 → level=null（灰格），有行透传 level/score/basis_date。
+ *  合并为补位网格。行缺失日期 → level=null（灰格），有行透传 level/score/basis_date/position_band。
  *  恒取 after_close（三时点 level 恒等，删 slot 参数）。 */
 export function mergeRhythmCalendarDays(
     dates: string[],
     rows: RhythmCalendarRow[],
-): Array<{ date: string; refresh_slot: string; level: string | null; score: number | null; basis_date: string | null }> {
+): Array<{
+    date: string
+    refresh_slot: string
+    level: string | null
+    score: number | null
+    basis_date: string | null
+    position_band: RhythmPositionBand | null
+}> {
     const byDate = new Map(rows.map((r) => [r.report_date, r]))
     return dates.map((d) => {
         const row = byDate.get(d)
@@ -31,14 +48,74 @@ export function mergeRhythmCalendarDays(
             level: row?.level ?? null,
             score: row?.score != null ? Number(row.score) : null,
             basis_date: row?.basis_date ?? null,
+            position_band: row?.position_band ?? null,
         }
     })
 }
 
-/** GET /api/agent/rhythm-master/calendar?days=N — 节奏日历热力图聚合（契约 #7）。
- *  N=交易日数量（默认 60，上限 60）；服务端按交易日历展开日期序列，前端不依赖交易日历。
- *  SQL 级 JSONB 投影 level/score/basis_date，不整行读 content（防响应膨胀）。 */
+/** 窗口内 macro 事件按日分组（对外契约，仅 type==='macro'；无则空数组，后端恒下发 events 字段）。 */
+async function loadMacroEventsByDate(dates: string[]): Promise<Map<string, Array<Record<string, unknown>>>> {
+  if (!dates.length) return new Map()
+  const from = dates[dates.length - 1]
+  const to = dates[0]
+  const rows = await listEvents(from, to)
+  const byDate = new Map<string, Array<Record<string, unknown>>>()
+  for (const row of rows) {
+    const ev = toContractEvent(row)
+    if (ev.type !== 'macro') continue
+    const list = byDate.get(String(ev.date)) ?? []
+    list.push(ev)
+    byDate.set(String(ev.date), list)
+  }
+  return byDate
+}
+
+/** GET /api/agent/rhythm-master/calendar?naturalDays=N — 自然日网格（契约 #7 扩展）。
+ *  N=自然日数量（含周末/节假日）；无 report 的日期 level=null（周末/无档如实展示）。
+ *  事件仍按自然日 loadMacroEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
+ *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadMacroEventsByDate 的 from=dates[last]、to=dates[0]）。 */
 rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res: Response) => {
+    const naturalDaysParam = Number(req.query.naturalDays ?? 0)
+    const naturalDays = Number.isFinite(naturalDaysParam) ? Math.max(0, Math.floor(naturalDaysParam)) : 0
+    if (naturalDays > 0) {
+      // 自然日模式：生成最近 naturalDays 个自然日（含周末），降序（新到老）
+      // 用上海时区分量构造日期（shanghaiDateTimeParts + Date.UTC），避免 toISOString()
+      // 在 00:00–08:00 上海时间错位到前一天（UTC drift），保证 grid 与周末归属对齐。
+      const dates: string[] = []
+      const now = new Date()
+      const today = shanghaiDateTimeParts(now)
+      if (!today) return res.status(500).json({ code: 500, message: 'Invalid date' })
+      for (let i = 0; i < naturalDays; i++) {
+        const d = new Date(Date.UTC(today.year, today.month - 1, today.day - i))
+        dates.push(shanghaiDateStr(d))
+      }
+      const result = await pool.query(
+        `SELECT (report_date AT TIME ZONE 'Asia/Shanghai')::date::text AS report_date,
+                content->'rhythm_card'->>'level' AS level,
+                content->'rhythm_card'->>'score' AS score,
+                content->>'basis_date' AS basis_date,
+                content->'rhythm_card'->'position_band' AS position_band
+         FROM agent_analysis_reports
+         WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
+           AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])
+         ORDER BY report_date DESC`,
+        [dates],
+      )
+      const eventsByDate = await loadMacroEventsByDate(dates)
+      const merged = dates.map((d) => {
+        const row = result.rows.find((r: any) => r.report_date === d)
+        return {
+          date: d,
+          refresh_slot: 'after_close',
+          level: row?.level ?? null,
+          score: row?.score != null ? Number(row.score) : null,
+          basis_date: row?.basis_date ?? null,
+          position_band: row?.position_band ?? null,
+          events: eventsByDate.get(d) ?? [],
+        }
+      })
+      return res.json({ code: 0, data: { days: merged } })
+    }
     const daysParam = Number(req.query.days ?? 60)
     const days = Number.isFinite(daysParam) && daysParam > 0 ? Math.min(Math.floor(daysParam), 60) : 60
     try {
@@ -48,14 +125,17 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
             `SELECT (report_date AT TIME ZONE 'Asia/Shanghai')::date::text AS report_date,
                     content->'rhythm_card'->>'level' AS level,
                     content->'rhythm_card'->>'score' AS score,
-                    content->>'basis_date' AS basis_date
+                    content->>'basis_date' AS basis_date,
+                    content->'rhythm_card'->'position_band' AS position_band
              FROM agent_analysis_reports
              WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
                AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])
              ORDER BY report_date DESC`,
             [dates],
         )
-        res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows) } })
+        const eventsByDate = await loadMacroEventsByDate(dates)
+        // 返回行时带上 events
+        res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows).map((d) => ({ ...d, events: eventsByDate.get(d.date) ?? [] })) } })
     } catch (err) {
         console.error('[Calendar] GET /rhythm-master/calendar error:', err)
         res.status(500).json({ code: 500, message: String(err) })

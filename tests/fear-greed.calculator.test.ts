@@ -131,6 +131,11 @@ test('computeJq 返回完整结构（key/name/10 指标/合成指数）', async 
     // 综合指数历史存在
     assert.ok(result.history.dates.length > 0);
     assert.equal(result.history.dates.length, result.history.scores.length);
+    // 二次百分位：composite = 最新日在历史序列中的百分位排名（= 历史序列首位）
+    assert.equal(result.composite, result.history.scores[0], 'composite 应为当前日在全历史窗口中的百分位排名');
+    // 分布展开：对 500 日窗口做百分位排名，历史两端应接近 0/100
+    assert.ok(Math.min(...result.history.scores) <= 10, '历史应覆盖到恐惧端（<=10）');
+    assert.ok(Math.max(...result.history.scores) >= 90, '历史应覆盖到贪婪端（>=90）');
 });
 
 test('margin 指标标记 excluded（不计入综合指数）', async () => {

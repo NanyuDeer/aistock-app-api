@@ -29,9 +29,32 @@ export function pctRankOrNeutral(series: number[], current: number): number {
     return percentileRank(current, series);
 }
 
-/** 综合指数得分 → 恐贪中文标签（与温度计分档一致） */
+/**
+ * 双层百分位聚合第二步：对逐日 rawAvg 序列做百分位排名。
+ *
+ * 背景：rawAvg = 各指标百分位等权平均，方差被压缩（σ/√9），天然收窄到 [33,67]。
+ * 再对 rawAvg 序列做百分位排名后，分布自动覆盖 0-100 全区间：
+ * 历史最恐惧日 → ≈0，历史最贪婪日 → ≈100，无需手工调参数。
+ *
+ * rawAvgs 约定「最新在前」；返回 scores 与 rawAvgs 同序，
+ * composite = scores[0]（最新日在其余历史日中的排名）；样本 <30 时 composite 退回均值防抖。
+ */
+export function compositeOfRawAvgs(rawAvgs: number[]): { composite: number; scores: number[] } {
+    if (rawAvgs.length === 0) return { composite: 50, scores: [] };
+    const scores = rawAvgs.map((v, i) => {
+        const others = rawAvgs.filter((_, j) => j !== i);
+        return Math.round(percentileRank(v, others) * 100) / 100;
+    });
+    // 短样本直接用 rawAvg 兜底（与 pctRankOrNeutral 一致，避免初启动几天的抖动）
+    const composite = rawAvgs.length >= 30
+        ? scores[0]
+        : Math.round(clamp(rawAvgs[0], 0, 100) * 100) / 100;
+    return { composite, scores };
+}
+
+/** 综合指数得分 → 恐贪中文标签（与温度计分档一致，冰点阈值 20） */
 export function labelOf(score: number): string {
-    if (score < 25) return '极度恐惧';
+    if (score < 20) return '极度恐惧';
     if (score < 45) return '恐惧';
     if (score < 55) return '中性';
     if (score < 80) return '贪婪';

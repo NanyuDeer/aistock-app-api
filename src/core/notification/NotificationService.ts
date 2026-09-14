@@ -253,11 +253,12 @@ export class NotificationService {
         return flushed;
     }
 
-    static async list(openid: string, limit: number, cursor?: string): Promise<{ items: UserNotification[]; nextCursor: string | null; unreadCount: number }> {
+    static async list(openid: string, limit: number, cursor?: string, unreadOnly = false): Promise<{ items: UserNotification[]; nextCursor: string | null; unreadCount: number }> {
         await this.ensureSchema();
         const parsedCursor = cursor ? this.decodeCursor(cursor) : null;
         const params: unknown[] = [openid];
         let where = 'WHERE openid = $1';
+        if (unreadOnly) where += ' AND read_at IS NULL';
         if (parsedCursor) {
             params.push(parsedCursor.createdAt, parsedCursor.id);
             where += ' AND (created_at, id) < ($2::timestamptz, $3::uuid)';
@@ -290,6 +291,15 @@ export class NotificationService {
             'UPDATE user_notifications SET read_at = COALESCE(read_at, NOW()) WHERE openid = $1 AND id = ANY($2::uuid[])',
             [openid, ids],
         );
+    }
+
+    static async markAllRead(openid: string): Promise<number> {
+        await this.ensureSchema();
+        const result = await pool.query(
+            'UPDATE user_notifications SET read_at = NOW() WHERE openid = $1 AND read_at IS NULL',
+            [openid],
+        );
+        return result.rowCount || 0;
     }
 
     static toPublic(row: NotificationRow): UserNotification {

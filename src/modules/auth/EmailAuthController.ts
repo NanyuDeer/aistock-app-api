@@ -18,7 +18,8 @@ import { createResponse } from '../../shared/utils/response';
 import { extractTokenFromRequest, isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlacklist';
 import pool from '../../core/db';
 import { EmailService, EMAIL_DEV_TEST_CODE, isValidEmail } from '../../core/email/EmailService';
-import { generateSmsCode, setCode, consumeCode, isRateLimited } from '../../core/sms/smsCodeStore';
+import { generateSmsCode, setCode, consumeCode, isRateLimited, isValidMainlandPhone } from '../../core/sms/smsCodeStore';
+import { SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { mergeConflictAccount } from './accountMerge';
 import { AuthController } from './controller';
 
@@ -29,6 +30,7 @@ type UserRow = {
     id: string;
     openid: string | null;
     email: string | null;
+    phone: string | null;
     nickname: string | null;
     avatar_url: string | null;
 };
@@ -198,7 +200,7 @@ export class EmailAuthController {
         } else {
             const updated = await pool.query(
                 `UPDATE users SET email = $1 WHERE id = $2
-                 RETURNING id, openid, email, nickname, avatar_url`,
+                 RETURNING id, openid, email, phone, nickname, avatar_url`,
                 [email, auth.id],
             );
             row = updated.rows[0] as UserRow;
@@ -213,14 +215,16 @@ export class EmailAuthController {
             id: row.id,
             openid: row.openid ?? null,
             email: row.email ?? null,
+            phone: row.phone ?? null,
             nickname: row.nickname ?? '',
             avatar: row.avatar_url ?? '',
             wechatBound: !!row.openid,
             emailBound: !!row.email,
+            phoneBound: !!row.phone,
         });
     }
 
-    /** 绑定微信：POST /api/auth/bind/wechat（Bearer 登录态邮箱账户，邮箱+验证码证明归属） */
+    /** 绑定微信：POST /api/auth/bind/wechat（Bearer 登录态；邮箱账户用 email+验证码、手机号账户用 phone+验证码证明归属） */
     static async bindWechat(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const auth = await EmailAuthController.resolveAuth(req);
         if (!auth.ok) {
@@ -228,20 +232,29 @@ export class EmailAuthController {
             return;
         }
         const email = normalizeEmail(String(req.body?.email ?? ''));
+        const phone = String(req.body?.phone ?? '').trim();
         const code = String(req.body?.code ?? '').trim();
         const wxCode = String(req.body?.wxCode ?? '').trim();
-        if (!isValidEmail(email) || !code || !wxCode) {
-            createResponse(res, 400, '参数不完整：需 email、code、wxCode');
+        // 证明身份：email 与 phone 至少提供一个（前端按当前账户绑定的身份传，互斥）
+        if ((!isValidEmail(email) && !isValidMainlandPhone(phone)) || !code || !wxCode) {
+            createResponse(res, 400, '参数不完整：需 email 或 phone、code、wxCode');
             return;
         }
-        if (!(await EmailAuthController.verifyCode(email, code))) {
+        const identity = isValidEmail(email)
+            ? { kind: 'email' as const, value: email }
+            : { kind: 'phone' as const, value: phone };
+        // 验证码校验：dev 放行固定测试码（邮箱/短信测试码同为 123456），否则单次消费对应身份验证码
+        const isDev = process.env.NODE_ENV !== 'production';
+        const devCode = identity.kind === 'phone' ? SMS_DEV_TEST_CODE : EMAIL_DEV_TEST_CODE;
+        if (!(isDev && code === devCode) && !(await consumeCode(identity.value, code))) {
             createResponse(res, 400, '验证码错误或已过期');
             return;
         }
-        // 邮箱须属于当前账户（证明该邮箱归本人，防把他人微信绑到自己名下）
-        const ownEmail = await pool.query('SELECT id FROM users WHERE email = $1 AND id = $2', [email, auth.id]);
-        if (ownEmail.rows.length === 0) {
-            createResponse(res, 403, '该邮箱不属于当前账户');
+        // 该身份须属于当前账户（证明归本人，防把他人微信绑到自己名下）
+        const col = identity.kind === 'email' ? 'email' : 'phone';
+        const own = await pool.query(`SELECT id FROM users WHERE ${col} = $1 AND id = $2`, [identity.value, auth.id]);
+        if (own.rows.length === 0) {
+            createResponse(res, 403, identity.kind === 'email' ? '该邮箱不属于当前账户' : '该手机号不属于当前账户');
             return;
         }
 
@@ -285,7 +298,7 @@ export class EmailAuthController {
                      nickname = COALESCE(NULLIF(nickname, ''), $2),
                      avatar_url = COALESCE(NULLIF(avatar_url, ''), $3)
                  WHERE id = $4
-                 RETURNING id, openid, email, nickname, avatar_url`,
+                 RETURNING id, openid, email, phone, nickname, avatar_url`,
                 [openid, nickname, avatarUrl, auth.id],
             );
             row = updated.rows[0] as UserRow;
@@ -300,10 +313,12 @@ export class EmailAuthController {
             id: row.id,
             openid: row.openid ?? null,
             email: row.email ?? null,
+            phone: row.phone ?? null,
             nickname: row.nickname ?? '',
             avatar: row.avatar_url ?? '',
             wechatBound: !!row.openid,
             emailBound: !!row.email,
+            phoneBound: !!row.phone,
         });
     }
 }

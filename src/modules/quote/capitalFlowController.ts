@@ -1,5 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
-import { getCapitalFlow, getCapitalFlowWithAi } from './TushareCapitalFlowService';
+import { getCapitalFlow, getCapitalFlowDataWithAsyncAi } from './TushareCapitalFlowService';
 import { CacheService } from '../../shared/utils/CacheService';
 import { createResponse } from '../../shared/utils/response';
 import { getAShareAdaptiveCacheTtlSeconds } from '../../shared/utils/tradingTime';
@@ -28,14 +28,21 @@ export class CapitalFlowController {
             }
         } catch {}
 
-        try {
-            const data = await getCapitalFlowWithAi(symbol);
+        // 异步补全：立即返回纯规则数据（约0.3s），AI结论后台算好写回缓存供下次命中
+        const writeCache = async (fresh: Record<string, any>) => {
             try {
                 const ttl = await getAShareAdaptiveCacheTtlSeconds(CAPITAL_FLOW_TRADING_TTL_SECONDS, { afterCloseUpdateTime: CAPITAL_FLOW_CLOSE_UPDATE_TIME });
-                await CacheService.put(cacheKey, data as unknown as Record<string, any>, ttl);
+                await CacheService.put(cacheKey, fresh, ttl);
             } catch {
-                await CacheService.put(cacheKey, data as unknown as Record<string, any>, CAPITAL_FLOW_TRADING_TTL_SECONDS);
+                await CacheService.put(cacheKey, fresh, CAPITAL_FLOW_TRADING_TTL_SECONDS);
             }
+        };
+
+        try {
+            // 仅返回纯规则数据；AI 完成后通过 onAiReady 写缓存，避免与纯数据写入竞态
+            const data = await getCapitalFlowDataWithAsyncAi(symbol, async (fresh) => {
+                await writeCache(fresh as unknown as Record<string, any>);
+            });
             createResponse(res, 200, 'success', data);
         } catch (err: any) {
             const message = err instanceof Error ? err.message : '获取资金流向数据失败';

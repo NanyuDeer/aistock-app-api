@@ -24,6 +24,9 @@ import {
     type ExpressVipRow, type DisclosureDateRow,
 } from '../quote/TushareService';
 import { AiTagService } from './AiTagService';
+import { AiScoreService } from './AiScoreService';
+import { PerformanceAiScoreVersionStore } from './PerformanceAiScoreVersionStore';
+import { shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -295,9 +298,27 @@ export class PerformanceReportAutoUpdateService {
                 payload,
                 occurredAt: annDateToIso(annDate),
             });
+            if (normalizedEndDate) {
+                this.persistAiScoreSnapshot(symbol, normalizedEndDate, reportType);
+            }
         } catch (error) {
             console.warn('[PerformanceReportAutoUpdate] App notification failed:', error instanceof Error ? error.message : String(error));
         }
+    }
+
+    /** 评分存档独立执行，不影响财报入库和即时通知主流程。 */
+    private static persistAiScoreSnapshot(symbol: string, endDate: string, reportType: string): void {
+        void (async () => {
+            try {
+                const scoreData = await AiScoreService.analyze(symbol);
+                await PerformanceAiScoreVersionStore.upsert({ symbol, endDate, reportType, scoreData });
+            } catch (error) {
+                console.warn(
+                    `[PerformanceReportAutoUpdate] ${symbol} AI score snapshot failed:`,
+                    error instanceof Error ? error.message : String(error),
+                );
+            }
+        })();
     }
 
     /**

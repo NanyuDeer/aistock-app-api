@@ -161,3 +161,35 @@ test('writing one horizon keeps other horizons untouched in entry payload', asyn
     queryMock.mock.restore();
   }
 });
+
+test('listSectorByDate filters sector_prediction by source_id date suffix', async () => {
+  const rows = [
+    makeRow({
+      source_type: 'sector_prediction',
+      source_id: 'sector:半导体:2026-09-01',
+      prediction: {
+        target: { kind: 'sector', internal_id: '881121.TI', code: '881121.TI', name: '半导体' },
+        horizons: [{ horizon: 'short' }],
+      },
+      due_dates: { short: '2026-09-08' },
+    }),
+  ];
+  let capturedSql = '';
+  let capturedParams: unknown[] = [];
+  const queryMock = mock.method(pool, 'query', async (sql: unknown, params: unknown[]) => {
+    capturedSql = String(sql);
+    capturedParams = params ?? [];
+    return { rows };
+  });
+  try {
+    const result = await PredictionRecordService.listSectorByDate('2026-09-01');
+    assert.equal(result.length, 1);
+    assert.equal(result[0].source_id, 'sector:半导体:2026-09-01');
+    assert.ok(capturedSql.includes("source_type = 'sector_prediction'"), '按 source_type 过滤');
+    assert.ok(capturedSql.includes("source_id LIKE 'sector:%:' || $1"), '按 source_id 日期后缀 LIKE');
+    assert.equal(capturedParams[0], '2026-09-01');
+    assert.ok(capturedSql.includes('ORDER BY created_at DESC'), 'created_at DESC 排序（最新优先）');
+  } finally {
+    queryMock.mock.restore();
+  }
+});

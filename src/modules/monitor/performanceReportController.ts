@@ -11,6 +11,7 @@ import pool from '../../core/db';
 import { PerformanceReportAutoUpdateService } from './PerformanceReportAutoUpdateService';
 import { AiAnalysisService } from './AiAnalysisService';
 import { AiScoreService } from './AiScoreService';
+import { PerformanceAiScoreVersionStore } from './PerformanceAiScoreVersionStore';
 
 interface ReportRow {
     symbol: string;
@@ -567,8 +568,27 @@ export class PerformanceReportController {
             createResponse(res, 400, '缺少或无效的 symbol 参数（需6位数字股票代码）');
             return;
         }
+        const endDate = (url.searchParams.get('endDate') || '').trim();
+        const reportType = (url.searchParams.get('reportType') || '').trim();
+        if (endDate && !/^\d{8}$/.test(endDate)) {
+            createResponse(res, 400, 'endDate 必须是 YYYYMMDD 格式');
+            return;
+        }
 
         try {
+            if (endDate) {
+                if (!reportType) {
+                    createResponse(res, 400, '查询历史评分时必须提供 reportType');
+                    return;
+                }
+                const snapshot = await PerformanceAiScoreVersionStore.find(symbol, endDate, reportType);
+                if (!snapshot) {
+                    createResponse(res, 404, '该历史报告暂无 AI 评分存档');
+                    return;
+                }
+                createResponse(res, 200, 'success', snapshot);
+                return;
+            }
             const result = await AiScoreService.analyze(symbol);
             createResponse(res, 200, 'success', result);
         } catch (error: any) {
