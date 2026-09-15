@@ -42,12 +42,38 @@ test('computeEventStatus：event_start_time 为 NULL（历史 fallback）→ 保
     assert.equal(computeEventStatus(null, null, '2026-09-24T12:00:00+08:00'), 'occurred')
 })
 
+test('computeEventStatus：pg 读回 Date 输入（date-only 分支不再死代码，spec G1 修订）', () => {
+    // 裸 pg.Pool 读回 TIMESTAMPTZ 为 JS Date：date-only 上海零点存为 UTC 前一日 16:00
+    const startDate = new Date('2026-09-23T00:00:00+08:00') // UTC 2026-09-22T16:00:00Z
+    // 当日白天（上海 18:00 = UTC 10:00）→ 按 date-only 语义应为 ongoing，不得误判 occurred
+    assert.equal(computeEventStatus(startDate, null, '2026-09-23T18:00:00+08:00'), 'ongoing')
+    // 次日 → occurred
+    assert.equal(computeEventStatus(startDate, null, '2026-09-24T00:00:00+08:00'), 'occurred')
+    // 前日 → scheduled
+    assert.equal(computeEventStatus(startDate, null, '2026-09-22T23:59:59+08:00'), 'scheduled')
+})
+
+test('computeEventStatus：Date 输入带具体时刻（非 date-only）→ 单日语义不变', () => {
+    const startDate = new Date('2026-09-23T14:00:00+08:00') // UTC 2026-09-23T06:00:00Z
+    assert.equal(computeEventStatus(startDate, null, '2026-09-23T13:59:59+08:00'), 'scheduled')
+    assert.equal(computeEventStatus(startDate, null, '2026-09-23T14:00:00+08:00'), 'ongoing')
+    assert.equal(computeEventStatus(startDate, null, '2026-09-23T14:00:01+08:00'), 'occurred')
+})
+
 test('normalizeTitle：去空白/标点/符号/全半角、小写（跨通道一致先例）', () => {
     assert.equal(normalizeTitle('  美联储  议息，议息！'), '美联储议息议息')
     assert.equal(normalizeTitle('ＡＢＣ 议息'), 'abc议息')
     assert.equal(normalizeTitle('下半年GDP展望'), '下半年gdp展望')
     // 中文标点/破折号同样剥离（/ 属 \p{P} 标点）
     assert.equal(normalizeTitle('9/17——美联储议息'), '917美联储议息')
+})
+
+test('normalizeTitle：数字小数点保留（「1.5万亿」≠「15万亿」，spec G2 修订）', () => {
+    assert.equal(normalizeTitle('1.5万亿'), '1.5万亿')
+    assert.equal(normalizeTitle('15万亿'), '15万亿')
+    assert.notEqual(normalizeTitle('1.5万亿'), normalizeTitle('15万亿'))
+    // 全角小数点 NFKC 转半角后同样保护
+    assert.equal(normalizeTitle('１．５万亿'), '1.5万亿')
 })
 
 test('canonicalKey：确定性且与书写噪声无关；不同日期同标题 → 不同 key', () => {

@@ -55,8 +55,16 @@ export interface EventEntityInput {
     source_event_id?: string | null
 }
 
-/** 判断是否为 date-only（00:00 整点），spec §3.4：当日整天 ongoing、次日 0 点 occurred。 */
-export function isDateOnly(iso: string): boolean {
+/**
+ * 判断是否为 date-only（上海时区墙钟 00:00 整点），spec §3.4：当日整天 ongoing、次日 0 点 occurred。
+ * design-debate R2 修订（G1 缺口）：裸 pg.Pool 读回 TIMESTAMPTZ 是 JS Date（字符串正则对
+ * `String(Date)` 永不命中 → date-only 分支在读时重算是死代码）。故 Date 输入用上海时区
+ * （固定 +8，无 DST）墙钟时刻判断；字符串输入保持原语义（写路径快照 + 单测不变）。
+ */
+export function isDateOnly(iso: string | Date): boolean {
+    if (iso instanceof Date) {
+        return new Date(iso.getTime() + 8 * 3600 * 1000).toISOString().slice(11, 19) === '00:00:00'
+    }
     return /^\d{4}-\d{2}-\d{2}T00:00:00/.test(iso)
 }
 
@@ -69,8 +77,8 @@ export function isDateOnly(iso: string): boolean {
  * upcoming（预热窗口）待 P1 预热语义定义，P0 一律落 scheduled。
  */
 export function computeEventStatus(
-    startIso: string | null,
-    endIso: string | null,
+    startIso: string | Date | null,
+    endIso: string | Date | null,
     nowIso: string,
 ): EventEntityStatus {
     const now = new Date(nowIso).getTime()
@@ -88,14 +96,20 @@ export function computeEventStatus(
     return now <= end.getTime() ? 'ongoing' : 'occurred'
 }
 
-/** canonical_title 归一化（spec §0.2 硬约束）：NFKC 全角→半角 + 去空白/标点/符号 +
+/**
+ * canonical_title 归一化（spec §0.2 硬约束）：NFKC 全角→半角 + 去空白/标点/符号 +
  * 小写；**只去书写噪声、不做语义归并**（"2026-09" vs "9月" 不等价）。
+ * design-debate R2 修订（G2 缺口）：`\p{P}` 会吞掉数字小数点，致「1.5万亿」与「15万亿」
+ * 误并同一 canonical_key。先保护 `数字.数字` 形态的小数点（占位符 \u0000 非标点类），
+ * 去噪后还原，确定性保持；非数字上下文行为不变。
  * 注意：与 calendar 模块 `dedupHash` 各自独立（calendar 用其通道内 key）；
  * 本函数是 Event Entity canonical 的统一口径，未来 calendar→entity 物化作业须复用本函数。 */
 export function normalizeTitle(title: string): string {
     return String(title)
         .normalize('NFKC')
+        .replace(/(?<=\d)\.(?=\d)/gu, '\u0000')
         .replace(/[\s\p{P}\p{S}_]+/gu, '')
+        .replace(/\u0000/g, '.')
         .toLowerCase()
 }
 
@@ -179,16 +193,19 @@ export async function listEventEntities(
 ): Promise<EventEntityRow[]> {
     const clauses: string[] = []
     const values: string[] = []
+    // design-debate R2 修订（G3 缺口）：`to_char(CAST(... AS date))` 与 019 迁移的
+    // `date(event_start_time AT TIME ZONE 'Asia/Shanghai')` 表达式索引形态不符 → 全表扫描。
+    // 改为与索引逐字一致的 `date(...)` 表达式，PG 可走 idx_event_entities_start_status。
     if (filters.dateFrom) {
         values.push(filters.dateFrom)
         clauses.push(
-            `to_char(CAST(event_start_time AT TIME ZONE 'Asia/Shanghai' AS date), 'YYYY-MM-DD') >= $${values.length}`,
+            `date(event_start_time AT TIME ZONE 'Asia/Shanghai') >= $${values.length}::date`,
         )
     }
     if (filters.dateTo) {
         values.push(filters.dateTo)
         clauses.push(
-            `to_char(CAST(event_start_time AT TIME ZONE 'Asia/Shanghai' AS date), 'YYYY-MM-DD') <= $${values.length}`,
+            `date(event_start_time AT TIME ZONE 'Asia/Shanghai') <= $${values.length}::date`,
         )
     }
     const whereClause = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
