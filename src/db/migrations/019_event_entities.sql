@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS event_entities (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Timeline 查询：event_start_date（上海时区表达列）+ status
+-- Timeline 查询：event_start_date（上海时区表达列）+ status（部分索引：NULL 历史行不建）
 CREATE INDEX IF NOT EXISTS idx_event_entities_start_status
-    ON event_entities ((event_start_time AT TIME ZONE 'Asia/Shanghai')::date, event_status);
+    ON event_entities (date(event_start_time AT TIME ZONE 'Asia/Shanghai'), event_status)
+    WHERE event_start_time IS NOT NULL;
