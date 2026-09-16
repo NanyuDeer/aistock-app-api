@@ -101,6 +101,7 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import stockInfoInternalRouter from './modules/crawler/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -636,6 +637,8 @@ app.use('/internal/insight', insightInternalRouter);
 app.use('/internal/predictions', predictionInternalRouter);
 
 app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
+
+app.use('/internal/event-entities', eventEntityInternalRouter); // 重大事件时间线 Event Entity（2026-09-15）
 
 app.use('/internal/stock-info', stockInfoInternalRouter); // crawler 情报：仅资讯股轻量预判 forecast 回写（2026-09-03）
 
