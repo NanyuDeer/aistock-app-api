@@ -28,7 +28,9 @@ cp -r "$FRONTEND_SRC/dist/"* "$FRONTEND_DIST"
 
 echo "[6/6] 重启后端服务..."
 cd "$APP_DIR"
-pm2 restart aistock-api || pm2 start deploy/ecosystem.config.json --only aistock-api
+# BUG FIX(2026-09-16)：pm2 实际应用名为 aistock-app-api（见 deploy/ecosystem.config.json）。
+# 此前写 aistock-api（旧应用）会导致 restart 命中空名、误 start 出重复实例，安全修复无法生效。
+pm2 restart aistock-app-api || pm2 start deploy/ecosystem.config.json --only aistock-app-api
 
 echo "=== 部署完成 ==="
 pm2 status
