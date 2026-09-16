@@ -110,3 +110,40 @@ test('US 隔夜事件 event_time>=15:00 顺延次一交易日（§4.5）', async
     assert.ok(overnight.date > '2026-09-02', '隔夜事件应顺延到次一交易日')
   } finally { server.close() }
 })
+
+test('listEvents 排序契约：event_date → event_time NULLS LAST → title', async () => {
+  let sql = ''
+  ;(pool as any).query = async (s: string) => { sql = String(s); return { rows: [], rowCount: 0 } }
+  await listEvents('2026-09-01', '2026-09-05')
+  assert.match(sql, /ORDER BY event_date ASC,\s*event_time ASC NULLS LAST,\s*title ASC/)
+})
+
+test('GET /events 下发顺序：router date 稳定排序保留 DB 三键次序', async () => {
+  // L1 delivery 恒 medium 非 high，混入同日期行不改变 high 相对次序；
+  // router L52 date 主键 + JS 稳定排序 → 同日期行保留 DB 三键次序（事件在下）
+  ;(pool as any).query = async (sql: string) => {
+    if (String(sql).includes('FROM market_calendar_events')) {
+      return {
+        rows: [
+          { id: 2, event_date: '2026-09-03', title: 'Z 事件', importance: 'high', market: 'CN', event_time: '10:00', source: 'L3', detail: null, result: null },
+          { id: 1, event_date: '2026-09-02', title: 'A 事件', importance: 'high', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+          { id: 3, event_date: '2026-09-03', title: 'B 事件', importance: 'high', market: 'CN', event_time: '10:00', source: 'L3', detail: null, result: null },
+        ],
+        rowCount: 3,
+      }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05')
+    const events = res.json.data.events
+    const titles = events.filter((e: any) => e.source === 'L3').map((e: any) => e.title)
+    // date 升序（09-02 在 09-03 前）+ 同日期稳定序（Z 在 B 前，保留 DB 行次序）
+    assert.deepEqual(titles, ['A 事件', 'Z 事件', 'B 事件'])
+  } finally { server.close() }
+})

@@ -17,6 +17,7 @@ import { CacheService } from '../../shared/utils/CacheService';
 import { NotificationService } from '../../core/notification/NotificationService';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { shanghaiDateStr, shanghaiDateYyyymmdd, shanghaiDateTimeMsStr } from '../../shared/utils/shanghaiTime';
+import { ForecastVersionStore } from './ForecastVersionStore';
 
 /** 从 ts_code 提取6位股票代码 */
 function tsCodeToSymbol(tsCode: string): string {
@@ -204,6 +205,18 @@ export class ProfitForecastAutoUpdateService {
                             forecast_eps_yoy = EXCLUDED.forecast_eps_yoy`,
                         [symbol, updateTime, summary, JSON.stringify(detail), forecastNetProfitYoy, forecastNetprofit, forecastEps, forecastEpsYoy],
                     );
+                    const versionDate = shanghaiDateStr();
+                    await ForecastVersionStore.upsert({
+                        symbol,
+                        versionDate,
+                        updateTime,
+                        summary,
+                        forecastDetail: detail,
+                        forecastNetprofitYoy: forecastNetProfitYoy,
+                        forecastNetprofit,
+                        forecastEps,
+                        forecastEpsYoy,
+                    });
                     try {
                         const nameResult = await pool.query<{ name: string | null }>('SELECT name FROM stocks WHERE symbol = $1 LIMIT 1', [symbol]);
                         const stockName = nameResult.rows[0]?.name || symbol;
@@ -217,7 +230,7 @@ export class ProfitForecastAutoUpdateService {
                             title: `${stockName}：业绩预测更新`,
                             summary: summary || '机构业绩预测数据已更新',
                             targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(symbol)}&anchor=forecast`,
-                            payload: { updateTime },
+                            payload: { updateTime, versionDate },
                             occurredAt: new Date().toISOString(),
                         });
                     } catch (error) {

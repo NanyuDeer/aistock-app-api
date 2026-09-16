@@ -67,6 +67,7 @@ export interface StockInfoJudgementRow {
     ai_horizon: StockInfoHorizon;
     ai_keywords: string[];
     ai_summary: string;
+    forecast: Record<string, unknown> | null;
     created_at: Date;
 }
 
@@ -354,7 +355,19 @@ export class StockInfoService {
         `);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_info_judgements_symbol_time ON stock_info_judgements(symbol, published_at DESC)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_info_judgements_type_impact_time ON stock_info_judgements(info_type, ai_impact, published_at DESC)');
+        // 阶段 2：仅重大资讯（无 stock_trace 事件）股票的轻量预判 slot 落库（{midday?: {...}, close?: {...}}）
+        await pool.query("ALTER TABLE stock_info_judgements ADD COLUMN IF NOT EXISTS forecast JSONB NOT NULL DEFAULT '{}'");
         this.schemaReady = true;
+    }
+
+    /** 情报事件 forecast slot 级 upsert（幂等：只覆盖目标 slot）；行不存在返回 false */
+    static async upsertJudgementForecast(id: number, slot: 'midday' | 'close', forecast: Record<string, unknown>): Promise<boolean> {
+        const result = await pool.query(`
+            UPDATE stock_info_judgements
+            SET forecast = forecast || jsonb_build_object($2::text, $3::jsonb), updated_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+        `, [id, slot, JSON.stringify(forecast)]);
+        return (result.rowCount ?? 0) > 0;
     }
 
     static async getTargets(source: StockInfoTargetSource, limit: number): Promise<StockInfoTarget[]> {
@@ -491,7 +504,7 @@ export class StockInfoService {
         const listValues = [...values, limit, offset];
         const result = await pool.query(
             `SELECT id, symbol, stock_name, info_type, source, source_id, title, url, published_at,
-                    ai_impact, ai_horizon, ai_keywords, ai_summary, created_at
+                    ai_impact, ai_horizon, ai_keywords, ai_summary, forecast, created_at
              FROM stock_info_judgements
              ${whereClause}
              ORDER BY published_at DESC, id DESC
@@ -512,7 +525,7 @@ export class StockInfoService {
         await this.ensureSchema();
         const result = await pool.query(
             `SELECT id, symbol, stock_name, info_type, source, source_id, title, url, published_at,
-                    ai_impact, ai_horizon, ai_keywords, ai_summary, created_at
+                    ai_impact, ai_horizon, ai_keywords, ai_summary, forecast, created_at
              FROM stock_info_judgements
              WHERE info_type = $1
                AND ai_impact IN ('重大利好', '重大利空')
@@ -533,7 +546,7 @@ export class StockInfoService {
         await this.ensureSchema();
         const result = await pool.query(
             `SELECT id, symbol, stock_name, info_type, source, source_id, title, url, published_at,
-                    ai_impact, ai_horizon, ai_keywords, ai_summary, created_at
+                    ai_impact, ai_horizon, ai_keywords, ai_summary, forecast, created_at
              FROM stock_info_judgements
              WHERE info_type = $1
                AND published_at >= $2::timestamptz

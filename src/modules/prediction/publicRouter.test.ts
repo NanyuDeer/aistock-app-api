@@ -225,6 +225,32 @@ test('GET /api/predictions?source_id=bad-format -> 400', async () => {
   assert.equal(body.code, 400)
 })
 
+test('GET /api/predictions?source_type=market_trace -> 200：source_type 过滤透传（列表与统计同口径）', async () => {
+  const rows = [baseRow()]
+  let capturedType: unknown
+  let capturedListType: unknown
+  __predictionPublicDependencies.listAllForStats = async (_status?: 'pending' | 'verified' | 'skipped', _source_id?: string, source_type?: 'market_trace' | 'sector_prediction') => {
+    capturedType = source_type
+    return rows
+  }
+  __predictionPublicDependencies.list = async (params: { status?: 'pending' | 'verified' | 'skipped'; source_id?: string; source_type?: 'market_trace' | 'sector_prediction'; page: number; pageSize: number }) => {
+    capturedListType = params.source_type
+    return { rows, total: rows.length }
+  }
+
+  const res = await makeJsonRequest(port, '/api/predictions?source_type=market_trace')
+  assert.equal(res.status, 200)
+  assert.equal(capturedType, 'market_trace')
+  assert.equal(capturedListType, 'market_trace')
+})
+
+test('GET /api/predictions?source_type=bad -> 400', async () => {
+  const res = await makeJsonRequest(port, '/api/predictions?source_type=bad')
+  assert.equal(res.status, 400)
+  const body = res.body as { code: number }
+  assert.equal(body.code, 400)
+})
+
 test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skippedCount 单独统计）', async () => {
   const rows = [
     baseRow({

@@ -146,3 +146,49 @@ test('GET /internal/index/000001/kline?start_date=bad -> 400', async () => {
     assert.equal(res.status, 400)
     assert.equal((res.body as Record<string, unknown>).code, 400)
 })
+
+test('GET /internal/index/000001/kline?end_date=20260115 -> 只返 <=end_date 的最近 N 根', async () => {
+    // S1：钉住 P0-2 门禁的前提语义——end_date 存在且无 start_date 时，
+    // Node 拉 days 根后按 d <= end_date 过滤，返回"最近 N 根"（非"必须精确等于 end_date 否则空"）。
+    const original = (TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine
+    ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = async () => [
+        { '时间': '20251201' },
+        { '时间': '20260110' },
+        { '时间': '20260120' },
+    ]
+    try {
+        const res = await makeGetRequest(
+            port,
+            '/internal/index/000001/kline?end_date=20260115',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { data: { rows: Array<{ trade_date: string }> } }
+        assert.deepEqual(body.data.rows.map((r) => r.trade_date), ['20251201', '20260110'])
+    } finally {
+        ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = original
+    }
+})
+
+test('GET /internal/index/000001/kline 非交易日 basis（20260117 周六）-> 仍返 <=basis 的 N 根', async () => {
+    // S1 关键用例：basis 为非交易日时接口不报空，仍返回 <=basis 的最近 N 根，
+    // 因此 Python 侧必须自己用"末行==basis"判门禁（本 plan Task 4），不能依赖接口返空。
+    const original = (TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine
+    ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = async () => [
+        { '时间': '20251201' },
+        { '时间': '20260110' },
+        { '时间': '20260120' },
+    ]
+    try {
+        const res = await makeGetRequest(
+            port,
+            '/internal/index/000001/kline?end_date=20260117',
+            INTERNAL_TOKEN,
+        )
+        assert.equal(res.status, 200)
+        const body = res.body as { data: { rows: Array<{ trade_date: string }> } }
+        assert.deepEqual(body.data.rows.map((r) => r.trade_date), ['20251201', '20260110'])
+    } finally {
+        ;(TushareKlineService as unknown as { getIndexKLine: unknown }).getIndexKLine = original
+    }
+})

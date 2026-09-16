@@ -41,6 +41,8 @@ const ORIG_FETCH = globalThis.fetch
 afterEach(() => {
     __internalPredictionDependencies.create = ORIGINAL_INTERNAL_DEPS.create
     __internalPredictionDependencies.list = ORIGINAL_INTERNAL_DEPS.list
+    __internalPredictionDependencies.listPending = ORIGINAL_INTERNAL_DEPS.listPending
+    __internalPredictionDependencies.listByStatus = ORIGINAL_INTERNAL_DEPS.listByStatus
     __internalPredictionDependencies.regenerateTimeoutMs = ORIGINAL_INTERNAL_DEPS.regenerateTimeoutMs
     ;(redis as unknown as { incr: unknown }).incr = ORIG_REDIS_INCR
     ;(redis as unknown as { expire: unknown }).expire = ORIG_REDIS_EXPIRE
@@ -288,79 +290,120 @@ test('GET /internal/predictions?source_id= (empty) -> 400', async () => {
 
 test('GET /internal/predictions?status=pending&before_id=100&limit=50 -> 透传游标', async () => {
     let captured: unknown
-    const original = PredictionRecordService.listPending
-    PredictionRecordService.listPending = (async (limit: number, beforeId?: number) => {
+    __internalPredictionDependencies.listPending = (async (limit: number, beforeId?: number) => {
         captured = { limit, beforeId }
         return []
-    }) as typeof PredictionRecordService.listPending
+    }) as unknown as typeof __internalPredictionDependencies.listPending
 
-    try {
-        const res = await makeJsonRequest(
-            port,
-            'GET',
-            '/internal/predictions?status=pending&before_id=100&limit=50',
-            INTERNAL_TOKEN,
-        )
-        assert.equal(res.status, 200)
-        const body = res.body as { code: number; data: unknown[] }
-        assert.equal(body.code, 200)
-        assert.ok(Array.isArray(body.data))
-        const params = captured as { limit: number; beforeId?: number }
-        assert.equal(params.limit, 50)
-        assert.equal(params.beforeId, 100)
-    } finally {
-        PredictionRecordService.listPending = original
-    }
+    const res = await makeJsonRequest(
+        port,
+        'GET',
+        '/internal/predictions?status=pending&before_id=100&limit=50',
+        INTERNAL_TOKEN,
+    )
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: unknown[] }
+    assert.equal(body.code, 200)
+    assert.ok(Array.isArray(body.data))
+    const params = captured as { limit: number; beforeId?: number }
+    assert.equal(params.limit, 50)
+    assert.equal(params.beforeId, 100)
 })
 
 test('GET /internal/predictions?status=verified&before_id=100&limit=50 -> 走 listByStatus（D3 统计出口）', async () => {
     let captured: unknown
-    const original = PredictionRecordService.listByStatus
-    PredictionRecordService.listByStatus = (async (status: string, limit: number, beforeId?: number) => {
+    __internalPredictionDependencies.listByStatus = (async (status: string, limit: number, beforeId?: number) => {
         captured = { status, limit, beforeId }
         return []
-    }) as typeof PredictionRecordService.listByStatus
+    }) as unknown as typeof __internalPredictionDependencies.listByStatus
 
-    try {
-        const res = await makeJsonRequest(
-            port,
-            'GET',
-            '/internal/predictions?status=verified&before_id=100&limit=50',
-            INTERNAL_TOKEN,
-        )
-        assert.equal(res.status, 200)
-        const body = res.body as { code: number; data: unknown[] }
-        assert.equal(body.code, 200)
-        const params = captured as { status: string; limit: number; beforeId?: number }
-        assert.equal(params.status, 'verified')
-        assert.equal(params.limit, 50)
-        assert.equal(params.beforeId, 100)
-    } finally {
-        PredictionRecordService.listByStatus = original
-    }
+    const res = await makeJsonRequest(
+        port,
+        'GET',
+        '/internal/predictions?status=verified&before_id=100&limit=50',
+        INTERNAL_TOKEN,
+    )
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: unknown[] }
+    assert.equal(body.code, 200)
+    const params = captured as { status: string; limit: number; beforeId?: number }
+    assert.equal(params.status, 'verified')
+    assert.equal(params.limit, 50)
+    assert.equal(params.beforeId, 100)
 })
 
 test('GET /internal/predictions?status=pending&before_id=abc -> 200 忽略非法游标（默认全量）', async () => {
     let captured: unknown
-    const original = PredictionRecordService.listPending
-    PredictionRecordService.listPending = (async (limit: number, beforeId?: number) => {
+    __internalPredictionDependencies.listPending = (async (limit: number, beforeId?: number) => {
         captured = { limit, beforeId }
         return []
-    }) as typeof PredictionRecordService.listPending
+    }) as unknown as typeof __internalPredictionDependencies.listPending
 
-    try {
-        const res = await makeJsonRequest(
-            port,
-            'GET',
-            '/internal/predictions?status=pending&before_id=abc',
-            INTERNAL_TOKEN,
-        )
-        assert.equal(res.status, 200)
-        const params = captured as { limit: number; beforeId?: number }
-        assert.equal(params.beforeId, undefined)
-    } finally {
-        PredictionRecordService.listPending = original
-    }
+    const res = await makeJsonRequest(
+        port,
+        'GET',
+        '/internal/predictions?status=pending&before_id=abc',
+        INTERNAL_TOKEN,
+    )
+    assert.equal(res.status, 200)
+    const params = captured as { limit: number; beforeId?: number }
+    assert.equal(params.beforeId, undefined)
+})
+
+test('GET /internal/predictions?status=pending -> id 归一位数字（D2：pg BIGSERIAL string 曾致 Python 全量跳过）', async () => {
+    __internalPredictionDependencies.listPending = (async () => [
+        {
+            id: '35',
+            source_type: 'sector_prediction',
+            source_id: 'sector:存储芯片:2026-08-27',
+            schema_version: '3.0',
+            prediction: {},
+            verification: {},
+            status: 'pending',
+            due_dates: { short: '2026-09-01' },
+            created_at: new Date().toISOString(),
+        },
+    ]) as unknown as typeof __internalPredictionDependencies.listPending
+
+    const res = await makeJsonRequest(
+        port,
+        'GET',
+        '/internal/predictions?status=pending',
+        INTERNAL_TOKEN,
+    )
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: Array<{ id: unknown }> }
+    assert.equal(body.code, 200)
+    assert.equal(body.data[0].id, 35)
+    assert.equal(typeof body.data[0].id, 'number')
+})
+
+test('GET /internal/predictions?source_id=... -> id 归一位数字（D2 同源回归）', async () => {
+    __internalPredictionDependencies.list = (async () => ({
+        rows: [{
+            id: '42',
+            source_type: 'market_trace',
+            source_id: 'review:2026-09-01',
+            schema_version: '3.0',
+            prediction: {},
+            verification: {},
+            status: 'pending',
+            due_dates: {},
+            created_at: new Date().toISOString(),
+        }],
+        total: 1,
+    })) as unknown as typeof __internalPredictionDependencies.list
+
+    const res = await makeJsonRequest(
+        port,
+        'GET',
+        '/internal/predictions?source_id=review:2026-09-01',
+        INTERNAL_TOKEN,
+    )
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: Array<{ id: unknown }> }
+    assert.equal(body.data[0].id, 42)
+    assert.equal(typeof body.data[0].id, 'number')
 })
 
 // ==================== POST / : status / skip_reason 透传 ====================

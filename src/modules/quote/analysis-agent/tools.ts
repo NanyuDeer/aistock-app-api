@@ -249,7 +249,7 @@ export async function executeMidLongToolCall(
             const nIncomeYoy = semiData.n_income_yoy ?? semiData.n_income_attr_p_yoy;
             if (nIncomeYoy != null) parts.push(`  净利润同比增速: ${nIncomeYoy}%`);
             if (latest.n_income_attr_p != null) parts.push(`  归母净利润: ${latest.n_income_attr_p}元`);
-            if (latest.rd_exp != null) parts.push(`  研发费用: ${latest.rd_exp}元`);
+            if (latest.rd_exp != null && latest.rd_exp !== 0) parts.push(`  研发费用: ${latest.rd_exp}元`);
             if (latest.gross_margin != null) parts.push(`  毛利率: ${latest.gross_margin}%`);
             if (latest.net_margin != null) parts.push(`  净利率: ${latest.net_margin}%`);
           } else {

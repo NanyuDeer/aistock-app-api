@@ -24,6 +24,8 @@ export interface PriceFact {
     previousClose: number;
     changePct: number;
     observedAt: Date;
+    /** 涨停标记：仅涨停雷达文章命中（强时效）置 true；行情打点不猜板阈值（ST/创板/主板各异） */
+    isLimitUp?: boolean;
 }
 
 export interface TriggerEvent {
@@ -55,7 +57,8 @@ export type DataReadiness = 'complete' | 'partial' | 'missing';
 
 export type SourceKind =
     | 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'market_fact'
-    | 'announcement' | 'news' | 'capital_fact' | 'technical_fact';
+    | 'announcement' | 'news' | 'capital_fact' | 'technical_fact'
+    | 'insight_article';
 
 export interface StockSourceRecord {
     sourceId: string;
@@ -91,7 +94,7 @@ export interface StockTraceSnapshot {
     sourceRecords: StockSourceRecord[];
 }
 
-export type DataReadinessDomains = 'company' | 'sector' | 'market' | 'capital' | 'technical';
+export type DataReadinessDomains = 'company' | 'sector' | 'market' | 'capital' | 'technical' | 'article';
 export type AttributionStatus = 'confirmed' | 'hypothesis' | 'insufficient' | 'not_applicable';
 export type CandidateLayer = 'company' | 'sector' | 'market' | 'capital' | 'technical';
 export type CandidateStatus = 'supported' | 'weak' | 'rejected' | 'insufficient';
@@ -182,6 +185,34 @@ export interface StockTraceArtifact {
     createdAt: string;
     expiresAt: string;
 }
+
+/** 轻量预判任务候选（阶段 2）：当日自选股"异动/涨停 ∪ 重大利好/利空资讯"，按 symbol 归并去重 */
+export interface LightPredictTarget {
+    symbol: string;
+    stockName: string;
+    /** 当日该股主事件（异动/涨停，含交集）；仅资讯股无此字段 */
+    event?: {
+        eventId: string;
+        direction: TraceDirection;
+        changePct: number | null;
+        severity: TraceSeverity;
+        analysisStatus: 'completed' | 'processing' | 'unavailable';
+        primaryCause: string | null;
+        isLimitUp: boolean;
+        forecast: Record<string, unknown> | null;
+    };
+    /** 当日该股重大利好/利空资讯（交集股也返回，作预判补充输入） */
+    intel?: Array<{
+        id: number;
+        title: string;
+        summary: string;
+        impact: string;
+        publishedAt: string;
+    }>;
+}
+
+/** 轻量预判落库 slot（与两次打点一一对应；slot 级 upsert，互不覆盖） */
+export type ForecastSlot = 'midday' | 'close';
 
 export function formatChinaTradingDate(date: Date): string {
     return shanghaiDateStr(date);

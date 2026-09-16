@@ -33,6 +33,7 @@ import { MarketSnapshotUnavailableError } from '../../modules/quote/MarketSnapsh
 import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
+import { EmailService } from '../email/EmailService'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -40,6 +41,7 @@ export const VALID_REPORT_TYPES = [
     'broadcast', 'event_conduction', 'market_snapshot', 'trend_score', 'global_importance',
     'brief_morning', 'brief_evening', 'broadcast_morning', 'broadcast_evening',
     'chat_analysis', 'event_scrape', 'midday', 'rhythm_master',
+    'sector_trace',
 ]
 
 /** 报告保留期（design-debate A4/U1 裁决）：rhythm_master 需支撑 60 交易日日历热力图
@@ -303,8 +305,16 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
     if (fqt !== 0 && fqt !== 1 && fqt !== 2) {
         return res.status(400).json({ code: 400, message: 'Invalid fqt — fqt 仅支持 0/1/2' })
     }
+    // 可选区间参数 start_date/end_date（YYYYMMDD）：存在时按区间过滤 rows，days 忽略；均缺省时保持原 days 语义（对齐 index 端点 H9）
+    const startDate = String(req.query.start_date || '')
+    const endDate = String(req.query.end_date || '')
+    const YMD = /^\d{8}$/
+    if ((startDate && !YMD.test(startDate)) || (endDate && !YMD.test(endDate))) {
+        return res.status(400).json({ code: 400, message: 'start_date/end_date 须为 YYYYMMDD' })
+    }
     try {
-        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: days })
+        // 指定 start_date 时拉全量（limit=0 不切片，getKLine 语义）后按区间过滤，否则原 days 语义
+        const rows = await TushareKlineService.getKLine({ symbol, klt: 101, fqt, limit: startDate ? 0 : days })
         // TushareKlineService.getKLine 返回的是中文键行（时间/开盘价/收盘价/最高价/最低价/涨跌幅），
         // 这里统一映射为契约英文键 trade_date/open/high/low/close/pct_chg；
         // 同时兼容 trade_date/tradeDate 键（测试 mock 数据与潜在直通行），保证真实服务与 mock 均正确。
@@ -315,8 +325,18 @@ router.get('/quote/:symbol/kline', async (req: Request, res: Response) => {
             low: r.low ?? r['最低价'] ?? null,
             close: r.close ?? r['收盘价'] ?? null,
             pct_chg: r.pct_chg ?? r['涨跌幅'] ?? null,
+            vol: r.vol ?? r['成交量'] ?? null,
+            amount: r.amount ?? r['成交额'] ?? null,
         }))
-        res.json({ code: 200, data: { symbol, klt: 101, days: clean.length, rows: clean } })
+        // 有任一边界时按区间过滤；每个边界仅当其存在时生效，避免单边参数导致空结果
+        const filtered =
+            startDate || endDate
+                ? clean.filter((r) => {
+                      const d = String(r.trade_date).replace(/-/g, '')
+                      return (!startDate || d >= startDate) && (!endDate || d <= endDate)
+                  })
+                : clean
+        res.json({ code: 200, data: { symbol, klt: 101, days: filtered.length, rows: filtered } })
     } catch (err: unknown) {
         console.error(`[Internal] quote/${symbol}/kline error:`, errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
@@ -1134,6 +1154,66 @@ router.get('/market/last-close-snapshot', async (_req: Request, res: Response) =
             return
         }
         console.error('[Internal] market/last-close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/market/sectors
+ * 盘内板块快照（午间报机会/风险候选源）。腾讯源，绕开 15:30 门禁，
+ * 仅供 Python Agent 午间 12:05 调用；不触碰东方财富。
+ * - 200：{ code: 200, data: { captured_at, indexes, breadth, gainers, losers, availability } }
+ * - 502：路由级异常
+ */
+router.get('/market/sectors', async (_req: Request, res: Response) => {
+    try {
+        const { TencentSnapshotService } = await import('../../modules/quote/TencentSnapshotService')
+        // 全部走腾讯源；任一失败降级为 partial，不整端 502
+        const [indexes, breadth, gainers, losers] = await Promise.allSettled([
+            TencentSnapshotService.fetchIndexes(),
+            TencentSnapshotService.fetchMarketBreadth(),
+            TencentSnapshotService.fetchTencentBoardRank('gn', 'down', 20),
+            TencentSnapshotService.fetchTencentBoardRank('gn', 'up', 20),
+        ])
+        // fetchIndexes 返回 CloseIndexFact：键为 ts_code（如 "000001.SH"），归一化为 6 位 code
+        const idx = (indexes.status === 'fulfilled' && Array.isArray(indexes.value))
+            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; pct_chg?: number }) => ({
+                  code: String(it.ts_code ?? it.code ?? '').replace(/[^0-9]/g, '').slice(0, 6),
+                  name: String(it.name ?? ''),
+                  pct_chg: it.pct_chg ?? null,
+              }))
+            : []
+        // MarketBreadth 只有 advance_count/total_count，在此现算 advance_ratio（防除零）
+        const breadthRaw = breadth.status === 'fulfilled' && breadth.value && typeof breadth.value === 'object'
+            ? ((breadth.value as { breadth?: { advance_count?: number; total_count?: number; avg_change_pct?: number } }).breadth ?? {})
+            : {}
+        const advanceN = Number(breadthRaw.advance_count ?? 0)
+        const totalN = Number(breadthRaw.total_count ?? 0)
+        const breadthData = {
+            advance_ratio: totalN > 0 ? advanceN / totalN : null,
+            avg_change_pct: breadthRaw.avg_change_pct ?? null,
+        }
+        const gainerRows = gainers.status === 'fulfilled' ? gainers.value.map(TencentSnapshotService.toSectorFact) : []
+        const loserRows = losers.status === 'fulfilled' ? losers.value.map(TencentSnapshotService.toSectorFact) : []
+        const okCount = [indexes.status, breadth.status, gainers.status, losers.status].filter((s) => s === 'fulfilled').length
+        const availability = okCount === 4
+            ? { state: 'available' }
+            : okCount > 0
+                ? { state: 'partial', reason: 'some upstream sources failed' }
+                : { state: 'unavailable', reason: 'all upstream sources failed' }
+        res.json({
+            code: 200,
+            data: {
+                captured_at: new Date().toISOString(),
+                indexes: idx,
+                breadth: breadthData,
+                gainers: gainerRows,
+                losers: loserRows,
+                availability,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] market/sectors error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
@@ -2976,7 +3056,7 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
     }
 })
 
-export { publicRouter }
+export { publicRouter, getAnalysisReport }
 
 /**
  * POST /internal/push/market-event
@@ -3050,6 +3130,55 @@ router.post('/push/market-event', json(), async (req: Request, res: Response) =>
         })
     } catch (err: unknown) {
         console.error('[Internal] market-event push error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/mail/notify
+ * 迭代完成通知邮件（2026-09-02）：agent-py 在 iterate 报告持久化后调用。
+ * SMTP：优先独立 QQ 通道（ITERATE_SMTP_*，收件 ITERATE_MAIL_TO），否则回退 EMAIL_SMTP_* 与 EMAIL_FROM。
+ * 未配置收件/发件不抛错 → 返回 sent:false（agent 侧仅记日志，不阻断迭代链路）。
+ * body: { report_type?, report_date?, summary? }
+ */
+router.post('/mail/notify', async (req: Request, res: Response) => {
+    try {
+        const body = (req.body ?? {}) as Record<string, unknown>
+        const reportType = typeof body.report_type === 'string' && body.report_type ? body.report_type : 'iterate'
+        const reportDate = typeof body.report_date === 'string' ? body.report_date : ''
+        const summary = typeof body.summary === 'string' ? body.summary : ''
+        const rawAtt = body.attachment as { filename?: unknown; content?: unknown } | undefined
+        const attachment =
+            rawAtt && typeof rawAtt.filename === 'string' && rawAtt.filename && typeof rawAtt.content === 'string'
+                ? { filename: rawAtt.filename, content: rawAtt.content }
+                : undefined
+        const to = (process.env.ITERATE_MAIL_TO ?? process.env.EMAIL_FROM ?? '').trim()
+        const subject = `【AI迭代完成】${reportType}${reportDate ? ` ${reportDate}` : ''}`
+        const text = [
+            `${reportType} 迭代报告已生成。`,
+            reportDate ? `日期：${reportDate}` : '',
+            summary ? `\n摘要：\n${summary}` : '',
+            `\n详情请前往 App 查看。`,
+        ].filter(Boolean).join('\n')
+
+        if (!to) {
+            console.log('[Internal] mail/notify skipped: ITERATE_MAIL_TO / EMAIL_FROM 未配置')
+            return res.json({ code: 0, data: { sent: false, reason: 'recipient not configured' } })
+        }
+        const smtpPort = Number(process.env.ITERATE_SMTP_PORT ?? 0)
+        const overrides = process.env.ITERATE_SMTP_USER
+            ? {
+                  host: process.env.ITERATE_SMTP_HOST || 'smtp.qq.com',
+                  port: smtpPort || 465,
+                  user: process.env.ITERATE_SMTP_USER,
+                  pass: process.env.ITERATE_SMTP_PASS ?? '',
+                  from: process.env.ITERATE_SMTP_USER,
+              }
+            : undefined
+        await EmailService.sendPlain(subject, text, to, overrides, attachment)
+        res.json({ code: 0, data: { sent: true, to } })
+    } catch (err: unknown) {
+        console.error('[Internal] mail/notify error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })

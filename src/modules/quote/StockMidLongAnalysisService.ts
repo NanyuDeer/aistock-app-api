@@ -34,20 +34,21 @@ export class StockMidLongAnalysisService {
   }
 
   private static buildModelUrl(): string {
-    const url = process.env.OPENAI_API_BASE_URL;
-    if (!url) throw new Error('缺少 OPENAI_API_BASE_URL 配置');
-    return url;
+    const url = process.env.QWEN_BASE_URL;
+    if (!url) throw new Error('缺少 QWEN_BASE_URL 配置');
+    const trimmed = url.replace(/\/+$/, '');
+    return trimmed.endsWith('/chat/completions') ? trimmed : `${trimmed}/chat/completions`;
   }
 
   private static buildAuthHeaders(): Record<string, string> {
-    const key = process.env.OPENAI_API_KEY;
-    if (!key) throw new Error('缺少 OPENAI_API_KEY 配置');
+    const key = process.env.QWEN_API_KEY;
+    if (!key) throw new Error('缺少 QWEN_API_KEY 配置');
     return { 'Content-Type': 'application/json', 'Authorization': `Bearer ${key}` };
   }
 
   private static getModel(): string {
-    const model = process.env.EVA_MODEL;
-    if (!model) throw new Error('缺少 EVA_MODEL 配置');
+    const model = process.env.QWEN_MODEL;
+    if (!model) throw new Error('缺少 QWEN_MODEL 配置');
     return model;
   }
 

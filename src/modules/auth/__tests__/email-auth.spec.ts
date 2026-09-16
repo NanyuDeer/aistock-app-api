@@ -193,6 +193,7 @@ test('bindEmail 邮箱已绑非空账户（有自选股/VIP/微信/手机）→ 
             tx.push(s);
             return { rows: [] } as never;
         }
+        tx.push(s);
         // 副账户行锁（参数 0 = 'other'）
         if (s.includes('FOR UPDATE')) return { rows: [{ id: 'other', openid: 'wx-other', email: EMAIL, phone: '13900000001', is_vip: true }] } as never;
         // 主账户身份读取（参数 0 = 'u1'）
@@ -222,6 +223,11 @@ test('bindEmail 邮箱已绑非空账户（有自选股/VIP/微信/手机）→ 
     assert.strictEqual(data.email, EMAIL);
     assert.strictEqual(data.openid, 'wx-other', '副账户微信身份应一并转移');
     assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
+    // 顺序约束：必须"先释放副账户身份（置 NULL）→ 再补主账户身份"，否则 email/openid 唯一索引冲突
+    const releaseIdx = tx.findIndex(s => s.includes('email = NULL') && s.includes('UPDATE users'));
+    const grantIdx = tx.findIndex(s => s.includes('UPDATE users SET openid') && !s.includes('NULL'));
+    assert.ok(releaseIdx >= 0 && grantIdx >= 0, '应同时存在释放与补身份 SQL');
+    assert.ok(releaseIdx < grantIdx, '副账户身份应先在唯一约束上释放，主账户才可补入同值');
 });
 
 test('bindEmail 邮箱已绑空壳账户（无其他身份/自选股）→ 自动合并 200', async () => {
@@ -354,4 +360,42 @@ test('bindWechat 微信已绑非空账户（有邮箱绑定）→ 自动合并 2
     assert.strictEqual(data.openid, 'wx-other');
     assert.strictEqual(data.email, 'other@163.com', '副账户邮箱应一并转移');
     assert.ok(tx.includes('BEGIN') && tx.includes('COMMIT'), '合并事务应正常提交');
+});
+
+test('bindWechat 手机号账户（无邮箱）→ 手机号+验证码证明归属 → 200', async () => {
+    mockWechatAuth('wx-mobile');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        const s = String(sql);
+        if (s.includes('SELECT id FROM users WHERE phone = $1 AND id = $2')) {
+            return { rows: [{ id: 'u1' }] } as never;
+        }
+        if (s.includes('SELECT id FROM users WHERE openid = $1 AND id <> $2')) {
+            return { rows: [] } as never;
+        }
+        if (s.includes('UPDATE users SET openid')) {
+            return { rows: [{ id: 'u1', openid: 'wx-mobile', email: null, phone: '13900000001', nickname: '微信用户', avatar_url: 'http://avatar' }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    const app = buildApp();
+    // 手机号账户绑定微信：传 body.phone + 短信验证码（dev 测试码 123456）+ wxCode
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { phone: '13900000001', code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 200);
+    const data = r.json?.data as { wechatBound: boolean; openid: string | null; phone: string | null };
+    assert.strictEqual(data.wechatBound, true);
+    assert.strictEqual(data.openid, 'wx-mobile');
+    assert.strictEqual(data.phone, '13900000001', '手机号保留在当前账户');
+});
+
+test('bindWechat 手机号不属于当前账户 → 403', async () => {
+    mockWechatAuth('wx-x');
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        if (String(sql).includes('SELECT id FROM users WHERE phone = $1 AND id = $2')) {
+            return { rows: [] } as never; // 手机号不在当前账户
+        }
+        return { rows: [] } as never;
+    };
+    const app = buildApp();
+    const r = await call(app, 'POST', '/api/auth/bind/wechat', { phone: '13900000002', code: '123456', wxCode: 'wx' }, signToken('u1', ''));
+    assert.strictEqual(r.status, 403);
 });
