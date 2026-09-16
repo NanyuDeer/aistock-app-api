@@ -2,6 +2,32 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## \[changer\] 2026-09-15 — Event Entity 端点落地 + design-debate R2 收口
+
+**开发者**: 37588
+
+### 新增
+
+- `/internal/event-entities` 端点：`migration 019`（`event_entities` 权威表：event_id PK 不可变随机 ID、canonical_event_key 唯一幂等、event_status display-only 快照、时间三件套 TIMESTAMPTZ）+ `EventEntityService`（确定性 `computeEventStatus` 纯函数、`normalizeTitle`/`canonicalKey`、`upsertEventEntity` ON CONFLICT、`listEventEntities`）+ `EventEntityInternalRouter`（POST 物化 / GET 列表，信封恒 code:200，独立 internal token）+ `index.ts` 挂载。
+- 表达式索引 `(date(event_start_time AT TIME ZONE 'Asia/Shanghai'), event_status)`，查询过滤与其逐字一致走索引。
+
+### 修复
+
+- **R2 G1（design-debate）**：`isDateOnly` 兼容 pg 读回 JS `Date`（上海时区墙钟判定）——裸 `pg.Pool` 读回 TIMESTAMPTZ 为 Date 对象，原字符串正则使读时重算的 date-only 分支成为死代码，当天事件白天误判 `occurred`；现签名放宽 `string | Date | null`。
+- **R2 G2**：`normalizeTitle` 保护数字小数点（`数字.数字` 形态）——「1.5万亿」与「15万亿」不再误并同一 canonical_key。
+- **R2 G3**：日期过滤由 `to_char(CAST(... AS date))` 改为 `date(...) >= $N::date`，与索引表达式一致走索引。
+
+### 测试
+
+- `tests/event-entities.service.test.ts`：9 用例（status 四边界 + Date 输入回归 + normalizeTitle 噪声/小数点 + canonicalKey 确定性），9/9 通过；`tsc --noEmit` / `npm run build` 0 错误。
+- 本地真实 HTTP 联调通过（信封 code:200 / 幂等重放 / 当日 ongoing 边界 /「1.5万亿」≠「15万亿」/ scheduled+occurred 双态）。
+
+### 状态
+
+- 本地验收通过；待组长 merge 后对生产库 `psql -f` 应用 019 迁移，agent-py `EVENT_ENTITY_ENABLED` 翻 True 走生产联调。
+
+---
+
 ## \[changer\] 2026-09-10 — 指数日 K 接口区间语义回归测试
 
 **开发者**: 37588
