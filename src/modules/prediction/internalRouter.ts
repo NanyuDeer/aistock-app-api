@@ -251,19 +251,26 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
     actual?: unknown;
     reason?: unknown;
     early_exit?: unknown;
-    /** 条件中间态标记（两段判定第①段）：布尔 true 时允许无 result */
+    /** 条件中间态标记（两段判定第①段）：true 时允许无 result（D1：只写 true） */
     condition_met?: unknown;
+    /** 条件档位下标（key=c{i} 的 i）；D1 要求整数，供前端 metByIndex/统计对齐 */
+    condition_index?: unknown;
   };
   if (!Number.isInteger(id) || id < 1 || typeof body.horizon !== 'string' || !body.horizon.trim()) {
     res.status(400).json({ code: 400, message: 'valid id and horizon are required' });
     return;
   }
   // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法。
-  // 条件中间态（本变更）：condition_met 两段判定的第①段——agent-py 在到期前回写
+  // 条件中间态（本变更，对齐决策 D1）：condition_met 两段判定的第①段——agent-py 在到期前回写
   // "条件已成立"（key=c{i}、只写 condition_met=true、不写 result）也必须放行，
   // 否则该写入被 400 拒绝、前端洞见卡"待验证"分支无法点亮。
+  // 收紧为 D1 三条件（终审遗留项）：condition_met 必须恒为 true（放行 false 会让前端
+  // hasMetData 为真 → 结论模式激活却无 true 分支 → 显示"条件未成立"空态）、
+  // horizon 形如 c{i}、condition_index 必须为整数（缺失/非整数时前端 metByIndex 不认、统计不计）。
   const isConditionIntermediate =
-    typeof body.condition_met === 'boolean' && /^c\d+$/.test(String(body.horizon ?? ''));
+    body.condition_met === true &&
+    /^c\d+$/.test(String(body.horizon ?? '')) &&
+    Number.isInteger(body.condition_index);
   if (
     !isConditionIntermediate &&
     body.type !== 'early_exit' &&

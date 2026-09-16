@@ -220,6 +220,63 @@ test('PUT /internal/predictions/1/verification 放行条件中间态（condition
     assert.ok(!('result' in (JSON.parse(JSON.stringify(entry)) as Record<string, unknown>)))
 })
 
+test('PUT /internal/predictions/1/verification 拒绝 condition_met=false 的条件中间态（D1：只写 true）', async () => {
+    // 决策 D1：条件中间态只允许写 true。放行 false 会让前端 hasMetData 为真 → 结论模式激活
+    // 却无 true 分支 → 显示"条件未成立"空态。故 false 必须 400（不落库）。
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for condition_met=false')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: false, condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝缺 condition_index 的条件中间态（D1）', async () => {
+    // condition_index 缺失时前端 metByIndex 不认、统计不计 → 必须 400
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called without condition_index')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非整数 condition_index 的条件中间态（D1）', async () => {
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called with non-integer condition_index')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true, condition_index: 0.5 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
 test('PUT /internal/predictions/1/verification 仍拒绝既无 result 又无 condition_met 的 body', async () => {
     const res = await makeJsonRequest(
         port,
