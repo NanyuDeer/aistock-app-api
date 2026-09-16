@@ -139,7 +139,8 @@ test('GET /internal/ths/resolve 缺 name -> 400', async () => {
 
 // ============ Task 3: GET /internal/ths/:code/daily（区间日 K） ============
 // 与 Task 1 同款约定：__dailyDeps 属性注入（tsx ESM 下 namespace 绑定只读，只能替换对象属性），
-// 不触达真实 Tushare。契约键 pct_change → pct_chg（H7：Tushare 缺失保行为 null，不静默丢行）。
+// 不触达真实 Tushare。契约键 pct_change → pct_chg（H7：Tushare 缺失保行为 null，不静默丢行）；
+// Task 9 加性透传 close/vol/amount（condition_met 技术位判定数据源）。
 
 function patchGetThsDaily(impl: ThsBoardService.ThsDailyDeps['getThsDaily']): void {
     ThsBoardService.__dailyDeps.getThsDaily = impl
@@ -152,7 +153,7 @@ test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows'
     ])
     const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
     assert.equal(res.status, 200)
-    const body = res.body as { code: number; data: { ts_code: string; days: number; rows: Array<{ trade_date: string; pct_chg: number | null }> } }
+    const body = res.body as { code: number; data: { ts_code: string; days: number; rows: ThsBoardService.ThsBoardDailyRow[] } }
     assert.equal(body.code, 200)
     assert.equal(body.data.ts_code, '885525.TI')
     assert.equal(body.data.days, 2)
@@ -161,6 +162,32 @@ test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows'
     assert.equal(rows[0].pct_chg, 1.23) // pct_change -> pct_chg 契约键
     assert.equal(rows[0].trade_date, '20250102') // 升序
     assert.equal(rows[1].pct_chg, -0.5)
+})
+
+test('GET /internal/ths/885525.TI/daily -> 透传 close/vol/amount（含缺值保 null 与中文键兜底）', async () => {
+    patchGetThsDaily(async () => [
+        // 全字段直通行
+        { ts_code: '885525.TI', trade_date: '20250102', pct_change: 1.23, close: 1664.75, vol: 13224.26, amount: 98765.4 },
+        // 缺值行：close/vol/amount 保 null（不静默丢行，H7），且键必须存在（非 undefined）
+        { ts_code: '885525.TI', trade_date: '20250103', pct_change: -0.5 },
+        // 中文键行（潜在直通/换源路径）：容错映射兜底
+        { ts_code: '885525.TI', trade_date: '20250104', pct_change: 0.2, '收盘价': 1600, '成交量': 100, '成交额': 5000 },
+    ])
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { days: number; rows: ThsBoardService.ThsBoardDailyRow[] } }
+    assert.equal(body.data.days, 3) // 缺值行不丢
+    const [full, missing, cn] = body.data.rows
+    assert.equal(full.close, 1664.75)
+    assert.equal(full.vol, 13224.26)
+    assert.equal(full.amount, 98765.4)
+    assert.equal(missing.close, null)
+    assert.equal(missing.vol, null)
+    assert.equal(missing.amount, null)
+    assert.ok(Object.prototype.hasOwnProperty.call(missing, 'close'), 'close 缺值时键仍须存在（保 null 而非省略）')
+    assert.equal(cn.close, 1600)
+    assert.equal(cn.vol, 100)
+    assert.equal(cn.amount, 5000)
 })
 
 test('GET /internal/ths/xxx/daily 非法 code -> 400', async () => {
