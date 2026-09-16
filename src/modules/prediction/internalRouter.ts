@@ -251,13 +251,24 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
     actual?: unknown;
     reason?: unknown;
     early_exit?: unknown;
+    /** 条件中间态标记（两段判定第①段）：布尔 true 时允许无 result */
+    condition_met?: unknown;
   };
   if (!Number.isInteger(id) || id < 1 || typeof body.horizon !== 'string' || !body.horizon.trim()) {
     res.status(400).json({ code: 400, message: 'valid id and horizon are required' });
     return;
   }
-  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法
-  if (body.type !== 'early_exit' && !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
+  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法。
+  // 条件中间态（本变更）：condition_met 两段判定的第①段——agent-py 在到期前回写
+  // "条件已成立"（key=c{i}、只写 condition_met=true、不写 result）也必须放行，
+  // 否则该写入被 400 拒绝、前端洞见卡"待验证"分支无法点亮。
+  const isConditionIntermediate =
+    typeof body.condition_met === 'boolean' && /^c\d+$/.test(String(body.horizon ?? ''));
+  if (
+    !isConditionIntermediate &&
+    body.type !== 'early_exit' &&
+    !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])
+  ) {
     res.status(400).json({ code: 400, message: 'result must be hit|miss|insufficient' });
     return;
   }
@@ -277,7 +288,10 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
         }
       : {
           horizon: entryHorizon,
-          result: body.result as 'hit' | 'miss' | 'insufficient',
+          // 条件中间态无 result：条件展开该键，避免落库 entry 出现 result: undefined 占位
+          ...(body.result !== undefined
+            ? { result: body.result as 'hit' | 'miss' | 'insufficient' }
+            : {}),
           actual: typeof body.actual === 'string' ? body.actual : '',
           reason: typeof body.reason === 'string' ? body.reason : '',
           verified_at: new Date().toISOString(),
