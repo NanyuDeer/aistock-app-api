@@ -36,6 +36,9 @@ import sectorInsightRouter from './core/routes/sectorInsightRouter';
 // 归因链存储/读取（2026-09-03 P1 chain-attribution Task 4：/api/internal/attribution-chain + /api/agent/attribution-chain/:date）
 import { attributionChainRouter } from './core/routes/attributionChainRouter';
 
+// 溯源弱反馈审计存储/读取（2026-09-17 §13.3 Task 7.1：/api/internal/attribution-feedback + /api/agent/attribution-feedback/:date）
+import { attributionFeedbackRouter } from './core/routes/attributionFeedbackRouter';
+
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
@@ -101,6 +104,7 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import stockInfoInternalRouter from './modules/crawler/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -115,6 +119,7 @@ import { StockInfoCrawlService } from './modules/crawler/services/StockInfoCrawl
 // shared 共享层
 import { isValidAShareSymbol } from './shared/utils/validator';
 import { closeAllAgents } from './shared/utils/httpAgent';
+import { requireLogin } from './shared/utils/requireLogin';
 
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
@@ -161,6 +166,10 @@ app.use('/api/agent', sectorInsightRouter);
 // （前端读取；GET 路径同上必须在反代之前，否则被转发到 Python。POST 路由自带 json parser，
 // 因为全局 express.json() 在反代之后注册，见 attributionChainRouter.ts）
 app.use('/api', attributionChainRouter);
+
+// 溯源弱反馈审计：POST /api/internal/attribution-feedback（agent 上报）+ GET
+// /api/agent/attribution-feedback/:date（读取，同上必须在反代之前；POST 自带 json parser）
+app.use('/api', attributionFeedbackRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req
@@ -459,7 +468,7 @@ app.post('/api/internal/crawl/cycle', async (req, res) => {
 app.get('/api/potential-stocks/push-history', (req, res, next) => PotentialStockPushController.getHistory(req, res, next));
 app.get('/api/potential-stocks/push-ranking', (req, res, next) => PotentialStockPushController.getRanking(req, res, next));
 
-app.post('/api/admin/trigger-price-update', async (_req, res) => {
+app.post('/api/admin/trigger-price-update', requireLogin, async (_req, res) => {
     try {
         console.log('[ManualTrigger] update push history prices');
         await WindLeaderService.updatePushHistoryPrices();
@@ -482,14 +491,14 @@ app.get('/api/gb/index/quotes', (req, res, next) => IndexQuoteController.getGlob
 
 app.get('/api/cn/stocks/profit-forecast', (req, res, next) => ProfitForecastController.getForecastList(req, res, next));
 app.get('/api/cn/stocks/profit-forecast/search', (req, res, next) => ProfitForecastController.searchForecastList(req, res, next));
-app.post('/api/cn/stocks/profit-forecast/batch', (req, res, next) => ProfitForecastController.batchRefresh(req, res, next));
+app.post('/api/cn/stocks/profit-forecast/batch', requireLogin, (req, res, next) => ProfitForecastController.batchRefresh(req, res, next));
 app.get('/api/cn/stocks/profit-forecast/batch/status', (req, res, next) => ProfitForecastController.getBatchStatus(req, res, next));
-app.post('/api/cn/stocks/ocr', (req, res, next) => StockOcrController.batchOcr(req, res, next));
+app.post('/api/cn/stocks/ocr', requireLogin, (req, res, next) => StockOcrController.batchOcr(req, res, next));
 
 // 业绩报告
 app.get('/api/cn/stocks/performance-reports', (req, res, next) => PerformanceReportController.getReportList(req, res, next));
 app.get('/api/cn/stocks/performance-reports/search', (req, res, next) => PerformanceReportController.searchReportList(req, res, next));
-app.post('/api/cn/stocks/performance-reports/refresh', (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
+app.post('/api/cn/stocks/performance-reports/refresh', requireLogin, (req, res, next) => PerformanceReportController.manualRefresh(req, res, next));
 app.get('/api/cn/stocks/performance-reports/analysis', (req, res, next) => PerformanceReportController.getAnalysis(req, res, next));
 app.get('/api/cn/stocks/performance-reports/ai-analysis', (req, res, next) => PerformanceReportController.getAiScore(req, res, next));
 app.get('/api/cn/stocks/performance-reports/ranking', (req, res, next) => PerformanceReportController.getPerformanceRanking(req, res, next));
@@ -504,7 +513,7 @@ app.get('/api/cn/stocks/:symbol/capital-flow', (req, res, next) => {
     CapitalFlowController.getCapitalFlow(req, res, next);
 });
 
-app.post('/api/cn/capital-flow/batch-prefetch', (req, res, next) => CapitalFlowController.batchPrefetch(req, res, next));
+app.post('/api/cn/capital-flow/batch-prefetch', requireLogin, (req, res, next) => CapitalFlowController.batchPrefetch(req, res, next));
 app.get('/api/cn/capital-flow/batch-status', (req, res, next) => CapitalFlowController.getBatchStatus(req, res, next));
 
 app.get('/api/cn/stocks/:symbol/semi-annual-report', async (req, res) => {
@@ -539,14 +548,14 @@ app.get('/api/cn/stocks/:symbol/analysis/history', (req, res, next) => {
 });
 
 app.route('/api/cn/stocks/:symbol/analysis')
-    .get((req, res, next) => {
+    .get(requireLogin, (req, res, next) => {
         if (!isValidAShareSymbol(req.params.symbol)) {
             res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
             return;
         }
         StockAnalysisController.handleStockAnalysis(req, res, next);
     })
-    .post((req, res, next) => {
+    .post(requireLogin, (req, res, next) => {
         if (!isValidAShareSymbol(req.params.symbol)) {
             res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
             return;
@@ -563,7 +572,7 @@ app.route('/api/cn/stocks/:symbol/mid-long/:timeframe')
         }
         StockMidLongAnalysisController.handleGet(req, res, next);
     })
-    .post((req, res, next) => {
+    .post(requireLogin, (req, res, next) => {
         if (!isValidAShareSymbol(req.params.symbol)) {
             res.status(400).json({ code: 400, message: 'Invalid symbol - A股代码必须是6位数字' });
             return;
@@ -590,8 +599,8 @@ app.post('/api/cn/stock/:symbol/profit-forecast', (req, res, next) => {
 app.get('/api/cn/stocks/trend-score/top', (req, res, next) => TrendScoreController.getTopStocks(req, res, next));
 app.get('/api/cn/stocks/:symbol/trend-score', (req, res, next) => TrendScoreController.getScore(req, res, next));
 app.get('/api/cn/stocks/:symbol/trend-score/detail', (req, res, next) => TrendScoreController.getDetail(req, res, next));
-app.post('/api/cn/stocks/:symbol/trend-score/refresh', (req, res, next) => TrendScoreController.refreshScore(req, res, next));
-app.post('/api/cn/stocks/trend-score/batch', (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
+app.post('/api/cn/stocks/:symbol/trend-score/refresh', requireLogin, (req, res, next) => TrendScoreController.refreshScore(req, res, next));
+app.post('/api/cn/stocks/trend-score/batch', requireLogin, (req, res, next) => TrendScoreController.batchRefresh(req, res, next));
 
 app.get('/api/news/headlines', (req, res, next) => NewsController.getHeadlines(req, res, next));
 app.get('/api/news/cn', (req, res, next) => NewsController.getCnNews(req, res, next));
@@ -635,6 +644,8 @@ app.use('/internal/insight', insightInternalRouter);
 app.use('/internal/predictions', predictionInternalRouter);
 
 app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
+
+app.use('/internal/event-entities', eventEntityInternalRouter); // 重大事件时间线 Event Entity（2026-09-15）
 
 app.use('/internal/stock-info', stockInfoInternalRouter); // crawler 情报：仅资讯股轻量预判 forecast 回写（2026-09-03）
 
@@ -1573,8 +1584,12 @@ async function start() {
         console.error('[Redis] Connection failed:', err instanceof Error ? err.message : String(err));
     }
 
-    const server = app.listen(PORT, '0.0.0.0', () => {
-        console.log(`[Server] aistock-app-api running on http://0.0.0.0:${PORT}`);
+    // 安全加固（2026-09-16）：默认仅监听 loopback。对外仅经 Caddy 反代
+    // （gupiao-api.yaozhineng.com → 127.0.0.1:56790）暴露，杜绝外部直连绕过网关盗用
+    // 高成本 OCR / LLM 分析接口。若确需被其他机器直连，显式设 HOST env。
+    const HOST = process.env.HOST || '127.0.0.1';
+    const server = app.listen(PORT, HOST, () => {
+        console.log(`[Server] aistock-app-api running on http://${HOST}:${PORT}`);
         if (!BACKGROUND_JOBS_ENABLED) {
             console.log('[Server] QA_MODE=true，后台调度和启动同步已禁用');
             return;

@@ -2,6 +2,61 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## \[master\] 2026-09-16 — 磁盘治理 + API 暴露面安全加固 + 部署脚本修复
+
+**开发者**: Aria
+
+### 安全加固（响应老师「API 被外部盗用」）
+
+- `src/index.ts`：监听地址 `0.0.0.0` → `127.0.0.1`。此前 app-api 以公网直连方式暴露 `56790`，OCR(OpenAI 视觉)/个股中长线分析(QWEN LLM)/批量刷新等高成本接口在 index.ts 原全无鉴权，外部可直连白嫖烧钱——老师说法有据。现仅经 Caddy 反代 `gupiao-api.yaozhineng.com → 127.0.0.1:56790` 对外；确需直连可用 `HOST` env 显式覆盖。
+- 新增 `src/shared/utils/requireLogin.ts`：Express 登录守卫中间件（JWT **或** `X-Internal-Token` 二选一放行，复用 extract→verify→isTokenRevoked）。挂载到 `admin/trigger-price-update`(原完全无校验)、`profit-forecast/batch`、`ocr`、`performance-reports/refresh`、`capital-flow/batch-prefetch`、`:symbol/analysis`(GET+POST)、`:symbol/mid-long/:timeframe`(POST)、`trend-score/refresh`、`trend-score/batch`。
+- 生产内部 token 核实为强随机值（非默认），历史是否真被外部盗刷需 Caddy 访问日志事后验证（配置片段已提供）。
+
+### 磁盘治理（复盘 9 月磁盘满事故）
+
+- 根因：磁盘 100% → PG/Redis 停机 → 登录/识图全挂。实测 pm2 日志仅 32K 非主因；真大头是**已下线十倍股模块遗留的废弃表 `tenx_scores`（11GB，app-api 源码 0 引用）**。
+- 运维（服务器 `docker exec`）：`DROP TABLE IF EXISTS tenx_scores CASCADE`，表已删除，磁盘 106G→95G used、可用 7.5G→19G（94%→84%）。
+- `trend_scores`（4.7GB）为活跃在用（analysis-agent/internal 读取 dim_scores/description/ai_conclusion），按要求未改动；其 `raw_data` 列经核查只写不读，留作后续可选优化。
+
+### 修复
+
+- `deploy/deploy.sh`：重启名 `aistock-api`→`aistock-app-api`（旧名命中空名致安全修复无法生效、误启重复实例）。
+
+### 测试
+
+- 新增 `src/shared/utils/__tests__/requireLogin.spec.ts`（6 用例：内部 token 放行/不匹配 401/无凭据 401/有效 JWT 放行注入 user/伪造 401/过期 401 全绿）；`npx tsc --noEmit` 0 errors。
+
+### 待办（管理员 root）
+
+- Caddy 访问日志开启（防/留痕外部盗用；配置片段见 CHANGELOG 下发给运维），部署需 `git pull && pm2 restart aistock-app-api` 使 loopback 与鉴权生效。
+
+***
+## \[changer\] 2026-09-15 — Event Entity 端点落地 + design-debate R2 收口
+
+**开发者**: 37588
+
+### 新增
+
+- `/internal/event-entities` 端点：`migration 019`（`event_entities` 权威表：event_id PK 不可变随机 ID、canonical_event_key 唯一幂等、event_status display-only 快照、时间三件套 TIMESTAMPTZ）+ `EventEntityService`（确定性 `computeEventStatus` 纯函数、`normalizeTitle`/`canonicalKey`、`upsertEventEntity` ON CONFLICT、`listEventEntities`）+ `EventEntityInternalRouter`（POST 物化 / GET 列表，信封恒 code:200，独立 internal token）+ `index.ts` 挂载。
+- 表达式索引 `(date(event_start_time AT TIME ZONE 'Asia/Shanghai'), event_status)`，查询过滤与其逐字一致走索引。
+
+### 修复
+
+- **R2 G1（design-debate）**：`isDateOnly` 兼容 pg 读回 JS `Date`（上海时区墙钟判定）——裸 `pg.Pool` 读回 TIMESTAMPTZ 为 Date 对象，原字符串正则使读时重算的 date-only 分支成为死代码，当天事件白天误判 `occurred`；现签名放宽 `string | Date | null`。
+- **R2 G2**：`normalizeTitle` 保护数字小数点（`数字.数字` 形态）——「1.5万亿」与「15万亿」不再误并同一 canonical_key。
+- **R2 G3**：日期过滤由 `to_char(CAST(... AS date))` 改为 `date(...) >= $N::date`，与索引表达式一致走索引。
+
+### 测试
+
+- `tests/event-entities.service.test.ts`：9 用例（status 四边界 + Date 输入回归 + normalizeTitle 噪声/小数点 + canonicalKey 确定性），9/9 通过；`tsc --noEmit` / `npm run build` 0 错误。
+- 本地真实 HTTP 联调通过（信封 code:200 / 幂等重放 / 当日 ongoing 边界 /「1.5万亿」≠「15万亿」/ scheduled+occurred 双态）。
+
+### 状态
+
+- 本地验收通过；待组长 merge 后对生产库 `psql -f` 应用 019 迁移，agent-py `EVENT_ENTITY_ENABLED` 翻 True 走生产联调。
+
+---
+
 ## \[changer\] 2026-09-10 — 指数日 K 接口区间语义回归测试
 
 **开发者**: 37588
@@ -17,7 +72,6 @@
 - 本地代码验收通过（**待生产验证**）：该测试文件 8/8 通过，类型检查 0 错误。
 
 ---
-
 ## \[changer\] 2026-09-05 — 指数日 K 接口透传 vol/amount（修复量能伪分支）
 
 **开发者**: 37588

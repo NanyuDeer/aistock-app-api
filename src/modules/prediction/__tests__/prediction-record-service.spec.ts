@@ -49,6 +49,36 @@ function mockAppend(row: PredictionRecordRow) {
   return { queries, queryMock };
 }
 
+/**
+ * mock pool.query：模拟 create（INSERT ... ON CONFLICT DO UPDATE）语义 ——
+ * 既有行 status='verified' 时 status 不回落（CASE 保护），prediction/due_dates 照常覆盖。
+ */
+function mockCreate(existing: PredictionRecordRow | null) {
+  const queries: { sql: string; params: unknown[] }[] = [];
+  const queryMock = mock.method(pool, 'query', async (sql: unknown, params: unknown[]) => {
+    const s = String(sql);
+    queries.push({ sql: s, params: params ?? [] });
+    const [sourceType, sourceId, schemaVersion, predictionJson, dueDatesJson, status] =
+      params as [string, string, string, string, string, string];
+    return {
+      rows: [
+        {
+          id: existing?.id ?? 1,
+          source_type: sourceType,
+          source_id: sourceId,
+          schema_version: schemaVersion,
+          prediction: JSON.parse(predictionJson),
+          verification: existing?.verification ?? {},
+          status: existing?.status === 'verified' ? 'verified' : status,
+          due_dates: JSON.parse(dueDatesJson),
+          created_at: existing?.created_at ?? '2026-09-17T00:00:00.000Z',
+        },
+      ],
+    };
+  });
+  return { queries, queryMock };
+}
+
 test('appendVerification issues atomic jsonb merge UPDATE with horizon+entry params', async () => {
   const row = makeRow();
   const { queries, queryMock } = mockAppend(row);
@@ -189,6 +219,75 @@ test('listSectorByDate filters sector_prediction by source_id date suffix', asyn
     assert.ok(capturedSql.includes("source_id LIKE 'sector:%:' || $1"), '按 source_id 日期后缀 LIKE');
     assert.equal(capturedParams[0], '2026-09-01');
     assert.ok(capturedSql.includes('ORDER BY created_at DESC'), 'created_at DESC 排序（最新优先）');
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+// ---------- create upsert：已验证记录不被级联/批量重跑打回 pending ----------
+
+test('create upsert keeps status=verified while still updating prediction/due_dates', async () => {
+  const existing = makeRow({
+    id: 7,
+    source_type: 'sector_prediction',
+    source_id: 'sector:半导体:2026-09-17',
+    schema_version: '3.0',
+    prediction: { horizons: [{ horizon: 'short' }], evolution_narrative: '旧结论' },
+    verification: { short: { horizon: 'short', result: 'hit' } },
+    status: 'verified',
+    due_dates: { short: '2026-09-24' },
+  });
+  const { queries, queryMock } = mockCreate(existing);
+  try {
+    const result = await PredictionRecordService.create({
+      source_type: 'sector_prediction',
+      source_id: 'sector:半导体:2026-09-17',
+      schema_version: '3.0',
+      prediction: { horizons: [{ horizon: 'short' }], evolution_narrative: '重跑结论' },
+      due_dates: { short: '2026-09-25' },
+    });
+    const insert = queries.find(q => q.sql.includes('ON CONFLICT'));
+    assert.ok(insert, '应执行 INSERT ... ON CONFLICT');
+    assert.match(
+      insert!.sql,
+      /status\s*=\s*CASE WHEN prediction_records\.status = 'verified'/,
+      'status 用 CASE 保护既有 verified（读目标表当前行，而非 EXCLUDED）',
+    );
+    assert.ok(
+      !/status\s*=\s*EXCLUDED\.status/.test(insert!.sql),
+      'status 不得无条件回落 EXCLUDED.status',
+    );
+    assert.equal(insert!.params.length, 6, 'SQL 参数与既有实现一致（6 个）');
+    assert.equal(insert!.params[5], 'pending', '入参 status 仍为默认 pending（参数语义未变）');
+    assert.equal(result?.status, 'verified', '已验证记录不被重跑打回 pending（命中率统计不失真）');
+    assert.deepEqual(
+      result?.prediction,
+      { horizons: [{ horizon: 'short' }], evolution_narrative: '重跑结论' },
+      'prediction 仍按 EXCLUDED 更新',
+    );
+    assert.deepEqual(result?.due_dates, { short: '2026-09-25' }, 'due_dates 仍按 EXCLUDED 更新');
+  } finally {
+    queryMock.mock.restore();
+  }
+});
+
+test('create upsert lets non-verified record follow EXCLUDED status', async () => {
+  const existing = makeRow({
+    id: 8,
+    source_type: 'sector_prediction',
+    source_id: 'sector:半导体:2026-09-17',
+    status: 'pending',
+  });
+  const { queryMock } = mockCreate(existing);
+  try {
+    const result = await PredictionRecordService.create({
+      source_type: 'sector_prediction',
+      source_id: 'sector:半导体:2026-09-17',
+      schema_version: '3.0',
+      prediction: { horizons: [{ horizon: 'short' }] },
+      due_dates: { short: '2026-09-25' },
+    });
+    assert.equal(result?.status, 'pending', 'CASE 只保护 verified，不得无条件保留旧 status');
   } finally {
     queryMock.mock.restore();
   }

@@ -172,6 +172,224 @@ test('PUT /internal/predictions/1/verification invalid result -> 400', async () 
     assert.equal(body.code, 400)
 })
 
+test('PUT /internal/predictions/1/verification 放行条件中间态（condition_met 布尔、无 result）', async () => {
+    // 两段判定第①段：agent-py 在到期前回写"条件已成立"（只写 condition_met=true，无 result）。
+    // 该 body 必须放行（否则 Python 侧写入被 400 拒绝），且 entry 不得被补 result 键。
+    let captured: unknown
+    mock.method(
+        PredictionRecordService,
+        'appendVerification',
+        async (id: number, horizon: string, entry: PredictionVerificationEntry) => {
+            captured = entry
+            return {
+                id,
+                source_type: 'review',
+                source_id: 'review:2026-08-28',
+                schema_version: '2.0',
+                prediction: { horizons: [{ horizon }] },
+                verification: { [horizon]: entry },
+                status: 'pending',
+                due_dates: { [horizon]: '2026-09-15' },
+                created_at: new Date().toISOString(),
+            } as PredictionRecordRow
+        },
+    )
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        {
+            horizon: 'c0',
+            condition_met: true,
+            condition_index: 0,
+            anchor_horizon: 'short',
+            verified_at: '2026-09-16',
+        },
+    )
+
+    assert.equal(res.status, 200)
+    const entry = captured as Record<string, unknown>
+    assert.equal(entry.condition_met, true)
+    assert.equal(entry.condition_index, 0)
+    assert.equal(entry.verified_at, '2026-09-16')
+    // horizon 沿用 D5 解耦：jsonb key=c{i}，entry.horizon=anchor 档位
+    assert.equal(entry.horizon, 'short')
+    // 不得补 result：JSON.stringify 后落库的 jsonb 中该键必须不存在
+    assert.ok(!('result' in (JSON.parse(JSON.stringify(entry)) as Record<string, unknown>)))
+})
+
+test('PUT /internal/predictions/1/verification 放行 condition_met=false 的到期未成立态（Task 6.1）', async () => {
+    // spec §12.5：到期（result 落库那一刻）对未触发条件写 condition_met=false + checked_at——
+    // 与第①段的 true 形成完整布尔，前端"到期未触发"与"在途未触发"可区分。
+    // Node 门禁由"仅 true"放宽为"布尔 + c{i} + 整数 condition_index"（false 不再 400）。
+    let captured: unknown
+    mock.method(
+        PredictionRecordService,
+        'appendVerification',
+        async (id: number, horizon: string, entry: PredictionVerificationEntry) => {
+            captured = entry
+            return {
+                id,
+                source_type: 'sector_prediction',
+                source_id: 'sector:半导体材料:2026-09-17',
+                schema_version: '3.0',
+                prediction: { horizons: [{ horizon }] },
+                verification: { [horizon]: entry },
+                status: 'pending',
+                due_dates: { [horizon]: '2026-09-09' },
+                created_at: new Date().toISOString(),
+            } as PredictionRecordRow
+        },
+    )
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        {
+            horizon: 'c0',
+            condition_met: false,
+            condition_index: 0,
+            anchor_horizon: 'short',
+            checked_at: '2026-09-17',
+        },
+    )
+
+    assert.equal(res.status, 200)
+    const entry = captured as Record<string, unknown>
+    assert.equal(entry.condition_met, false)
+    assert.equal(entry.checked_at, '2026-09-17')
+    assert.equal(entry.condition_index, 0)
+    assert.equal(entry.horizon, 'short')
+    // 不得补 result：false 是"未成立态"，不是到期验证结果
+    assert.ok(!('result' in (JSON.parse(JSON.stringify(entry)) as Record<string, unknown>)))
+})
+
+test('PUT /internal/predictions/1/verification 拒绝 condition_met=null 的条件中间态', async () => {
+    // null 不是布尔：jsonb 键级浅合并下显式写 null 会抹掉已点亮值 → 必须 400（绝不写 null）
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for condition_met=null')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: null, condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非布尔 condition_met（字符串）', async () => {
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for string condition_met')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: 'true', condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非字符串 checked_at', async () => {
+    // checked_at 为判定时间留痕（字符串）；非法类型不放行（避免脏数据落 jsonb）
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for non-string checked_at')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true, condition_index: 0, checked_at: 123 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝缺 condition_index 的条件中间态（D1）', async () => {
+    // condition_index 缺失时前端 metByIndex 不认、统计不计 → 必须 400
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called without condition_index')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非整数 condition_index 的条件中间态（D1）', async () => {
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called with non-integer condition_index')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true, condition_index: 0.5 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 仍拒绝既无 result 又无 condition_met 的 body', async () => {
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'short', verified_at: '2026-09-16' },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非 c{i} horizon 的条件中间态', async () => {
+    // 放行仅限条件档位 key（c{i}）；普通档位（short/mid）仍须带合法 result
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'short', condition_met: true, condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
 test('PUT /internal/predictions/1/verification passes through extended entry fields (A3 stats)', async () => {
     // A3 统计口径修复回归：Python 验证器写入的扩展字段（methodology_version/baseline_neutral
     // /target_type/approximate 等）必须完整透传到 appendVerification 的 entry——

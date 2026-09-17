@@ -218,6 +218,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert） |
 | `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
 | `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
+| `POST /api/internal/attribution-feedback` | attribution_feedback_signals | **溯源弱反馈审计上报**（Task 7.1，2026-09-17）：body `{date, unit_key, mode, sample_size, hit_count, miss_count, hit_rate, suggestion, detail}`；`(date, unit_key)` upsert 幂等；**注意路径带 `/api` 前缀**（该 router 挂在 `/api` 下，同 attribution-chain）；本期只有观测层（不应用权重） |
 
 > `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified|skipped)/due_dates(JSONB)/created_at；status `{pending, verified, skipped}`（无 expired）；**`appendVerification`（2026-08-31 起）改为 jsonb 按 horizon 原子合并写**（`verification || jsonb_build_object($1, COALESCE(verification->$1,'{}'::jsonb) || $2::jsonb)`，防并发读改写覆盖其他档位）；`status=verified` 只认各档位 entry 含合法 `result ∈ {hit,miss,insufficient}`（`PredictionVerificationEntry.result` 改可选 + 新增 `type`/`early_exit` 字段——早退标记与最终结果分离存储，early_exit-only entry 不置 verified）；skipped 行（gate_skipped/skip_reason）不计入命中率统计。Python agent-py scheduler 每日 16:00 到期验证任务消费（阶段 0 起验证口径 3.0，见 agent-py AGENTS.md B2）。
 >
@@ -249,6 +250,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
+| `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
