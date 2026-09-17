@@ -55,13 +55,17 @@ export class PredictionRecordService {
       ...(input.due_dates_approximate !== undefined ? { due_dates_approximate: input.due_dates_approximate } : {}),
     };
     const result = await pool.query<PredictionRecordRow>(
+      // 重跑（级联/批量同日同板块）只覆盖 prediction/due_dates，不把已验证记录
+      // 打回 pending（否则 verification 与 status 脱钩，命中率统计口径失真）。
       `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates, status)
        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
        ON CONFLICT (source_type, source_id)
        DO UPDATE SET schema_version = EXCLUDED.schema_version,
                      prediction = EXCLUDED.prediction,
                      due_dates = EXCLUDED.due_dates,
-                     status = EXCLUDED.status
+                     status = CASE WHEN prediction_records.status = 'verified'
+                                   THEN prediction_records.status
+                                   ELSE EXCLUDED.status END
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
       [
         input.source_type,
