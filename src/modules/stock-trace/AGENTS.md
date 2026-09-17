@@ -84,3 +84,14 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - `StockTraceService.listLightPredictTargets(tradeDate)`：按 symbol 去重返回当日预判候选。
 - `StockTraceService.upsertEventForecast(eventId, slot, forecast)`：slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
 - Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。
+
+### 2026-09-04 更新：movements 持仓期可见 + 新增自选股"加入即打点"
+
+- **问题**：用户刚把某股加入自选，却在"自选股异动"看到加入前历史（09-03 mv 历史 / 08-04 老雷达存量），且改为"仅当日"误伤老自选股（历史归因消失）。
+- **最终决策**：movements 可见性下界 = 该股**当前持仓期**（`listUserEvents` JOIN ON 追加 `AND e.first_triggered_at >= us.created_at`）：
+  - 老自选（created_at 早）全历史 + 今日新触发照常（恢复 08-21"当前在自选即可见"直觉）；
+  - 新加入股只显示加入时刻之后触发/仍活跃的异动，避免"刚加入即见加入前历史事件"。
+  - `user_stocks.created_at` = 行首次加入（移出再重加则新行/新时刻）；`addFavorites` 用 `INSERT ... ON CONFLICT DO NOTHING RETURNING symbol` 识别本次真正新加入的 symbol。
+- **加入即打点**：`PriceTriggerDetector.detectSymbols(symbols, now)`（新增）——仅对给定 symbols 拉 `activity` 行情（复用 detect 的字段/阈值/eligible 过滤），命中（相对昨收 ≥ PRICE_TRIGGER_PERCENT）即 `processPriceFact(..., { immediateEnqueue: true })` 盘中立即归因，使新加入股当天即可见归因（不回填历史）。`UserController.addFavorites` 在交易时段（`isAShareTradingTime`）对新加入 symbols 调用它；非交易时段跳过（避免用收盘价误判）。检测失败仅告警不影响添加。
+- `listRecentEvents`（未登录/全局）还原原样（无持仓期概念）；`StockTraceController.list` 登录分支调用还原为不带额外参数。
+- monitor.vue（前端）移除老雷达数据源 `watchlistInsightApi.getInsights`（存量 watchlist_insight_events 08-30 起停用，含 8 月初远古事件）。

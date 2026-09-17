@@ -601,10 +601,14 @@ export class StockTraceService {
         await this.ensureSchema();
         // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
-        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1), $4=cursor
+        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 可选尾部参数（序号动态追加）
         const params: unknown[] = [id, openid, limit + 1];
-        const cursorClause = cursor ? `AND e.first_triggered_at < $4::timestamptz` : '';
-        if (cursor) params.push(cursor);
+        let windowClause = '';
+        if (cursor) { windowClause += ` AND e.first_triggered_at < $${params.length + 1}::timestamptz`; params.push(cursor); }
+        // 2026-09-04 决策（修订）：movements 可见性 = 该股"当前持仓期内触发"（JOIN ON 下界 e.first_triggered_at >= us.created_at）：
+        // 老自选（created_at 早）全历史 + 今日新触发照常；新加入股只显示加入时刻之后触发/仍活跃的异动，
+        // 配合"加入即打点"（addFavorites 后立即检测，命中则建事件+归因），避免"刚加入即见加入前历史事件"。
+        // agent 读层（internal 端点）走同一查询，同样只返回持仓期事件，语义一致。
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, e.forecast, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
@@ -615,11 +619,13 @@ export class StockTraceService {
                      ELSE 'processing'
                    END AS analysis_status,
                    (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
-            -- 列表可见性实时跟随当前自选（INNER JOIN user_stocks）：
-            -- 移出自选立即消失、之后加入自选可见历史事件，与 insights 一致。
+            -- 列表可见性实时跟随当前自选 + 持仓期下界（INNER JOIN user_stocks，JOIN ON 限定
+            -- e.first_triggered_at >= us.created_at）：老自选可见全历史 + 今日新触发；新加入股只显加入后触发，
+            -- 配合"加入即打点"避免"刚加入即见加入前历史事件"（2026-09-04 决策修订）。
             -- stock_trace_user_events 仅作已读状态落点（LEFT JOIN 取 read_at）与推送对象。
             FROM stock_trace_events e
             INNER JOIN user_stocks us ON us.symbol = e.symbol AND ${scopeWhere}
+                AND e.first_triggered_at >= us.created_at
             LEFT JOIN stock_trace_user_events ue ON ue.event_id = e.event_id AND ue.openid = $2
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
@@ -639,7 +645,7 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
-            WHERE ${scopeWhere} ${cursorClause}
+            WHERE true ${windowClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $3
         `, params);
@@ -842,7 +848,7 @@ export class StockTraceService {
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity, ue.read_at,
+                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, e.forecast, ue.read_at,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
@@ -875,6 +881,8 @@ export class StockTraceService {
             severity: row.current_severity,
             rule_version: row.rule_version,
             read_at: row.read_at,
+            is_limit_up: Boolean(row.is_limit_up),
+            forecast: row.forecast ?? null,
             analysis_status: 'pending',
             fact_status: 'frozen',
         };
@@ -886,7 +894,7 @@ export class StockTraceService {
         await this.ensureSchema();
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity,
+                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, e.forecast,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             FROM stock_trace_events e
@@ -915,6 +923,8 @@ export class StockTraceService {
             severity: row.current_severity,
             rule_version: row.rule_version,
             read_at: null,
+            is_limit_up: Boolean(row.is_limit_up),
+            forecast: row.forecast ?? null,
             analysis_status: 'pending',
             fact_status: 'frozen',
         };

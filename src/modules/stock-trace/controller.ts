@@ -65,7 +65,8 @@ export class StockTraceController {
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
-            // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动。
+            // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动；
+            // 可见性下界 = 持仓期（listUserEvents JOIN ON e.first_triggered_at >= us.created_at，2026-09-04）。
             const result = auth && auth.id
                 ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr)
                 : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr);
