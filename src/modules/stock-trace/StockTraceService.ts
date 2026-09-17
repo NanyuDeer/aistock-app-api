@@ -19,8 +19,6 @@ import {
     type TraceDirection,
     type TraceSeverity,
     type TriggerEvent,
-    type ForecastSlot,
-    type LightPredictTarget,
 } from './types';
 
 interface EventRow {
@@ -161,15 +159,13 @@ export class StockTraceService {
                 current_severity VARCHAR(16) NOT NULL,
                 related_event_id VARCHAR(128),
                 is_limit_up BOOLEAN NOT NULL DEFAULT FALSE,
-                forecast JSONB NOT NULL DEFAULT '{}',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         `);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_trace_events_symbol_status ON stock_trace_events(symbol, event_status, last_seen_at DESC)');
-        // 存量表幂等补列（阶段 2：轻量预判 slot 落库 + 涨停标记）
+        // 存量表幂等补列
         await pool.query('ALTER TABLE stock_trace_events ADD COLUMN IF NOT EXISTS is_limit_up BOOLEAN NOT NULL DEFAULT FALSE');
-        await pool.query("ALTER TABLE stock_trace_events ADD COLUMN IF NOT EXISTS forecast JSONB NOT NULL DEFAULT '{}'");
         await pool.query(`
             CREATE TABLE IF NOT EXISTS stock_trace_event_revisions (
                 event_id VARCHAR(128) NOT NULL REFERENCES stock_trace_events(event_id),
@@ -611,7 +607,7 @@ export class StockTraceService {
         // agent 读层（internal 端点）走同一查询，同样只返回持仓期事件，语义一致。
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
-                   e.current_severity, e.is_limit_up, e.forecast, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
+                   e.current_severity, e.is_limit_up, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
@@ -671,7 +667,6 @@ export class StockTraceService {
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
                 is_limit_up: Boolean(row.is_limit_up),
-                forecast: row.forecast ?? null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
@@ -689,7 +684,7 @@ export class StockTraceService {
         if (cursor) params.push(cursor);
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
-                   e.current_severity, e.is_limit_up, e.forecast, r.latest_price, r.previous_close, r.actual_value AS change_pct,
+                   e.current_severity, e.is_limit_up, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
@@ -742,104 +737,9 @@ export class StockTraceService {
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
                 is_limit_up: Boolean(row.is_limit_up),
-                forecast: row.forecast ?? null,
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
         };
-    }
-
-    /**
-     * 轻量预判候选聚合（阶段 2）：当日"自选股异动/涨停事件 ∪ 重大利好/利空资讯"，按 symbol 归并去重。
-     * 事件取该 symbol 当日最新一条（active/closed，DISTINCT ON）；资讯取当日重大档全部行（交集股亦返回作补充输入）。
-     * 供 agent-py 定时轻量预判任务消费（GET /internal/stock-trace/light-predict-targets）。
-     */
-    static async listLightPredictTargets(tradeDate: string): Promise<LightPredictTarget[]> {
-        await this.ensureSchema();
-        const eventRows = await pool.query<Record<string, unknown>>(`
-            SELECT DISTINCT ON (e.symbol)
-                   e.event_id, e.symbol, e.stock_name, e.direction, e.current_severity,
-                   e.is_limit_up, e.forecast, r.actual_value AS change_pct,
-                   CASE
-                     WHEN a.event_id IS NOT NULL THEN 'completed'
-                     WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
-                     ELSE 'processing'
-                   END AS analysis_status,
-                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
-            FROM stock_trace_events e
-            INNER JOIN user_stocks us ON us.symbol = e.symbol
-            INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
-                AND r.trigger_revision = e.current_trigger_revision
-            LEFT JOIN LATERAL (
-                SELECT a.event_id, a.result_id
-                FROM stock_trace_artifacts a
-                WHERE a.event_id = e.event_id
-                  AND a.is_effective = TRUE AND a.expires_at > CURRENT_TIMESTAMP
-                ORDER BY a.artifact_version DESC
-                LIMIT 1
-            ) a ON TRUE
-            LEFT JOIN LATERAL (
-                SELECT r2.result_id, r2.validation_status, r2.processing_status
-                FROM stock_trace_results r2
-                INNER JOIN stock_trace_snapshots s2 ON s2.snapshot_id = r2.snapshot_id
-                WHERE r2.event_id = e.event_id AND s2.trigger_revision = e.current_trigger_revision
-                ORDER BY r2.created_at DESC
-                LIMIT 1
-            ) rr ON TRUE
-            WHERE e.trading_date = $1::date AND e.event_status IN ('active', 'closed')
-            ORDER BY e.symbol, e.first_triggered_at DESC
-        `, [tradeDate]);
-        const intelRows = await pool.query<Record<string, unknown>>(`
-            SELECT j.id, j.symbol, COALESCE(j.stock_name, '') AS stock_name, j.title,
-                   COALESCE(j.ai_summary, '') AS ai_summary, j.ai_impact, j.published_at
-            FROM stock_info_judgements j
-            INNER JOIN user_stocks us ON us.symbol = j.symbol
-            WHERE j.ai_impact IN ('重大利好', '重大利空')
-              AND (j.published_at AT TIME ZONE 'Asia/Shanghai')::date = $1::date
-            ORDER BY j.symbol, j.published_at DESC
-        `, [tradeDate]);
-
-        const bySymbol = new Map<string, LightPredictTarget>();
-        const ensureTarget = (symbol: string, stockName: string): LightPredictTarget => {
-            const existing = bySymbol.get(symbol);
-            if (existing) return existing;
-            const created: LightPredictTarget = { symbol, stockName };
-            bySymbol.set(symbol, created);
-            return created;
-        };
-        for (const row of eventRows.rows) {
-            const target = ensureTarget(String(row.symbol), String(row.stock_name || ''));
-            target.event = {
-                eventId: String(row.event_id),
-                direction: row.direction as TraceDirection,
-                changePct: row.change_pct === null ? null : toNumber(row.change_pct as string | number),
-                severity: String(row.current_severity) as TraceSeverity,
-                analysisStatus: String(row.analysis_status ?? 'processing') as 'completed' | 'processing' | 'unavailable',
-                primaryCause: row.primary_cause ? String(row.primary_cause) : null,
-                isLimitUp: Boolean(row.is_limit_up),
-                forecast: row.forecast ? row.forecast as Record<string, unknown> : null,
-            };
-        }
-        for (const row of intelRows.rows) {
-            const target = ensureTarget(String(row.symbol), String(row.stock_name || ''));
-            (target.intel ??= []).push({
-                id: Number(row.id),
-                title: String(row.title),
-                summary: String(row.ai_summary),
-                impact: String(row.ai_impact),
-                publishedAt: (row.published_at as Date).toISOString(),
-            });
-        }
-        return [...bySymbol.values()];
-    }
-
-    /** 事件 forecast slot 级 upsert（幂等：只覆盖目标 slot，不触碰另一 slot）；事件不存在返回 false */
-    static async upsertEventForecast(eventId: string, slot: ForecastSlot, forecast: Record<string, unknown>): Promise<boolean> {
-        const result = await pool.query(`
-            UPDATE stock_trace_events
-            SET forecast = forecast || jsonb_build_object($2::text, $3::jsonb), updated_at = CURRENT_TIMESTAMP
-            WHERE event_id = $1
-        `, [eventId, slot, JSON.stringify(forecast)]);
-        return (result.rowCount ?? 0) > 0;
     }
 
     static async getUserEvent(id: string, openid: string, eventId: string): Promise<Record<string, unknown> | null> {
@@ -848,7 +748,7 @@ export class StockTraceService {
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, e.forecast, ue.read_at,
+                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, ue.read_at,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
@@ -882,7 +782,6 @@ export class StockTraceService {
             rule_version: row.rule_version,
             read_at: row.read_at,
             is_limit_up: Boolean(row.is_limit_up),
-            forecast: row.forecast ?? null,
             analysis_status: 'pending',
             fact_status: 'frozen',
         };
@@ -894,7 +793,7 @@ export class StockTraceService {
         await this.ensureSchema();
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, e.forecast,
+                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             FROM stock_trace_events e
@@ -924,7 +823,6 @@ export class StockTraceService {
             rule_version: row.rule_version,
             read_at: null,
             is_limit_up: Boolean(row.is_limit_up),
-            forecast: row.forecast ?? null,
             analysis_status: 'pending',
             fact_status: 'frozen',
         };
