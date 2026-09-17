@@ -220,11 +220,58 @@ test('PUT /internal/predictions/1/verification 放行条件中间态（condition
     assert.ok(!('result' in (JSON.parse(JSON.stringify(entry)) as Record<string, unknown>)))
 })
 
-test('PUT /internal/predictions/1/verification 拒绝 condition_met=false 的条件中间态（D1：只写 true）', async () => {
-    // 决策 D1：条件中间态只允许写 true。放行 false 会让前端 hasMetData 为真 → 结论模式激活
-    // 却无 true 分支 → 显示"条件未成立"空态。故 false 必须 400（不落库）。
+test('PUT /internal/predictions/1/verification 放行 condition_met=false 的到期未成立态（Task 6.1）', async () => {
+    // spec §12.5：到期（result 落库那一刻）对未触发条件写 condition_met=false + checked_at——
+    // 与第①段的 true 形成完整布尔，前端"到期未触发"与"在途未触发"可区分。
+    // Node 门禁由"仅 true"放宽为"布尔 + c{i} + 整数 condition_index"（false 不再 400）。
+    let captured: unknown
+    mock.method(
+        PredictionRecordService,
+        'appendVerification',
+        async (id: number, horizon: string, entry: PredictionVerificationEntry) => {
+            captured = entry
+            return {
+                id,
+                source_type: 'sector_prediction',
+                source_id: 'sector:半导体材料:2026-09-17',
+                schema_version: '3.0',
+                prediction: { horizons: [{ horizon }] },
+                verification: { [horizon]: entry },
+                status: 'pending',
+                due_dates: { [horizon]: '2026-09-09' },
+                created_at: new Date().toISOString(),
+            } as PredictionRecordRow
+        },
+    )
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        {
+            horizon: 'c0',
+            condition_met: false,
+            condition_index: 0,
+            anchor_horizon: 'short',
+            checked_at: '2026-09-17',
+        },
+    )
+
+    assert.equal(res.status, 200)
+    const entry = captured as Record<string, unknown>
+    assert.equal(entry.condition_met, false)
+    assert.equal(entry.checked_at, '2026-09-17')
+    assert.equal(entry.condition_index, 0)
+    assert.equal(entry.horizon, 'short')
+    // 不得补 result：false 是"未成立态"，不是到期验证结果
+    assert.ok(!('result' in (JSON.parse(JSON.stringify(entry)) as Record<string, unknown>)))
+})
+
+test('PUT /internal/predictions/1/verification 拒绝 condition_met=null 的条件中间态', async () => {
+    // null 不是布尔：jsonb 键级浅合并下显式写 null 会抹掉已点亮值 → 必须 400（绝不写 null）
     mock.method(PredictionRecordService, 'appendVerification', async () => {
-        throw new Error('appendVerification must not be called for condition_met=false')
+        throw new Error('appendVerification must not be called for condition_met=null')
     })
 
     const res = await makeJsonRequest(
@@ -232,7 +279,44 @@ test('PUT /internal/predictions/1/verification 拒绝 condition_met=false 的条
         'PUT',
         '/internal/predictions/1/verification',
         INTERNAL_TOKEN,
-        { horizon: 'c0', condition_met: false, condition_index: 0 },
+        { horizon: 'c0', condition_met: null, condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非布尔 condition_met（字符串）', async () => {
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for string condition_met')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: 'true', condition_index: 0 },
+    )
+
+    assert.equal(res.status, 400)
+    const body = res.body as { code: number }
+    assert.equal(body.code, 400)
+})
+
+test('PUT /internal/predictions/1/verification 拒绝非字符串 checked_at', async () => {
+    // checked_at 为判定时间留痕（字符串）；非法类型不放行（避免脏数据落 jsonb）
+    mock.method(PredictionRecordService, 'appendVerification', async () => {
+        throw new Error('appendVerification must not be called for non-string checked_at')
+    })
+
+    const res = await makeJsonRequest(
+        port,
+        'PUT',
+        '/internal/predictions/1/verification',
+        INTERNAL_TOKEN,
+        { horizon: 'c0', condition_met: true, condition_index: 0, checked_at: 123 },
     )
 
     assert.equal(res.status, 400)
