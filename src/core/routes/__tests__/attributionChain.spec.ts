@@ -337,7 +337,7 @@ describe('POST /api/internal/attribution-chain', () => {
             body,
         });
         assert.strictEqual(postRes.status, 200);
-        assert.deepStrictEqual(postRes.json, { ok: true });
+        assert.deepStrictEqual(postRes.json, { code: 200, data: { ok: true } });
 
         const getRes = await call(app, {
             method: 'GET',
@@ -473,7 +473,7 @@ describe('POST /api/internal/attribution-chain', () => {
             body: chainWith([{ sector: '半导体', relation: 'self_driven', pct: 3.2 }]),
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(res.json, { ok: true });
+        assert.deepStrictEqual(res.json, { code: 200, data: { ok: true } });
     });
 
     it('children[1] 非法 → 错误下标为 1（定位到具体子项），且不触达 DB', async () => {
@@ -501,7 +501,7 @@ describe('POST /api/internal/attribution-chain', () => {
             body: chainWith([{ sector: '银行', relation: 'unknown', pct: null }]),
         });
         assert.strictEqual(res.status, 200);
-        assert.deepStrictEqual(res.json, { ok: true });
+        assert.deepStrictEqual(res.json, { code: 200, data: { ok: true } });
         assert.strictEqual(mockCalls.length, 1);
     });
 
@@ -514,7 +514,7 @@ describe('POST /api/internal/attribution-chain', () => {
             body: CHAIN_V1,
         });
         assert.strictEqual(postRes.status, 200);
-        assert.deepStrictEqual(postRes.json, { ok: true });
+        assert.deepStrictEqual(postRes.json, { code: 200, data: { ok: true } });
 
         // 落库 SQL 序列：仅 INSERT ... ON CONFLICT upsert（建表由 020 migration 负责）
         assert.strictEqual(mockCalls.length, 1);

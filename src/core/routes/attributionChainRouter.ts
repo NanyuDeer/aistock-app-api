@@ -170,7 +170,9 @@ attributionChainRouter.post(
                  ON CONFLICT (date) DO UPDATE SET content = EXCLUDED.content, updated_at = now()`,
                 [date, JSON.stringify(chain)],
             )
-            res.json({ ok: true })
+            // 响应契约对齐 agent-py data_client._post_request：业务码必须为 0/200/201
+            // 且存在 dict 类型的 data（只回 {ok:true} 会被判为业务失败 → 假 save_failed）。
+            res.json({ code: 200, data: { ok: true } })
         } catch (err: unknown) {
             res.status(500).json({ error: err instanceof Error ? err.message : String(err) })
         }
