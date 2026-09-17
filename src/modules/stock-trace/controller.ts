@@ -5,6 +5,7 @@ import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
+import { InsightReportService } from './InsightReportService';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 
 /**
@@ -100,6 +101,47 @@ export class StockTraceController {
             });
         } catch (error) {
             next(error);
+        }
+    }
+
+    /** 完整洞察报告 PDF：登录 + 自选归属 + 有效归因校验 → 组装数据 → agent-py 渲染 → 流式下载 */
+    static async report(req: Request, res: Response, next: NextFunction): Promise<void> {
+        try {
+            const auth = await authFromRequest(req);
+            // 报告属于用户资产：未登录直接 401（不做未登录全局降级）
+            if (!auth || !auth.id) {
+                res.status(401).json({ code: 401, message: 'unauthorized' });
+                return;
+            }
+            const eventId = eventIdFromRequest(req);
+            if (!eventId) {
+                res.status(404).json({ code: 404, message: 'not found' });
+                return;
+            }
+            const event = await StockTraceService.getUserEvent(auth.id, auth.openid, eventId);
+            if (!event) {
+                res.status(404).json({ code: 404, message: 'Event not found' });
+                return;
+            }
+            const presentation = await presentEventAnalysis(eventId, event);
+            if (!presentation.artifact) {
+                res.status(409).json({ code: 409, message: '该异动暂无完整归因' });
+                return;
+            }
+            const revision = triggerRevision(event);
+            const result = revision > 0
+                ? await StockTraceResultService.getLatestForEventRevision(eventId, revision)
+                : null;
+            const data = InsightReportService.buildReportData(event, presentation.artifact, result);
+            const pdf = await InsightReportService.renderPdf(data);
+            const date = String(event.triggered_at ?? '').slice(0, 10) || 'report';
+            res.setHeader('Content-Type', 'application/pdf');
+            res.setHeader('Content-Disposition', `attachment; filename="insight-report-${String(event.symbol ?? '')}-${date}.pdf"`);
+            res.send(pdf);
+        } catch (error) {
+            // agent-py 不可用/渲染失败 → 502（前端提示稍后重试）
+            res.status(502).json({ code: 502, message: '报告生成失败，请重试' });
+            void next;
         }
     }
 
