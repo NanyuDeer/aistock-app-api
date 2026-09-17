@@ -5,8 +5,9 @@
  *   （date text PK, content jsonb, updated_at）；建表由 migration 020_attribution_chains.sql
  *   负责，路由不再内联 DDL（原先每次 POST 都 CREATE TABLE IF NOT EXISTS，非事务且多实例
  *   并发会竞态）。落库前校验：date 匹配 DATE_RE、root.type==="market"、children 为数组
- *   且每个子项 {sector 非空字符串, relation ∈ RELATIONS, pct number|null}，否则 400
- *   （错误文案带 children 下标）。
+ *   且每个子项 {sector 非空字符串, relation ∈ RELATIONS, pct number|null, events 可选数组
+ *   ——子项 {event_id, ref, headline, source ∈ warehouse|search}，source=warehouse 时
+ *   event_id 必须非空}，否则 400（错误文案带 children 下标）。
  * - GET  /api/agent/attribution-chain/:date → {date, chain|null}（查无该日期链 → 200 降级，
  *   不报错）。
  *
@@ -53,6 +54,59 @@ interface AttributionChainChild {
     sector?: unknown
     relation?: unknown
     pct?: unknown
+    events?: unknown
+}
+
+/** children[].events[].source 取值域（对齐 agent-py 链事件层：中台命中 / 检索补漏） */
+const EVENT_SOURCES = new Set(['warehouse', 'search'])
+
+interface AttributionChainEvent {
+    event_id?: unknown
+    ref?: unknown
+    headline?: unknown
+    source?: unknown
+}
+
+/**
+ * 校验 children[i].events（Task 2.1 链事件节点契约，可选 —— 旧链无事件层）。
+ * 子项：ref/headline 非空字符串；source ∈ {warehouse,search}；source=warehouse 时
+ * event_id 必须非空字符串（中台权威 id），source=search 允许 null（检索无中台 id，
+ * 不得用 URL 冒充 event_id）。
+ */
+function validateEvents(raw: unknown, index: number): string | null {
+    if (raw === undefined) {
+        return null
+    }
+    if (!Array.isArray(raw)) {
+        return `children[${index}].events must be an array`
+    }
+    for (let j = 0; j < raw.length; j++) {
+        const path = `children[${index}].events[${j}]`
+        const item = raw[j]
+        if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+            return `${path} must be an object`
+        }
+        const event = item as AttributionChainEvent
+        if (typeof event.ref !== 'string' || !event.ref.trim()) {
+            return `${path}.ref must be a non-empty string`
+        }
+        if (typeof event.headline !== 'string' || !event.headline.trim()) {
+            return `${path}.headline must be a non-empty string`
+        }
+        if (typeof event.source !== 'string' || !EVENT_SOURCES.has(event.source)) {
+            return `${path}.source must be one of ${[...EVENT_SOURCES].join('|')}`
+        }
+        if (event.source === 'warehouse') {
+            if (typeof event.event_id !== 'string' || !event.event_id.trim()) {
+                return `${path}.event_id must be a non-empty string when source is warehouse`
+            }
+        } else if (event.event_id !== null && event.event_id !== undefined) {
+            if (typeof event.event_id !== 'string' || !event.event_id.trim()) {
+                return `${path}.event_id must be null or a non-empty string`
+            }
+        }
+    }
+    return null
 }
 
 /** 校验单个 children 子项；返回错误文案（含下标定位），null 表示通过 */
@@ -71,7 +125,7 @@ function validateChild(raw: unknown, index: number): string | null {
     if (child.pct !== null && typeof child.pct !== 'number') {
         return `children[${index}].pct must be a number or null`
     }
-    return null
+    return validateEvents(child.events, index)
 }
 
 attributionChainRouter.post(
