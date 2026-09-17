@@ -164,14 +164,14 @@ test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows'
     assert.equal(rows[1].pct_chg, -0.5)
 })
 
-test('GET /internal/ths/885525.TI/daily -> 透传 close/vol/amount（含缺值保 null 与中文键兜底）', async () => {
+test('GET /internal/ths/885525.TI/daily -> 透传 close/vol/amount/open/high/low（含缺值保 null 与中文键兜底）', async () => {
     patchGetThsDaily(async () => [
         // 全字段直通行
-        { ts_code: '885525.TI', trade_date: '20250102', pct_change: 1.23, close: 1664.75, vol: 13224.26, amount: 98765.4 },
-        // 缺值行：close/vol/amount 保 null（不静默丢行，H7），且键必须存在（非 undefined）
+        { ts_code: '885525.TI', trade_date: '20250102', pct_change: 1.23, close: 1664.75, vol: 13224.26, amount: 98765.4, open: 1650.0, high: 1670.5, low: 1645.2 },
+        // 缺值行：close/vol/amount/open/high/low 保 null（不静默丢行，H7），且键必须存在（非 undefined）
         { ts_code: '885525.TI', trade_date: '20250103', pct_change: -0.5 },
         // 中文键行（潜在直通/换源路径）：容错映射兜底
-        { ts_code: '885525.TI', trade_date: '20250104', pct_change: 0.2, '收盘价': 1600, '成交量': 100, '成交额': 5000 },
+        { ts_code: '885525.TI', trade_date: '20250104', pct_change: 0.2, '收盘价': 1600, '成交量': 100, '成交额': 5000, '开盘价': 1590, '最高价': 1610, '最低价': 1585 },
     ])
     const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
     assert.equal(res.status, 200)
@@ -181,13 +181,23 @@ test('GET /internal/ths/885525.TI/daily -> 透传 close/vol/amount（含缺值�
     assert.equal(full.close, 1664.75)
     assert.equal(full.vol, 13224.26)
     assert.equal(full.amount, 98765.4)
+    assert.equal(full.open, 1650.0)
+    assert.equal(full.high, 1670.5)
+    assert.equal(full.low, 1645.2)
     assert.equal(missing.close, null)
     assert.equal(missing.vol, null)
     assert.equal(missing.amount, null)
+    assert.equal(missing.open, null)
+    assert.equal(missing.high, null)
+    assert.equal(missing.low, null)
     assert.ok(Object.prototype.hasOwnProperty.call(missing, 'close'), 'close 缺值时键仍须存在（保 null 而非省略）')
+    assert.ok(Object.prototype.hasOwnProperty.call(missing, 'high'), 'high 缺值时键仍须存在（保 null 而非省略）')
     assert.equal(cn.close, 1600)
     assert.equal(cn.vol, 100)
     assert.equal(cn.amount, 5000)
+    assert.equal(cn.open, 1590)
+    assert.equal(cn.high, 1610)
+    assert.equal(cn.low, 1585)
 })
 
 test('GET /internal/ths/xxx/daily 非法 code -> 400', async () => {

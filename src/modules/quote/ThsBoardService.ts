@@ -96,6 +96,10 @@ export interface ThsBoardDailyRow {
     close: number | null
     vol: number | null
     amount: number | null
+    /** 当日开/高/低（Task 10.1 加性透传：agent-py 参考位类条件 today_open/high/low 判定数据源）。 */
+    open: number | null
+    high: number | null
+    low: number | null
 }
 
 /** 数值透传：仅接受 number（Tushare 数值列即 number），其余（缺失/字符串/null）保 null。
@@ -108,7 +112,9 @@ function numOrNull(v: unknown): number | null {
  * rows 按 trade_date 升序（YYYYMMDD 字典序 = 时间序）。
  *
  * 加性透传 close/vol（condition_met 技术位判定数据源，对齐 Python `_fetch_kline_window` sector 分支按
- * close/vol 取值）；amount 同键透传但**上游 ths_daily 无此字段**（TushareService.getThsDaily 的 fields
+ * close/vol 取值）；open/high/low 同为加性透传（Task 10.1：Python 参考位类 today_open/high/low 判定
+ * 数据源 —— Tushare `ths_daily` 本身返回 open/high/low，此前仅映射层未透传）；
+ * amount 同键透传但**上游 ths_daily 无此字段**（TushareService.getThsDaily 的 fields
  * 未含 amount，Tushare 文档接口 260 输出亦无）→ 恒 null，仅为契约形状统一留位，未来换源/扩字段即成真值。 */
 export async function getBoardDailyRange(
     code: string, start: string, end: string,
@@ -122,6 +128,9 @@ export async function getBoardDailyRange(
             close: numOrNull(r.close ?? r['收盘价']),
             vol: numOrNull(r.vol ?? r['成交量']),
             amount: numOrNull(r.amount ?? r['成交额']),
+            open: numOrNull(r.open ?? r['开盘价']),
+            high: numOrNull(r.high ?? r['最高价']),
+            low: numOrNull(r.low ?? r['最低价']),
         }))
     out.sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
     return out
