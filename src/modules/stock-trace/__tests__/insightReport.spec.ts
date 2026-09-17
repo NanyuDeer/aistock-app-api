@@ -38,6 +38,73 @@ afterEach(() => {
     mock.restoreAll();
 });
 
+type ReportDataShape = { event: Record<string, unknown>; attribution: Record<string, unknown> };
+
+describe('InsightReportService.buildReportData', () => {
+    it('事件字段从 DB 行映射正确', () => {
+        const event = {
+            event_id: 'mv:003018:20260913:123456:up',
+            symbol: '003018',
+            stock_name: '某科技公司',
+            triggered_at: '2026-09-13T10:30:00Z',
+            direction: 'up',
+            change_pct: 9.5,
+            threshold_pct: 7,
+            severity: 'high',
+            latest_price: 15.50,
+            previous_close: 14.15,
+            trigger_revision: 1,
+        };
+        const artifact = {
+            artifactId: 'a1',
+            artifactVersion: 1,
+            artifactJson: { candidates: [], chains: [], evidence_index: [], unresolved_questions: [] },
+            movementView: { confidenceLevel: 'high', primaryCandidate: { verdict: '液冷板块联动' } },
+            createdAt: '2026-09-13',
+        };
+        const result = { primaryPhrase: '液冷服务器板块联动拉升' };
+        const data = InsightReportService.buildReportData(
+            event, artifact as never, result as never,
+        ) as unknown as ReportDataShape;
+        const evt = data.event;
+
+        assert.equal(evt.eventId, 'mv:003018:20260913:123456:up');
+        assert.equal(evt.symbol, '003018');
+        assert.equal(evt.stockName, '某科技公司');
+        assert.equal(evt.triggeredAt, '2026-09-13T10:30:00Z');
+        assert.equal(evt.direction, 'up');
+        assert.equal(evt.changePct, 9.5);
+        assert.equal(evt.thresholdPct, 7);
+        assert.equal(evt.severity, 'high');
+        assert.equal(evt.latestPrice, 15.50);
+        assert.equal(evt.previousClose, 14.15);
+        // attribution 字段也从有效输入正确映射
+        assert.equal(data.attribution.primaryPhrase, '液冷服务器板块联动拉升');
+        assert.equal(data.attribution.confidenceLevel, 'high');
+    });
+
+    it('artifactJson 缺失字段回落为空数组/null（非 undefined）', () => {
+        const event = { event_id: 'mv:1', symbol: '003018', stock_name: 'test' };
+        const artifact = {
+            artifactId: 'a1',
+            artifactVersion: 1,
+            artifactJson: {},
+            movementView: {},
+            createdAt: '2026-09-13',
+        };
+        const data = InsightReportService.buildReportData(
+            event, artifact as never, null,
+        ) as unknown as ReportDataShape;
+
+        assert.equal(data.attribution.primaryPhrase, null);
+        assert.equal(data.attribution.confidenceLevel, null);
+        assert.deepEqual(data.attribution.candidates, []);
+        assert.deepEqual(data.attribution.chains, []);
+        assert.deepEqual(data.attribution.unresolvedQuestions, []);
+        assert.deepEqual(data.attribution.evidenceIndex, []);
+    });
+});
+
 describe('GET /movements/:eventId/report.pdf', () => {
     it('未登录 → 401', async () => {
         const res = fakeRes();

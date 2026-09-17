@@ -139,9 +139,9 @@ export class StockTraceController {
             res.setHeader('Content-Disposition', `attachment; filename="insight-report-${String(event.symbol ?? '')}-${date}.pdf"`);
             res.send(pdf);
         } catch (error) {
+            console.error('[InsightReport] render failed:', error instanceof Error ? error.message : error);
             // agent-py 不可用/渲染失败 → 502（前端提示稍后重试）
             res.status(502).json({ code: 502, message: '报告生成失败，请重试' });
-            void next;
         }
     }
 
