@@ -60,6 +60,29 @@ function nextDate(date: string): string {
     ].join('');
 }
 
+/** 指数日 K 行规范化（getIndexKLine 使用，纯函数可单测）。
+ * 输出：六 OHLC 中文键（内部路由 /internal/index/:code/kline 消费）+ 加性透传
+ * vol/amount（Tushare index_daily 原始单位：vol=手、amount=千元；缺失如实为 null，
+ * 不误填 0）。2026-09-05 核实修复：此前 map 丢弃 vol/amount，接口恒返 null，
+ * 导致 Python 节奏大师量能维度缺失、成交额分支退化为伪分支。 */
+export function normalizeIndexKLineRow(row: Record<string, any>): Record<string, any> {
+    const close = toNumber(row.close) ?? 0;
+    const preClose = toNumber(row.pre_close) ?? 0;
+    const high = toNumber(row.high) ?? 0;
+    const low = toNumber(row.low) ?? 0;
+    const pctChg = toNumber(row.pct_chg) ?? (preClose > 0 ? ((close - preClose) / preClose) * 100 : 0);
+    return {
+        '时间': String(row.trade_date || ''),
+        '开盘价': toNumber(row.open),
+        '收盘价': close,
+        '最高价': high,
+        '最低价': low,
+        '涨跌幅': Math.round(pctChg * 100) / 100,
+        vol: toNumber(row.vol),
+        amount: toNumber(row.amount),
+    };
+}
+
 function normalizeRow(row: Record<string, any>): Record<string, any> {
     const close = toNumber(row.close) ?? 0;
     const rowPreClose = toNumber(row.pre_close) ?? 0;
@@ -179,20 +202,6 @@ export class TushareKlineService {
         const sorted = rows.sort((a, b) =>
             String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
         const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
-        return sliced.map(row => {
-            const close = toNumber(row.close) ?? 0;
-            const preClose = toNumber(row.pre_close) ?? 0;
-            const high = toNumber(row.high) ?? 0;
-            const low = toNumber(row.low) ?? 0;
-            const pctChg = toNumber(row.pct_chg) ?? (preClose > 0 ? ((close - preClose) / preClose) * 100 : 0);
-            return {
-                '时间': String(row.trade_date || ''),
-                '开盘价': toNumber(row.open),
-                '收盘价': close,
-                '最高价': high,
-                '最低价': low,
-                '涨跌幅': Math.round(pctChg * 100) / 100,
-            };
-        });
+        return sliced.map(normalizeIndexKLineRow);
     }
 }

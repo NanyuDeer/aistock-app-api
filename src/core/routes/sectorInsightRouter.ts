@@ -48,6 +48,8 @@ export interface SectorInsightHorizon {
   remaining?: string
   direction?: string
   confidence?: string
+  /** 基准走势短语（4~6 字，2026-09-03 起新数据携带；旧记录无则省略） */
+  label?: string
 }
 
 export interface SectorInsightCondition {
@@ -56,6 +58,12 @@ export interface SectorInsightCondition {
   condition: string
   scenario: string
   met?: boolean | null
+  /** 路径短语名（两段式“状态 · 走势”，2026-09-03 起新数据携带；旧记录无则省略） */
+  label?: string
+  /** 简洁展示用关键词（2026-09-02 起新数据携带：1~2 个）；旧记录无则省略 */
+  keywords?: string[]
+  /** 预判关键词（2026-09-03 起新数据携带：scenario 摘要，侧重方向+幅度）；旧记录无则省略 */
+  scenario_keywords?: string[]
 }
 
 export interface SectorInsightPrediction {
@@ -65,6 +73,8 @@ export interface SectorInsightPrediction {
   verification?: 'pending' | 'hit' | 'miss'
   direction?: string | null
   confidence?: string | null
+  /** 一句话研判结论（LLM 30~40 字，如 板块回调缩量无亮点，短期预计弱势整理；洞见卡标题用） */
+  attribution_summary?: string | null
   horizons?: SectorInsightHorizon[]
   conditions?: SectorInsightCondition[]
 }
@@ -240,6 +250,7 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
         ...(typeof h.confidence === 'string' && h.confidence
           ? { confidence: h.confidence }
           : {}),
+        ...(typeof h.label === 'string' && h.label.trim() ? { label: h.label.trim() } : {}),
       }
     },
   )
@@ -273,6 +284,19 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
           : {}),
         condition: typeof c.condition === 'string' ? c.condition : '',
         scenario: typeof c.scenario === 'string' ? c.scenario : '',
+        ...(typeof c.label === 'string' && c.label.trim() ? { label: c.label.trim() } : {}),
+        ...(Array.isArray(c.keywords) && c.keywords.length > 0
+          ? {
+              keywords: c.keywords.filter((k): k is string => typeof k === 'string' && k.trim() !== ''),
+            }
+          : {}),
+        ...(Array.isArray(c.scenario_keywords) && c.scenario_keywords.length > 0
+          ? {
+              scenario_keywords: c.scenario_keywords.filter(
+                (k): k is string => typeof k === 'string' && k.trim() !== '',
+              ),
+            }
+          : {}),
         ...(metByIndex.has(i) ? { met: metByIndex.get(i) ?? null } : {}),
       }
     })
@@ -281,6 +305,9 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
   return {
     present: true,
     status,
+    ...(typeof p.attribution_summary === 'string' && p.attribution_summary.trim()
+      ? { attribution_summary: p.attribution_summary.trim() }
+      : {}),
     ...(dueLabelOf(record.due_dates) !== null
       ? { dueLabel: dueLabelOf(record.due_dates) }
       : {}),

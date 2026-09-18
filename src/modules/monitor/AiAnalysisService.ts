@@ -50,6 +50,7 @@ export interface AiAnalysisResult {
     symbol: string;
     stockName: string;
     endDate: string;
+    annDate: string; // 该报告期的报告发出日期（YYYYMMDD），用于详情页"更新"时间
     reportType: string; // 'formal' | 'express'
     periodLabel: string;
     aiTag: string;
@@ -87,6 +88,7 @@ function endDateToKey(endDate: string): string {
 
 interface ReportRow {
     end_date: string;
+    ann_date?: string | null;
     total_revenue: number | null;
     n_income_attr_p: number | null;
     stock_name: string;
@@ -209,6 +211,7 @@ export class AiAnalysisService {
             symbol,
             stockName: current.stock_name || '',
             endDate: current.end_date,
+            annDate: current.ann_date || '',
             reportType: current.report_type || 'formal',
             periodLabel: endDateToLabel(current.end_date),
             aiTag: current.ai_tag ?? '',
@@ -230,7 +233,7 @@ export class AiAnalysisService {
      */
     private static async fetchReportRows(symbol: string): Promise<ReportRow[]> {
         const result = await pool.query(
-            `SELECT r.end_date, r.total_revenue, r.n_income_attr_p, r.stock_name, r.ai_tag, r.report_type,
+            `SELECT r.end_date, r.ann_date, r.total_revenue, r.n_income_attr_p, r.stock_name, r.ai_tag, r.report_type,
                     i.grossprofit_margin, i.netprofit_margin, i.roe, i.debt_to_assets,
                     c.n_cashflow_act
              FROM performance_reports r

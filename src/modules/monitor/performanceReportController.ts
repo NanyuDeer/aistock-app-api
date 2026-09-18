@@ -65,6 +65,33 @@ function currentReportPeriod(now: Date = new Date()): string {
     return `${y - 1}1231`;
 }
 
+/**
+ * 计算当前默认展示的报告期
+ * 逻辑：取数据库里有数据的最新报告期 end_date；
+ *       但新报告期必须积累到 MIN_REPORTS 条才切换，否则沿用上一期
+ */
+async function getDefaultReportPeriod(): Promise<string> {
+    // 1. 按报告期聚合统计（正式报告+快报）
+    const result = await pool.query(
+        `SELECT end_date, COUNT(*) AS report_count, MAX(ann_date) AS latest_ann_date
+         FROM performance_reports
+         WHERE report_type IN ('formal', 'express')
+         GROUP BY end_date
+         ORDER BY end_date DESC
+         LIMIT 3`
+    );
+
+    const MIN_REPORTS = 30; // 切换阈值：新期至少有30条才成为默认期
+
+    for (const p of result.rows) {
+        if (Number(p.report_count) >= MIN_REPORTS) {
+            return p.end_date as string; // 最新的、已达阈值的报告期
+        }
+    }
+    // 兜底：库中无达阈值的报告期时，沿用最早一期；再兜底按日期推算
+    return (result.rows[result.rows.length - 1]?.end_date as string) || currentReportPeriod();
+}
+
 const LATEST_REPORT_CTE = `
     WITH latest AS (
         SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
@@ -258,13 +285,13 @@ export class PerformanceReportController {
      * - formal：仅当前报告期（如 2026半年报）的正式报告
      * - express：仅当前报告期的快报，且排除同报告期已出正式报告的股票
      */
-    private static buildReportTypeFilter(reportType: string): string {
+    private static async buildReportTypeFilter(reportType: string): Promise<string> {
         if (reportType === 'formal') {
-            const period = currentReportPeriod();
+            const period = await getDefaultReportPeriod();
             return ` AND l.report_type = 'formal' AND l.end_date = '${period}'`;
         }
         if (reportType === 'express') {
-            const period = currentReportPeriod();
+            const period = await getDefaultReportPeriod();
             return ` AND l.report_type = 'express' AND l.end_date = '${period}'
                 AND NOT EXISTS (
                     SELECT 1 FROM performance_reports f
@@ -379,7 +406,7 @@ export class PerformanceReportController {
 
         // 筛选条件
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = this.buildReportTypeFilter(reportType);
+        const reportTypeFilter = await this.buildReportTypeFilter(reportType);
         const endYear = url.searchParams.get('endYear') || '';
         const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
@@ -443,7 +470,7 @@ export class PerformanceReportController {
         const keywordPattern = `%${keyword}%`;
 
         const reportType = url.searchParams.get('reportType') || '';
-        const reportTypeFilter = this.buildReportTypeFilter(reportType);
+        const reportTypeFilter = await this.buildReportTypeFilter(reportType);
         const endYear = url.searchParams.get('endYear') || '';
         const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
@@ -518,7 +545,9 @@ export class PerformanceReportController {
             createResponse(res, 400, '缺少或无效的 symbol 参数（需6位数字股票代码）');
             return;
         }
-        const endDate = (url.searchParams.get('endDate') || '').trim() || undefined;
+        // 未指定报告期时沿用列表页的默认报告期（新期数据达阈值才切换），
+        // 保证详情页"当前期"与列表展示的报告期一致；该股无此期数据时 analyze 内部自动回退到其最新一期
+        const endDate = (url.searchParams.get('endDate') || '').trim() || await getDefaultReportPeriod();
 
         try {
             const result = await AiAnalysisService.analyze(symbol, endDate);
@@ -526,11 +555,17 @@ export class PerformanceReportController {
                 createResponse(res, 404, '未找到该股票的业绩报告数据');
                 return;
             }
+            // 最新报告的更新时间：报告发出日期 YYYYMMDD → YYYY-MM-DD（与列表页"更新时间"一致）
+            const annDate = result.annDate || '';
+            const updateTime = annDate.length >= 8
+                ? `${annDate.slice(0, 4)}-${annDate.slice(4, 6)}-${annDate.slice(6, 8)}`
+                : annDate;
             createResponse(res, 200, 'success', {
                 '股票代码': result.symbol,
                 '股票名称': result.stockName,
                 '报告期': result.periodLabel,
                 '最新报告类型': result.reportType,
+                '更新时间': updateTime,
                 'AI研判': result.aiTag,
                 '经营亮点': result.goodTags,
                 '潜在风险': result.riskTags,
@@ -602,7 +637,7 @@ export class PerformanceReportController {
      */
     static async getPerformanceRanking(req: Request, res: Response, _next: NextFunction): Promise<void> {
         const url = new URL(req.originalUrl, `http://${req.get('host')}`);
-        const reportPeriod = (url.searchParams.get('reportPeriod') || '').trim() || currentReportPeriod();
+        const reportPeriod = (url.searchParams.get('reportPeriod') || '').trim() || await getDefaultReportPeriod();
         const sortByRaw = (url.searchParams.get('sortBy') || 'score').trim();
         const sortOrderRaw = (url.searchParams.get('sortOrder') || 'desc').trim().toLowerCase();
         const reportTypeRaw = (url.searchParams.get('reportType') || 'all').trim();

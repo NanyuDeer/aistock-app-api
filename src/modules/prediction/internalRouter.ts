@@ -26,8 +26,17 @@ function shanghaiToday(): string {
 export const __internalPredictionDependencies = {
   create: (input: Parameters<typeof PredictionRecordService.create>[0]) => PredictionRecordService.create(input),
   list: (params: Parameters<typeof PredictionRecordService.list>[0]) => PredictionRecordService.list(params),
+  listPending: (limit: number, beforeId?: number) => PredictionRecordService.listPending(limit, beforeId),
+  listByStatus: (status: string, limit: number, beforeId?: number) =>
+    PredictionRecordService.listByStatus(status, limit, beforeId),
   regenerateTimeoutMs: REGENERATE_TIMEOUT_MS,
 };
+
+/** DB 行 → 响应项：id 归一为数字（pg 对 BIGSERIAL 返回 string；publicRouter 已归一，internal 对齐——
+ *  2026-09-03 D2：Python run_once 以 isinstance(record_id,int) 门禁，未归一时全量跳过） */
+function toInternalRow<T extends { id: number | string }>(row: T): T {
+  return { ...row, id: Number(row.id) };
+}
 
 router.use((req, res, next) => {
   if (req.headers['x-internal-token'] !== INTERNAL_TOKEN) {
@@ -205,7 +214,7 @@ router.get('/', async (req: Request, res: Response) => {
     }
     try {
       const { rows } = await __internalPredictionDependencies.list({ source_id: sourceId, page: 1, pageSize: 50 });
-      res.json({ code: 200, data: rows });
+      res.json({ code: 200, data: rows.map(toInternalRow) });
     } catch (err) {
       res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
     }
@@ -224,9 +233,9 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const rows =
       status === 'pending'
-        ? await PredictionRecordService.listPending(limit, beforeId)
-        : await PredictionRecordService.listByStatus(status, limit, beforeId);
-    res.json({ code: 200, data: rows });
+        ? await __internalPredictionDependencies.listPending(limit, beforeId)
+        : await __internalPredictionDependencies.listByStatus(status, limit, beforeId);
+    res.json({ code: 200, data: rows.map(toInternalRow) });
   } catch (err) {
     res.status(500).json({ code: 500, message: err instanceof Error ? err.message : String(err) });
   }
@@ -236,31 +245,70 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   const id = Number(param(req, 'id'));
   const body = req.body as {
     horizon?: unknown;
+    anchor_horizon?: unknown;
     type?: unknown;
     result?: unknown;
     actual?: unknown;
     reason?: unknown;
     early_exit?: unknown;
+    /** 条件中间态标记（两段判定的第①段点亮 / 到期未成立态）：布尔（true|false）时允许无 result */
+    condition_met?: unknown;
+    /** 条件档位下标（key=c{i} 的 i）；要求整数，供前端 metByIndex/统计对齐 */
+    condition_index?: unknown;
+    /** 条件判定时间留痕（Task 6.1，spec §12.5）：到期未成立态与 condition_met 同批写入 */
+    checked_at?: unknown;
   };
   if (!Number.isInteger(id) || id < 1 || typeof body.horizon !== 'string' || !body.horizon.trim()) {
     res.status(400).json({ code: 400, message: 'valid id and horizon are required' });
     return;
   }
-  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法
-  if (body.type !== 'early_exit' && !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])) {
+  // A1：type=early_exit（早退标记，无 result）时 result 可缺省；否则 result 必须合法。
+  // 条件中间态（本变更，spec §12.5）：condition_met 两段判定也必须放行——
+  // ① 第①段点亮：agent-py 在到期前回写 "条件已成立"（key=c{i}、condition_met=true、无 result），
+  //    否则该写入被 400 拒绝、前端洞见卡"待验证"分支无法点亮；
+  // ② 到期未成立态（Task 6.1）：到期（result 落库那一刻）对**未触发**条件回写
+  //    condition_met=false + checked_at——与 true 形成完整布尔，前端"到期未触发"与
+  //    "在途未触发"从此可区分（旧口径"仅放行 true"会让 false 一律 400，未成立态永远写不进来）。
+  // 三条件不变（其余仍 400）：condition_met 必须是**布尔**（null/字符串/数字一律拒绝——jsonb
+  // 键级浅合并下写 null 会抹掉已点亮值）、horizon 形如 c{i}、condition_index 必须为整数
+  // （缺失/非整数时前端 metByIndex 不认、统计不计）。
+  const isConditionIntermediate =
+    typeof body.condition_met === 'boolean' &&
+    /^c\d+$/.test(String(body.horizon ?? '')) &&
+    Number.isInteger(body.condition_index);
+  // checked_at 为判定时间留痕（新增字段）：允许缺省，但给了就必须是字符串（防脏数据落 jsonb）
+  if (body.checked_at !== undefined && typeof body.checked_at !== 'string') {
+    res.status(400).json({ code: 400, message: 'checked_at must be a string' });
+    return;
+  }
+  if (
+    !isConditionIntermediate &&
+    body.type !== 'early_exit' &&
+    !VALID_RESULTS.includes(body.result as typeof VALID_RESULTS[number])
+  ) {
     res.status(400).json({ code: 400, message: 'result must be hit|miss|insufficient' });
     return;
   }
+  // D5（2026-09-03）：jsonb key（body.horizon）与 entry 内档位字段解耦——condition 路径
+  // key=c{i}、entry.horizon=anchor 档位（short/mid）。Python 经 anchor_horizon 透传 anchor，
+  // 写回 entry.horizon 供统计按档位分桶；缺省回退 body.horizon（horizon 档位 key=档位名）。
+  const entryHorizon =
+    typeof body.anchor_horizon === 'string' && body.anchor_horizon.trim()
+      ? body.anchor_horizon
+      : body.horizon;
   const entry: PredictionVerificationEntry =
     body.type === 'early_exit'
       ? {
-          horizon: body.horizon,
+          horizon: entryHorizon,
           type: 'early_exit',
           early_exit: (body.early_exit as Record<string, unknown>) ?? {},
         }
       : {
-          horizon: body.horizon,
-          result: body.result as 'hit' | 'miss' | 'insufficient',
+          horizon: entryHorizon,
+          // 条件中间态无 result：条件展开该键，避免落库 entry 出现 result: undefined 占位
+          ...(body.result !== undefined
+            ? { result: body.result as 'hit' | 'miss' | 'insufficient' }
+            : {}),
           actual: typeof body.actual === 'string' ? body.actual : '',
           reason: typeof body.reason === 'string' ? body.reason : '',
           verified_at: new Date().toISOString(),
@@ -269,7 +317,7 @@ router.put('/:id/verification', async (req: Request, res: Response) => {
   // （methodology_version/baseline_neutral/target_type/approximate 等）——此前只透传固定 5 字段，
   // 导致 methodology_version 不落库 → agent-py _filter_v2 恒 n=0 → A3 钳制与存量统计在生产不触发。
   for (const [k, v] of Object.entries(body)) {
-    if (['horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
+    if (['horizon', 'anchor_horizon', 'type', 'result', 'actual', 'reason', 'early_exit'].includes(k) || v === undefined) {
       continue;
     }
     (entry as Record<string, unknown>)[k] = v;

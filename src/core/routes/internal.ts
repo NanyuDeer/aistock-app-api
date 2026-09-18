@@ -239,8 +239,10 @@ const CODE_RE = /^\d{6}\.TI$/i
  * GET /internal/ths/:code/daily
  * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
  *
- * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
- *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg, close, vol, amount, open, high, low }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）；
+ *   close/vol/amount/open/high/low 加性透传（condition_met 技术位/参考位判定数据源；amount 上游
+ *   ths_daily 无此字段恒 null）
  * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
  * - 502: 服务异常
  */
@@ -1154,6 +1156,66 @@ router.get('/market/last-close-snapshot', async (_req: Request, res: Response) =
             return
         }
         console.error('[Internal] market/last-close-snapshot error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/market/sectors
+ * 盘内板块快照（午间报机会/风险候选源）。腾讯源，绕开 15:30 门禁，
+ * 仅供 Python Agent 午间 12:05 调用；不触碰东方财富。
+ * - 200：{ code: 200, data: { captured_at, indexes, breadth, gainers, losers, availability } }
+ * - 502：路由级异常
+ */
+router.get('/market/sectors', async (_req: Request, res: Response) => {
+    try {
+        const { TencentSnapshotService } = await import('../../modules/quote/TencentSnapshotService')
+        // 全部走腾讯源；任一失败降级为 partial，不整端 502
+        const [indexes, breadth, gainers, losers] = await Promise.allSettled([
+            TencentSnapshotService.fetchIndexes(),
+            TencentSnapshotService.fetchMarketBreadth(),
+            TencentSnapshotService.fetchTencentBoardRank('gn', 'down', 20),
+            TencentSnapshotService.fetchTencentBoardRank('gn', 'up', 20),
+        ])
+        // fetchIndexes 返回 CloseIndexFact：键为 ts_code（如 "000001.SH"），归一化为 6 位 code
+        const idx = (indexes.status === 'fulfilled' && Array.isArray(indexes.value))
+            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; pct_chg?: number }) => ({
+                  code: String(it.ts_code ?? it.code ?? '').replace(/[^0-9]/g, '').slice(0, 6),
+                  name: String(it.name ?? ''),
+                  pct_chg: it.pct_chg ?? null,
+              }))
+            : []
+        // MarketBreadth 只有 advance_count/total_count，在此现算 advance_ratio（防除零）
+        const breadthRaw = breadth.status === 'fulfilled' && breadth.value && typeof breadth.value === 'object'
+            ? ((breadth.value as { breadth?: { advance_count?: number; total_count?: number; avg_change_pct?: number } }).breadth ?? {})
+            : {}
+        const advanceN = Number(breadthRaw.advance_count ?? 0)
+        const totalN = Number(breadthRaw.total_count ?? 0)
+        const breadthData = {
+            advance_ratio: totalN > 0 ? advanceN / totalN : null,
+            avg_change_pct: breadthRaw.avg_change_pct ?? null,
+        }
+        const gainerRows = gainers.status === 'fulfilled' ? gainers.value.map(TencentSnapshotService.toSectorFact) : []
+        const loserRows = losers.status === 'fulfilled' ? losers.value.map(TencentSnapshotService.toSectorFact) : []
+        const okCount = [indexes.status, breadth.status, gainers.status, losers.status].filter((s) => s === 'fulfilled').length
+        const availability = okCount === 4
+            ? { state: 'available' }
+            : okCount > 0
+                ? { state: 'partial', reason: 'some upstream sources failed' }
+                : { state: 'unavailable', reason: 'all upstream sources failed' }
+        res.json({
+            code: 200,
+            data: {
+                captured_at: new Date().toISOString(),
+                indexes: idx,
+                breadth: breadthData,
+                gainers: gainerRows,
+                losers: loserRows,
+                availability,
+            },
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] market/sectors error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })

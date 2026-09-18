@@ -55,13 +55,17 @@ export class PredictionRecordService {
       ...(input.due_dates_approximate !== undefined ? { due_dates_approximate: input.due_dates_approximate } : {}),
     };
     const result = await pool.query<PredictionRecordRow>(
+      // 重跑（级联/批量同日同板块）只覆盖 prediction/due_dates，不把已验证记录
+      // 打回 pending（否则 verification 与 status 脱钩，命中率统计口径失真）。
       `INSERT INTO prediction_records (source_type, source_id, schema_version, prediction, due_dates, status)
        VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6)
        ON CONFLICT (source_type, source_id)
        DO UPDATE SET schema_version = EXCLUDED.schema_version,
                      prediction = EXCLUDED.prediction,
                      due_dates = EXCLUDED.due_dates,
-                     status = EXCLUDED.status
+                     status = CASE WHEN prediction_records.status = 'verified'
+                                   THEN prediction_records.status
+                                   ELSE EXCLUDED.status END
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
       [
         input.source_type,
@@ -127,10 +131,11 @@ export class PredictionRecordService {
     return result.rows;
   }
 
-  /** 列表（public 路由）：status/source_id 可选过滤（可组合），created_at DESC 分页 */
+  /** 列表（public 路由）：status/source_id/source_type 可选过滤（可组合），created_at DESC 分页 */
   static async list(params: {
     status?: 'pending' | 'verified' | 'skipped';
     source_id?: string;
+    source_type?: 'market_trace' | 'sector_prediction';
     page: number;
     pageSize: number;
   }): Promise<{ rows: PredictionRecordRow[]; total: number }> {
@@ -143,6 +148,10 @@ export class PredictionRecordService {
     if (params.source_id) {
       conditions.push(`source_id = $${filterValues.length + 1}`);
       filterValues.push(params.source_id);
+    }
+    if (params.source_type) {
+      conditions.push(`source_type = $${filterValues.length + 1}`);
+      filterValues.push(params.source_type);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const countResult = await pool.query<{ count: string }>(
@@ -166,6 +175,7 @@ export class PredictionRecordService {
   static async listAllForStats(
     status?: 'pending' | 'verified' | 'skipped',
     source_id?: string,
+    source_type?: 'market_trace' | 'sector_prediction',
   ): Promise<PredictionRecordRow[]> {
     const conditions: string[] = [];
     const filterValues: unknown[] = [];
@@ -176,6 +186,10 @@ export class PredictionRecordService {
     if (source_id) {
       conditions.push(`source_id = $${filterValues.length + 1}`);
       filterValues.push(source_id);
+    }
+    if (source_type) {
+      conditions.push(`source_type = $${filterValues.length + 1}`);
+      filterValues.push(source_type);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const result = await pool.query<PredictionRecordRow>(
@@ -252,10 +266,14 @@ export class PredictionRecordService {
 
     // 原子合并写：verification 顶层 jsonb 合并，同档位 COALESCE 二次合并，
     // 避免并发读-改-写覆盖其他档位（A1：Node 端只写本次 entry，不整段覆盖）。
+    // 回归修复（D1，2026-09-03）：jsonb_build_object($1, ...) 的 key 参数与
+    // COALESCE(verification->$1, ...) 的 -> 下标在 variadic/多态上下文无法推断类型，
+    // 每次回写 HTTP 500（could not determine data type of parameter $1）。
+    // 显式 $1::text + 改用 ->>（取 text 再 ::jsonb cast）消除歧义。
     const updated = await pool.query<PredictionRecordRow>(
       `UPDATE prediction_records
        SET verification = verification
-         || jsonb_build_object($1, COALESCE(verification->$1, '{}'::jsonb) || $2::jsonb),
+         || jsonb_build_object($1::text, COALESCE(verification->>$1, '{}')::jsonb || $2::jsonb),
            status = $3
        WHERE id = $4
        RETURNING id, source_type, source_id, schema_version, prediction, verification, status, due_dates, created_at`,
