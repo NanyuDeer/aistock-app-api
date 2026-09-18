@@ -250,9 +250,13 @@ router.get('/ths/:code/daily', async (req: Request, res: Response) => {
     const code = String(req.params.code || '').toUpperCase()
     const start = String(req.query.start || '')
     const end = String(req.query.end || '')
+    // X1（2026-09-19）：同时接受 YYYYMMDD 与 YYYY-MM-DD（归一在 getBoardDailyRange 内完成）。
+    // 此前仅认 YYYYMMDD，Python 侧传 ISO 时恒 400，导致主线候选取数全败且被误记为"序列不足"。
     const YM = /^\d{8}$/
-    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
-        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    const YMD = /^\d{4}-\d{2}-\d{2}$/
+    const okDate = (v: string) => YM.test(v) || YMD.test(v)
+    if (!CODE_RE.test(code) || !okDate(start) || !okDate(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD 或 YYYY-MM-DD' })
     }
     try {
         const rows = await getBoardDailyRange(code, start, end)
