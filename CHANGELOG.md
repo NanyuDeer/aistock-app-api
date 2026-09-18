@@ -2,6 +2,18 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## \[changer\] 2026-09-19 — 板块日 K 接口日期契约双侧兼容（X1）
+
+**开发者**: 37588
+
+### 修复
+
+- `GET /internal/ths/:code/daily` 此前仅接受紧凑 `YYYYMMDD`，Python 侧（节奏大师主线候选）传 ISO 连字符日期时**恒 400**（已用路由测试实测复现 `400 !== 200`），导致 5 个主线候选取数全败、主线不可用。现路由同时接受 `YYYYMMDD` 与 `YYYY-MM-DD`，并在 `ThsBoardService.getBoardDailyRange` 边界统一归一为紧凑格式后再取数（归一放在 service 边界，未来任何调用方传 ISO 也不会再失败）。
+
+### 新增
+
+- 跨语言日期契约测试（`internal.ths.test.ts`）：ISO 入参须 200 且下游取数层收到归一后的 `YYYYMMDD`；紧凑格式行为不变（回归护栏）；非法格式（位数不足）仍 400。
+
 ## \[master\] 2026-09-18 — `sector-insight` 报告侧摘要改为 conclusion 优先（不再落到「触发」）
 
 **开发者**: Aria
