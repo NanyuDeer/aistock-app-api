@@ -3,6 +3,7 @@ import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 import { shanghaiDateStr, shanghaiDateTimeParts } from '../../shared/utils/shanghaiTime'
 import { listEvents, toContractEvent } from './MarketCalendarEventService'
+import { listDeliveryDates } from './CalendarRuleService'
 
 export const rhythmMasterPublicRouter: Router = Router()
 
@@ -53,27 +54,41 @@ export function mergeRhythmCalendarDays(
     })
 }
 
-/** 窗口内 macro 事件按日分组（对外契约，仅 type==='macro'；无则空数组，后端恒下发 events 字段）。 */
-async function loadMacroEventsByDate(dates: string[]): Promise<Map<string, Array<Record<string, unknown>>>> {
+/** 窗口内"日历可见"事件按日分组（对外契约，type ∈ {macro, delivery}；无则空数组，后端恒下发 events 字段）。
+ *
+ * 2026-09-18（spec §5.4）：① 由仅 macro 放开到 macro + delivery —— 交割日每月仅一次、
+ * 不构成噪音，且消除"卡片有交割日、日历无"的反向不一致（H3 同源风险）；
+ * ② 合并 L1 规则算出的交割日（此前只下发 DB 表行，规则交割日在本端点恒缺失）。
+ * earnings/seed 仍不下发（量大、噪音高）。
+ */
+const CALENDAR_VISIBLE_TYPES = new Set(['macro', 'delivery'])
+
+export async function loadCalendarEventsByDate(
+  dates: string[],
+): Promise<Map<string, Array<Record<string, unknown>>>> {
   if (!dates.length) return new Map()
   const from = dates[dates.length - 1]
   const to = dates[0]
   const rows = await listEvents(from, to)
+  const merged = [
+    ...listDeliveryDates(from, to),
+    ...rows.map((row) => toContractEvent(row)),
+  ]
   const byDate = new Map<string, Array<Record<string, unknown>>>()
-  for (const row of rows) {
-    const ev = toContractEvent(row)
-    if (ev.type !== 'macro') continue
-    const list = byDate.get(String(ev.date)) ?? []
-    list.push(ev)
-    byDate.set(String(ev.date), list)
+  for (const ev of merged) {
+    if (!CALENDAR_VISIBLE_TYPES.has(String(ev.type))) continue
+    const key = String(ev.date)
+    const list = byDate.get(key) ?? []
+    list.push(ev as unknown as Record<string, unknown>)
+    byDate.set(key, list)
   }
   return byDate
 }
 
 /** GET /api/agent/rhythm-master/calendar?naturalDays=N — 自然日网格（契约 #7 扩展）。
  *  N=自然日数量（含周末/节假日）；无 report 的日期 level=null（周末/无档如实展示）。
- *  事件仍按自然日 loadMacroEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
- *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadMacroEventsByDate 的 from=dates[last]、to=dates[0]）。 */
+ *  事件仍按自然日 loadCalendarEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
+ *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadCalendarEventsByDate 的 from=dates[last]、to=dates[0]）。 */
 rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res: Response) => {
     const naturalDaysParam = Number(req.query.naturalDays ?? 0)
     const naturalDays = Number.isFinite(naturalDaysParam) ? Math.max(0, Math.floor(naturalDaysParam)) : 0
@@ -101,7 +116,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
          ORDER BY report_date DESC`,
         [dates],
       )
-      const eventsByDate = await loadMacroEventsByDate(dates)
+      const eventsByDate = await loadCalendarEventsByDate(dates)
       const merged = dates.map((d) => {
         const row = result.rows.find((r: any) => r.report_date === d)
         return {
@@ -133,7 +148,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
              ORDER BY report_date DESC`,
             [dates],
         )
-        const eventsByDate = await loadMacroEventsByDate(dates)
+        const eventsByDate = await loadCalendarEventsByDate(dates)
         // 返回行时带上 events
         res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows).map((d) => ({ ...d, events: eventsByDate.get(d.date) ?? [] })) } })
     } catch (err) {

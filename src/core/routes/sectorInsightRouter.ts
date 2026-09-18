@@ -12,6 +12,7 @@
  * 否则 /api/agent/sector-insight/* 会被反代转发到 Python。
  */
 import { Router, type Request, type Response } from 'express'
+import pool from '../../core/db'
 import { WindLeaderService } from '../../modules/monitor/WindLeaderService'
 import { resolveBoardName } from '../../modules/quote/ThsBoardService'
 import { PredictionRecordService, type PredictionRecordRow } from '../../modules/prediction/PredictionRecordService'
@@ -173,6 +174,122 @@ export function extractSectorTraceInfo(content: unknown): SectorTraceInfo {
   }
 }
 
+// ==================== 每板块溯源摘要（2026-09-18 根治） ====================
+//
+// 修复两个叠加的口径问题：
+//   1. **多板块日所有主因候选共用同一份 trace**：`buildCandidatesMap` 原先只收一个
+//      `traceInfo`，而 `market_trace.trace` 是**单板块形状**（只承载当天第一个板块），
+//      于是 3 个主因板块全部显示第一个板块的归因句；
+//   2. **与大盘归因链口径分裂**：链 `attribution_chains.children[].trace_summary` 才是
+//      "该板块有没有驱动原因"的权威结论（含摘要与事件的让位裁决），板块详情页却另取
+//      报告 trigger headline。
+// 现改为**每板块解析**：链优先（按 ts_code → sector_std → sector 匹配）→ 报告
+// `display_report.sector_traces[板块名]`（每板块自己的 stages）→ 旧单板块形状兜底。
+
+export interface SectorTraceEntry {
+  summary: string | null
+  status?: 'completed' | 'insufficient'
+}
+
+/**
+ * `display_report.sector_traces`（{板块名: SectorChainResult}）→ 每板块摘要。
+ * 取源与 agent-py `_trace_summary` 的报告侧口径一致：顶层 `summary` 优先，缺则 trigger
+ * stage headline。无该字段/无该板块 → 空 Map（调用方回退旧行为，不编造）。
+ */
+export function extractPerSectorTraceEntries(content: unknown): Map<string, SectorTraceEntry> {
+  const out = new Map<string, SectorTraceEntry>()
+  const c = content && typeof content === 'object' ? (content as Record<string, unknown>) : {}
+  const display =
+    c.display_report && typeof c.display_report === 'object'
+      ? (c.display_report as Record<string, unknown>)
+      : {}
+  const traces = display.sector_traces
+  if (!traces || typeof traces !== 'object' || Array.isArray(traces)) return out
+  for (const [name, trace] of Object.entries(traces as Record<string, unknown>)) {
+    const key = name.trim()
+    if (!key) continue
+    const t = trace && typeof trace === 'object' ? (trace as Record<string, unknown>) : {}
+    const top = typeof t.summary === 'string' ? t.summary.trim() : ''
+    out.set(key, {
+      summary: top || extractTraceSummary(trace),
+      status: t.attribution_status === 'sufficient' ? 'completed' : 'insufficient',
+    })
+  }
+  return out
+}
+
+/** 当日链 children 的摘要索引：ts_code 裸码 / 板块名（原始名与权威名）→ 链摘要 */
+export interface ChainTraceIndex {
+  byTs: Map<string, string>
+  byName: Map<string, string>
+}
+
+/**
+ * `attribution_chains.content` → 每板块链摘要索引（根治的取源第一步）。
+ * 只收非空 `trace_summary`；`ts_code` 剥 `.TI` 归一（与候选主键同源）；板块名同时收
+ * `sector`（复盘原始名）与 `sector_std`（快照权威名）——命名漂移时任一命中即可。
+ * 链缺失/无 children → 空索引（调用方自动回退报告侧）。
+ */
+export function indexChainTraceSummaries(chain: unknown): ChainTraceIndex {
+  const byTs = new Map<string, string>()
+  const byName = new Map<string, string>()
+  if (!chain || typeof chain !== 'object') return { byTs, byName }
+  const children = (chain as { children?: unknown }).children
+  if (!Array.isArray(children)) return { byTs, byName }
+  for (const child of children) {
+    if (!child || typeof child !== 'object') continue
+    const c = child as Record<string, unknown>
+    const summary = typeof c.trace_summary === 'string' ? c.trace_summary.trim() : ''
+    if (!summary) continue
+    if (typeof c.ts_code === 'string' && c.ts_code.trim()) byTs.set(stripTiSuffix(c.ts_code), summary)
+    for (const name of [c.sector_std, c.sector]) {
+      if (typeof name === 'string' && name.trim()) byName.set(name.trim(), summary)
+    }
+  }
+  return { byTs, byName }
+}
+
+/** 当日归因链 content（表不存在/查询失败 → null；接口降级不报错，回退报告侧摘要） */
+async function loadAttributionChain(date: string): Promise<unknown | null> {
+  try {
+    const { rows } = await pool.query('SELECT content FROM attribution_chains WHERE date = $1', [date])
+    return (rows[0] as { content?: unknown } | undefined)?.content ?? null
+  } catch (err: unknown) {
+    console.error(
+      '[SectorInsight] load attribution chain failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+    return null
+  }
+}
+
+/**
+ * 每板块摘要取源优先级（根治的唯一裁决点，抽成纯函数以便直测）：
+ * **链**（`ts_code` 裸码 → 权威名 → 复盘原始名，逐级降级，抗命名漂移）
+ * → 报告 `display_report.sector_traces[板块名]`（该板块自己的 stages）
+ * → `null`（交给调用方沿用旧的单板块形状兜底）。
+ *
+ * 链优先的理由：链 `children[].trace_summary` 是"该板块有没有驱动原因"的权威结论
+ * （含 agent-py 摘要/事件层一致性裁决），板块详情页必须与「市场洞见」页同一取源。
+ */
+export function pickSectorTraceSummary(
+  chainIndex: ChainTraceIndex,
+  keys: { tsNorm: string; names: string[] },
+  entry: SectorTraceEntry | undefined,
+): string | null {
+  if (keys.tsNorm) {
+    const byTs = chainIndex.byTs.get(keys.tsNorm)
+    if (byTs) return byTs
+  }
+  for (const name of keys.names) {
+    const key = name.trim()
+    if (!key) continue
+    const byName = chainIndex.byName.get(key)
+    if (byName) return byName
+  }
+  return entry?.summary ?? null
+}
+
 // ==================== 预测记录摘要映射（纯函数） ====================
 
 const HORIZON_ORDER: HorizonKey[] = ['short', 'mid', 'long']
@@ -327,6 +444,11 @@ export interface ResolvedSectorInput {
   /** 仅风口来源携带；主因来源恒不传 */
   cycle?: SectorCycle
   quote?: SectorInsightQuote | null
+  /**
+   * 仅主因来源携带：该板块**自己**的溯源信息（2026-09-18 根治）。
+   * 缺省时回退 `buildCandidatesMap` 第 3 参的单板块 traceInfo（旧行为，兼容既有调用方）。
+   */
+  trace?: SectorInsightTrace | null
 }
 
 export interface CandidateDraft extends SectorInsightCandidate {
@@ -336,6 +458,9 @@ export interface CandidateDraft extends SectorInsightCandidate {
 /**
  * 两来源归一合并：按 ts_code（裸码）去重，来源并集标 both；
  * name 取后写权威名（resolve 名）；trace 仅主因/both 携带，quote/cycle 仅风口携带。
+ *
+ * `traceInfo` 为**兜底**：主因项自带 `item.trace`（每板块自己的溯源）时优先用它——
+ * 多板块日不能所有板块共用一份单板块形状的 `market_trace.trace`。
  */
 export function buildCandidatesMap(
   windItems: ResolvedSectorInput[],
@@ -345,6 +470,7 @@ export function buildCandidatesMap(
   const map = new Map<string, CandidateDraft>()
   const put = (item: ResolvedSectorInput, source: SectorSource) => {
     const norm = stripTiSuffix(item.ts_code)
+    const itemTrace = item.trace ?? traceInfo
     const existing = map.get(norm)
     if (existing) {
       if (source === 'wind_leader') {
@@ -354,7 +480,7 @@ export function buildCandidatesMap(
       } else {
         // 主因：权威名（resolve 名）+ 溯源信息——无论先后都覆盖，保证展示名权威
         existing.name = item.name
-        existing.trace = traceInfo
+        existing.trace = itemTrace
       }
       if (existing.source !== source) existing.source = 'both'
       return
@@ -366,7 +492,7 @@ export function buildCandidatesMap(
       source,
       cycle: source === 'wind_leader' ? (item.cycle ?? null) : null,
       quote: source === 'wind_leader' ? (item.quote ?? null) : null,
-      trace: source === 'review_primary' ? traceInfo : null,
+      trace: source === 'review_primary' ? itemTrace : null,
       prediction: null,
       tsNorm: norm,
     }
@@ -532,10 +658,11 @@ router.get('/sector-insight/:date', async (req: Request, res: Response) => {
   }
 
   try {
-    const [wind, traceReport, predictions] = await Promise.all([
+    const [wind, traceReport, predictions, chain] = await Promise.all([
       WindLeaderService.getAnalysis(16), // 双榜 top8 并集（≤16），文件侧已双榜排序
       getAnalysisReport('sector_trace', date),
       PredictionRecordService.listSectorByDate(date),
+      loadAttributionChain(date), // 当日大盘归因链（根治：每板块摘要的权威取源）
     ])
 
     const unresolved: Array<{ name: string; source: SectorSource }> = []
@@ -581,11 +708,16 @@ router.get('/sector-insight/:date', async (req: Request, res: Response) => {
       })
     }
 
-    // ---- 主因来源归一：sector_trace 报告 display_report.sectors（通常 1 个主因板块）----
+    // ---- 主因来源归一：sector_trace 报告 display_report.sectors（多板块日可 >1）----
     const traceInfo =
       traceReport && traceReport.content
         ? extractSectorTraceInfo(traceReport.content)
         : null
+    // 每板块溯源摘要：链（权威，与市场洞见同源）→ 报告 sector_traces（该板块自己的 stages）
+    const chainIndex = indexChainTraceSummaries(chain)
+    const perSectorEntries = traceReport?.content
+      ? extractPerSectorTraceEntries(traceReport.content)
+      : new Map<string, SectorTraceEntry>()
     const primaryItems: ResolvedSectorInput[] = []
     if (traceInfo) {
       for (const primaryName of traceInfo.sectors) {
@@ -599,7 +731,24 @@ router.get('/sector-insight/:date', async (req: Request, res: Response) => {
           pushUnresolved(primaryName, 'review_primary')
           continue
         }
-        primaryItems.push({ ts_code: resolved.ts_code, name: resolved.name })
+        const entry = perSectorEntries.get(primaryName.trim())
+        // 链优先（ts_code 裸码 → 权威名 → 复盘原始名），取不到再回退该板块报告摘要
+        const summary = pickSectorTraceSummary(
+          chainIndex,
+          { tsNorm: stripTiSuffix(resolved.ts_code), names: [resolved.name, primaryName] },
+          entry,
+        )
+        primaryItems.push({
+          ts_code: resolved.ts_code,
+          name: resolved.name,
+          // 每板块挂自己的 trace（不再三块共用第一个板块的 market_trace.trace）
+          trace: {
+            present: true,
+            status: entry?.status ?? traceInfo.status,
+            summary,
+            sectors: traceInfo.sectors,
+          },
+        })
       }
     }
 
