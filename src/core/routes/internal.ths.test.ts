@@ -211,3 +211,34 @@ test('GET /internal/ths/885525.TI/daily 缺 start/end -> 400', async () => {
     assert.equal(res.status, 400)
     assert.equal((res.body as { code: number }).code, 400)
 })
+
+// ============ X1（2026-09-19）：跨语言日期契约 ============
+// Python 侧曾传 ISO 连字符（2026-05-11）→ 命中 ^\d{8}$ 校验 → 恒 400 → 主线候选取数全败。
+// 约定：本路由同时接受 YYYYMMDD 与 YYYY-MM-DD，并统一规范化为 YYYYMMDD 后再取数。
+
+test('GET /internal/ths/:code/daily 接受 ISO 日期并规范化为 YYYYMMDD（X1）', async () => {
+    const seen: string[] = []
+    patchGetThsDaily(async (tsCode, startDate, endDate) => {
+        seen.push(`${tsCode}|${startDate}|${endDate}`)
+        return []
+    })
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=2026-05-11&end=2026-09-18', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    assert.deepEqual(seen, ['885525.TI|20260511|20260918'])
+})
+
+test('GET /internal/ths/:code/daily 紧凑格式行为不变（回归护栏）', async () => {
+    const seen: string[] = []
+    patchGetThsDaily(async (tsCode, startDate, endDate) => {
+        seen.push(`${tsCode}|${startDate}|${endDate}`)
+        return []
+    })
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20260511&end=20260918', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    assert.deepEqual(seen, ['885525.TI|20260511|20260918'])
+})
+
+test('GET /internal/ths/:code/daily 非法日期格式仍 400（位数不足）', async () => {
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=2026051&end=20260918', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
+})
