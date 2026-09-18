@@ -299,8 +299,11 @@ test('extractPerSectorTraceEntries: 每板块取自己的 trigger headline（不
   };
   const entries = extractPerSectorTraceEntries(content);
   assert.equal(entries.size, 2);
-  assert.deepEqual(entries.get('国家大基金持股'), { summary: '大基金三期再落子', status: 'completed' });
-  assert.deepEqual(entries.get('汽车芯片'), { summary: '市场监管总局严查汽车芯片炒作', status: 'insufficient' });
+  // 逐字段断言（而非 deepEqual 整对象）：entry 会随加性键（如 stages）增长，整对象比较会被无关新增打破
+  assert.equal(entries.get('国家大基金持股')?.summary, '大基金三期再落子');
+  assert.equal(entries.get('国家大基金持股')?.status, 'completed');
+  assert.equal(entries.get('汽车芯片')?.summary, '市场监管总局严查汽车芯片炒作');
+  assert.equal(entries.get('汽车芯片')?.status, 'insufficient');
 });
 
 test('extractPerSectorTraceEntries: 顶层 summary 优先；无 sector_traces → 空 Map（调用方回退）', () => {
@@ -315,6 +318,101 @@ test('extractPerSectorTraceEntries: 顶层 summary 优先；无 sector_traces �
   assert.equal(extractPerSectorTraceEntries({ display_report: { sectors: ['玉米'] } }).size, 0);
   assert.equal(extractPerSectorTraceEntries(null).size, 0);
   assert.equal(extractPerSectorTraceEntries({ display_report: { sector_traces: [] } }).size, 0);
+});
+
+// ==================== 每板块 4 段原因链透出（2026-09-18 加性） ====================
+//
+// 板块溯源本身就是一条原因链，但**4 段**（现象→触发→传导→影响），不是大盘的 6 段。
+// 它整条躺在 display_report.sector_traces[板块名].stages 里，此前前端只取了 trigger 段
+// headline 当 summary —— 过程、每段 claims、证据 URL 全都没露出来。本轮**只透出数据**
+// （界面稍后做，两处都放：板块详情页折叠 + 市场洞见链分支展开）。
+
+test('extractPerSectorTraceEntries: 透出 4 段原因链（kind/headline/claims/evidence，保源序）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        汽车芯片: {
+          attribution_status: 'sufficient',
+          stages: [
+            {
+              kind: 'phenomenon',
+              headline: '板块当日大涨 4.03%，华天科技领涨',
+              claims: ['52 只成分股联动'],
+              evidence: [{ url: 'https://news.example.com/a', title: '板块大涨' }],
+            },
+            {
+              kind: 'trigger',
+              headline: '美国对半导体加码关税，在美生产可豁免',
+              claims: ['关税威胁', '国产替代升温'],
+              evidence: [{ url: 'https://news.example.com/b', title: '关税' }],
+            },
+            { kind: 'transmission', headline: '同向走强', claims: [], evidence: [] },
+            { kind: 'impact', headline: '订单可见度提升', claims: [], evidence: [] },
+          ],
+        },
+      },
+    },
+  });
+
+  const stages = entries.get('汽车芯片')?.stages;
+  assert.ok(stages, 'stages 应透出');
+  // 保源序（4 段顺序本身是语义，不得排序）
+  assert.deepEqual(
+    stages!.map((s) => s.kind),
+    ['phenomenon', 'trigger', 'transmission', 'impact'],
+  );
+  assert.equal(stages![1]!.headline, '美国对半导体加码关税，在美生产可豁免');
+  assert.deepEqual(stages![1]!.claims, ['关税威胁', '国产替代升温']);
+  assert.equal(stages![0]!.evidence[0]!.url, 'https://news.example.com/a');
+  assert.equal(stages![0]!.evidence[0]!.title, '板块大涨');
+});
+
+test('extractPerSectorTraceEntries: 无 stages / stages 非数组 → 省略该键（不编造空链）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        无链: { attribution_status: 'insufficient', stages: [] },
+        坏形状: { stages: 'not-an-array' },
+        没这键: { attribution_status: 'sufficient' },
+      },
+    },
+  });
+  assert.equal(entries.get('无链')?.stages, undefined);
+  assert.equal(entries.get('坏形状')?.stages, undefined);
+  assert.equal(entries.get('没这键')?.stages, undefined);
+});
+
+test('extractPerSectorTraceEntries: 段内畸形字段逐项清洗（不整段丢、不塞脏值）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        脏数据: {
+          stages: [
+            { kind: 'trigger', headline: '  有效标题  ', claims: ['ok', '', '   ', 42, null], evidence: [{ url: 'https://a', title: 'A' }, { url: null, title: 'B' }, 'junk'] },
+            { kind: '', headline: '无 kind 段' }, // kind 非空才收
+            null, // 非对象段丢弃
+            { kind: 'impact' }, // headline 缺失 → 空串
+          ],
+        },
+      },
+    },
+  });
+
+  const stages = entries.get('脏数据')?.stages;
+  assert.ok(stages);
+  assert.equal(stages!.length, 2, 'null 段与空 kind 段被丢弃，其余保留');
+  assert.equal(stages![0]!.kind, 'trigger');
+  assert.equal(stages![0]!.headline, '有效标题'); // trim
+  assert.deepEqual(stages![0]!.claims, ['ok']); // 空白/非字符串全部剔除
+  // evidence：url 或 title 任一为非空字符串即收（title-only 仍可展示，url 缺失归一为 null）；'junk' 丢弃
+  assert.deepEqual(stages![0]!.evidence, [
+    { url: 'https://a', title: 'A' },
+    { url: null, title: 'B' },
+  ]);
+  assert.equal(stages![1]!.kind, 'impact');
+  assert.equal(stages![1]!.headline, ''); // 缺失 → 空串（不 undefined）
+  assert.deepEqual(stages![1]!.claims, []);
+  assert.deepEqual(stages![1]!.evidence, []);
 });
 
 test('indexChainTraceSummaries: ts_code 裸码 + sector_std/sector 双名索引', () => {
