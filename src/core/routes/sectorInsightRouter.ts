@@ -263,6 +263,33 @@ async function loadAttributionChain(date: string): Promise<unknown | null> {
   }
 }
 
+/**
+ * 每板块摘要取源优先级（根治的唯一裁决点，抽成纯函数以便直测）：
+ * **链**（`ts_code` 裸码 → 权威名 → 复盘原始名，逐级降级，抗命名漂移）
+ * → 报告 `display_report.sector_traces[板块名]`（该板块自己的 stages）
+ * → `null`（交给调用方沿用旧的单板块形状兜底）。
+ *
+ * 链优先的理由：链 `children[].trace_summary` 是"该板块有没有驱动原因"的权威结论
+ * （含 agent-py 摘要/事件层一致性裁决），板块详情页必须与「市场洞见」页同一取源。
+ */
+export function pickSectorTraceSummary(
+  chainIndex: ChainTraceIndex,
+  keys: { tsNorm: string; names: string[] },
+  entry: SectorTraceEntry | undefined,
+): string | null {
+  if (keys.tsNorm) {
+    const byTs = chainIndex.byTs.get(keys.tsNorm)
+    if (byTs) return byTs
+  }
+  for (const name of keys.names) {
+    const key = name.trim()
+    if (!key) continue
+    const byName = chainIndex.byName.get(key)
+    if (byName) return byName
+  }
+  return entry?.summary ?? null
+}
+
 // ==================== 预测记录摘要映射（纯函数） ====================
 
 const HORIZON_ORDER: HorizonKey[] = ['short', 'mid', 'long']
@@ -706,12 +733,11 @@ router.get('/sector-insight/:date', async (req: Request, res: Response) => {
         }
         const entry = perSectorEntries.get(primaryName.trim())
         // 链优先（ts_code 裸码 → 权威名 → 复盘原始名），取不到再回退该板块报告摘要
-        const summary =
-          chainIndex.byTs.get(stripTiSuffix(resolved.ts_code)) ??
-          chainIndex.byName.get(resolved.name) ??
-          chainIndex.byName.get(primaryName.trim()) ??
-          entry?.summary ??
-          null
+        const summary = pickSectorTraceSummary(
+          chainIndex,
+          { tsNorm: stripTiSuffix(resolved.ts_code), names: [resolved.name, primaryName] },
+          entry,
+        )
         primaryItems.push({
           ts_code: resolved.ts_code,
           name: resolved.name,

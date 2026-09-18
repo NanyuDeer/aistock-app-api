@@ -18,6 +18,7 @@ import {
   extractSectorTraceInfo,
   extractPerSectorTraceEntries,
   indexChainTraceSummaries,
+  pickSectorTraceSummary,
   aggregateVerificationResult,
   dueLabelOf,
   sectorNameFromSourceId,
@@ -355,5 +356,38 @@ test('buildCandidatesMap: 主因项不带 trace → 回退第 3 参（旧调用�
   const shared = { present: true, status: 'completed' as const, summary: '出口管制传闻', sectors: ['半导体'] };
   const map = buildCandidatesMap([], [{ ts_code: '881121.TI', name: '半导体' }], shared);
   assert.deepEqual(map.get('881121')?.trace, shared);
+});
+
+test('pickSectorTraceSummary: 链优先于报告 sector_traces（跨页同源的唯一裁决点）', () => {
+  const chainIndex = indexChainTraceSummaries({
+    children: [
+      { sector: '注册制次新股', sector_std: '次新股', ts_code: '885905.TI', trace_summary: '链上的事件句' },
+    ],
+  });
+  const entry = { summary: '报告里的句子', status: 'insufficient' as const };
+  assert.equal(
+    pickSectorTraceSummary(chainIndex, { tsNorm: '885905', names: ['次新股', '注册制次新股'] }, entry),
+    '链上的事件句', // 链命中即用链，报告句子被压过
+  );
+  // 链无该板块 → 回退该板块报告摘要
+  assert.equal(
+    pickSectorTraceSummary(chainIndex, { tsNorm: '885756', names: ['汽车芯片'] }, entry),
+    '报告里的句子',
+  );
+  // 链与报告都没有 → null（调用方沿用旧单板块兜底，不编造）
+  assert.equal(pickSectorTraceSummary(indexChainTraceSummaries(null), { tsNorm: '885756', names: [] }, undefined), null);
+});
+
+test('pickSectorTraceSummary: 名称漂移时按 ts_code/权威名/原始名逐级降级', () => {
+  const chainIndex = indexChainTraceSummaries({
+    children: [{ sector: '次新股', ts_code: '885905.TI', trace_summary: '链句' }],
+  });
+  // 候选权威名（次新股概念）与链 sector 不一致，但 ts_code 相同 → 仍命中
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '885905', names: ['次新股概念'] }, undefined), '链句');
+  // tsNorm 为空 → 仅按名匹配；名全不中 → null
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['别的板块'] }, undefined), null);
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['次新股'] }, undefined), '链句');
+  // 空白名跳过，不因空串误命中
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['  ', ''] }, undefined), null);
 });
 
