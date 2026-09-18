@@ -51,6 +51,14 @@ export const InsightReportService = {
             responseType: 'arraybuffer',
             timeout: 10_000,
         });
+        // axios AxiosHeaders.has/get 大小写不敏感；兼容 AxiosHeaders 和 plain object
+        const ct: string | undefined =
+            typeof (response.headers as Record<string, unknown>)?.get === 'function'
+                ? (response.headers as { get: (k: string) => string | undefined }).get('content-type')
+                : (response.headers as Record<string, string> | undefined)?.['content-type'];
+        if (!ct || !ct.startsWith('application/pdf')) {
+            throw new Error('agent-py 返回非 PDF 内容');
+        }
         return Buffer.from(response.data as ArrayBuffer);
     },
 };
