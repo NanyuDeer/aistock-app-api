@@ -89,17 +89,48 @@ export const __dailyDeps: ThsDailyDeps = {
 
 const CODE_RE = /^\d{6}\.TI$/i
 
+/** 板块指数区间日 K 行（契约键为英文；缺值恒 null，不省略键——H7 不静默丢行）。 */
+export interface ThsBoardDailyRow {
+    trade_date: string
+    pct_chg: number | null
+    close: number | null
+    vol: number | null
+    amount: number | null
+    /** 当日开/高/低（Task 10.1 加性透传：agent-py 参考位类条件 today_open/high/low 判定数据源）。 */
+    open: number | null
+    high: number | null
+    low: number | null
+}
+
+/** 数值透传：仅接受 number（Tushare 数值列即 number），其余（缺失/字符串/null）保 null。
+ * 中文键兜底对齐 index 分支容错写法（internal.ts index kline 的 r.close ?? r['收盘价']）。 */
+function numOrNull(v: unknown): number | null {
+    return typeof v === 'number' ? v : null
+}
+
 /** 板块指数区间日 K：pct_change → pct_chg 契约键归一（Tushare 缺失时保行为 null，H7 不静默丢行），
- * rows 按 trade_date 升序（YYYYMMDD 字典序 = 时间序）。 */
+ * rows 按 trade_date 升序（YYYYMMDD 字典序 = 时间序）。
+ *
+ * 加性透传 close/vol（condition_met 技术位判定数据源，对齐 Python `_fetch_kline_window` sector 分支按
+ * close/vol 取值）；open/high/low 同为加性透传（Task 10.1：Python 参考位类 today_open/high/low 判定
+ * 数据源 —— Tushare `ths_daily` 本身返回 open/high/low，此前仅映射层未透传）；
+ * amount 同键透传但**上游 ths_daily 无此字段**（TushareService.getThsDaily 的 fields
+ * 未含 amount，Tushare 文档接口 260 输出亦无）→ 恒 null，仅为契约形状统一留位，未来换源/扩字段即成真值。 */
 export async function getBoardDailyRange(
     code: string, start: string, end: string,
-): Promise<Array<{ trade_date: string; pct_chg: number | null }>> {
+): Promise<ThsBoardDailyRow[]> {
     const rows = await __dailyDeps.getThsDaily(code, start, end)
     const out = rows
         .filter((r) => r.trade_date !== undefined)
         .map((r) => ({
             trade_date: String(r.trade_date),
             pct_chg: typeof r.pct_change === 'number' ? r.pct_change : null,
+            close: numOrNull(r.close ?? r['收盘价']),
+            vol: numOrNull(r.vol ?? r['成交量']),
+            amount: numOrNull(r.amount ?? r['成交额']),
+            open: numOrNull(r.open ?? r['开盘价']),
+            high: numOrNull(r.high ?? r['最高价']),
+            low: numOrNull(r.low ?? r['最低价']),
         }))
     out.sort((a, b) => String(a.trade_date).localeCompare(String(b.trade_date)))
     return out

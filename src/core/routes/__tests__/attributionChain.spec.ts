@@ -9,12 +9,17 @@
  * 4. GET 无该 date → {date, chain:null}（200，不报错）
  * 5. POST 无/错 X-Internal-Token → 401 且不触达 DB（Task4 审查 Important 补鉴权）
  * 6. GET :date 非 YYYY-MM-DD → 400 且不触达 DB（Task4 审查顺带 date 防御）
+ * 7. POST date 非 YYYY-MM-DD（"foo"）→ 400 且不触达 DB（Phase 0.4：与 GET 同款 DATE_RE）
+ * 8. POST children 子项非法（sector 空/缺失、relation 越界、pct 为字符串）→ 400 且不触达 DB，
+ *    错误文案含下标（Phase 0.4：原先 children 零校验）
+ * 9. POST 落库 SQL 不再内联建表（Phase 0.4：attribution_chains 转 020 migration 管理，
+ *    每次 POST 仅 1 条 INSERT ... ON CONFLICT）
  *
  * Mock strategy（沿仓库既有惯例，见 internal_user_profile.spec.ts / event_conduction.spec.ts）：
  * monkey-patch pool.query（router 持有同一 pool 对象引用），不建立真实 DB 连接；
- * mockResponder 用内存 Map<date, content> 模拟 attribution_chains 表三分支
- * （CREATE TABLE IF NOT EXISTS / INSERT ... ON CONFLICT upsert / SELECT content），
- * 使 POST→GET 读回一致性与覆盖更新可端到端断言。
+ * mockResponder 用内存 Map<date, content> 模拟 attribution_chains 表两分支
+ * （INSERT ... ON CONFLICT upsert / SELECT content），使 POST→GET 读回一致性与
+ * 覆盖更新可端到端断言（建表由 020 migration 负责，不在本路由 SQL 序列内）。
  */
 import { describe, it, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,9 +43,6 @@ const store = new Map<string, unknown>();
 (pool as any).query = function (sql: string, ...rest: unknown[]): Promise<{ rows: unknown[] }> {
     const params = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
     mockCalls.push({ sql, params });
-    if (/^CREATE TABLE/i.test(sql.trim())) {
-        return Promise.resolve({ rows: [] });
-    }
     if (/INSERT INTO attribution_chains/i.test(sql)) {
         store.set(String(params[0]), JSON.parse(String(params[1])));
         return Promise.resolve({ rows: [] });
@@ -63,14 +65,16 @@ const POST_HEADERS = { 'content-type': 'application/json', 'x-internal-token': I
 const DATE = '2026-09-03';
 
 // 链结构契约：{date, chain:{date, root:{type:"market",...}, children:[...]}}
+// children[].relation 取值域对齐 agent-py judge_sector_driver_relation：
+// self_driven | market_follow | unknown；pct 为 number | null。
 const CHAIN_V1 = {
     date: DATE,
     chain: {
         date: DATE,
         root: { type: 'market', date: DATE, summary: '放量普涨', index_pct: 1.25 },
         children: [
-            { sector: '半导体', relation: '主因', pct: 3.2, trace_summary: 'AI 算力催化领涨' },
-            { sector: '证券', relation: '联动', pct: 1.8, trace_summary: '情绪扩散' },
+            { sector: '半导体', relation: 'self_driven', pct: 3.2, trace_summary: 'AI 算力催化领涨' },
+            { sector: '证券', relation: 'market_follow', pct: 1.8, trace_summary: '情绪扩散' },
         ],
     },
 };
@@ -81,10 +85,15 @@ const CHAIN_V2 = {
         date: DATE,
         root: { type: 'market', date: DATE, summary: '缩量回调', index_pct: -0.85 },
         children: [
-            { sector: '银行', relation: '防御', pct: 0.6, trace_summary: '避险资金流入' },
+            { sector: '银行', relation: 'market_follow', pct: 0.6, trace_summary: '避险资金流入' },
         ],
     },
 };
+
+/** 以指定 children 覆盖构造合法外壳（date/root 均合法），便于聚焦 children 子项校验 */
+function chainWith(children: unknown): unknown {
+    return { date: DATE, chain: { date: DATE, root: { type: 'market', date: DATE }, children } };
+}
 
 function buildApp(): Express {
     const app = express();
@@ -221,6 +230,281 @@ describe('POST /api/internal/attribution-chain', () => {
         assert.strictEqual(mockCalls.length, 0, '无效载荷应在落库前拦截');
     });
 
+    it('date 非 YYYY-MM-DD → 400（对齐 GET 侧 DATE_RE），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: { date: 'foo', chain: CHAIN_V1.chain },
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'invalid date format: foo（需要 YYYY-MM-DD）' });
+        assert.strictEqual(mockCalls.length, 0, '非法 date 应在落库前拦截');
+    });
+
+    it('children[0].sector 为空串 → 400（错误含下标），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '  ', relation: 'self_driven', pct: 1.0 }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'children[0].sector must be a non-empty string' });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    it('children[0].sector 缺失 → 400（错误含下标），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ relation: 'self_driven', pct: 1.0 }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'children[0].sector must be a non-empty string' });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    it('children[0].relation 越界（非 self_driven/market_follow/unknown）→ 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '半导体', relation: '主因', pct: 1.0 }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, {
+            error: 'children[0].relation must be one of self_driven|market_follow|unknown',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    it('children[0].pct 为字符串 → 400（非 number|null），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '半导体', relation: 'self_driven', pct: '3.2' }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'children[0].pct must be a number or null' });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    it('children[0].pct 缺失（undefined）→ 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '半导体', relation: 'self_driven' }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'children[0].pct must be a number or null' });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    // Task 2.1 链事件节点契约：children[].events 可选数组，子项 {event_id, ref, headline, source}
+    it('children[0].events 合法（warehouse 带 event_id + search 允许 event_id=null）→ 200 且读回一致', async () => {
+        const app = buildApp();
+        const children = [
+            {
+                sector: '半导体',
+                relation: 'self_driven',
+                pct: 3.2,
+                trace_summary: '出口管制升级',
+                events: [
+                    {
+                        event_id: '2026-09-03-abc1234567890',
+                        ref: 'https://news.example.com/a',
+                        headline: '美对华半导体设备出口限制落地',
+                        source: 'warehouse',
+                    },
+                    {
+                        event_id: null,
+                        ref: 'search:2026-09-03 半导体 板块 暴跌 大涨 原因|半导体板块早盘异动',
+                        headline: '半导体板块早盘异动',
+                        source: 'search',
+                    },
+                ],
+            },
+        ];
+        const body = chainWith(children);
+        const postRes = await call(app, {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body,
+        });
+        assert.strictEqual(postRes.status, 200);
+        assert.deepStrictEqual(postRes.json, { code: 200, data: { ok: true } });
+
+        const getRes = await call(app, {
+            method: 'GET',
+            path: `/api/agent/attribution-chain/${DATE}`,
+        });
+        assert.strictEqual(getRes.status, 200);
+        assert.deepStrictEqual(
+            (getRes.json as { chain: { children: unknown[] } }).chain.children,
+            children,
+        );
+    });
+
+    it('children[0].events 非数组 → 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '半导体', relation: 'self_driven', pct: 3.2, events: 'x' }]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, { error: 'children[0].events must be an array' });
+        assert.strictEqual(mockCalls.length, 0, '非法 events 应在落库前拦截');
+    });
+
+    it('children[0].events[0].source 越界 → 400（错误含下标），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([
+                {
+                    sector: '半导体',
+                    relation: 'self_driven',
+                    pct: 3.2,
+                    events: [
+                        {
+                            event_id: null,
+                            ref: 'https://news.example.com/a',
+                            headline: '半导体板块异动',
+                            source: 'tavily',
+                        },
+                    ],
+                },
+            ]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, {
+            error: 'children[0].events[0].source must be one of warehouse|search',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 events 应在落库前拦截');
+    });
+
+    it('children[0].events[0].source=warehouse 但缺 event_id → 400，且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([
+                {
+                    sector: '半导体',
+                    relation: 'self_driven',
+                    pct: 3.2,
+                    events: [
+                        {
+                            event_id: null,
+                            ref: 'https://news.example.com/a',
+                            headline: '半导体板块异动',
+                            source: 'warehouse',
+                        },
+                    ],
+                },
+            ]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, {
+            error: 'children[0].events[0].event_id must be a non-empty string when source is warehouse',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 events 应在落库前拦截');
+    });
+
+    it('children[0].events[0] 缺 ref/headline → 400（错误含下标），且不触达 DB', async () => {
+        const noRef = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([
+                {
+                    sector: '半导体',
+                    relation: 'self_driven',
+                    pct: 3.2,
+                    events: [{ event_id: null, headline: '半导体板块异动', source: 'search' }],
+                },
+            ]),
+        });
+        assert.strictEqual(noRef.status, 400);
+        assert.deepStrictEqual(noRef.json, {
+            error: 'children[0].events[0].ref must be a non-empty string',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 events 应在落库前拦截');
+
+        const blankHeadline = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([
+                {
+                    sector: '半导体',
+                    relation: 'self_driven',
+                    pct: 3.2,
+                    events: [
+                        {
+                            event_id: null,
+                            ref: 'https://news.example.com/a',
+                            headline: '  ',
+                            source: 'search',
+                        },
+                    ],
+                },
+            ]),
+        });
+        assert.strictEqual(blankHeadline.status, 400);
+        assert.deepStrictEqual(blankHeadline.json, {
+            error: 'children[0].events[0].headline must be a non-empty string',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 events 应在落库前拦截');
+    });
+
+    it('children[0].events 缺省（旧链无事件层）→ 200（可选字段向后兼容）', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '半导体', relation: 'self_driven', pct: 3.2 }]),
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.json, { code: 200, data: { ok: true } });
+    });
+
+    it('children[1] 非法 → 错误下标为 1（定位到具体子项），且不触达 DB', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([
+                { sector: '半导体', relation: 'self_driven', pct: 3.2 },
+                { sector: '证券', relation: '联动', pct: 1.8 },
+            ]),
+        });
+        assert.strictEqual(res.status, 400);
+        assert.deepStrictEqual(res.json, {
+            error: 'children[1].relation must be one of self_driven|market_follow|unknown',
+        });
+        assert.strictEqual(mockCalls.length, 0, '非法 children 应在落库前拦截');
+    });
+
+    it('children[].pct 为 null 且 relation 为 unknown → 200（合法边界）', async () => {
+        const res = await call(buildApp(), {
+            method: 'POST',
+            path: '/api/internal/attribution-chain',
+            headers: POST_HEADERS,
+            body: chainWith([{ sector: '银行', relation: 'unknown', pct: null }]),
+        });
+        assert.strictEqual(res.status, 200);
+        assert.deepStrictEqual(res.json, { code: 200, data: { ok: true } });
+        assert.strictEqual(mockCalls.length, 1);
+    });
+
     it('有效载荷 → {ok:true}，GET 同 date 读回 chain 内容一致', async () => {
         const app = buildApp();
         const postRes = await call(app, {
@@ -230,13 +514,16 @@ describe('POST /api/internal/attribution-chain', () => {
             body: CHAIN_V1,
         });
         assert.strictEqual(postRes.status, 200);
-        assert.deepStrictEqual(postRes.json, { ok: true });
+        assert.deepStrictEqual(postRes.json, { code: 200, data: { ok: true } });
 
-        // 落库 SQL 序列：先 CREATE TABLE IF NOT EXISTS，再 INSERT ... ON CONFLICT upsert
-        assert.strictEqual(mockCalls.length, 2);
-        assert.match(mockCalls[0].sql, /CREATE TABLE IF NOT EXISTS attribution_chains/);
-        assert.match(mockCalls[1].sql, /INSERT INTO attribution_chains[\s\S]*ON CONFLICT/);
-        assert.deepStrictEqual(mockCalls[1].params, [DATE, JSON.stringify(CHAIN_V1.chain)]);
+        // 落库 SQL 序列：仅 INSERT ... ON CONFLICT upsert（建表由 020 migration 负责）
+        assert.strictEqual(mockCalls.length, 1);
+        assert.match(mockCalls[0].sql, /INSERT INTO attribution_chains[\s\S]*ON CONFLICT/);
+        assert.deepStrictEqual(mockCalls[0].params, [DATE, JSON.stringify(CHAIN_V1.chain)]);
+        assert.ok(
+            !/CREATE TABLE/i.test(mockCalls.map((c) => c.sql).join('\n')),
+            '路由不得内联建表（attribution_chains 由 020 migration 管理）',
+        );
 
         const getRes = await call(app, {
             method: 'GET',
