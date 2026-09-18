@@ -238,6 +238,49 @@ export function toInsightArticleSourceRecord(
 }
 
 /**
+ * Tushare 资金流结果 → StockSourceRecord（capital 证据域映射）。
+ *
+ * 2026-09-18：资金维度降级为"条件准入层"后，证据必须含"价格读不出的增量信息"才可能被
+ * LLM 置 supported/weak——故透出原先被丢弃的分单结构（超大单/大单/中单/小单）与多窗口拆解
+ * （1/5/10/20 日），并在正文标注 trade_date，供提示词按"同日可 supported、T-1 最高 weak"分档。
+ */
+export function toCapitalSourceRecord(
+    flow: CapitalFlowResult,
+    symbol: string,
+    capturedAt: Date,
+): StockSourceRecord {
+    const orderText = flow.orders.map((order) => `${order.label} ${order.value} 亿`).join('、');
+    return sourceRecord({
+        sourceId: `capital:${symbol}:${flow.tradeDate}`,
+        kind: 'capital_fact',
+        provider: 'tushare_moneyflow',
+        sourceLevel: 'B',
+        title: `资金流向 ${symbol}`,
+        contentExcerpt: `截至 ${flow.tradeDate}：主力净流入 ${flow.mainInflow} 亿（${flow.tag}），`
+            + `5 日 ${flow.fiveDay} 亿${orderText ? `；分单结构 ${orderText}` : ''}`,
+        symbol,
+        occurredAt: tradeDateAsUtc(flow.tradeDate, capturedAt),
+        capturedAt,
+        payload: {
+            trade_date: flow.tradeDate,
+            main_inflow: flow.mainInflow,
+            retail_inflow: flow.retailInflow,
+            five_day: flow.fiveDay,
+            streak: flow.streak,
+            tag: flow.tag,
+            orders: flow.orders.map((order) => ({ label: order.label, value: order.value })),
+            windows: flow.windows.map((window) => ({
+                days: window.days,
+                main_inflow: window.mainInflow,
+                retail_inflow: window.retailInflow,
+                ratio: window.ratio,
+                orders: window.orders.map((order) => ({ label: order.label, value: order.value })),
+            })),
+        },
+    });
+}
+
+/**
  * 读取当日事件库证据（stock_trace 证据源优先读事件库）。
  *
  * 调用 Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`
@@ -613,13 +656,7 @@ export class StockTraceSnapshotService {
             });
             // buildEmptyResult 返回 tradeDate=''，此时返回空数组使 capital 域为 missing 而非假证据
             if (!flow.tradeDate) return [];
-            return [sourceRecord({
-                sourceId: `capital:${event.symbol}:${flow.tradeDate}`, kind: 'capital_fact', provider: 'tushare_moneyflow',
-                sourceLevel: 'B', title: `资金流向 ${event.symbol}`,
-                contentExcerpt: `主力净流入 ${flow.mainInflow} 亿（${flow.tag}），5 日 ${flow.fiveDay} 亿`,
-                symbol: event.symbol, occurredAt: tradeDateAsUtc(flow.tradeDate, capturedAt), capturedAt,
-                payload: { trade_date: flow.tradeDate, main_inflow: flow.mainInflow, retail_inflow: flow.retailInflow, five_day: flow.fiveDay, streak: flow.streak, tag: flow.tag },
-            })];
+            return [toCapitalSourceRecord(flow, event.symbol, capturedAt)];
         } catch {
             return []; // 超时/无数据 → capital 域 missing
         }
