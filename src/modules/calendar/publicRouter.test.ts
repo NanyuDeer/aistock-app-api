@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import type { AddressInfo } from 'node:net'
 import http from 'node:http'
-import { rhythmMasterPublicRouter } from './publicRouter'
+import { rhythmMasterPublicRouter, loadCalendarEventsByDate } from './publicRouter'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
@@ -72,7 +72,7 @@ test('GET /api/agent/rhythm-master/:date 返回按 refresh_slot 优先级排序�
   } finally { server.close() }
 })
 
-test('GET /rhythm-master/calendar 每行含 events：仅 macro、US 隔夜顺延后按对外契约、非 macro 排除、无事件日空数组', async () => {
+test('GET /rhythm-master/calendar 每行含 events：macro 与 delivery、US 隔夜顺延后按对外契约、earnings 排除、无事件日空数组', async () => {
   const app = express()
   app.use('/api/agent', rhythmMasterPublicRouter)
   const server = app.listen(0, '127.0.0.1')
@@ -82,10 +82,10 @@ test('GET /rhythm-master/calendar 每行含 events：仅 macro、US 隔夜顺延
     const res = await get(port, '/api/agent/rhythm-master/calendar?days=5')
     assert.equal(res.status, 200)
     assert.ok(Array.isArray(res.json.data.days))
-    // 存在至少一天包含 macro 事件；所有 events 元素 type 均为 macro 且带对外契约字段
+    // 存在至少一天包含 macro/delivery 事件；所有 events 元素 type ∈ {macro, delivery}（earnings/seed 不下发）且带对外契约字段
     const dayWithEvents = res.json.data.days.find((d: any) => Array.isArray(d.events) && d.events.length > 0)
     assert.ok(dayWithEvents, '应存在带 events 的交易日')
-    assert.ok(dayWithEvents.events.every((e: any) => e.type === 'macro'))
+    assert.ok(dayWithEvents.events.every((e: any) => e.type === 'macro' || e.type === 'delivery'))
     assert.ok(dayWithEvents.events.every((e: any) => typeof e.title === 'string' && e.source && e.importance))
     // 全部行都有 events 字段（无事件 = []）
     assert.ok(res.json.data.days.every((d: any) => Array.isArray(d.events)))
@@ -124,4 +124,13 @@ test('GET /rhythm-master/calendar naturalDays 含周末且 level=null', async ()
     // 每行都有 events 字段
     assert.ok(days.every((d: any) => Array.isArray(d.events)))
   } finally { server.close() }
+})
+
+test('日历网格合并 L1 交割日：2026-09-18（9 月第三个周五）为 delivery', async () => {
+  // dates 降序（新到老）；from=最后一个、to=第一个 → 窗口 2026-09-18 ~ 2026-09-24
+  const byDate = await loadCalendarEventsByDate([
+    '2026-09-24', '2026-09-23', '2026-09-22', '2026-09-21', '2026-09-18',
+  ])
+  const day = byDate.get('2026-09-18') ?? []
+  assert.ok(day.some((e) => e.type === 'delivery'), '2026-09-18 应有交割日事件')
 })
