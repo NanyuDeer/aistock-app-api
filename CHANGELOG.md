@@ -2,6 +2,23 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## \[master\] 2026-09-18 — `sector-insight` 报告侧摘要改为 conclusion 优先（不再落到「触发」）
+
+**开发者**: Aria
+
+### 修复
+
+- `extractTraceSummary` 优先取报告 `conclusion`（agent-py 新增的一句话归因结论），无则回退 trigger headline（无则第一个 stage），取不到仍返回 `null`（不编造）。
+- `extractPerSectorTraceEntries` 摘要取源改为 `conclusion` → 顶层 `summary`（旧数据兼容）→ `extractTraceSummary`，修掉此前 `top` 压过 conclusion 的顺序问题；与 agent-py `_trace_summary` 报告侧优先级对齐。
+- 根因：`SectorChainResult` 此前无结论字段，报告侧摘要只能落 trigger 段 headline（原因第 1 段），导致三处折叠卡显示的都是「触发」。响应契约未变（结论折进 `trace.summary`），`aistock-app-frontend` 0 改动。
+
+### 测试
+
+- `src/core/routes/__tests__/sectorInsight.spec.ts` +2 例（先红后绿）：conclusion 优先于 trigger / conclusion 空白回退 trigger / conclusion 与顶层 summary 同时存在时 conclusion 赢。
+- `node --import tsx --test src/core/routes/__tests__/sectorInsight.spec.ts` 24 pass / 0 fail；`npx tsc --noEmit` exit 0。
+
+---
+
 ## \[changer\] 2026-09-18 — 节奏日历网格增加交割日标记
 
 **开发者**: 37588

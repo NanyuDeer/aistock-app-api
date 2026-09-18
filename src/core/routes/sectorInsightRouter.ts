@@ -137,11 +137,19 @@ function looksLikeTsCode(v: string): boolean {
 /**
  * 从 market_trace.trace（SectorChainResult 序列化：chain_id/sector/stages[]/
  * attribution_status/missing_evidence）提取可展示的归因主句。
- * stages[].headline 是 LLM 按现象/触发/传导/影响产出的标题——取 trigger 阶段
- * （无则第一个 stage）headline 作 summary；取不到返回 null（不编造）。
+ *
+ * R25（2026-09-18）：**优先取报告 `conclusion`**（agent-py 新增的一句话归因结论），
+ * 它才是"该板块为什么动"的结论句；修复前无该字段，摘要只能落 trigger headline
+ * （= 原因的第 1 段），前端三处折叠卡因此都显示「触发」。
+ * 无 `conclusion` → trigger headline（无则第一个 stage），取不到返回 null（不编造）。
+ * 注：顶层 `summary` 的优先级在调用方（`extractPerSectorTraceEntries`），不在本函数内。
  */
 export function extractTraceSummary(trace: unknown): string | null {
   if (!trace || typeof trace !== 'object') return null
+  const pickText = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() ? v.trim() : null
+  const conclusion = pickText((trace as { conclusion?: unknown }).conclusion)
+  if (conclusion) return conclusion
   const stages = (trace as { stages?: unknown }).stages
   if (!Array.isArray(stages)) return null
   const pick = (s: unknown): string | null => {
@@ -260,8 +268,9 @@ export function extractTraceStages(trace: unknown): SectorInsightTraceStage[] | 
 
 /**
  * `display_report.sector_traces`（{板块名: SectorChainResult}）→ 每板块摘要 + 4 段原因链。
- * 摘要取源与 agent-py `_trace_summary` 的报告侧口径一致：顶层 `summary` 优先，缺则 trigger
- * stage headline。无该字段/无该板块 → 空 Map（调用方回退旧行为，不编造）。
+ * 摘要取源与 agent-py `_trace_summary` 的报告侧口径一致（R25 起）：
+ * **`conclusion`（一句话归因结论）→ 顶层 `summary`（旧数据兼容）→ trigger stage headline**。
+ * 无该字段/无该板块 → 空 Map（调用方回退旧行为，不编造）。
  */
 export function extractPerSectorTraceEntries(content: unknown): Map<string, SectorTraceEntry> {
   const out = new Map<string, SectorTraceEntry>()
@@ -276,10 +285,11 @@ export function extractPerSectorTraceEntries(content: unknown): Map<string, Sect
     const key = name.trim()
     if (!key) continue
     const t = trace && typeof trace === 'object' ? (trace as Record<string, unknown>) : {}
+    const conclusion = typeof t.conclusion === 'string' ? t.conclusion.trim() : ''
     const top = typeof t.summary === 'string' ? t.summary.trim() : ''
     const stages = extractTraceStages(trace)
     out.set(key, {
-      summary: top || extractTraceSummary(trace),
+      summary: conclusion || top || extractTraceSummary(trace),
       status: t.attribution_status === 'sufficient' ? 'completed' : 'insufficient',
       ...(stages ? { stages } : {}),
     })
