@@ -753,20 +753,50 @@ const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
         console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
     } catch (err) {
         console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    } finally {
+        // 2026-09-18 修复：收盘落定必须在当日打点**创建完事件之后**执行。
+        // 原先落定与 close 打点同为 '5 15 * * 1-5' 并发触发，落定抢在打点中途把当日 active 事件关掉，
+        // 打点随后（落定之后）为同一标的又新建一条事件 —— 该事件永远停在 active、无 job/outbox，
+        // 前端同日聚合取最新 → 展示"归因分析中"（2026-09-18 蓝盾光电/海正生材实测）。
+        if (snapshotType === 'close') {
+            try {
+                const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
+                const settled = await StockTraceService.settleActiveEvents();
+                console.log(`[StockTraceCron] 打点后落定完成 settled=${settled}`);
+            } catch (err: unknown) {
+                console.error('[StockTraceCron] 打点后落定失败:', err instanceof Error ? err.message : String(err));
+            }
+        }
     }
 };
 cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
 
-// 异动监控收盘兜底（15:05）：强制落定当日仍 active 的事件并触发一次最终归因。
-// 盘中不再即时归因（降 token / 数据更全），此 cron 保证 5 分钟恢复窗口在收盘前未到期的事件也不漏归因。
-cron.schedule('5 15 * * 1-5', async () => {
+// 异动监控收盘落定兜底（15:10）：强制落定当日仍 active 的事件并触发一次最终归因。
+// 盘中不再即时归因（降 token / 数据更全）。15:05 的落定已并入 close 打点以保证时序，
+// 本 cron 后移 5 分钟作兜底，覆盖打点路径异常、或 15:05 之后才新建事件的漏落定。
+cron.schedule('10 15 * * 1-5', async () => {
     try {
         const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
         const settled = await StockTraceService.settleActiveEvents();
         console.log(`[StockTraceCron] 收盘落定完成 settled=${settled}`);
     } catch (err: unknown) {
         console.error('[StockTraceCron] 收盘落定失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// stock-trace outbox 冲刷兜底（每分钟）：发布失败（如 Redis 连接中断）会让 outbox 停在 pending，
+// 而 publishPending 只在 enqueue / scheduleEnriched 完成等事件路径被顺带调用 → 失败行可能永久滞留
+// （2026-08-25、2026-09-18 两次实测：err='Error'，attempt_count 停在 3 且再无重试入口）。
+cron.schedule('* * * * *', async () => {
+    try {
+        const { StockTraceJobService } = await import('./modules/stock-trace/StockTraceJobService');
+        const r = await StockTraceJobService.publishPending();
+        if (r.published > 0 || r.failed > 0) {
+            console.log(`[StockTraceOutboxCron] published=${r.published} failed=${r.failed}`);
+        }
+    } catch (err: unknown) {
+        console.error('[StockTraceOutboxCron] outbox 冲刷失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
