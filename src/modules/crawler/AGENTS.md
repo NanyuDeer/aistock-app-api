@@ -46,8 +46,8 @@
 
 ### 2026-09-03 更新：资讯 forecast 回写端点——已于 2026-09-13 移除
 
-> 以下内容已在迁移 019 中删除：
+> 以下内容已在迁移 022 中删除：
 >
 > - `PATCH /internal/stock-info/judgements/:id/forecast` 端点已删除。
 > - `StockInfoService.upsertJudgementForecast(id, slot, forecast)` 已删除。
-> - `stock_info_judgements` 的 `forecast JSONB` 列已由迁移 `019_drop_forecast.sql` 删除。
+> - `stock_info_judgements` 的 `forecast JSONB` 列已由迁移 `022_drop_forecast.sql` 删除。

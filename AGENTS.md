@@ -326,7 +326,7 @@ pm2 logs aistock-api      # 查看日志
 
 ### 2026-09-03 更新：自选股洞察阶段 2（轻量预判 forecast 落库）——已于 2026-09-13 移除
 
-> forecast（轻量预判）功能已彻底下线。迁移 `019_drop_forecast.sql` 已删除 `stock_trace_events` 与 `stock_info_judgements` 的 `forecast` 列（保留 `is_limit_up`）。以下端点/类型/Service 已全部删除：
+> forecast（轻量预判）功能已彻底下线。迁移 `022_drop_forecast.sql` 已删除 `stock_trace_events` 与 `stock_info_judgements` 的 `forecast` 列（保留 `is_limit_up`）。以下端点/类型/Service 已全部删除：
 >
 > - `GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast`
 > - `ForecastSlot`、`LightPredictTarget` 类型（`types.ts`）
