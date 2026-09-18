@@ -77,13 +77,26 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - User APIs remain in `controller.ts`; Python-facing routes remain in `internalRouter.ts` and require `X-Internal-Token`.
 - Company-context evidence is read from the unified event store first (`loadEventStoreEvidence` → Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`, via `AGENT_PY_URL || PYTHON_AGENT_URL` + `X-Internal-Token`, Shanghai-today date); on empty/miss/failure `collectCompanySources` falls back to the original CLS stock news + stock-info announcement collection (2026-08-12).
 
-### 2026-09-03 更新：is_limit_up + forecast slot 分存（阶段 2 轻量预判）
+### 2026-09-03 更新：is_limit_up + forecast slot 分存（阶段 2 轻量预判）——已于 2026-09-13 移除
 
-- `stock_trace_events` 新增 `is_limit_up BOOLEAN NOT NULL DEFAULT FALSE`（涨停雷达文章命中标记）与 `forecast JSONB NOT NULL DEFAULT '{}'`（slot 级分存，midday/close 互不覆盖）。
-- `listUserEvents`/`listRecentEvents` 返回体补 `is_limit_up`/`forecast`（纯增量）。
-- `StockTraceService.listLightPredictTargets(tradeDate)`：按 symbol 去重返回当日预判候选。
-- `StockTraceService.upsertEventForecast(eventId, slot, forecast)`：slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
-- Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。
+> forecast（轻量预判）功能已彻底下线。迁移 `019_drop_forecast.sql` 已删除 `stock_trace_events` 的 `forecast` 列（保留 `is_limit_up`）。以下方法/端点已删除：
+>
+> - `StockTraceService.listLightPredictTargets(tradeDate)` — 按 symbol 去重返回当日预判候选。
+> - `StockTraceService.upsertEventForecast(eventId, slot, forecast)` — slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
+> - Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。
+>
+> `is_limit_up` 列保留不变（涨停文章命中标记，前端涨停文案仍依赖）。
+
+### 2026-09-13 更新：完整洞察报告 PDF + 预判彻底移除（迁移 019）
+
+- **新增端点**：`GET /api/cn/favorites/movements/:eventId/report.pdf`（StockTraceController.report）——JWT 鉴权，返回实时渲染的 PDF。
+  - 状态码：`401`（无/无效 JWT）、`404`（事件不存在或不属于当前用户）、`409`（事件无归因完成结果，不可生成报告）、`200`（正常返回 PDF 字节流，Content-Type: application/pdf）、`502`（上游 agent-py 渲染服务不可用/超时/非 PDF 响应）。
+  - 数据流：app-api 组装快照 + 归因结果 → `POST /api/agent/insight-report/render`（agent-py，X-Internal-Token 鉴权）→ 收到 PDF buffer → 设 Content-Disposition attachment 文件名 `{symbol}_{eventId}_{date}.pdf` → 返回。
+  - 报告**实时生成不落盘**（无 DB 存储，无缓存）。
+- **agent-py 侧**：`POST /api/agent/insight-report/render`（`services/insight_report.py`，X-Internal-Token 校验）——接收 event JSON body，以 reportlab 渲染 PDF（A4, 中文正文+表格+归因证据），500 出错。
+- **迁移 `019_drop_forecast.sql`**：`stock_trace_events` 与 `stock_info_judgements` 的 `forecast` 列已彻底删除（**保留 `is_limit_up`**——涨停文案仍依赖）。`ensureSchema` 中对应的幂等 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS forecast` 已同步清理（否则重启会复活列）。
+- **Service 层移除**：`StockTraceService.listLightPredictTargets`、`upsertEventForecast` 已删除；`StockInfoService.upsertJudgementForecast` 已删除。
+- **端点移除**：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast` 已删除。
 
 ### 2026-09-04 更新：movements 持仓期可见 + 新增自选股"加入即打点"
 
