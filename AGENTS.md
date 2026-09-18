@@ -251,6 +251,10 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
 | `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
+| `/api/agent/attribution-chain/:date` | GET | 当日大盘归因链（`attributionChainRouter`，须在 createAgentProxy 之前挂载）：`{date, chain \| null}`；查无 → 200 降级不报错 |
+| `/api/agent/sector-insight/:date` | GET | 板块四环聚合（`sectorInsightRouter`，须在 createAgentProxy 之前挂载）：风口板块 ∪ 溯源主因板块候选，按同花顺 `ts_code` 去重合并，每候选挂 `quote`/`trace`/`prediction` |
+
+> **`sector-insight` 的 `trace.summary` 取源（2026-09-18 根治）**：**链优先** —— 读当日 `attribution_chains.children[].trace_summary`（匹配顺序 `ts_code` 裸码 → `sector_std` → `sector`），与「市场洞见」页同源；链无该板块（或链表缺失/查询失败，接口降级不报错）→ 回退报告 `display_report.sector_traces[板块名]`（该板块**自己**的 stages）→ 再回退旧单板块形状 `market_trace.trace`。修复两个叠加问题：① `market_trace.trace` 是**单板块形状**（只承载当天第一个板块），多板块日所有 `review_primary` 候选原先共用同一份摘要（三个板块显示同一句话）；② 与大盘归因链口径分裂。纯函数 `extractPerSectorTraceEntries` / `indexChainTraceSummaries` + `buildCandidatesMap` 主因项新增可选 `item.trace`（缺省回退第 3 参，旧调用方行为不变）。**响应契约未变**（`SectorInsightTrace` 字段与形状不变，仅取值更准），两个前端 0 改动。
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
