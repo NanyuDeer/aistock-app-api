@@ -51,7 +51,7 @@
 
 - internal 鉴权：`x-internal-token` 必须等于 `INTERNAL_API_TOKEN || INTERNAL_TOKEN || 'change-me-in-production'`（**请求时动态求值**，非模块加载期常量——避免 core/db 的 dotenv 抢先固化导致测试/热更新后 token 失效）
 
-- rhythm-master 版本优先级：`midday > morning > after_close`（展示最新）
+- rhythm-master 版本排序：**created_at 倒序**（2026-09-19 起；原 `midday > morning > after_close` 优先级仅作自动调度下的自然序——手动补跑覆盖生成的卡 created 最新，需优先展示）
 
 ## 接口表
 

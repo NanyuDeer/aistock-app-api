@@ -8,7 +8,8 @@ import { listDeliveryDates } from './CalendarRuleService'
 export const rhythmMasterPublicRouter: Router = Router()
 
 // refresh_slot 展示优先级（前端展示最新）
-const SLOT_PRIORITY: Record<string, number> = { midday: 2, morning: 1, after_close: 0 }
+// 2026-09-19：三时点排序改为 created_at 倒序（手动补跑覆盖优先展示），
+// 原 SLOT_PRIORITY 优先级（midday>morning>after_close）已不再用于本接口排序。
 
 /** 每日收盘基准建议仓位（rhythm_card.position_band；行缺失/无仓位语义 = null，前端如实展示）。 */
 export interface RhythmPositionBand {
@@ -173,7 +174,10 @@ rhythmMasterPublicRouter.get('/rhythm-master/:date', async (req: Request, res: R
     )
     const versions = result.rows
       .map((r) => ({ refresh_slot: r.user_id as string, created_at: r.created_at as string, content: r.content as unknown }))
-      .sort((a, b) => SLOT_PRIORITY[b.refresh_slot] - SLOT_PRIORITY[a.refresh_slot])
+      // 2026-09-19：排序由 SLOT_PRIORITY（midday>morning>after_close）改为 created_at 倒序——
+      // 手动补跑（target_date 覆盖）生成的新卡 created 最新，需优先展示；原"三时点优先级"
+      // 在自动调度下与 created_at 倒序基本同序，测试契约兼容。
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     res.json({ code: 0, data: { date, versions } })
   } catch (err) {
     console.error('[Calendar] GET /rhythm-master error:', err)
