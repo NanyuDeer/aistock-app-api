@@ -116,10 +116,17 @@ function numOrNull(v: unknown): number | null {
  * 数据源 —— Tushare `ths_daily` 本身返回 open/high/low，此前仅映射层未透传）；
  * amount 同键透传但**上游 ths_daily 无此字段**（TushareService.getThsDaily 的 fields
  * 未含 amount，Tushare 文档接口 260 输出亦无）→ 恒 null，仅为契约形状统一留位，未来换源/扩字段即成真值。 */
+/** 日期入参归一为紧凑 YYYYMMDD（上游 Tushare 要求）。
+ * X1（2026-09-19）：Python 侧曾传 ISO 连字符（2026-05-11）→ 被路由校验挡下恒 400；
+ * 归一放在 service 边界，任何调用方传 ISO 也不会再失败。 */
+function toYmd(value: string): string {
+    return value.includes('-') ? value.replace(/-/g, '') : value
+}
+
 export async function getBoardDailyRange(
     code: string, start: string, end: string,
 ): Promise<ThsBoardDailyRow[]> {
-    const rows = await __dailyDeps.getThsDaily(code, start, end)
+    const rows = await __dailyDeps.getThsDaily(code, toYmd(start), toYmd(end))
     const out = rows
         .filter((r) => r.trade_date !== undefined)
         .map((r) => ({

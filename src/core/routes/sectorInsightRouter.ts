@@ -37,11 +37,28 @@ export interface SectorInsightQuote {
   lead_stock?: string | null
 }
 
+/** 溯源链单段（板块 4 段固定语义：phenomenon → trigger → transmission → impact） */
+export interface SectorInsightTraceStage {
+  /** 阶段名（`phenomenon`/`trigger`/`transmission`/`impact`；取自报告，仅保证非空字符串） */
+  kind: string
+  headline: string
+  claims: string[]
+  /** 该段证据来源：url 可点跳原文；title-only 也保留（url 缺失归一为 null，不编造） */
+  evidence: { url: string | null; title: string | null }[]
+}
+
 export interface SectorInsightTrace {
   present: boolean
   status?: 'completed' | 'insufficient'
   summary?: string | null
   sectors: string[]
+  /**
+   * 该板块自己的**完整 4 段原因链**（2026-09-18 加性透出）。
+   * 数据一直在 `display_report.sector_traces[板块名].stages` 里，此前前端只取了 trigger 段
+   * headline 当 `summary` —— 过程、每段 claims、证据 URL 都没露出来。**保源序**（4 段顺序
+   * 本身是语义，不得排序）；无 stages / 非数组 → **省略该键**（不编造空链）。
+   */
+  stages?: SectorInsightTraceStage[]
 }
 
 export interface SectorInsightHorizon {
@@ -120,11 +137,19 @@ function looksLikeTsCode(v: string): boolean {
 /**
  * 从 market_trace.trace（SectorChainResult 序列化：chain_id/sector/stages[]/
  * attribution_status/missing_evidence）提取可展示的归因主句。
- * stages[].headline 是 LLM 按现象/触发/传导/影响产出的标题——取 trigger 阶段
- * （无则第一个 stage）headline 作 summary；取不到返回 null（不编造）。
+ *
+ * R25（2026-09-18）：**优先取报告 `conclusion`**（agent-py 新增的一句话归因结论），
+ * 它才是"该板块为什么动"的结论句；修复前无该字段，摘要只能落 trigger headline
+ * （= 原因的第 1 段），前端三处折叠卡因此都显示「触发」。
+ * 无 `conclusion` → trigger headline（无则第一个 stage），取不到返回 null（不编造）。
+ * 注：顶层 `summary` 的优先级在调用方（`extractPerSectorTraceEntries`），不在本函数内。
  */
 export function extractTraceSummary(trace: unknown): string | null {
   if (!trace || typeof trace !== 'object') return null
+  const pickText = (v: unknown): string | null =>
+    typeof v === 'string' && v.trim() ? v.trim() : null
+  const conclusion = pickText((trace as { conclusion?: unknown }).conclusion)
+  if (conclusion) return conclusion
   const stages = (trace as { stages?: unknown }).stages
   if (!Array.isArray(stages)) return null
   const pick = (s: unknown): string | null => {
@@ -189,12 +214,63 @@ export function extractSectorTraceInfo(content: unknown): SectorTraceInfo {
 export interface SectorTraceEntry {
   summary: string | null
   status?: 'completed' | 'insufficient'
+  /** 该板块的 4 段原因链（无/畸形 → 省略） */
+  stages?: SectorInsightTraceStage[]
 }
 
 /**
- * `display_report.sector_traces`（{板块名: SectorChainResult}）→ 每板块摘要。
- * 取源与 agent-py `_trace_summary` 的报告侧口径一致：顶层 `summary` 优先，缺则 trigger
- * stage headline。无该字段/无该板块 → 空 Map（调用方回退旧行为，不编造）。
+ * `stages` → 4 段原因链（纯函数，逐项清洗）。
+ *
+ * 板块溯源链是 **4 段**：`现象 → 触发 → 传导 → 影响`（**不是**大盘主因链的 6 段）——
+ * 板块的「触发」才是原因，其余三段是现象与后果。清洗口径：
+ * - 段非对象 → 丢；`kind` 去空白后为空 → 丢（无阶段名无法归类）；
+ * - `headline` 缺失/非字符串 → **空串**（保留段，前端按"该段无结论"渲染）；
+ * - `claims` 只留非空字符串（trim）；`evidence` 只留 url 或 title 至少一个非空字符串的条目；
+ * - **保源序**（4 段顺序本身是语义）。
+ * 全空 → 返回 `undefined`（调用方省略键，不编造空链）。
+ */
+export function extractTraceStages(trace: unknown): SectorInsightTraceStage[] | undefined {
+  if (!trace || typeof trace !== 'object') return undefined
+  const raw = (trace as { stages?: unknown }).stages
+  if (!Array.isArray(raw)) return undefined
+  const stages: SectorInsightTraceStage[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const s = item as Record<string, unknown>
+    const kind = typeof s.kind === 'string' ? s.kind.trim() : ''
+    if (!kind) continue
+    const claims: string[] = []
+    if (Array.isArray(s.claims)) {
+      for (const c of s.claims) {
+        if (typeof c === 'string' && c.trim()) claims.push(c.trim())
+      }
+    }
+    const evidence: SectorInsightTraceStage['evidence'] = []
+    if (Array.isArray(s.evidence)) {
+      for (const e of s.evidence) {
+        if (!e || typeof e !== 'object') continue
+        const rec = e as Record<string, unknown>
+        const url = typeof rec.url === 'string' ? rec.url.trim() : ''
+        const title = typeof rec.title === 'string' ? rec.title.trim() : ''
+        if (!url && !title) continue
+        evidence.push({ url: url || null, title: title || null })
+      }
+    }
+    stages.push({
+      kind,
+      headline: typeof s.headline === 'string' ? s.headline.trim() : '',
+      claims,
+      evidence,
+    })
+  }
+  return stages.length ? stages : undefined
+}
+
+/**
+ * `display_report.sector_traces`（{板块名: SectorChainResult}）→ 每板块摘要 + 4 段原因链。
+ * 摘要取源与 agent-py `_trace_summary` 的报告侧口径一致（R25 起）：
+ * **`conclusion`（一句话归因结论）→ 顶层 `summary`（旧数据兼容）→ trigger stage headline**。
+ * 无该字段/无该板块 → 空 Map（调用方回退旧行为，不编造）。
  */
 export function extractPerSectorTraceEntries(content: unknown): Map<string, SectorTraceEntry> {
   const out = new Map<string, SectorTraceEntry>()
@@ -209,10 +285,13 @@ export function extractPerSectorTraceEntries(content: unknown): Map<string, Sect
     const key = name.trim()
     if (!key) continue
     const t = trace && typeof trace === 'object' ? (trace as Record<string, unknown>) : {}
+    const conclusion = typeof t.conclusion === 'string' ? t.conclusion.trim() : ''
     const top = typeof t.summary === 'string' ? t.summary.trim() : ''
+    const stages = extractTraceStages(trace)
     out.set(key, {
-      summary: top || extractTraceSummary(trace),
+      summary: conclusion || top || extractTraceSummary(trace),
       status: t.attribution_status === 'sufficient' ? 'completed' : 'insufficient',
+      ...(stages ? { stages } : {}),
     })
   }
   return out
@@ -741,12 +820,14 @@ router.get('/sector-insight/:date', async (req: Request, res: Response) => {
         primaryItems.push({
           ts_code: resolved.ts_code,
           name: resolved.name,
-          // 每板块挂自己的 trace（不再三块共用第一个板块的 market_trace.trace）
+          // 每板块挂自己的 trace（不再三块共用第一个板块的 market_trace.trace）；
+          // stages = 该板块自己的 4 段原因链（2026-09-18 加性透出，界面消费待做）
           trace: {
             present: true,
             status: entry?.status ?? traceInfo.status,
             summary,
             sectors: traceInfo.sectors,
+            ...(entry?.stages ? { stages: entry.stages } : {}),
           },
         })
       }
