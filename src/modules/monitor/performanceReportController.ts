@@ -66,30 +66,44 @@ function currentReportPeriod(now: Date = new Date()): string {
 }
 
 /**
- * 计算当前默认展示的报告期
- * 逻辑：取数据库里有数据的最新报告期 end_date；
- *       但新报告期必须积累到 MIN_REPORTS 条才切换，否则沿用上一期
+ * 按报告期聚合统计（正式报告 + 快报），取最新的两个报告期
  */
-async function getDefaultReportPeriod(): Promise<string> {
-    // 1. 按报告期聚合统计（正式报告+快报）
+async function getRecentReportPeriods(): Promise<Array<{ period: string; count: number }>> {
     const result = await pool.query(
-        `SELECT end_date, COUNT(*) AS report_count, MAX(ann_date) AS latest_ann_date
+        `SELECT end_date, COUNT(*) AS report_count
          FROM performance_reports
          WHERE report_type IN ('formal', 'express')
          GROUP BY end_date
          ORDER BY end_date DESC
-         LIMIT 3`
+         LIMIT 2`
     );
+    return result.rows.map(row => ({ period: row.end_date as string, count: Number(row.report_count) }));
+}
 
-    const MIN_REPORTS = 30; // 切换阈值：新期至少有30条才成为默认期
+/**
+ * 默认报告期 = 库中有数据的最新报告期（不再等新期积累够数量才切换）
+ * 用于详情页"当前期"与业绩排行榜口径
+ */
+async function getDefaultReportPeriod(): Promise<string> {
+    const periods = await getRecentReportPeriods();
+    return periods[0]?.period || currentReportPeriod();
+}
 
-    for (const p of result.rows) {
-        if (Number(p.report_count) >= MIN_REPORTS) {
-            return p.end_date as string; // 最新的、已达阈值的报告期
-        }
-    }
-    // 兜底：库中无达阈值的报告期时，沿用最早一期；再兜底按日期推算
-    return (result.rows[result.rows.length - 1]?.end_date as string) || currentReportPeriod();
+/** 新报告期达到该条数后，列表不再保留上一期卡片 */
+const PREVIOUS_PERIOD_KEEP_REPORTS = 30;
+
+/**
+ * 列表默认展示的报告期集合
+ * 逻辑：以最新报告期为准直接展示（新增三季报时立即展示三季报）；
+ *       新期条数不足 PREVIOUS_PERIOD_KEEP_REPORTS 时，同时保留上一期卡片（新期在上、上期在下），
+ *       待新期达到阈值后只展示新期
+ */
+async function getDisplayReportPeriods(): Promise<string[]> {
+    const periods = await getRecentReportPeriods();
+    if (periods.length === 0) return [currentReportPeriod()];
+    const [latest, previous] = periods;
+    if (latest.count >= PREVIOUS_PERIOD_KEEP_REPORTS || !previous) return [latest.period];
+    return [latest.period, previous.period];
 }
 
 const LATEST_REPORT_CTE = `
@@ -271,28 +285,34 @@ export class PerformanceReportController {
 
     private static buildOrderBy(sortBy: ReportSortBy, sortOrder: ReportSortOrder): string {
         const order = sortOrder.toUpperCase();
-        if (sortBy === 'symbol') return `l.symbol ${order}`;
-        if (sortBy === 'ann_date') return `l.ann_date ${order} NULLS LAST, l.symbol ASC`;
-        if (sortBy === 'total_revenue') return `l.total_revenue IS NULL ASC, l.total_revenue ${order}, l.symbol ASC`;
-        if (sortBy === 'forecast_eps') return `l.forecast_eps IS NULL ASC, l.forecast_eps ${order}, l.symbol ASC`;
-        if (sortBy === 'ai_score') return `l.ai_score IS NULL ASC, l.ai_score ${order}, l.symbol ASC`;
+        // 新报告期数据不足时列表会同时展示上一期，报告期优先保证新期卡片在上、上一期在下
+        const periodFirst = 'l.end_date DESC, ';
+        if (sortBy === 'symbol') return `${periodFirst}l.symbol ${order}`;
+        if (sortBy === 'ann_date') return `${periodFirst}l.ann_date ${order} NULLS LAST, l.symbol ASC`;
+        if (sortBy === 'total_revenue') return `${periodFirst}l.total_revenue IS NULL ASC, l.total_revenue ${order}, l.symbol ASC`;
+        if (sortBy === 'forecast_eps') return `${periodFirst}l.forecast_eps IS NULL ASC, l.forecast_eps ${order}, l.symbol ASC`;
+        if (sortBy === 'ai_score') return `${periodFirst}l.ai_score IS NULL ASC, l.ai_score ${order}, l.symbol ASC`;
         // n_income_attr_p 或默认
-        return `l.n_income_attr_p IS NULL ASC, l.n_income_attr_p ${order}, l.symbol ASC`;
+        return `${periodFirst}l.n_income_attr_p IS NULL ASC, l.n_income_attr_p ${order}, l.symbol ASC`;
     }
 
     /**
      * 构建报告类型筛选条件
-     * - formal：仅当前报告期（如 2026半年报）的正式报告
-     * - express：仅当前报告期的快报，且排除同报告期已出正式报告的股票
+     * - formal：默认展示报告期（最新一期；新期不足 30 条时并含上一期）的正式报告
+     * - express：同上报告期的快报，且排除同报告期已出正式报告的股票
      */
     private static async buildReportTypeFilter(reportType: string): Promise<string> {
-        if (reportType === 'formal') {
-            const period = await getDefaultReportPeriod();
-            return ` AND l.report_type = 'formal' AND l.end_date = '${period}'`;
-        }
-        if (reportType === 'express') {
-            const period = await getDefaultReportPeriod();
-            return ` AND l.report_type = 'express' AND l.end_date = '${period}'
+        if (reportType === 'formal' || reportType === 'express') {
+            const periods = await getDisplayReportPeriods();
+            const periodFilter = ` AND l.end_date IN (${periods.map(p => `'${p}'`).join(', ')})`;
+            if (reportType === 'formal') {
+                return ` AND l.report_type = 'formal'${periodFilter}`;
+            }
+            // 业绩快报只取"快报端口"（express_vip）的数据：
+            // 快报端口入库时 n_income 与 n_income_attr_p 同源同值；
+            // 早期"预告端口"（forecast）遗留行只写净利润区间上限、n_income 为空，需排除
+            return ` AND l.report_type = 'express'${periodFilter}
+                AND l.n_income IS NOT DISTINCT FROM l.n_income_attr_p
                 AND NOT EXISTS (
                     SELECT 1 FROM performance_reports f
                     WHERE f.symbol = l.symbol AND f.report_type = 'formal' AND f.end_date = l.end_date
@@ -545,8 +565,8 @@ export class PerformanceReportController {
             createResponse(res, 400, '缺少或无效的 symbol 参数（需6位数字股票代码）');
             return;
         }
-        // 未指定报告期时沿用列表页的默认报告期（新期数据达阈值才切换），
-        // 保证详情页"当前期"与列表展示的报告期一致；该股无此期数据时 analyze 内部自动回退到其最新一期
+        // 未指定报告期时使用库中最新的报告期，保证详情页"当前期"与列表页展示的报告期一致；
+        // 该股无此期数据时 analyze 内部自动回退到其最新一期
         const endDate = (url.searchParams.get('endDate') || '').trim() || await getDefaultReportPeriod();
 
         try {

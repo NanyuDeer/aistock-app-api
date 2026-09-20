@@ -110,7 +110,8 @@ export class AiAnalysisService {
 
     /**
      * 对指定股票执行 AI 研判
-     * 数据来源优先级：formal（正式报告）> express（快报/预告）> rating（研报评级）
+     * 数据来源优先级：formal（正式报告）> express（快报）
+     * 注：早期"预告端口"（forecast）遗留行不参与取期与计算
      */
     static async analyze(symbol: string, endDate?: string): Promise<AiAnalysisResult | null> {
         // 1. 获取多期数据（formal → express → rating 逐级降级）
@@ -252,6 +253,9 @@ export class AiAnalysisService {
              WHERE r.symbol = $1
                AND r.end_date IS NOT NULL AND r.end_date != ''
                AND r.report_type IN ('formal', 'express')
+               -- 排除早期"预告端口"（forecast）遗留行：只写净利润区间上限、n_income 为空，
+               -- 若参与取期会把预告当成正式报告/快报（营收缺失、同比与单位失真）
+               AND NOT (r.report_type = 'express' AND r.n_income IS DISTINCT FROM r.n_income_attr_p)
              ORDER BY r.end_date DESC, r.report_type DESC`,
             [symbol],
         );
