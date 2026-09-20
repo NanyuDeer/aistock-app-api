@@ -2,6 +2,7 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+
 ## \[changer\] 2026-09-19 — 板块日 K 接口日期契约双侧兼容（X1）
 
 **开发者**: 37588
@@ -15,10 +16,13 @@
 - 跨语言日期契约测试（`internal.ths.test.ts`）：ISO 入参须 200 且下游取数层收到归一后的 `YYYYMMDD`；紧凑格式行为不变（回归护栏）；非法格式（位数不足）仍 400。
 
 ## \[master\] 2026-09-18 — `sector-insight` 报告侧摘要改为 conclusion 优先（不再落到「触发」）
+## \[junliang] 2026-09-18 — 修复异动归因卡住（cron 竞态 + outbox 无重试）+ 资金证据结构信息补齐
+
 
 **开发者**: Aria
 
 ### 修复
+
 
 - `extractTraceSummary` 优先取报告 `conclusion`（agent-py 新增的一句话归因结论），无则回退 trigger headline（无则第一个 stage），取不到仍返回 `null`（不编造）。
 - `extractPerSectorTraceEntries` 摘要取源改为 `conclusion` → 顶层 `summary`（旧数据兼容）→ `extractTraceSummary`，修掉此前 `top` 压过 conclusion 的顺序问题；与 agent-py `_trace_summary` 报告侧优先级对齐。
@@ -28,6 +32,25 @@
 
 - `src/core/routes/__tests__/sectorInsight.spec.ts` +2 例（先红后绿）：conclusion 优先于 trigger / conclusion 空白回退 trigger / conclusion 与顶层 summary 同时存在时 conclusion 赢。
 - `node --import tsx --test src/core/routes/__tests__/sectorInsight.spec.ts` 24 pass / 0 fail；`npx tsc --noEmit` exit 0。
+- **归因卡住根因：收盘落定与收盘打点同 cron 表达式竞态**（`src/index.ts`）：close 打点（`runPriceMoveDetect('close')`）与收盘落定（`StockTraceService.settleActiveEvents`）曾同为 `5 15 * * 1-5` 并发。落定仅一两条 UPDATE（很快），打点要遍历自选股 + 采快照（数秒），于是落定插进打点中途把当日 active 事件关闭并入队，打点随后为同一标的**又建一条事件** → 该事件永远停在 `active`、无 job / 无 outbox；前端同日聚合取最新且 `processing` 不算"不可归因" → 卡片恒显"归因分析中"（2026-09-18 蓝盾光电 300862、海正生材 688203 实测）。**判别特征**：同标的当日出现两条 15:05 事件；events 有 active 行但 jobs 无对应 `(event_id, trigger_revision)`；outbox 无行。
+- **修复方式**：落定并入 close 打点的 `finally` 串行 `await`，保证"先建齐当日事件、再落定"的时序；独立落定 cron 由 `5 15` 后移到 `10 15` 作兜底（`settleActiveEvents` 幂等，可重复调用）。
+- **outbox 发布失败无任何重试入口**（`src/index.ts` 新增每分钟 `StockTraceOutboxCron`）：`stock_trace_outbox` 行 `status='pending'` + `last_error_code='Error'`（Redis 命令失败的 `error.name`）+ `attempt_count` 停住后，因 `publishPending` 只在 enqueue / 快照采集完成等事件路径被顺带调用，该行再无重试入口、可永久滞留（2026-08-25 已复现过一次，当时靠人工重发）。新增周期冲刷后实测自动补发成功。
+
+### 改进
+
+- **capital 证据补齐结构信息**（`StockTraceSnapshotService`）：抽出导出纯函数 `toCapitalSourceRecord`（对齐 `toInsightArticleSourceRecord` 约定），透出原先被丢弃的 `orders`（超大单/大单/中单/小单）与 `windows`（1/5/10/20 日拆解），正文改为 `截至 {tradeDate}：主力净流入…；分单结构…`。原因：agent-py 侧资金维度降级为条件准入层后，只有"价格读不出的增量信息"才可能被置 supported/weak，否则恒为 insufficient；正文标注 `trade_date` 用于时效分档判定。
+- **清理陈旧能力标记**（`StockTraceResultService`）：删除 `missingCapabilities: ['capital_flow_disabled']` 硬编码（`runRuleFallback` / `acceptExternalResult` 共 4 处）与 `ValidationInput.missingCapabilities` 字段——资金流数据已实际采集，该标记会使 sector/market 的 `missing_counter_evidence` 反证校验被永久跳过。配套 agent-py 侧提示词与 validator 镜像同一规则，避免"未引用反证的 supported 候选"被拒后 `processing_status` 变 `partial`（→ 无 artifact → 报告端点 409）。
+- `InsightReportService` 文件注释口径同步为"分层候选"。
+
+### 文档
+
+- `src/modules/stock-trace/AGENTS.md`：登记 cron 竞态与 outbox 滞留的根因、判别特征与修复；登记 capital 降级口径、证据结构补齐与陈旧能力标记清理。
+
+### 测试
+
+- `__tests__/snapshot.spec.ts`：新增 capital 映射用例（orders/windows/trade_date/正文标注）。
+- `__tests__/result-validator.spec.ts`：删除 `capital_flow_disabled` 例外用例，新增 market 层反证不可绕过用例。
+
 
 ---
 
