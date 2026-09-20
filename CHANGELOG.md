@@ -2,6 +2,47 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## \[changer\] 2026-09-19 — 板块日 K 接口日期契约双侧兼容（X1）
+
+**开发者**: 37588
+
+### 修复
+
+- `GET /internal/ths/:code/daily` 此前仅接受紧凑 `YYYYMMDD`，Python 侧（节奏大师主线候选）传 ISO 连字符日期时**恒 400**（已用路由测试实测复现 `400 !== 200`），导致 5 个主线候选取数全败、主线不可用。现路由同时接受 `YYYYMMDD` 与 `YYYY-MM-DD`，并在 `ThsBoardService.getBoardDailyRange` 边界统一归一为紧凑格式后再取数（归一放在 service 边界，未来任何调用方传 ISO 也不会再失败）。
+
+### 新增
+
+- 跨语言日期契约测试（`internal.ths.test.ts`）：ISO 入参须 200 且下游取数层收到归一后的 `YYYYMMDD`；紧凑格式行为不变（回归护栏）；非法格式（位数不足）仍 400。
+
+## \[master\] 2026-09-18 — `sector-insight` 报告侧摘要改为 conclusion 优先（不再落到「触发」）
+
+**开发者**: Aria
+
+### 修复
+
+- `extractTraceSummary` 优先取报告 `conclusion`（agent-py 新增的一句话归因结论），无则回退 trigger headline（无则第一个 stage），取不到仍返回 `null`（不编造）。
+- `extractPerSectorTraceEntries` 摘要取源改为 `conclusion` → 顶层 `summary`（旧数据兼容）→ `extractTraceSummary`，修掉此前 `top` 压过 conclusion 的顺序问题；与 agent-py `_trace_summary` 报告侧优先级对齐。
+- 根因：`SectorChainResult` 此前无结论字段，报告侧摘要只能落 trigger 段 headline（原因第 1 段），导致三处折叠卡显示的都是「触发」。响应契约未变（结论折进 `trace.summary`），`aistock-app-frontend` 0 改动。
+
+### 测试
+
+- `src/core/routes/__tests__/sectorInsight.spec.ts` +2 例（先红后绿）：conclusion 优先于 trigger / conclusion 空白回退 trigger / conclusion 与顶层 summary 同时存在时 conclusion 赢。
+- `node --import tsx --test src/core/routes/__tests__/sectorInsight.spec.ts` 24 pass / 0 fail；`npx tsc --noEmit` exit 0。
+
+---
+
+## \[changer\] 2026-09-18 — 节奏日历网格增加交割日标记
+
+**开发者**: 37588
+
+### 修复
+
+- 节奏日历网格此前只下发宏观事件，导致状态卡上出现的交割日在日历中缺失（同一窗口两处口径不一致）：网格改为合并规则计算出的交割日并放开交割日类型；财报与种子事件仍不下发（量大、噪音高）。
+
+### 改进
+
+- 每个日期的日历可见事件恒下发事件列表字段（无事件为空数组），并同步模块接口说明。
+
 ## \[master\] 2026-09-16 — 磁盘治理 + API 暴露面安全加固 + 部署脚本修复
 
 **开发者**: Aria

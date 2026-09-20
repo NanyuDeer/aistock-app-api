@@ -51,7 +51,7 @@
 
 - internal 鉴权：`x-internal-token` 必须等于 `INTERNAL_API_TOKEN || INTERNAL_TOKEN || 'change-me-in-production'`（**请求时动态求值**，非模块加载期常量——避免 core/db 的 dotenv 抢先固化导致测试/热更新后 token 失效）
 
-- rhythm-master 版本优先级：`midday > morning > after_close`（展示最新）
+- rhythm-master 版本排序：**created_at 倒序**（2026-09-19 起；原 `midday > morning > after_close` 优先级仅作自动调度下的自然序——手动补跑覆盖生成的卡 created 最新，需优先展示）
 
 ## 接口表
 
@@ -61,8 +61,8 @@
 | `/internal/calendar/events`                             | POST | x-internal-token | upsert 事件（event\_date+title 必填，importance/market/source 枚举校验）                                                                                                                                                                                                                                                                           |
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET  | x-internal-token | performance\_reports 按 ann\_date 聚合 `{date, count}`                                                                                                                                                                                                                                                                                     |
 | `/api/agent/rhythm-master/:date`                        | GET  | 无                | 三时点版本（user\_id ∈ after\_close/morning/midday），按 refresh\_slot 优先级排序                                                                                                                                                                                                                                                                     |
-| `/api/agent/rhythm-master/calendar?days=N`              | GET  | 无                | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（macro，CN + US\_OVERNIGHT 按对外契约顺延；无事件 = `[]`）                                                                                                                           |
-| `/api/agent/rhythm-master/calendar?naturalDays=N`       | GET  | 无                | **自然日模式（2026-09-03）**：最近 N 自然日网格（**含周末/节假日**），逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（macro，含 US 隔夜顺延后的反应日）；dates 降序（新到老），与 `loadMacroEventsByDate`（from=dates\[last]/to=dates\[0]）及既有 days 分支方向一致。既有 `days=` 交易日模式保持不变（向后兼容，首页近 5 日摘要走交易日） |
+| `/api/agent/rhythm-master/calendar?days=N`              | GET  | 无                | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（**macro + delivery**，含 L1 交割日；CN + US\_OVERNIGHT 按对外契约顺延；无事件 = `[]`；2026-09-18 放开 delivery 并合并规则交割日）                                                                                                                           |
+| `/api/agent/rhythm-master/calendar?naturalDays=N`       | GET  | 无                | **自然日模式（2026-09-03）**：最近 N 自然日网格（**含周末/节假日**），逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（**macro + delivery**，含 L1 交割日与 US 隔夜顺延后的反应日）；dates 降序（新到老），与 `loadCalendarEventsByDate`（from=dates\[last]/to=dates\[0]）及既有 days 分支方向一致。既有 `days=` 交易日模式保持不变（向后兼容，首页近 5 日摘要走交易日） |
 
 ## 依赖
 

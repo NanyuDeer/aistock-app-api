@@ -139,7 +139,8 @@ test('GET /internal/ths/resolve 缺 name -> 400', async () => {
 
 // ============ Task 3: GET /internal/ths/:code/daily（区间日 K） ============
 // 与 Task 1 同款约定：__dailyDeps 属性注入（tsx ESM 下 namespace 绑定只读，只能替换对象属性），
-// 不触达真实 Tushare。契约键 pct_change → pct_chg（H7：Tushare 缺失保行为 null，不静默丢行）。
+// 不触达真实 Tushare。契约键 pct_change → pct_chg（H7：Tushare 缺失保行为 null，不静默丢行）；
+// Task 9 加性透传 close/vol/amount（condition_met 技术位判定数据源）。
 
 function patchGetThsDaily(impl: ThsBoardService.ThsDailyDeps['getThsDaily']): void {
     ThsBoardService.__dailyDeps.getThsDaily = impl
@@ -152,7 +153,7 @@ test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows'
     ])
     const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
     assert.equal(res.status, 200)
-    const body = res.body as { code: number; data: { ts_code: string; days: number; rows: Array<{ trade_date: string; pct_chg: number | null }> } }
+    const body = res.body as { code: number; data: { ts_code: string; days: number; rows: ThsBoardService.ThsBoardDailyRow[] } }
     assert.equal(body.code, 200)
     assert.equal(body.data.ts_code, '885525.TI')
     assert.equal(body.data.days, 2)
@@ -161,6 +162,42 @@ test('GET /internal/ths/885525.TI/daily?start=20250101&end=20251231 -> 200 rows'
     assert.equal(rows[0].pct_chg, 1.23) // pct_change -> pct_chg 契约键
     assert.equal(rows[0].trade_date, '20250102') // 升序
     assert.equal(rows[1].pct_chg, -0.5)
+})
+
+test('GET /internal/ths/885525.TI/daily -> 透传 close/vol/amount/open/high/low（含缺值保 null 与中文键兜底）', async () => {
+    patchGetThsDaily(async () => [
+        // 全字段直通行
+        { ts_code: '885525.TI', trade_date: '20250102', pct_change: 1.23, close: 1664.75, vol: 13224.26, amount: 98765.4, open: 1650.0, high: 1670.5, low: 1645.2 },
+        // 缺值行：close/vol/amount/open/high/low 保 null（不静默丢行，H7），且键必须存在（非 undefined）
+        { ts_code: '885525.TI', trade_date: '20250103', pct_change: -0.5 },
+        // 中文键行（潜在直通/换源路径）：容错映射兜底
+        { ts_code: '885525.TI', trade_date: '20250104', pct_change: 0.2, '收盘价': 1600, '成交量': 100, '成交额': 5000, '开盘价': 1590, '最高价': 1610, '最低价': 1585 },
+    ])
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20250101&end=20251231', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    const body = res.body as { code: number; data: { days: number; rows: ThsBoardService.ThsBoardDailyRow[] } }
+    assert.equal(body.data.days, 3) // 缺值行不丢
+    const [full, missing, cn] = body.data.rows
+    assert.equal(full.close, 1664.75)
+    assert.equal(full.vol, 13224.26)
+    assert.equal(full.amount, 98765.4)
+    assert.equal(full.open, 1650.0)
+    assert.equal(full.high, 1670.5)
+    assert.equal(full.low, 1645.2)
+    assert.equal(missing.close, null)
+    assert.equal(missing.vol, null)
+    assert.equal(missing.amount, null)
+    assert.equal(missing.open, null)
+    assert.equal(missing.high, null)
+    assert.equal(missing.low, null)
+    assert.ok(Object.prototype.hasOwnProperty.call(missing, 'close'), 'close 缺值时键仍须存在（保 null 而非省略）')
+    assert.ok(Object.prototype.hasOwnProperty.call(missing, 'high'), 'high 缺值时键仍须存在（保 null 而非省略）')
+    assert.equal(cn.close, 1600)
+    assert.equal(cn.vol, 100)
+    assert.equal(cn.amount, 5000)
+    assert.equal(cn.open, 1590)
+    assert.equal(cn.high, 1610)
+    assert.equal(cn.low, 1585)
 })
 
 test('GET /internal/ths/xxx/daily 非法 code -> 400', async () => {
@@ -173,4 +210,35 @@ test('GET /internal/ths/885525.TI/daily 缺 start/end -> 400', async () => {
     const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily', INTERNAL_TOKEN)
     assert.equal(res.status, 400)
     assert.equal((res.body as { code: number }).code, 400)
+})
+
+// ============ X1（2026-09-19）：跨语言日期契约 ============
+// Python 侧曾传 ISO 连字符（2026-05-11）→ 命中 ^\d{8}$ 校验 → 恒 400 → 主线候选取数全败。
+// 约定：本路由同时接受 YYYYMMDD 与 YYYY-MM-DD，并统一规范化为 YYYYMMDD 后再取数。
+
+test('GET /internal/ths/:code/daily 接受 ISO 日期并规范化为 YYYYMMDD（X1）', async () => {
+    const seen: string[] = []
+    patchGetThsDaily(async (tsCode, startDate, endDate) => {
+        seen.push(`${tsCode}|${startDate}|${endDate}`)
+        return []
+    })
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=2026-05-11&end=2026-09-18', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    assert.deepEqual(seen, ['885525.TI|20260511|20260918'])
+})
+
+test('GET /internal/ths/:code/daily 紧凑格式行为不变（回归护栏）', async () => {
+    const seen: string[] = []
+    patchGetThsDaily(async (tsCode, startDate, endDate) => {
+        seen.push(`${tsCode}|${startDate}|${endDate}`)
+        return []
+    })
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=20260511&end=20260918', INTERNAL_TOKEN)
+    assert.equal(res.status, 200)
+    assert.deepEqual(seen, ['885525.TI|20260511|20260918'])
+})
+
+test('GET /internal/ths/:code/daily 非法日期格式仍 400（位数不足）', async () => {
+    const res = await makeGetRequest(port, '/internal/ths/885525.TI/daily?start=2026051&end=20260918', INTERNAL_TOKEN)
+    assert.equal(res.status, 400)
 })

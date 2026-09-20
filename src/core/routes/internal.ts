@@ -239,8 +239,10 @@ const CODE_RE = /^\d{6}\.TI$/i
  * GET /internal/ths/:code/daily
  * 同花顺板块指数区间日 K（供预测验证器评分窗口拉取板块涨幅序列）。
  *
- * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg }] } }
- *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）
+ * - 200: { code: 200, data: { ts_code, days, rows: [{ trade_date, pct_chg, close, vol, amount, open, high, low }] } }
+ *   rows 按 trade_date 升序；pct_change → pct_chg 契约键（Tushare 缺失保行为 null，不静默丢行）；
+ *   close/vol/amount/open/high/low 加性透传（condition_met 技术位/参考位判定数据源；amount 上游
+ *   ths_daily 无此字段恒 null）
  * - 400: code 非 6位.TI / start / end 非 YYYYMMDD
  * - 502: 服务异常
  */
@@ -248,9 +250,13 @@ router.get('/ths/:code/daily', async (req: Request, res: Response) => {
     const code = String(req.params.code || '').toUpperCase()
     const start = String(req.query.start || '')
     const end = String(req.query.end || '')
+    // X1（2026-09-19）：同时接受 YYYYMMDD 与 YYYY-MM-DD（归一在 getBoardDailyRange 内完成）。
+    // 此前仅认 YYYYMMDD，Python 侧传 ISO 时恒 400，导致主线候选取数全败且被误记为"序列不足"。
     const YM = /^\d{8}$/
-    if (!CODE_RE.test(code) || !YM.test(start) || !YM.test(end)) {
-        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD' })
+    const YMD = /^\d{4}-\d{2}-\d{2}$/
+    const okDate = (v: string) => YM.test(v) || YMD.test(v)
+    if (!CODE_RE.test(code) || !okDate(start) || !okDate(end)) {
+        return res.status(400).json({ code: 400, message: 'code 须为 6位.TI，start/end 须为 YYYYMMDD 或 YYYY-MM-DD' })
     }
     try {
         const rows = await getBoardDailyRange(code, start, end)

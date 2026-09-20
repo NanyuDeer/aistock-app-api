@@ -36,6 +36,9 @@ import sectorInsightRouter from './core/routes/sectorInsightRouter';
 // 归因链存储/读取（2026-09-03 P1 chain-attribution Task 4：/api/internal/attribution-chain + /api/agent/attribution-chain/:date）
 import { attributionChainRouter } from './core/routes/attributionChainRouter';
 
+// 溯源弱反馈审计存储/读取（2026-09-17 §13.3 Task 7.1：/api/internal/attribution-feedback + /api/agent/attribution-feedback/:date）
+import { attributionFeedbackRouter } from './core/routes/attributionFeedbackRouter';
+
 // agent 反代模块（/api/agent/* → Python FastAPI，SSE 流式透传 + 注入 X-Internal-Token）
 import { createAgentProxy } from './modules/agent/agent.proxy';
 
@@ -163,6 +166,10 @@ app.use('/api/agent', sectorInsightRouter);
 // （前端读取；GET 路径同上必须在反代之前，否则被转发到 Python。POST 路由自带 json parser，
 // 因为全局 express.json() 在反代之后注册，见 attributionChainRouter.ts）
 app.use('/api', attributionChainRouter);
+
+// 溯源弱反馈审计：POST /api/internal/attribution-feedback（agent 上报）+ GET
+// /api/agent/attribution-feedback/:date（读取，同上必须在反代之前；POST 自带 json parser）
+app.use('/api', attributionFeedbackRouter);
 
 // ==================== Agent 反代（/api/agent/* → Python FastAPI） ====================
 // 必须在 express.json()/urlencoded() 之前挂载：反代需要原始请求流，body parser 会消费 req

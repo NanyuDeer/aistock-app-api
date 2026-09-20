@@ -3,11 +3,13 @@ import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 import { shanghaiDateStr, shanghaiDateTimeParts } from '../../shared/utils/shanghaiTime'
 import { listEvents, toContractEvent } from './MarketCalendarEventService'
+import { listDeliveryDates } from './CalendarRuleService'
 
 export const rhythmMasterPublicRouter: Router = Router()
 
 // refresh_slot 展示优先级（前端展示最新）
-const SLOT_PRIORITY: Record<string, number> = { midday: 2, morning: 1, after_close: 0 }
+// 2026-09-19：三时点排序改为 created_at 倒序（手动补跑覆盖优先展示），
+// 原 SLOT_PRIORITY 优先级（midday>morning>after_close）已不再用于本接口排序。
 
 /** 每日收盘基准建议仓位（rhythm_card.position_band；行缺失/无仓位语义 = null，前端如实展示）。 */
 export interface RhythmPositionBand {
@@ -53,27 +55,41 @@ export function mergeRhythmCalendarDays(
     })
 }
 
-/** 窗口内 macro 事件按日分组（对外契约，仅 type==='macro'；无则空数组，后端恒下发 events 字段）。 */
-async function loadMacroEventsByDate(dates: string[]): Promise<Map<string, Array<Record<string, unknown>>>> {
+/** 窗口内"日历可见"事件按日分组（对外契约，type ∈ {macro, delivery}；无则空数组，后端恒下发 events 字段）。
+ *
+ * 2026-09-18（spec §5.4）：① 由仅 macro 放开到 macro + delivery —— 交割日每月仅一次、
+ * 不构成噪音，且消除"卡片有交割日、日历无"的反向不一致（H3 同源风险）；
+ * ② 合并 L1 规则算出的交割日（此前只下发 DB 表行，规则交割日在本端点恒缺失）。
+ * earnings/seed 仍不下发（量大、噪音高）。
+ */
+const CALENDAR_VISIBLE_TYPES = new Set(['macro', 'delivery'])
+
+export async function loadCalendarEventsByDate(
+  dates: string[],
+): Promise<Map<string, Array<Record<string, unknown>>>> {
   if (!dates.length) return new Map()
   const from = dates[dates.length - 1]
   const to = dates[0]
   const rows = await listEvents(from, to)
+  const merged = [
+    ...listDeliveryDates(from, to),
+    ...rows.map((row) => toContractEvent(row)),
+  ]
   const byDate = new Map<string, Array<Record<string, unknown>>>()
-  for (const row of rows) {
-    const ev = toContractEvent(row)
-    if (ev.type !== 'macro') continue
-    const list = byDate.get(String(ev.date)) ?? []
-    list.push(ev)
-    byDate.set(String(ev.date), list)
+  for (const ev of merged) {
+    if (!CALENDAR_VISIBLE_TYPES.has(String(ev.type))) continue
+    const key = String(ev.date)
+    const list = byDate.get(key) ?? []
+    list.push(ev as unknown as Record<string, unknown>)
+    byDate.set(key, list)
   }
   return byDate
 }
 
 /** GET /api/agent/rhythm-master/calendar?naturalDays=N — 自然日网格（契约 #7 扩展）。
  *  N=自然日数量（含周末/节假日）；无 report 的日期 level=null（周末/无档如实展示）。
- *  事件仍按自然日 loadMacroEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
- *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadMacroEventsByDate 的 from=dates[last]、to=dates[0]）。 */
+ *  事件仍按自然日 loadCalendarEventsByDate 关联（含 US 隔夜顺延后的反应日归属）。
+ *  dates 必须为降序（新到老），与既有 days 分支方向一致（loadCalendarEventsByDate 的 from=dates[last]、to=dates[0]）。 */
 rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res: Response) => {
     const naturalDaysParam = Number(req.query.naturalDays ?? 0)
     const naturalDays = Number.isFinite(naturalDaysParam) ? Math.max(0, Math.floor(naturalDaysParam)) : 0
@@ -101,7 +117,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
          ORDER BY report_date DESC`,
         [dates],
       )
-      const eventsByDate = await loadMacroEventsByDate(dates)
+      const eventsByDate = await loadCalendarEventsByDate(dates)
       const merged = dates.map((d) => {
         const row = result.rows.find((r: any) => r.report_date === d)
         return {
@@ -133,7 +149,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
              ORDER BY report_date DESC`,
             [dates],
         )
-        const eventsByDate = await loadMacroEventsByDate(dates)
+        const eventsByDate = await loadCalendarEventsByDate(dates)
         // 返回行时带上 events
         res.json({ code: 0, data: { days: mergeRhythmCalendarDays(dates, result.rows).map((d) => ({ ...d, events: eventsByDate.get(d.date) ?? [] })) } })
     } catch (err) {
@@ -158,7 +174,10 @@ rhythmMasterPublicRouter.get('/rhythm-master/:date', async (req: Request, res: R
     )
     const versions = result.rows
       .map((r) => ({ refresh_slot: r.user_id as string, created_at: r.created_at as string, content: r.content as unknown }))
-      .sort((a, b) => SLOT_PRIORITY[b.refresh_slot] - SLOT_PRIORITY[a.refresh_slot])
+      // 2026-09-19：排序由 SLOT_PRIORITY（midday>morning>after_close）改为 created_at 倒序——
+      // 手动补跑（target_date 覆盖）生成的新卡 created 最新，需优先展示；原"三时点优先级"
+      // 在自动调度下与 created_at 倒序基本同序，测试契约兼容。
+      .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
     res.json({ code: 0, data: { date, versions } })
   } catch (err) {
     console.error('[Calendar] GET /rhythm-master error:', err)
