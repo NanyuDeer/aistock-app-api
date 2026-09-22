@@ -181,5 +181,5 @@ export function toContractEvent(row: CalendarEventRow): Record<string, unknown> 
       console.warn('[Calendar] overnight mapping skipped (calendar uncovered):', err)
     }
   }
-  return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result }
+  return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result, detail: row.detail ?? null }
 }

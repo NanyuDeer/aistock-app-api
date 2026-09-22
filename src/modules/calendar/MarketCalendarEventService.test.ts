@@ -1,6 +1,6 @@
 import test, { after, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { DDL_MARKET_CALENDAR_EVENTS, normalizeTitle, listEvents, upsertEvent } from './MarketCalendarEventService'
+import { DDL_MARKET_CALENDAR_EVENTS, normalizeTitle, listEvents, upsertEvent, toContractEvent } from './MarketCalendarEventService'
 import pool from '../../core/db'
 
 const ORIGINAL_QUERY = pool.query
@@ -126,4 +126,13 @@ test('upsertEvent 透传 result_source / result_attempted_at 到参数数组位�
   } finally {
     ;(pool as any).query = orig
   }
+})
+
+test('toContractEvent 加性透传 detail（预期差 job 读 consensus 用）', () => {
+  // 有 detail → 透传（含 consensus 前缀）；无 detail → null（保持既有键，不缺省）
+  const withDetail = toContractEvent({ id: 1, event_date: '2026-09-21', title: '图表', importance: 'high', market: 'CN', event_time: null, source: 'L4', detail: 'x｜consensus:1%', result: null } as any)
+  assert.equal(withDetail.detail, 'x｜consensus:1%')
+  const noDetail = toContractEvent({ id: 2, event_date: '2026-09-21', title: '图表2', importance: 'high', market: 'CN', event_time: null, source: 'L4', detail: null, result: null } as any)
+  assert.equal(noDetail.detail, null)
+  assert.ok('detail' in noDetail, 'detail 键应存在（null 也透传，禁省略导致读侧 undefined）')
 })
