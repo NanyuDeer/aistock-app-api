@@ -32,6 +32,8 @@ export interface CalendarEventRow {
   source: 'L1' | 'L2' | 'L3' | 'L4'
   detail: string | null
   result: string | null
+  /** 读侧折叠命中数（同 event_date + 归一标题相同的行数）；非折叠读取时为 1。toContractEvent 不透传。 */
+  merged_count?: number
 }
 
 export interface CalendarEventInput {
@@ -45,10 +47,25 @@ export interface CalendarEventInput {
   result?: string | null
 }
 
-/** title 归一化：trim + 去空白标点 + 小写（upsert 去重键，spec §4.4）。
- * 用 Unicode 属性转义（\p{P} 标点 / \p{S} 符号），避免 \W 把中文当非单词字符删光。 */
+/** 平台后缀白名单（§5.9，D-b）：剥离"分隔符+平台名"；可配置常量便于扩充。 */
+const PLATFORM_SUFFIXES: string[] = ['moomoo', '东方财富', '同花顺', '新浪财经', '财联社', '证券时报', 'e公司', '界面新闻']
+
+/** title 归一化：trim + 去空白标点小写 + 白名单后缀剥离 + 尾部丨/| 片段剥离。
+ * 写侧 dedupHash 与读侧折叠必须共用本函数（防两处口径漂移，§12 实施注意 14）。
+ * 仅白名单剥离，禁止激进归一化（硬约束 10，防误并"业绩预告-上修"类有语义标题）。 */
 export function normalizeTitle(title: string): string {
-  return title.replace(/[\s\p{P}\p{S}_]+/gu, '').toLowerCase()
+  let t = title.replace(/[\s\p{P}\p{S}_]+/gu, '').toLowerCase()
+  // 剥离"分隔符 + 平台后缀"（_ 已在标点类，故分隔符归零后平台名紧贴主体）
+  for (const suffix of PLATFORM_SUFFIXES) {
+    if (t.endsWith(suffix)) {
+      t = t.slice(0, -suffix.length)
+      break
+    }
+  }
+  // 剥离尾部 丨/| 片段（§5.9：出现位置在标题后半段）
+  const sep = t.lastIndexOf('丨')
+  if (sep > Math.floor(t.length / 2)) t = t.slice(0, sep)
+  return t || title.replace(/[\s\p{P}\p{S}_]+/gu, '').toLowerCase() // 剥离后为空回退原值（防空键）
 }
 
 /** upsert 键 = event_date + title 归一化 hash（三源共用去重）。 */
@@ -80,7 +97,26 @@ export async function listEvents(dateFrom: string, dateTo: string): Promise<Cale
      FROM market_calendar_events WHERE event_date BETWEEN $1 AND $2 ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`,
     [dateFrom, dateTo],
   )
-  return result.rows
+  // 读侧折叠（X4）：同 event_date + 归一标题相同 → 合并为一行；保留 importance 最高、result 非空者优先（同序则保首个）。
+  // 只加折叠逻辑，不改 SQL 投影；与写侧共用 normalizeTitle 防口径漂移。
+  const order = { high: 2, medium: 1, low: 0 } as const
+  const byKey = new Map<string, CalendarEventRow & { merged_count: number }>()
+  for (const row of result.rows) {
+    const key = `${row.event_date}|${normalizeTitle(row.title)}`
+    const prev = byKey.get(key)
+    if (!prev) {
+      byKey.set(key, { ...row, merged_count: 1 })
+      continue
+    }
+    const curScore = (order[row.importance as keyof typeof order] ?? 0) + (row.result ? 1 : 0)
+    const prevScore = (order[prev.importance as keyof typeof order] ?? 0) + (prev.result ? 1 : 0)
+    if (curScore > prevScore) {
+      byKey.set(key, { ...row, merged_count: prev.merged_count + 1 })
+    } else {
+      prev.merged_count += 1
+    }
+  }
+  return [...byKey.values()]
 }
 
 export async function upsertEvent(input: CalendarEventInput): Promise<{ id: number; upserted: boolean }> {
