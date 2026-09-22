@@ -108,9 +108,14 @@ export async function listEvents(dateFrom: string, dateTo: string): Promise<Cale
       byKey.set(key, { ...row, merged_count: 1 })
       continue
     }
-    const curScore = (order[row.importance as keyof typeof order] ?? 0) + (row.result ? 1 : 0)
-    const prevScore = (order[prev.importance as keyof typeof order] ?? 0) + (prev.result ? 1 : 0)
-    if (curScore > prevScore) {
+    // 字典序比较：先比 importance 序数（high>medium>low），再比 result 非空（有 result 优先）。
+    // 不能用「result 加成重要性档位等权重」的计分式（medium+result 会与 high 无 result 打平而误保 medium）。
+    const curImportance = order[row.importance as keyof typeof order] ?? 0
+    const prevImportance = order[prev.importance as keyof typeof order] ?? 0
+    const curBetter =
+      curImportance > prevImportance ||
+      (curImportance === prevImportance && !!row.result && !prev.result)
+    if (curBetter) {
       byKey.set(key, { ...row, merged_count: prev.merged_count + 1 })
     } else {
       prev.merged_count += 1

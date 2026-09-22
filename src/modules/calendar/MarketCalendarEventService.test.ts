@@ -45,3 +45,27 @@ test('listEvents 读侧折叠近似重复并附 merged_count', async () => {
     ;(pool as any).query = orig
   }
 })
+
+// Plan-mandated 锁定测试：堵死"importance 优先"被 result 加权推翻的原公式缺陷。
+// mock 返回同 event_date、归一标题相同、但顺序为 medium+result 在前、high 无 result 在后 →
+// 原公式 curScore=(1+1)=2 vs prevScore=(2+0)=2 平手保留先见 medium；必须改为字典序后保留 high。
+test('listEvents 折叠按字典序：high(无 result) 优先于 medium(result 非空)', async () => {
+  const orig = pool.query
+  ;(pool as any).query = async () => ({
+    rows: [
+      { id: 1, event_date: '2026-10-01', title: '美联储利率决议', importance: 'medium', market: 'CN', event_time: null, source: 'L2', detail: null, result: '加息 25bp' },
+      { id: 2, event_date: '2026-10-01', title: '美联储利率决议 - Moomoo', importance: 'high', market: 'CN', event_time: null, source: 'L2', detail: null, result: null },
+    ],
+    rowCount: 2,
+  })
+  try {
+    const rows = await listEvents('2026-10-01', '2026-10-05')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].importance, 'high')
+    // 保留 high 行：id=2 且 result 为原 high 行才说明真的用 high 替换了 medium
+    assert.equal(rows[0].id, 2)
+    assert.equal(rows[0].merged_count, 2)
+  } finally {
+    ;(pool as any).query = orig
+  }
+})
