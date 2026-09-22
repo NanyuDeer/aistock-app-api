@@ -1,6 +1,6 @@
 import test, { after, before } from 'node:test'
 import assert from 'node:assert/strict'
-import { DDL_MARKET_CALENDAR_EVENTS, normalizeTitle, listEvents } from './MarketCalendarEventService'
+import { DDL_MARKET_CALENDAR_EVENTS, normalizeTitle, listEvents, upsertEvent } from './MarketCalendarEventService'
 import pool from '../../core/db'
 
 const ORIGINAL_QUERY = pool.query
@@ -65,6 +65,64 @@ test('listEvents 折叠按字典序：high(无 result) 优先于 medium(result �
     // 保留 high 行：id=2 且 result 为原 high 行才说明真的用 high 替换了 medium
     assert.equal(rows[0].id, 2)
     assert.equal(rows[0].merged_count, 2)
+  } finally {
+    ;(pool as any).query = orig
+  }
+})
+
+// mock pool.query 捕获 SQL 文本与参数数组，供 CASE 子句与透传位次断言用。
+// Pool 引用是模块级单例；测试间覆盖/还原与既有 fixture（listEvents 折叠测试）一致。
+let capturedSql = ''
+let capturedParams: unknown[] | null = null
+
+test('upsertEvent CASE 保护：已存在 high 行不被降级、source 不被改写', async () => {
+  const orig = pool.query
+  ;(pool as any).query = async (sql: string, params?: unknown[]) => {
+    capturedSql = sql
+    capturedParams = params ?? null
+    return { rows: [{ id: '1', inserted: true }], rowCount: 1 }
+  }
+  try {
+    await upsertEvent({ event_date: '2026-10-01', title: '美联储利率决议', importance: 'high' })
+    // X1：importance/source SET 必须被 CASE 保护，不得直接覆盖
+    assert.ok(
+      capturedSql.includes(
+        "importance = CASE WHEN market_calendar_events.importance = 'high' THEN 'high' ELSE EXCLUDED.importance END",
+      ),
+      'importance SET 应被 CASE 保护（已存在 high 不被降级）',
+    )
+    assert.ok(
+      capturedSql.includes(
+        "source = CASE WHEN market_calendar_events.importance = 'high' THEN market_calendar_events.source ELSE EXCLUDED.source END",
+      ),
+      'source SET 应被 CASE 保护（已存在 high 的 source 不被改写）',
+    )
+  } finally {
+    ;(pool as any).query = orig
+  }
+})
+
+test('upsertEvent 透传 result_source / result_attempted_at 到参数数组位次', async () => {
+  const orig = pool.query
+  ;(pool as any).query = async (sql: string, params?: unknown[]) => {
+    capturedSql = sql
+    capturedParams = params ?? null
+    return { rows: [{ id: '1', inserted: true }], rowCount: 1 }
+  }
+  try {
+    await upsertEvent({
+      event_date: '2026-10-01',
+      title: '美联储利率决议',
+      result_source: 'auto',
+      result_attempted_at: '2026-10-01T09:00:00Z',
+    })
+    assert.ok(capturedParams, 'upsertEvent 应传入参数数组')
+    assert.ok(capturedSql.includes('result_source'), 'INSERT 列清单应含 result_source')
+    assert.ok(capturedSql.includes('result_attempted_at'), 'INSERT 列清单应含 result_attempted_at')
+    // 位次：event_date,title,importance,market,event_time,source,detail,result,result_source,result_attempted_at,dedup_hash
+    assert.equal(capturedParams![0], '2026-10-01')
+    assert.equal(capturedParams![8], 'auto')
+    assert.equal(capturedParams![9], '2026-10-01T09:00:00Z')
   } finally {
     ;(pool as any).query = orig
   }

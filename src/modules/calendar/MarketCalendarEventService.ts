@@ -45,6 +45,8 @@ export interface CalendarEventInput {
   source?: 'L1' | 'L2' | 'L3' | 'L4'
   detail?: string | null
   result?: string | null
+  result_source?: 'auto' | 'manual' | null
+  result_attempted_at?: string | null
 }
 
 /** 平台后缀白名单（§5.9，D-b）：剥离"分隔符+平台名"；可配置常量便于扩充。 */
@@ -131,15 +133,25 @@ export async function upsertEvent(input: CalendarEventInput): Promise<{ id: numb
   const eventTime = input.event_time ?? null
   const detail = input.detail ?? null
   const result = input.result ?? null
+  const resultSource = input.result_source ?? null
+  const resultAttemptedAt = input.result_attempted_at ?? null
   const hash = dedupHash(input.event_date, input.title)
+  // X1（design-debate §11.2 X1）：high 行保护 —— 已存在 high 的 importance/source 不可被任何写者降级/改写。
+  // 原为 `SET importance = EXCLUDED.importance, ... source = EXCLUDED.source`（会覆盖）。
   const dbResult = await pool.query<{ id: string; inserted: boolean }>(
-    `INSERT INTO market_calendar_events (event_date, title, importance, market, event_time, source, detail, result, dedup_hash)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO market_calendar_events (event_date, title, importance, market, event_time, source, detail, result, result_source, result_attempted_at, dedup_hash)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT (event_date, dedup_hash) DO UPDATE
-       SET importance = EXCLUDED.importance, market = EXCLUDED.market, event_time = EXCLUDED.event_time,
-           source = EXCLUDED.source, detail = EXCLUDED.detail, result = EXCLUDED.result
+       SET importance = CASE WHEN market_calendar_events.importance = 'high' THEN 'high' ELSE EXCLUDED.importance END,
+           market = EXCLUDED.market,
+           event_time = EXCLUDED.event_time,
+           source = CASE WHEN market_calendar_events.importance = 'high' THEN market_calendar_events.source ELSE EXCLUDED.source END,
+           detail = EXCLUDED.detail,
+           result = EXCLUDED.result,
+           result_source = EXCLUDED.result_source,
+           result_attempted_at = EXCLUDED.result_attempted_at
      RETURNING id, (xmax = 0) AS inserted`,
-    [input.event_date, input.title, importance, market, eventTime, source, detail, result, hash],
+    [input.event_date, input.title, importance, market, eventTime, source, detail, result, resultSource, resultAttemptedAt, hash],
   )
   const row = dbResult.rows[0]
   return { id: Number(row.id), upserted: row.inserted === true }
