@@ -126,6 +126,17 @@ export async function listEvents(dateFrom: string, dateTo: string): Promise<Cale
   return [...byKey.values()]
 }
 
+/** 按 (event_date, title) 服务端算 dedupHash 删除（裁决 C2 G3，候选 rejected 清场 / 种子删除 / 误录清理）。
+ * 不存在返回 false（幂等），不抛错。 */
+export async function deleteEvent(eventDate: string, title: string): Promise<boolean> {
+  const hash = dedupHash(eventDate, title)
+  const result = await pool.query(
+    'DELETE FROM market_calendar_events WHERE event_date = $1 AND dedup_hash = $2',
+    [eventDate, hash],
+  )
+  return (result.rowCount ?? 0) > 0
+}
+
 export async function upsertEvent(input: CalendarEventInput): Promise<{ id: number; upserted: boolean }> {
   const importance = input.importance ?? 'medium'
   const market = input.market ?? 'CN'
