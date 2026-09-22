@@ -30,7 +30,16 @@ calendarInternalRouter.get('/events', async (req: Request, res: Response) => {
     }
     const delivery = listDeliveryDates(dateFrom, dateTo)
     const rows = await listEvents(dateFrom, dateTo)
-    const events = [...delivery, ...rows.map(toContractEvent)].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    let events = [...delivery, ...rows.map(toContractEvent)].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    // 终审 C2：可选 importance 过滤（预期差 job 读昨日 high 事件传 &importance=high）。
+    // 对合并后数组做过滤（含 L1 delivery 行按其 importance 判；delivery 恒 medium）。
+    const importance = req.query.importance !== undefined ? String(req.query.importance).trim() : ''
+    if (importance !== '') {
+      if (!['high', 'medium', 'low'].includes(importance)) {
+        return res.status(400).json({ code: 400, message: 'importance 须为 high/medium/low' })
+      }
+      events = events.filter((e) => e.importance === importance)
+    }
     // 信封 code 对齐 internal.ts 成功约定（200）；agent-py _request 仅接受 code==200，0 会恒降级（C1）
     res.json({ code: 200, data: { events } })
   } catch (err) {

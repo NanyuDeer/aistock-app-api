@@ -136,3 +136,11 @@ test('toContractEvent 加性透传 detail（预期差 job 读 consensus 用）',
   assert.equal(noDetail.detail, null)
   assert.ok('detail' in noDetail, 'detail 键应存在（null 也透传，禁省略导致读侧 undefined）')
 })
+
+// 终审 C1：toContractEvent 加性透传原始 event_date（US 隔夜 date 顺延后定位 dedup 键用）
+test('toContractEvent 透传原始 event_date（供预期差 job 回写定位）', () => {
+  const withDate = toContractEvent({ id: 1, event_date: '2026-10-28', title: 'FOMC', importance: 'high', market: 'US_OVERNIGHT', event_time: '22:00', source: 'L2', detail: null, result: null } as any)
+  assert.equal(withDate.event_date, '2026-10-28', '原始 event_date 应作为 event_date 透传（不被 date 顺延覆盖）')
+  // date 因隔夜顺延而为反应日（≠原始 event_date），event_date 保留原始 → 两者可分离
+  assert.notEqual(withDate.date, withDate.event_date)
+})

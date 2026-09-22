@@ -206,3 +206,35 @@ test('DELETE 缺参 400', async () => {
     assert.equal(res.json.code, 400)
   } finally { server.close() }
 })
+
+test('GET /events ?importance=high 只返回 high 行（终审 C2）', async () => {
+  // 混合 importance；delivery(L1) 为 medium 恒被过滤
+  ;(pool as any).query = async (sql: string) => {
+    if (String(sql).includes('FROM market_calendar_events')) {
+      return {
+        rows: [
+          { id: 1, event_date: '2026-09-03', title: '高事件', importance: 'high', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+          { id: 2, event_date: '2026-09-03', title: '中事件', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+        ],
+        rowCount: 2,
+      }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05&importance=high')
+    assert.equal(res.json.code, 200)
+    const events = res.json.data.events
+    assert.ok(events.length >= 1)
+    assert.ok(events.every((e: any) => e.importance === 'high'), 'importance=high 只应下放 high 行')
+    // 非法 importance → 400
+    const bad = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05&importance=bogus')
+    assert.equal(bad.status, 400)
+    assert.equal(bad.json.code, 400)
+  } finally { server.close() }
+})

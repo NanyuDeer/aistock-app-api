@@ -181,5 +181,7 @@ export function toContractEvent(row: CalendarEventRow): Record<string, unknown> 
       console.warn('[Calendar] overnight mapping skipped (calendar uncovered):', err)
     }
   }
-  return { date, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result, detail: row.detail ?? null }
+  // 加性透传原始 event_date（终审 C1）：US 隔夜 date 顺延到反应日后，原始 event_date
+  // 仍供预期差 job 回写定位 dedup 键（段 matches 见 agent-py _write_event_date）。
+  return { date, event_date: row.event_date ?? null, type: typeFromSource(row), title: row.title, importance: row.importance, source: row.source, event_time: row.event_time, result: row.result, detail: row.detail ?? null }
 }
