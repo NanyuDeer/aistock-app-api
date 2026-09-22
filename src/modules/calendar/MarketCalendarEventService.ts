@@ -3,6 +3,25 @@ import pool from '../../core/db'
 import type { CalendarEvent } from './CalendarRuleService'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 
+/** 建表 DDL（index.ts 启动建表 + 测试字面量断言共用，防跨处漂移）。
+ * 含 result_source（auto|manual）/result_attempted_at 两列；source 缺省 'L4' 保持。 */
+export const DDL_MARKET_CALENDAR_EVENTS = `
+CREATE TABLE IF NOT EXISTS market_calendar_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_date DATE NOT NULL,
+  title TEXT NOT NULL,
+  importance TEXT NOT NULL DEFAULT 'medium',
+  market TEXT NOT NULL DEFAULT 'CN',
+  event_time TEXT,
+  source TEXT NOT NULL DEFAULT 'L4',
+  detail TEXT,
+  result TEXT,
+  result_source TEXT,
+  result_attempted_at TIMESTAMPTZ,
+  dedup_hash VARCHAR(64) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`
+
 export interface CalendarEventRow {
   id: number
   event_date: string

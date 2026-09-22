@@ -104,6 +104,7 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import stockInfoInternalRouter from './modules/crawler/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
@@ -1177,21 +1178,14 @@ async function start() {
 
     // 节奏大师：market_calendar_events（L1-L4 事件日历，spec §4.4；启动自动建表对齐 prediction_records 先例）
     try {
-        await pool.query(`CREATE TABLE IF NOT EXISTS market_calendar_events (
-  id BIGSERIAL PRIMARY KEY,
-  event_date DATE NOT NULL,
-  title TEXT NOT NULL,
-  importance TEXT NOT NULL DEFAULT 'medium',
-  market TEXT NOT NULL DEFAULT 'CN',
-  event_time TEXT,
-  source TEXT NOT NULL DEFAULT 'L4',
-  detail TEXT,
-  result TEXT,
-  dedup_hash VARCHAR(64) NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`);
+        await pool.query(DDL_MARKET_CALENDAR_EVENTS);
         await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_market_calendar_events_dedup ON market_calendar_events(event_date, dedup_hash)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_market_calendar_events_date ON market_calendar_events(event_date)');
+        // result_source/result_attempted_at 增列（预期差闭环结果来源标注 + 日内重试时点；IF NOT EXISTS 幂等，可重复执行）
+        await pool.query(`ALTER TABLE market_calendar_events ADD COLUMN IF NOT EXISTS result_source TEXT`);
+        await pool.query(`ALTER TABLE market_calendar_events ADD COLUMN IF NOT EXISTS result_attempted_at TIMESTAMPTZ`);
+        // 回填（仅首次增列时生效）：存量已落 result 的行标为 manual（G4/裁决 C8）
+        await pool.query(`UPDATE market_calendar_events SET result_source = 'manual' WHERE result IS NOT NULL AND result_source IS NULL`);
         console.log('[DB] market_calendar_events table ready');
     } catch (err: unknown) {
         console.warn('[DB] market_calendar_events table check:', err instanceof Error ? err.message : String(err));
