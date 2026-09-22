@@ -54,15 +54,16 @@ export function mergeRhythmCalendarDays(
     })
 }
 
-/** 窗口内"日历可见"事件按日分组（对外契约，type ∈ {macro, delivery}；无则空数组，后端恒下发 events 字段）。
- *
- * 2026-09-18（spec §5.4）：① 由仅 macro 放开到 macro + delivery —— 交割日每月仅一次、
- * 不构成噪音，且消除"卡片有交割日、日历无"的反向不一致（H3 同源风险）；
- * ② 合并 L1 规则算出的交割日（此前只下发 DB 表行，规则交割日在本端点恒缺失）。
- * earnings/seed 仍不下发（量大、噪音高）。
- */
-const CALENDAR_VISIBLE_TYPES = new Set(['macro', 'delivery'])
+/** 网格单日事件显示上限（裁决 C5：防 earnings 密集日刷屏，L3 恒 medium 无 low 缓冲）。 */
+export const CALENDAR_GRID_PER_CELL_MAX = 3
+const IMPORTANCE_ORDER = { high: 2, medium: 1, low: 0 } as const
 
+/** 窗口内"日历可见"事件按日分组（对外契约：importance≥medium + 每格上限 3 + 溢出折叠；无则空数组）。
+ *
+ * 裁决 C5：由 type 白名单（{macro,delivery}）改为 importance≥medium 过滤 —— 让 earnings/seed
+ * 进入网格（此前被丢弃），但剔除 low；单日超 CALENDAR_GRID_PER_CELL_MAX 折叠为 { overflow: N } 占位
+ * （前端展开），防 earnings 密集日刷屏（L3 恒 medium 无 low 缓冲）。low 不进网格。
+ */
 export async function loadCalendarEventsByDate(
   dates: string[],
 ): Promise<Map<string, Array<Record<string, unknown>>>> {
@@ -76,11 +77,21 @@ export async function loadCalendarEventsByDate(
   ]
   const byDate = new Map<string, Array<Record<string, unknown>>>()
   for (const ev of merged) {
-    if (!CALENDAR_VISIBLE_TYPES.has(String(ev.type))) continue
+    // 裁决 C5：importance ≥ medium 过滤替代 type 白名单（low 不进网格）
+    const importance = String(ev.importance ?? 'medium')
+    if ((IMPORTANCE_ORDER[importance as keyof typeof IMPORTANCE_ORDER] ?? 1) < 1) continue
     const key = String(ev.date)
     const list = byDate.get(key) ?? []
     list.push(ev as unknown as Record<string, unknown>)
     byDate.set(key, list)
+  }
+  // 每格上限 + 溢出折叠（裁决 C5）：超限尾部折叠为 { overflow: N } 占位
+  for (const [key, list] of byDate) {
+    if (list.length <= CALENDAR_GRID_PER_CELL_MAX) continue
+    byDate.set(key, [
+      ...list.slice(0, CALENDAR_GRID_PER_CELL_MAX),
+      { overflow: list.length - CALENDAR_GRID_PER_CELL_MAX },
+    ])
   }
   return byDate
 }

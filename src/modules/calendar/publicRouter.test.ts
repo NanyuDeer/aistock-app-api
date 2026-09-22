@@ -72,7 +72,7 @@ test('GET /api/agent/rhythm-master/:date 返回按 refresh_slot 优先级排序�
   } finally { server.close() }
 })
 
-test('GET /rhythm-master/calendar 每行含 events：macro 与 delivery、US 隔夜顺延后按对外契约、earnings 排除、无事件日空数组', async () => {
+test('GET /rhythm-master/calendar 每行含 events：importance≥medium（含 earnings/seed）、US 隔夜顺延后按对外契约、无事件日空数组', async () => {
   const app = express()
   app.use('/api/agent', rhythmMasterPublicRouter)
   const server = app.listen(0, '127.0.0.1')
@@ -82,10 +82,11 @@ test('GET /rhythm-master/calendar 每行含 events：macro 与 delivery、US 隔
     const res = await get(port, '/api/agent/rhythm-master/calendar?days=5')
     assert.equal(res.status, 200)
     assert.ok(Array.isArray(res.json.data.days))
-    // 存在至少一天包含 macro/delivery 事件；所有 events 元素 type ∈ {macro, delivery}（earnings/seed 不下发）且带对外契约字段
+    // 存在至少一天包含事件；所有 events importance∈{high,medium}（low 不进网格）且 type 可为 macro/delivery/earnings/seed（裁决 C5 放开 type）且带对外契约字段
     const dayWithEvents = res.json.data.days.find((d: any) => Array.isArray(d.events) && d.events.length > 0)
     assert.ok(dayWithEvents, '应存在带 events 的交易日')
-    assert.ok(dayWithEvents.events.every((e: any) => e.type === 'macro' || e.type === 'delivery'))
+    assert.ok(dayWithEvents.events.every((e: any) => e.importance === 'high' || e.importance === 'medium'), '网格不含 low 事件')
+    assert.ok(dayWithEvents.events.every((e: any) => e.type === 'macro' || e.type === 'delivery' || e.type === 'earnings' || e.type === 'seed'))
     assert.ok(dayWithEvents.events.every((e: any) => typeof e.title === 'string' && e.source && e.importance))
     // 全部行都有 events 字段（无事件 = []）
     assert.ok(res.json.data.days.every((d: any) => Array.isArray(d.events)))
@@ -133,4 +134,47 @@ test('日历网格合并 L1 交割日：2026-09-18（9 月第三个周五）为 
   ])
   const day = byDate.get('2026-09-18') ?? []
   assert.ok(day.some((e) => e.type === 'delivery'), '2026-09-18 应有交割日事件')
+})
+
+// ---- 裁决 C5：importance≥medium 过滤 + 每格上限 3 + 溢出折叠（本任务引入的口径变更）----
+function mockEvents(rows: Array<Record<string, unknown>>) {
+  const orig = pool.query
+  ;(pool as any).query = async (sql: string, params?: unknown[]) => {
+    if (String(sql).includes('market_calendar_events')) {
+      return { rows, rowCount: rows.length }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+  return orig
+}
+
+test('网格按 importance≥medium 过滤（含 earnings/seed，剔除 low）', async () => {
+  const orig = mockEvents([
+    { id: 1, event_date: '2026-10-01', title: '苹果公司财报', importance: 'high', market: 'CN', event_time: null, source: 'L3', detail: null, result: null }, // earnings，high → 保留
+    { id: 2, event_date: '2026-10-01', title: '种子事件', importance: 'medium', market: 'CN', event_time: null, source: 'L4', detail: null, result: null }, // seed，medium → 保留
+    { id: 3, event_date: '2026-10-01', title: '某公司低优先级财报', importance: 'low', market: 'CN', event_time: null, source: 'L3', detail: null, result: null }, // earnings，low → 剔除
+  ])
+  try {
+    const map = await loadCalendarEventsByDate(['2026-10-05', '2026-10-01'])
+    const day = map.get('2026-10-01')!
+    assert.equal(day.some((e) => e.type === 'earnings'), true, '应含 earnings（此前被 type 白名单丢弃）')
+    assert.equal(day.some((e) => e.type === 'seed'), true, '应含 seed（此前被 type 白名单丢弃）')
+    assert.equal(day.some((e) => e.importance === 'low'), false, 'low 不进网格')
+  } finally { ;(pool as any).query = orig }
+})
+
+test('单日事件超上限折叠为 +N', async () => {
+  const orig = mockEvents([
+    { id: 1, event_date: '2026-10-01', title: '财报A', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+    { id: 2, event_date: '2026-10-01', title: '财报B', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+    { id: 3, event_date: '2026-10-01', title: '财报C', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+    { id: 4, event_date: '2026-10-01', title: '财报D', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+    { id: 5, event_date: '2026-10-01', title: '财报E', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+  ])
+  try {
+    const map = await loadCalendarEventsByDate(['2026-10-01'])
+    const day = map.get('2026-10-01')!
+    assert.ok(day.filter((e) => e.overflow == null).length <= 3, '折叠后保留 ≤3 条')
+    assert.equal(day.some((e) => e.overflow === 2), true, '5条超上限 → 溢出占位 2')
+  } finally { ;(pool as any).query = orig }
 })
