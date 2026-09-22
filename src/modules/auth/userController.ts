@@ -5,6 +5,8 @@ import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlackli
 import { isValidAShareSymbol } from '../../shared/utils/validator';
 import pool from '../../core/db';
 import { NotificationService, NotificationTableUnavailableError } from '../../core/notification/NotificationService';
+import { PriceTriggerDetector } from '../stock-trace/PriceTriggerDetector';
+import { isAShareTradingTime } from '../../shared/utils/tradingTime';
 
 export class UserController {
     private static readonly UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -177,13 +179,33 @@ export class UserController {
         let nextOrder = (maxOrderResult.rows[0]?.max_order ?? 0) + 1;
         // 归属按 user_id（统一主键）；openid 手机号用户为空时写 NULL（部分唯一索引 WHERE openid IS NOT NULL 排除，防跨用户冲突）
         const openidForDb = openid || null;
+        const newlyAddedSymbols: string[] = [];
         for (const sym of validSymbols) {
-            // 已存在的自选股不改变其顺序，仅新增的按序分配；ON CONFLICT DO NOTHING 覆盖两枚部分唯一索引
-            await pool.query(
+            // 已存在的自选股不改变其顺序，仅新增的按序分配；ON CONFLICT DO NOTHING 覆盖两枚部分唯一索引。
+            // RETURNING 仅在真正新插入时返回行 → 可识别"本次新加入"的股票（曾加过又删掉再重加也算新持仓）。
+            const inserted = await pool.query(
                 `INSERT INTO user_stocks (user_id, openid, symbol, sort_order) VALUES ($1, $2, $3, $4)
-                 ON CONFLICT DO NOTHING`,
+                 ON CONFLICT DO NOTHING RETURNING symbol`,
                 [id, openidForDb, sym, nextOrder++],
             );
+            if (inserted.rows.length > 0) newlyAddedSymbols.push(sym);
+        }
+
+        // 2026-09-04：新增自选股"加入即打点"——交易时段内立即对该股做一次行情检测，
+        // 相对昨收 ≥ 阈值命中则创建/更新异动事件并立即归因（immediateEnqueue），
+        // 使刚加入的股票当天即可在 movements 看到其异动，而非回填加入前的历史事件。
+        // 非交易时段（盘前/午休/收盘后/周末）不触发，避免用收盘价或陈旧行情误判异动。
+        if (newlyAddedSymbols.length > 0 && (await isAShareTradingTime())) {
+            try {
+                await PriceTriggerDetector.detectSymbols(newlyAddedSymbols);
+                UserController.log('addFavorites', '加入即打点完成', { symbols: newlyAddedSymbols });
+            } catch (err) {
+                // 检测失败不影响自选添加结果，仅记录告警
+                UserController.log('addFavorites', '⚠️ 加入即打点检测失败（不影响自选添加）', {
+                    symbols: newlyAddedSymbols,
+                    error: (err as Error)?.message || String(err),
+                });
+            }
         }
 
         UserController.log('addFavorites', '✅ 添加完成', { id, count: validSymbols.length });

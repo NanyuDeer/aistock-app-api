@@ -97,6 +97,35 @@ test('extractSectorTraceInfo: attribution_status/summary/sectors/primaryName 提
   assert.equal(info.primaryName, '半导体');
 });
 
+test('extractSectorTraceInfo: 报告 conclusion（R25 一句话归因结论）优先于 trigger headline', () => {
+  const withConclusion = extractSectorTraceInfo({
+    display_report: { sectors: ['半导体'] },
+    market_trace: {
+      trace: {
+        chain_id: 'x',
+        sector: '半导体',
+        conclusion: '美方设备出口限制落地，国产替代与供应链避险共振走强',
+        stages: [{ kind: 'trigger', headline: '海外出口管制传闻发酵', claims: [], evidence: [] }],
+        attribution_status: 'sufficient',
+      },
+    },
+  });
+  assert.equal(withConclusion.summary, '美方设备出口限制落地，国产替代与供应链避险共振走强');
+
+  // 空白 conclusion（老数据/未产出）→ 回退 trigger headline，与本条修复前行为一致
+  const blank = extractSectorTraceInfo({
+    display_report: { sectors: ['半导体'] },
+    market_trace: {
+      trace: {
+        conclusion: '   ',
+        stages: [{ kind: 'trigger', headline: '海外出口管制传闻发酵', claims: [], evidence: [] }],
+        attribution_status: 'sufficient',
+      },
+    },
+  });
+  assert.equal(blank.summary, '海外出口管制传闻发酵');
+});
+
 test('extractSectorTraceInfo: attribution_status insufficient / 无 stages 摘要降级', () => {
   const insufficient = extractSectorTraceInfo({
     display_report: { sectors: ['存储'] },
@@ -304,6 +333,35 @@ test('extractPerSectorTraceEntries: 每板块取自己的 trigger headline（不
   assert.equal(entries.get('国家大基金持股')?.status, 'completed');
   assert.equal(entries.get('汽车芯片')?.summary, '市场监管总局严查汽车芯片炒作');
   assert.equal(entries.get('汽车芯片')?.status, 'insufficient');
+});
+
+test('extractPerSectorTraceEntries: 每板块 conclusion 优先，空白回退 trigger（R25）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        汽车芯片: {
+          conclusion: '关税豁免落地，国产替代与供应链避险共振走强',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+        次新股: {
+          conclusion: '  ',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+        // conclusion 与顶层 summary 同时存在 → conclusion 必须赢（R25 口径）
+        存储: {
+          conclusion: '美方限制升级，存储涨价预期升温',
+          summary: '旧的顶层摘要',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+      },
+    },
+  });
+  assert.equal(entries.get('汽车芯片')?.summary, '关税豁免落地，国产替代与供应链避险共振走强');
+  assert.equal(entries.get('次新股')?.summary, '触发句');
+  assert.equal(entries.get('存储')?.summary, '美方限制升级，存储涨价预期升温');
 });
 
 test('extractPerSectorTraceEntries: 顶层 summary 优先；无 sector_traces → 空 Map（调用方回退）', () => {

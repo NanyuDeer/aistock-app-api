@@ -2,6 +2,28 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-09-18 更新：capital 候选层降级为条件准入层（agent-py 侧口径变更）
+
+- **背景**：资金净流入/流出方向与价格涨跌是同义反复（价格本即资金博弈结果），作为候选归因维度信息增量为零，且因"永远存在且天然同向"成为五层中最易置 supported 的一层，会挤压 company/sector/market 真因；但资金的结构/来源/背离（分单结构、席位来源、量价背离）含价格读不出的增量信息 → **保留维度、收紧准入**。
+- **agent-py 改动（本仓无代码改动）**：`schemas/stock_trace.py` `required_layers` 五层 → `{company, sector, market, technical}`（`capital` 仍在 layer 枚举，存量结果兼容）；`prompts/workers/stock_trace.py` 新增 capital 专项规则（禁同义反复、仅结构/来源/背离可 supported、T-1 资金数据不得支撑主链）；PDF 报告章节标题改为"分层候选归因"。
+- **本仓为何无需改动**：`StockTraceResultService.validateStockTraceResult` 本就只强制 `company/sector/market` 三层，对 capital 缺席已兼容；`stock_trace_candidates` 按 `(result_id, layer, rank)` 唯一，少一层不影响落库与报告组装。
+- **陈旧能力标记已清理（2026-09-18 当日追加）**：删除 `missingCapabilities: ['capital_flow_disabled']` 硬编码（`runRuleFallback` / `acceptExternalResult` 共 4 处）与 `ValidationInput.missingCapabilities` 字段——资金流数据已实际采集，该标记使 sector/market 的 `missing_counter_evidence` 校验被永久跳过。
+- **capital 证据补齐结构信息（2026-09-18）**：`StockTraceSnapshotService` 抽出纯函数 `toCapitalSourceRecord(flow, symbol, capturedAt)`（对齐 `toInsightArticleSourceRecord` 约定），透出原先被丢弃的 `orders`（超大单/大单/中单/小单）与 `windows`（1/5/10/20 日拆解），正文改为 `截至 {tradeDate}：主力净流入…；分单结构…`。原因：agent-py 侧资金维度降级为条件准入层后，只有"价格读不出的增量信息（结构/来源/背离）"才可能被置 supported/weak，否则恒为 insufficient；正文标注 `trade_date` 用于"同日可 supported、T-1 最高 weak"的时效分档判定。
+- **配套防回归**：直接启用严格校验会让"未引用反证的 supported 板块/大盘候选"被拒 → `processing_status='partial'` → artifact 不生成 → 报告端点 409。故同步：① agent-py 提示词新增"反向板块/大盘事实下仍置 supported 必须引用 `counter_evidence_ids`"；② agent-py `validate_stock_trace_result` 镜像该规则（Node 是回写后终态门、无重试；Python 侧失败可触发 LLM 纠错重试）。规则兜底路径的 `buildCandidate` 自带 counter 证据，不受影响。
+
+### 2026-09-18 修复：收盘落定与收盘打点同 cron 竞态导致归因卡住
+
+- **现象**：蓝盾光电（300862）/海正生材（688203）当日归因卡在"归因分析中"。
+- **根因**：`index.ts` 中 close 打点（`runPriceMoveDetect('close')`）与收盘落定（`settleActiveEvents`）曾注册为**同一 cron 表达式 `5 15 * * 1-5`**，两者并发触发。落定是一两条 UPDATE，很快跑完，会抢在打点（遍历自选股 + 采快照，耗时数秒）中途把当日 active 事件一次性关闭并入队；打点随后（落定之后）为同一标的**又新建一条事件** → 该事件永远停在 `active`、**无 job / 无 outbox**，前端同日聚合取最新 → 卡片恒显"归因分析中"。
+- **判别特征**（复现/排查用）：同标的当日出现**两条** 15:05 事件（落定前一条被关闭、落定后一条 active）；`stock_trace_events` 有 active 行但 `stock_trace_jobs` 无对应 `(event_id, trigger_revision)`；outbox 无对应行。
+- **修复**：落定改为在 close 打点**完成后**执行（`runPriceMoveDetect` 的 `finally` 内 `await StockTraceService.settleActiveEvents()`），保证"先建齐当日事件、再落定"的时序；独立落定 cron 由 `5 15` 后移到 `10 15` 作兜底（覆盖打点异常或 15:05 后新建事件），`settleActiveEvents` 幂等可重复调用。
+
+### 2026-09-18 修复：outbox 发布失败无重试入口导致 pending 永久滞留
+
+- **现象**：`stock_trace_outbox` 某行 `status='pending'`、`last_error_code='Error'`（Redis 命令失败，`error.name.slice(0,64)` 落成 `'Error'`）、`attempt_count=3`、`published_at=NULL`，此后 15 小时无任何重试。
+- **根因**：`publishPending` 只在 `enqueue` / `scheduleEnriched` 完成等**事件路径**被顺带调用，没有周期性触发点 → 一旦发布失败，该行没有重试入口（同一模式 2026-08-25 已复现过一次，当时靠人工重发）。
+- **修复**：新增每分钟 cron `StockTraceOutboxCron` 调用 `StockTraceJobService.publishPending()`（`status='pending'` 有索引，常态零行近零成本；日志仅在 `published>0 || failed>0` 时打印）。实测已自动补发滞留行。
+
 ### 2026-08-30 更新：涨停雷达并入 stock-trace 链路（统一事件与归因）
 
 - **事件**：`InsightService.runCycle` 命中自选股（标题主体/涨停复盘汇总）改拉腾讯行情走 `processPriceFact(..., { immediateEnqueue: true })`，建 mv 事件并立即归因；`watchlist_insight_events` 不再新建（存量保留）。
@@ -77,10 +99,34 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - User APIs remain in `controller.ts`; Python-facing routes remain in `internalRouter.ts` and require `X-Internal-Token`.
 - Company-context evidence is read from the unified event store first (`loadEventStoreEvidence` → Python `GET /api/agent/event/scrape-by-symbol/:symbol?date=当日`, via `AGENT_PY_URL || PYTHON_AGENT_URL` + `X-Internal-Token`, Shanghai-today date); on empty/miss/failure `collectCompanySources` falls back to the original CLS stock news + stock-info announcement collection (2026-08-12).
 
-### 2026-09-03 更新：is_limit_up + forecast slot 分存（阶段 2 轻量预判）
+### 2026-09-03 更新：is_limit_up + forecast slot 分存（阶段 2 轻量预判）——已于 2026-09-13 移除
 
-- `stock_trace_events` 新增 `is_limit_up BOOLEAN NOT NULL DEFAULT FALSE`（涨停雷达文章命中标记）与 `forecast JSONB NOT NULL DEFAULT '{}'`（slot 级分存，midday/close 互不覆盖）。
-- `listUserEvents`/`listRecentEvents` 返回体补 `is_limit_up`/`forecast`（纯增量）。
-- `StockTraceService.listLightPredictTargets(tradeDate)`：按 symbol 去重返回当日预判候选。
-- `StockTraceService.upsertEventForecast(eventId, slot, forecast)`：slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
-- Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。
+> forecast（轻量预判）功能已彻底下线。迁移 `022_drop_forecast.sql` 已删除 `stock_trace_events` 的 `forecast` 列（保留 `is_limit_up`）。以下方法/端点已删除：
+>
+> - `StockTraceService.listLightPredictTargets(tradeDate)` — 按 symbol 去重返回当日预判候选。
+> - `StockTraceService.upsertEventForecast(eventId, slot, forecast)` — slot 级 upsert（`forecast = forecast || jsonb_build_object($slot, $forecast::jsonb)`）。
+> - Internal 端点：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`。
+>
+> `is_limit_up` 列保留不变（涨停文章命中标记，前端涨停文案仍依赖）。
+
+### 2026-09-13 更新：完整洞察报告 PDF + 预判彻底移除（迁移 022）
+
+- **新增端点**：`GET /api/cn/favorites/movements/:eventId/report.pdf`（StockTraceController.report）——JWT 鉴权，返回实时渲染的 PDF。
+  - 状态码：`401`（无/无效 JWT）、`404`（事件不存在或不属于当前用户）、`409`（事件无归因完成结果，不可生成报告）、`200`（正常返回 PDF 字节流，Content-Type: application/pdf）、`502`（上游 agent-py 渲染服务不可用/超时/非 PDF 响应）。
+  - 数据流：app-api 组装快照 + 归因结果 → `POST /api/agent/insight-report/render`（agent-py，X-Internal-Token 鉴权）→ 收到 PDF buffer → 设 Content-Disposition attachment 文件名 `{symbol}_{eventId}_{date}.pdf` → 返回。
+  - 报告**实时生成不落盘**（无 DB 存储，无缓存）。
+- **agent-py 侧**：`POST /api/agent/insight-report/render`（`services/insight_report.py`，X-Internal-Token 校验）——接收 event JSON body，以 reportlab 渲染 PDF（A4, 中文正文+表格+归因证据），500 出错。
+- **迁移 `022_drop_forecast.sql`**：`stock_trace_events` 与 `stock_info_judgements` 的 `forecast` 列已彻底删除（**保留 `is_limit_up`**——涨停文案仍依赖）。`ensureSchema` 中对应的幂等 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS forecast` 已同步清理（否则重启会复活列）。
+- **Service 层移除**：`StockTraceService.listLightPredictTargets`、`upsertEventForecast` 已删除；`StockInfoService.upsertJudgementForecast` 已删除。
+- **端点移除**：`GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast` 已删除。
+
+### 2026-09-04 更新：movements 持仓期可见 + 新增自选股"加入即打点"
+
+- **问题**：用户刚把某股加入自选，却在"自选股异动"看到加入前历史（09-03 mv 历史 / 08-04 老雷达存量），且改为"仅当日"误伤老自选股（历史归因消失）。
+- **最终决策**：movements 可见性下界 = 该股**当前持仓期**（`listUserEvents` JOIN ON 追加 `AND e.first_triggered_at >= us.created_at`）：
+  - 老自选（created_at 早）全历史 + 今日新触发照常（恢复 08-21"当前在自选即可见"直觉）；
+  - 新加入股只显示加入时刻之后触发/仍活跃的异动，避免"刚加入即见加入前历史事件"。
+  - `user_stocks.created_at` = 行首次加入（移出再重加则新行/新时刻）；`addFavorites` 用 `INSERT ... ON CONFLICT DO NOTHING RETURNING symbol` 识别本次真正新加入的 symbol。
+- **加入即打点**：`PriceTriggerDetector.detectSymbols(symbols, now)`（新增）——仅对给定 symbols 拉 `activity` 行情（复用 detect 的字段/阈值/eligible 过滤），命中（相对昨收 ≥ PRICE_TRIGGER_PERCENT）即 `processPriceFact(..., { immediateEnqueue: true })` 盘中立即归因，使新加入股当天即可见归因（不回填历史）。`UserController.addFavorites` 在交易时段（`isAShareTradingTime`）对新加入 symbols 调用它；非交易时段跳过（避免用收盘价误判）。检测失败仅告警不影响添加。
+- `listRecentEvents`（未登录/全局）还原原样（无持仓期概念）；`StockTraceController.list` 登录分支调用还原为不带额外参数。
+- monitor.vue（前端）移除老雷达数据源 `watchlistInsightApi.getInsights`（存量 watchlist_insight_events 08-30 起停用，含 8 月初远古事件）。

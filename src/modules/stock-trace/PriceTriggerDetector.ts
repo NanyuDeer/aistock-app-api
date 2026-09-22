@@ -56,6 +56,43 @@ export class PriceTriggerDetector {
         await this.detect(now);
     }
 
+    /**
+     * 2026-09-04：对指定自选股各做一次价格检测（"加入自选即打点"）。
+     * 与 detect 的差异：只检测给定 symbols（新加入），不校验交易时段（由调用方 isAShareTradingTime 把关），
+     * 命中即 processPriceFact(..., { immediateEnqueue: true })——盘中立即归因，
+     * 使新加入的自选股当天即可在 movements 看到其异动与归因（而非回填加入前的历史事件）。
+     * 若该股当日已有同向 active 事件则走 revision/unchanged（不重复归因）；无则新建事件窗口。
+     */
+    static async detectSymbols(symbols: string[], now = new Date()): Promise<void> {
+        if (symbols.length === 0) return;
+        const securities = (await StockTraceService.getFavoriteSecurities())
+            .filter((security) => symbols.includes(security.symbol) && isEligiblePriceSecurity(security, now));
+        if (securities.length === 0) return;
+        const quotes = await TencentQuoteService.getBatchQuotes(securities.map((security) => security.symbol), 'activity');
+        const quoteBySymbol = new Map<string, Record<string, unknown>>();
+        for (const quote of quotes) {
+            const symbol = typeof quote[SYMBOL_FIELD] === 'string' ? quote[SYMBOL_FIELD] : '';
+            if (symbol) quoteBySymbol.set(symbol, quote);
+        }
+        for (const security of securities) {
+            const quote = quoteBySymbol.get(security.symbol);
+            if (!quote) continue;
+            const latestPrice = numeric(quote[PRICE_FIELD]);
+            const previousClose = numeric(quote[PREVIOUS_CLOSE_FIELD]);
+            const changePct = numeric(quote[CHANGE_FIELD]);
+            if (latestPrice === null || previousClose === null || previousClose <= 0 || changePct === null) continue;
+            const fact: PriceFact = {
+                symbol: security.symbol,
+                stockName: typeof quote[NAME_FIELD] === 'string' ? quote[NAME_FIELD] : security.stockName,
+                latestPrice,
+                previousClose,
+                changePct,
+                observedAt: now,
+            };
+            await StockTraceService.processPriceFact(security, fact, { immediateEnqueue: true });
+        }
+    }
+
     private static async detect(now: Date): Promise<void> {
         this.running = true;
         try {
