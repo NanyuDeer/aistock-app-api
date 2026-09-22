@@ -29,7 +29,7 @@
 
 ## 数据模型（启动自动建表，对齐 prediction\_records 先例）
 
-- `market_calendar_events`：`event_date DATE` + `title TEXT` + `importance`（high/medium/low）+ `market`（CN/US\_OVERNIGHT）+ `event_time TEXT`（HH:MM）+ `source`（L1/L2/L3/L4）+ `detail` + `result` + `dedup_hash VARCHAR(64)`
+- `market_calendar_events`：`event_date DATE` + `title TEXT` + `importance`（high/medium/low）+ `market`（CN/US\_OVERNIGHT）+ `event_time TEXT`（HH:MM）+ `source`（L1/L2/L3/L4）+ `detail` + `result` + `result_source`（auto/manual）+ `result_attempted_at TIMESTAMPTZ` + `dedup_hash VARCHAR(64)`
 
 - 唯一键：`ux_market_calendar_events_dedup(event_date, dedup_hash)`（三源共用去重）；日期索引 `idx_market_calendar_events_date`
 
@@ -45,7 +45,11 @@
 
 - **listEvents 排序契约**（2026-09-02，rhythm 锚点单一来源）：`ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`（三键稳定排序）；`internalRouter` GET /events 再按 date 主键 JS 稳定排序（同日期保留 DB 行次序）；Python 侧 `high_events`/`next_event_anchor` 取首条顺序唯一继承此下发序，Python 不重排
 
-- `upsertEvent` 默认值：importance=medium、market=CN、source=L3、event\_time/detail/result=null；返回 `{id, upserted}`（`xmax=0` 判断新插入）
+- `upsertEvent` 默认值：importance=medium、market=CN、source=L3、event\_time/detail/result=null；返回 `{id, upserted}`（`xmax=0` 判断新插入）；**透传 `result_source`/`result_attempted_at`**（缺省 null）
+
+- **X1（high 行 CASE 保护，2026-09-22 事件前瞻批次）**：`upsertEvent` 的 `ON CONFLICT DO UPDATE` 对 importance 用 `CASE WHEN market_calendar_events.importance='high' THEN 'high' ELSE EXCLUDED.importance END`、source 同逻辑——**已存在 high 行的 importance/source 不可被任何写者降级/改写**（防低优先级种子/L3 覆盖真正的高优事件）。
+
+- **X4（读侧折叠禁写侧清理，2026-09-22）**：`listEvents` 读侧按**同日期 + 归一化标题**（`normalizeTitle`）折叠近似重复，只保留 importance 最高 + result 非空优先，并附 `merged_count`；**绝不在写侧批量删行**去重（折叠语义只发生在读侧）。`normalizeTitle` 另做**白名单后缀剥离**（如 ` - Moomoo` 类尾缀）。
 
 - `dedupHash`：`sha256(event_date|normalizeTitle(title))` 前 16 位；`normalizeTitle` = 去 `[\s\W_]+` + 小写
 
@@ -58,11 +62,12 @@
 | 接口                                                      | 方法   | 鉴权               | 说明                                                                                                                                                                                                                                                                                                                                      |
 | ------------------------------------------------------- | ---- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/internal/calendar/events?dateFrom=&dateTo=`           | GET  | x-internal-token | L1 交割日 + 表内事件合并，按日期升序                                                                                                                                                                                                                                                                                                                   |
-| `/internal/calendar/events`                             | POST | x-internal-token | upsert 事件（event\_date+title 必填，importance/market/source 枚举校验）                                                                                                                                                                                                                                                                           |
+| `/internal/calendar/events`                             | POST | x-internal-token | upsert 事件（event\_date+title 必填，importance/market/source 枚举校验；**透传 detail/result/result\_source(∈{auto,manual})/result\_attempted\_at**，缺省 null） |
+| `/internal/calendar/events`                             | DELETE | x-internal-token | **按 (event\_date,title) 服务端算 dedupHash 删行**（`deleteEvent`，候选 rejected 清场/种子删除/误录清理）；返回 `{deleted}`；不存在幂等 200 |                                                                                                                                                                                                                                                                          |
 | `/internal/calendar/earnings-density?dateFrom=&dateTo=` | GET  | x-internal-token | performance\_reports 按 ann\_date 聚合 `{date, count}`                                                                                                                                                                                                                                                                                     |
 | `/api/agent/rhythm-master/:date`                        | GET  | 无                | 三时点版本（user\_id ∈ after\_close/morning/midday），按 refresh\_slot 优先级排序                                                                                                                                                                                                                                                                     |
-| `/api/agent/rhythm-master/calendar?days=N`              | GET  | 无                | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（**macro + delivery**，含 L1 交割日；CN + US\_OVERNIGHT 按对外契约顺延；无事件 = `[]`；2026-09-18 放开 delivery 并合并规则交割日）                                                                                                                           |
-| `/api/agent/rhythm-master/calendar?naturalDays=N`       | GET  | 无                | **自然日模式（2026-09-03）**：最近 N 自然日网格（**含周末/节假日**），逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（**macro + delivery**，含 L1 交割日与 US 隔夜顺延后的反应日）；dates 降序（新到老），与 `loadCalendarEventsByDate`（from=dates\[last]/to=dates\[0]）及既有 days 分支方向一致。既有 `days=` 交易日模式保持不变（向后兼容，首页近 5 日摘要走交易日） |
+| `/api/agent/rhythm-master/calendar?days=N`              | GET  | 无                | 日历聚合：最近 N 交易日逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band}`；level=null 灰格（行缺失/沿用前值），SQL 级 JSONB 投影不整行读 content；每行恒下发 `events`（**importance≥medium 过滤**，含 L1 交割日与 earnings/seed；**每格上限 3 + 溢出折叠 `{overflow:N}`**，裁决 C5；CN + US\_OVERNIGHT 按对外契约顺延；无事件 = `[]`） |
+| `/api/agent/rhythm-master/calendar?naturalDays=N`       | GET  | 无                | **自然日模式（2026-09-03）**：最近 N 自然日网格（**含周末/节假日**），逐日 `{date, refresh_slot: 'after_close', level, score, basis_date, position_band, events}`；周末/无档 `level=null` 灰格如实展示但 events 仍按自然日关联（**importance≥medium 过滤 + 每格上限 3 + 溢出折叠**，裁决 C5，含 L1 交割日与 US 隔夜顺延后的反应日）；dates 降序（新到老），与 `loadCalendarEventsByDate`（from=dates\[last]/to=dates\[0]）及既有 days 分支方向一致。既有 `days=` 交易日模式保持不变（向后兼容，首页近 5 日摘要走交易日） |
 
 ## 依赖
 

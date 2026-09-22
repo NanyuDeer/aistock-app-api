@@ -214,8 +214,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/insight/events/:eventId?openid=` | watchlist_insight | 自选股洞察详情（阶段 2.1 读层：事件 + 归因结果 + 最新证据包；openid 归属校验，无归属 404） |
 | `GET /internal/stock-trace/events?openid=&symbol=&limit=` | stock_trace | 自选股异动溯源列表（阶段 2.2 读层：价格异动/涨停雷达归因，复用 listUserEvents：openid 过滤 + analysis_status/primary_cause；symbol 可选过滤、limit 默认 50 上限 100） |
 | `GET /internal/stocks/basic` | stocks 表 | 全量 A 股基础信息 [{symbol, name, industry}]，内存 TTL 6h 缓存，供 Python 股票名称实体匹配（stock_event_detector company_event_rule） |
-| `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取） |
-| `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert） |
+| `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取；**2026-09-22 起 `listEvents` 读侧折叠近似重复 + `toContractEvent` 加性透传 `detail`**，含 consensus 前缀） |
+| `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert；**2026-09-22 行：透传 `result_source`/`result_attempted_at`，`upsertEvent` 用 CASE 保护 high 行 importance/source（X1）**） |
+| `DELETE /internal/calendar/events` | market_calendar_events | **事件日历删行（2026-09-22 新增）**：按 `{event_date, title}` 服务端算 dedupHash 删行，返回 `{deleted}`；不存在幂等 200（候选 rejected 清场/种子删除/误录清理） |
 | `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
 | `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
 | `POST /api/internal/attribution-feedback` | attribution_feedback_signals | **溯源弱反馈审计上报**（Task 7.1，2026-09-17）：body `{date, unit_key, mode, sample_size, hit_count, miss_count, hit_rate, suggestion, detail}`；`(date, unit_key)` upsert 幂等；**注意路径带 `/api` 前缀**（该 router 挂在 `/api` 下，同 attribution-chain）；本期只有观测层（不应用权重） |
