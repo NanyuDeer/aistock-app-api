@@ -1,6 +1,6 @@
 import { Router, type Request, type Response } from 'express'
 import { listDeliveryDates } from './CalendarRuleService'
-import { listEvents, upsertEvent, toContractEvent } from './MarketCalendarEventService'
+import { listEvents, upsertEvent, deleteEvent, toContractEvent } from './MarketCalendarEventService'
 
 export const calendarInternalRouter: Router = Router()
 
@@ -30,7 +30,16 @@ calendarInternalRouter.get('/events', async (req: Request, res: Response) => {
     }
     const delivery = listDeliveryDates(dateFrom, dateTo)
     const rows = await listEvents(dateFrom, dateTo)
-    const events = [...delivery, ...rows.map(toContractEvent)].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    let events = [...delivery, ...rows.map(toContractEvent)].sort((a, b) => String(a.date).localeCompare(String(b.date)))
+    // 终审 C2：可选 importance 过滤（预期差 job 读昨日 high 事件传 &importance=high）。
+    // 对合并后数组做过滤（含 L1 delivery 行按其 importance 判；delivery 恒 medium）。
+    const importance = req.query.importance !== undefined ? String(req.query.importance).trim() : ''
+    if (importance !== '') {
+      if (!['high', 'medium', 'low'].includes(importance)) {
+        return res.status(400).json({ code: 400, message: 'importance 须为 high/medium/low' })
+      }
+      events = events.filter((e) => e.importance === importance)
+    }
     // 信封 code 对齐 internal.ts 成功约定（200）；agent-py _request 仅接受 code==200，0 会恒降级（C1）
     res.json({ code: 200, data: { events } })
   } catch (err) {
@@ -41,7 +50,7 @@ calendarInternalRouter.get('/events', async (req: Request, res: Response) => {
 
 calendarInternalRouter.post('/events', async (req: Request, res: Response) => {
   try {
-    const { event_date, title, importance, market, event_time, source, detail, result } = (req.body ?? {}) as Record<string, unknown>
+    const { event_date, title, importance, market, event_time, source, detail, result, result_source, result_attempted_at } = (req.body ?? {}) as Record<string, unknown>
     if (typeof event_date !== 'string' || !DATE_RE.test(event_date) || typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({ code: 400, message: 'event_date(YYYY-MM-DD) 与 title 必填' })
     }
@@ -50,6 +59,10 @@ calendarInternalRouter.post('/events', async (req: Request, res: Response) => {
     }
     if (market !== undefined && !['CN', 'US_OVERNIGHT'].includes(String(market))) {
       return res.status(400).json({ code: 400, message: 'market 须为 CN/US_OVERNIGHT' })
+    }
+    // 校验 result_source ∈ {auto, manual}（可选；缺省 null 透传，向后兼容）
+    if (result_source !== undefined && !['auto', 'manual'].includes(String(result_source))) {
+      return res.status(400).json({ code: 400, message: 'result_source 须为 auto/manual' })
     }
     const src = source === undefined ? 'L3' : String(source)
     if (!['L1', 'L2', 'L3', 'L4'].includes(src)) {
@@ -64,10 +77,28 @@ calendarInternalRouter.post('/events', async (req: Request, res: Response) => {
       source: src as 'L1' | 'L2' | 'L3' | 'L4',
       detail: detail === undefined ? null : String(detail),
       result: result === undefined ? null : String(result),
+      result_source: result_source === undefined ? null : (result_source as 'auto' | 'manual'),
+      result_attempted_at: result_attempted_at === undefined ? null : String(result_attempted_at),
     })
     res.json({ code: 0, data: { id: row.id, upserted: row.upserted } })
   } catch (err) {
     console.error('[Calendar] POST /events error:', err)
+    res.status(502).json({ code: 502, message: String(err) })
+  }
+})
+
+/** DELETE /internal/calendar/events — 按 (event_date, title) 服务端算 dedupHash 删行（裁决 C2 G3）。
+ * 供候选 rejected 清场 / 种子删除 / 误录清理；未知错误返 502 由调用方留痕。 */
+calendarInternalRouter.delete('/events', async (req: Request, res: Response) => {
+  try {
+    const { event_date, title } = (req.body ?? {}) as Record<string, unknown>
+    if (typeof event_date !== 'string' || !DATE_RE.test(event_date) || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ code: 400, message: 'event_date(YYYY-MM-DD) 与 title 必填' })
+    }
+    const deleted = await deleteEvent(event_date, title)
+    res.json({ code: 0, data: { deleted } })
+  } catch (err) {
+    console.error('[Calendar] DELETE /events error:', err)
     res.status(502).json({ code: 502, message: String(err) })
   }
 })

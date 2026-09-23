@@ -12,13 +12,21 @@ import * as TradingCalendarModule from '../../shared/utils/TradingCalendarServic
 const ORIGINAL_QUERY = pool.query
 function makeJsonRequest(port: number, method: string, path: string, body?: unknown) {
   return new Promise<{ status: number; json: any }>((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path, headers: body ? { 'content-type': 'application/json', 'x-internal-token': 'test-token' } : { 'x-internal-token': 'test-token' } }, (res) => {
+    const payload = body !== undefined ? JSON.stringify(body) : undefined
+    const headers: Record<string, string> = { 'x-internal-token': 'test-token' }
+    if (payload !== undefined) {
+      headers['content-type'] = 'application/json'
+      // 显式 Content-Length：Node http client 对 DELETE 不自动加 body 帧头（无 content-length / transfer-encoding），
+      // 否则 body-parser 的 hasBody 判定无 body，DELETE 请求体会被静默丢弃。
+      headers['content-length'] = String(Buffer.byteLength(payload))
+    }
+    const req = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
       let data = ''
       res.on('data', (c) => (data += c))
       res.on('end', () => { try { resolve({ status: res.statusCode ?? 0, json: JSON.parse(data || '{}') }) } catch { resolve({ status: res.statusCode ?? 0, json: {} }) } })
     })
     req.on('error', reject)
-    if (body !== undefined) req.write(JSON.stringify(body))
+    if (payload !== undefined) req.write(payload)
     req.end()
   })
 }
@@ -145,5 +153,88 @@ test('GET /events 下发顺序：router date 稳定排序保留 DB 三键次序'
     const titles = events.filter((e: any) => e.source === 'L3').map((e: any) => e.title)
     // date 升序（09-02 在 09-03 前）+ 同日期稳定序（Z 在 B 前，保留 DB 行次序）
     assert.deepEqual(titles, ['A 事件', 'Z 事件', 'B 事件'])
+  } finally { server.close() }
+})
+
+test('POST 接受 result_source/result_attempted_at（向后兼容）', async () => {
+  ;(pool as any).query = async (sql: string) => {
+    if (String(sql).includes('INSERT INTO market_calendar_events')) return { rows: [{ id: 1 }], rowCount: 1 }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use(express.json())
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'POST', '/internal/calendar/events',
+      { event_date: '2026-10-01', title: '测试事件', result: '超预期', result_source: 'auto', result_attempted_at: '2026-10-01T10:00:00Z' })
+    assert.equal(res.status, 200)
+    assert.equal(res.json.code, 0)
+  } finally { server.close() }
+})
+
+test('DELETE /internal/calendar/events 按 (event_date,title) 删行', async () => {
+  ;(pool as any).query = async (sql: string) => {
+    if (String(sql).includes('DELETE FROM market_calendar_events')) return { rows: [], rowCount: 1 }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use(express.json())
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'DELETE', '/internal/calendar/events', { event_date: '2026-10-01', title: '测试事件' })
+    assert.equal(res.status, 200)
+    assert.equal(res.json.data.deleted, true)
+  } finally { server.close() }
+})
+
+test('DELETE 缺参 400', async () => {
+  const app = express()
+  app.use(express.json())
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'DELETE', '/internal/calendar/events', { event_date: '2026-10-01' })
+    assert.equal(res.status, 400)
+    assert.equal(res.json.code, 400)
+  } finally { server.close() }
+})
+
+test('GET /events ?importance=high 只返回 high 行（终审 C2）', async () => {
+  // 混合 importance；delivery(L1) 为 medium 恒被过滤
+  ;(pool as any).query = async (sql: string) => {
+    if (String(sql).includes('FROM market_calendar_events')) {
+      return {
+        rows: [
+          { id: 1, event_date: '2026-09-03', title: '高事件', importance: 'high', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+          { id: 2, event_date: '2026-09-03', title: '中事件', importance: 'medium', market: 'CN', event_time: null, source: 'L3', detail: null, result: null },
+        ],
+        rowCount: 2,
+      }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use('/internal/calendar', calendarInternalRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05&importance=high')
+    assert.equal(res.json.code, 200)
+    const events = res.json.data.events
+    assert.ok(events.length >= 1)
+    assert.ok(events.every((e: any) => e.importance === 'high'), 'importance=high 只应下放 high 行')
+    // 非法 importance → 400
+    const bad = await makeJsonRequest(port, 'GET', '/internal/calendar/events?dateFrom=2026-09-01&dateTo=2026-09-05&importance=bogus')
+    assert.equal(bad.status, 400)
+    assert.equal(bad.json.code, 400)
   } finally { server.close() }
 })

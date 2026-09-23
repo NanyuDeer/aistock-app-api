@@ -16,6 +16,9 @@ import {
   categoryOfTsCode,
   stripTiSuffix,
   extractSectorTraceInfo,
+  extractPerSectorTraceEntries,
+  indexChainTraceSummaries,
+  pickSectorTraceSummary,
   aggregateVerificationResult,
   dueLabelOf,
   sectorNameFromSourceId,
@@ -92,6 +95,35 @@ test('extractSectorTraceInfo: attribution_status/summary/sectors/primaryName 提
   assert.equal(info.summary, '海外出口管制传闻发酵'); // trigger 阶段 headline
   assert.deepEqual(info.sectors, ['半导体']);
   assert.equal(info.primaryName, '半导体');
+});
+
+test('extractSectorTraceInfo: 报告 conclusion（R25 一句话归因结论）优先于 trigger headline', () => {
+  const withConclusion = extractSectorTraceInfo({
+    display_report: { sectors: ['半导体'] },
+    market_trace: {
+      trace: {
+        chain_id: 'x',
+        sector: '半导体',
+        conclusion: '美方设备出口限制落地，国产替代与供应链避险共振走强',
+        stages: [{ kind: 'trigger', headline: '海外出口管制传闻发酵', claims: [], evidence: [] }],
+        attribution_status: 'sufficient',
+      },
+    },
+  });
+  assert.equal(withConclusion.summary, '美方设备出口限制落地，国产替代与供应链避险共振走强');
+
+  // 空白 conclusion（老数据/未产出）→ 回退 trigger headline，与本条修复前行为一致
+  const blank = extractSectorTraceInfo({
+    display_report: { sectors: ['半导体'] },
+    market_trace: {
+      trace: {
+        conclusion: '   ',
+        stages: [{ kind: 'trigger', headline: '海外出口管制传闻发酵', claims: [], evidence: [] }],
+        attribution_status: 'sufficient',
+      },
+    },
+  });
+  assert.equal(blank.summary, '海外出口管制传闻发酵');
 });
 
 test('extractSectorTraceInfo: attribution_status insufficient / 无 stages 摘要降级', () => {
@@ -269,3 +301,249 @@ test('joinPredictions: target ts_code 直连 + source_id resolve 兜底', async 
   assert.equal(map.get('885789')?.prediction?.present, true, '无 target 记录经 resolve 兜底 join');
   assert.equal(resolveMock.mock.callCount(), 1); // recDirect 已 join，仅 recResolve 触发 resolve
 });
+
+// ==================== 每板块溯源摘要（2026-09-18 根治） ====================
+//
+// 生产实证（2026-09-18）：`display_report.sectors` 有 3 个主因板块，`market_trace.trace`
+// 只承载第一个（单板块形状），于是 3 个候选全部显示第一个板块的归因句；且该句与大盘归因链
+// `children[].trace_summary` 不是同一取源。根治 = 每板块解析，链优先。
+
+test('extractPerSectorTraceEntries: 每板块取自己的 trigger headline（不再共用单板块形状）', () => {
+  const content = {
+    display_report: {
+      sectors: ['国家大基金持股', '汽车芯片'],
+      sector_traces: {
+        国家大基金持股: {
+          sector: '国家大基金持股',
+          stages: [{ kind: 'trigger', headline: '大基金三期再落子' }],
+          attribution_status: 'sufficient',
+        },
+        汽车芯片: {
+          sector: '汽车芯片',
+          stages: [{ kind: 'trigger', headline: '市场监管总局严查汽车芯片炒作' }],
+          attribution_status: 'insufficient',
+        },
+      },
+    },
+  };
+  const entries = extractPerSectorTraceEntries(content);
+  assert.equal(entries.size, 2);
+  // 逐字段断言（而非 deepEqual 整对象）：entry 会随加性键（如 stages）增长，整对象比较会被无关新增打破
+  assert.equal(entries.get('国家大基金持股')?.summary, '大基金三期再落子');
+  assert.equal(entries.get('国家大基金持股')?.status, 'completed');
+  assert.equal(entries.get('汽车芯片')?.summary, '市场监管总局严查汽车芯片炒作');
+  assert.equal(entries.get('汽车芯片')?.status, 'insufficient');
+});
+
+test('extractPerSectorTraceEntries: 每板块 conclusion 优先，空白回退 trigger（R25）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        汽车芯片: {
+          conclusion: '关税豁免落地，国产替代与供应链避险共振走强',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+        次新股: {
+          conclusion: '  ',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+        // conclusion 与顶层 summary 同时存在 → conclusion 必须赢（R25 口径）
+        存储: {
+          conclusion: '美方限制升级，存储涨价预期升温',
+          summary: '旧的顶层摘要',
+          stages: [{ kind: 'trigger', headline: '触发句' }],
+          attribution_status: 'sufficient',
+        },
+      },
+    },
+  });
+  assert.equal(entries.get('汽车芯片')?.summary, '关税豁免落地，国产替代与供应链避险共振走强');
+  assert.equal(entries.get('次新股')?.summary, '触发句');
+  assert.equal(entries.get('存储')?.summary, '美方限制升级，存储涨价预期升温');
+});
+
+test('extractPerSectorTraceEntries: 顶层 summary 优先；无 sector_traces → 空 Map（调用方回退）', () => {
+  const withTop = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        玉米: { summary: '超强厄尔尼诺供给扰动预期', stages: [{ kind: 'trigger', headline: '次选' }] },
+      },
+    },
+  });
+  assert.equal(withTop.get('玉米')?.summary, '超强厄尔尼诺供给扰动预期'); // 顶层优先，与 agent-py 报告侧口径一致
+  assert.equal(extractPerSectorTraceEntries({ display_report: { sectors: ['玉米'] } }).size, 0);
+  assert.equal(extractPerSectorTraceEntries(null).size, 0);
+  assert.equal(extractPerSectorTraceEntries({ display_report: { sector_traces: [] } }).size, 0);
+});
+
+// ==================== 每板块 4 段原因链透出（2026-09-18 加性） ====================
+//
+// 板块溯源本身就是一条原因链，但**4 段**（现象→触发→传导→影响），不是大盘的 6 段。
+// 它整条躺在 display_report.sector_traces[板块名].stages 里，此前前端只取了 trigger 段
+// headline 当 summary —— 过程、每段 claims、证据 URL 全都没露出来。本轮**只透出数据**
+// （界面稍后做，两处都放：板块详情页折叠 + 市场洞见链分支展开）。
+
+test('extractPerSectorTraceEntries: 透出 4 段原因链（kind/headline/claims/evidence，保源序）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        汽车芯片: {
+          attribution_status: 'sufficient',
+          stages: [
+            {
+              kind: 'phenomenon',
+              headline: '板块当日大涨 4.03%，华天科技领涨',
+              claims: ['52 只成分股联动'],
+              evidence: [{ url: 'https://news.example.com/a', title: '板块大涨' }],
+            },
+            {
+              kind: 'trigger',
+              headline: '美国对半导体加码关税，在美生产可豁免',
+              claims: ['关税威胁', '国产替代升温'],
+              evidence: [{ url: 'https://news.example.com/b', title: '关税' }],
+            },
+            { kind: 'transmission', headline: '同向走强', claims: [], evidence: [] },
+            { kind: 'impact', headline: '订单可见度提升', claims: [], evidence: [] },
+          ],
+        },
+      },
+    },
+  });
+
+  const stages = entries.get('汽车芯片')?.stages;
+  assert.ok(stages, 'stages 应透出');
+  // 保源序（4 段顺序本身是语义，不得排序）
+  assert.deepEqual(
+    stages!.map((s) => s.kind),
+    ['phenomenon', 'trigger', 'transmission', 'impact'],
+  );
+  assert.equal(stages![1]!.headline, '美国对半导体加码关税，在美生产可豁免');
+  assert.deepEqual(stages![1]!.claims, ['关税威胁', '国产替代升温']);
+  assert.equal(stages![0]!.evidence[0]!.url, 'https://news.example.com/a');
+  assert.equal(stages![0]!.evidence[0]!.title, '板块大涨');
+});
+
+test('extractPerSectorTraceEntries: 无 stages / stages 非数组 → 省略该键（不编造空链）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        无链: { attribution_status: 'insufficient', stages: [] },
+        坏形状: { stages: 'not-an-array' },
+        没这键: { attribution_status: 'sufficient' },
+      },
+    },
+  });
+  assert.equal(entries.get('无链')?.stages, undefined);
+  assert.equal(entries.get('坏形状')?.stages, undefined);
+  assert.equal(entries.get('没这键')?.stages, undefined);
+});
+
+test('extractPerSectorTraceEntries: 段内畸形字段逐项清洗（不整段丢、不塞脏值）', () => {
+  const entries = extractPerSectorTraceEntries({
+    display_report: {
+      sector_traces: {
+        脏数据: {
+          stages: [
+            { kind: 'trigger', headline: '  有效标题  ', claims: ['ok', '', '   ', 42, null], evidence: [{ url: 'https://a', title: 'A' }, { url: null, title: 'B' }, 'junk'] },
+            { kind: '', headline: '无 kind 段' }, // kind 非空才收
+            null, // 非对象段丢弃
+            { kind: 'impact' }, // headline 缺失 → 空串
+          ],
+        },
+      },
+    },
+  });
+
+  const stages = entries.get('脏数据')?.stages;
+  assert.ok(stages);
+  assert.equal(stages!.length, 2, 'null 段与空 kind 段被丢弃，其余保留');
+  assert.equal(stages![0]!.kind, 'trigger');
+  assert.equal(stages![0]!.headline, '有效标题'); // trim
+  assert.deepEqual(stages![0]!.claims, ['ok']); // 空白/非字符串全部剔除
+  // evidence：url 或 title 任一为非空字符串即收（title-only 仍可展示，url 缺失归一为 null）；'junk' 丢弃
+  assert.deepEqual(stages![0]!.evidence, [
+    { url: 'https://a', title: 'A' },
+    { url: null, title: 'B' },
+  ]);
+  assert.equal(stages![1]!.kind, 'impact');
+  assert.equal(stages![1]!.headline, ''); // 缺失 → 空串（不 undefined）
+  assert.deepEqual(stages![1]!.claims, []);
+  assert.deepEqual(stages![1]!.evidence, []);
+});
+
+test('indexChainTraceSummaries: ts_code 裸码 + sector_std/sector 双名索引', () => {
+  const idx = indexChainTraceSummaries({
+    date: '2026-09-18',
+    children: [
+      { sector: '注册制次新股', sector_std: '次新股', ts_code: '885905.TI', trace_summary: '某公司公告中标5亿元订单' },
+      { sector: '国家大基金持股', ts_code: '885893.TI', trace_summary: '未检索到可解释当日大涨的独立触发事件' },
+      { sector: '汽车芯片', ts_code: '885756.TI', trace_summary: '   ' }, // 空白摘要不收
+    ],
+  });
+  assert.equal(idx.byTs.get('885905'), '某公司公告中标5亿元订单');
+  assert.equal(idx.byName.get('注册制次新股'), '某公司公告中标5亿元订单');
+  assert.equal(idx.byName.get('次新股'), '某公司公告中标5亿元订单'); // 权威名亦索引
+  assert.equal(idx.byName.has('汽车芯片'), false);
+  assert.equal(idx.byTs.has('885756'), false);
+});
+
+test('indexChainTraceSummaries: 无链/无 children → 空索引（接口降级回退报告侧）', () => {
+  for (const bad of [null, undefined, {}, { children: null }, { children: 'x' }]) {
+    const idx = indexChainTraceSummaries(bad);
+    assert.equal(idx.byTs.size, 0);
+    assert.equal(idx.byName.size, 0);
+  }
+});
+
+test('buildCandidatesMap: 主因项自带 trace 时各候选拿自己的（不再全部共用第 3 参）', () => {
+  const shared = { present: true, status: 'insufficient' as const, summary: '第一个板块的句子', sectors: ['A', 'B'] };
+  const primary: ResolvedSectorInput[] = [
+    { ts_code: '885905.TI', name: '注册制次新股', trace: { present: true, status: 'insufficient', summary: '事件A', sectors: ['A', 'B'] } },
+    { ts_code: '885756.TI', name: '汽车芯片', trace: { present: true, status: 'completed', summary: '事件B', sectors: ['A', 'B'] } },
+  ];
+  const map = buildCandidatesMap([], primary, shared);
+  assert.equal(map.get('885905')?.trace?.summary, '事件A');
+  assert.equal(map.get('885756')?.trace?.summary, '事件B');
+});
+
+test('buildCandidatesMap: 主因项不带 trace → 回退第 3 参（旧调用方行为逐字不变）', () => {
+  const shared = { present: true, status: 'completed' as const, summary: '出口管制传闻', sectors: ['半导体'] };
+  const map = buildCandidatesMap([], [{ ts_code: '881121.TI', name: '半导体' }], shared);
+  assert.deepEqual(map.get('881121')?.trace, shared);
+});
+
+test('pickSectorTraceSummary: 链优先于报告 sector_traces（跨页同源的唯一裁决点）', () => {
+  const chainIndex = indexChainTraceSummaries({
+    children: [
+      { sector: '注册制次新股', sector_std: '次新股', ts_code: '885905.TI', trace_summary: '链上的事件句' },
+    ],
+  });
+  const entry = { summary: '报告里的句子', status: 'insufficient' as const };
+  assert.equal(
+    pickSectorTraceSummary(chainIndex, { tsNorm: '885905', names: ['次新股', '注册制次新股'] }, entry),
+    '链上的事件句', // 链命中即用链，报告句子被压过
+  );
+  // 链无该板块 → 回退该板块报告摘要
+  assert.equal(
+    pickSectorTraceSummary(chainIndex, { tsNorm: '885756', names: ['汽车芯片'] }, entry),
+    '报告里的句子',
+  );
+  // 链与报告都没有 → null（调用方沿用旧单板块兜底，不编造）
+  assert.equal(pickSectorTraceSummary(indexChainTraceSummaries(null), { tsNorm: '885756', names: [] }, undefined), null);
+});
+
+test('pickSectorTraceSummary: 名称漂移时按 ts_code/权威名/原始名逐级降级', () => {
+  const chainIndex = indexChainTraceSummaries({
+    children: [{ sector: '次新股', ts_code: '885905.TI', trace_summary: '链句' }],
+  });
+  // 候选权威名（次新股概念）与链 sector 不一致，但 ts_code 相同 → 仍命中
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '885905', names: ['次新股概念'] }, undefined), '链句');
+  // tsNorm 为空 → 仅按名匹配；名全不中 → null
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['别的板块'] }, undefined), null);
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['次新股'] }, undefined), '链句');
+  // 空白名跳过，不因空串误命中
+  assert.equal(pickSectorTraceSummary(chainIndex, { tsNorm: '', names: ['  ', ''] }, undefined), null);
+});
+

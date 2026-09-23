@@ -102,8 +102,8 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 
 // calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
-import stockInfoInternalRouter from './modules/crawler/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
+import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
@@ -285,6 +285,7 @@ app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.
 app.post('/api/cn/favorites/movements/detect', (req, res, next) => StockTraceController.detect(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
+app.get('/api/cn/favorites/movements/:eventId/report.pdf', (req, res, next) => StockTraceController.report(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
 app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
 
@@ -647,8 +648,7 @@ app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件�
 
 app.use('/internal/event-entities', eventEntityInternalRouter); // 重大事件时间线 Event Entity（2026-09-15）
 
-app.use('/internal/stock-info', stockInfoInternalRouter); // crawler 情报：仅资讯股轻量预判 forecast 回写（2026-09-03）
-
+// 注：原 app.use('/internal/stock-info', stockInfoInternalRouter) 已随 crawler 情报 forecast 回写端点一并移除（2026-09-13）
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）
 
 app.use('/api/fear-greed', fearGreedRouter); // 恐贪指数：公开查询（温度计 + 主面板）
@@ -754,20 +754,50 @@ const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
         console.log(`[PriceMoveCron] ${snapshotType} triggered=${r.triggered}`);
     } catch (err) {
         console.error(`[PriceMoveCron] ${snapshotType} 失败:`, err instanceof Error ? err.message : String(err));
+    } finally {
+        // 2026-09-18 修复：收盘落定必须在当日打点**创建完事件之后**执行。
+        // 原先落定与 close 打点同为 '5 15 * * 1-5' 并发触发，落定抢在打点中途把当日 active 事件关掉，
+        // 打点随后（落定之后）为同一标的又新建一条事件 —— 该事件永远停在 active、无 job/outbox，
+        // 前端同日聚合取最新 → 展示"归因分析中"（2026-09-18 蓝盾光电/海正生材实测）。
+        if (snapshotType === 'close') {
+            try {
+                const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
+                const settled = await StockTraceService.settleActiveEvents();
+                console.log(`[StockTraceCron] 打点后落定完成 settled=${settled}`);
+            } catch (err: unknown) {
+                console.error('[StockTraceCron] 打点后落定失败:', err instanceof Error ? err.message : String(err));
+            }
+        }
     }
 };
 cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
 cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
 
-// 异动监控收盘兜底（15:05）：强制落定当日仍 active 的事件并触发一次最终归因。
-// 盘中不再即时归因（降 token / 数据更全），此 cron 保证 5 分钟恢复窗口在收盘前未到期的事件也不漏归因。
-cron.schedule('5 15 * * 1-5', async () => {
+// 异动监控收盘落定兜底（15:10）：强制落定当日仍 active 的事件并触发一次最终归因。
+// 盘中不再即时归因（降 token / 数据更全）。15:05 的落定已并入 close 打点以保证时序，
+// 本 cron 后移 5 分钟作兜底，覆盖打点路径异常、或 15:05 之后才新建事件的漏落定。
+cron.schedule('10 15 * * 1-5', async () => {
     try {
         const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
         const settled = await StockTraceService.settleActiveEvents();
         console.log(`[StockTraceCron] 收盘落定完成 settled=${settled}`);
     } catch (err: unknown) {
         console.error('[StockTraceCron] 收盘落定失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// stock-trace outbox 冲刷兜底（每分钟）：发布失败（如 Redis 连接中断）会让 outbox 停在 pending，
+// 而 publishPending 只在 enqueue / scheduleEnriched 完成等事件路径被顺带调用 → 失败行可能永久滞留
+// （2026-08-25、2026-09-18 两次实测：err='Error'，attempt_count 停在 3 且再无重试入口）。
+cron.schedule('* * * * *', async () => {
+    try {
+        const { StockTraceJobService } = await import('./modules/stock-trace/StockTraceJobService');
+        const r = await StockTraceJobService.publishPending();
+        if (r.published > 0 || r.failed > 0) {
+            console.log(`[StockTraceOutboxCron] published=${r.published} failed=${r.failed}`);
+        }
+    } catch (err: unknown) {
+        console.error('[StockTraceOutboxCron] outbox 冲刷失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 
@@ -1177,21 +1207,14 @@ async function start() {
 
     // 节奏大师：market_calendar_events（L1-L4 事件日历，spec §4.4；启动自动建表对齐 prediction_records 先例）
     try {
-        await pool.query(`CREATE TABLE IF NOT EXISTS market_calendar_events (
-  id BIGSERIAL PRIMARY KEY,
-  event_date DATE NOT NULL,
-  title TEXT NOT NULL,
-  importance TEXT NOT NULL DEFAULT 'medium',
-  market TEXT NOT NULL DEFAULT 'CN',
-  event_time TEXT,
-  source TEXT NOT NULL DEFAULT 'L4',
-  detail TEXT,
-  result TEXT,
-  dedup_hash VARCHAR(64) NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`);
+        await pool.query(DDL_MARKET_CALENDAR_EVENTS);
         await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS ux_market_calendar_events_dedup ON market_calendar_events(event_date, dedup_hash)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_market_calendar_events_date ON market_calendar_events(event_date)');
+        // result_source/result_attempted_at 增列（预期差闭环结果来源标注 + 日内重试时点；IF NOT EXISTS 幂等，可重复执行）
+        await pool.query(`ALTER TABLE market_calendar_events ADD COLUMN IF NOT EXISTS result_source TEXT`);
+        await pool.query(`ALTER TABLE market_calendar_events ADD COLUMN IF NOT EXISTS result_attempted_at TIMESTAMPTZ`);
+        // 回填（仅首次增列时生效）：存量已落 result 的行标为 manual（G4/裁决 C8）
+        await pool.query(`UPDATE market_calendar_events SET result_source = 'manual' WHERE result IS NOT NULL AND result_source IS NULL`);
         console.log('[DB] market_calendar_events table ready');
     } catch (err: unknown) {
         console.warn('[DB] market_calendar_events table check:', err instanceof Error ? err.message : String(err));

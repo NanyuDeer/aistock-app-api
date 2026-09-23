@@ -93,8 +93,8 @@ describe('StockTraceService.listUserEvents analysis_status', () => {
         );
         assert.match(
             sql.text,
-            /WHERE \(us\.user_id = \$1 OR \(us\.user_id IS NULL AND us\.openid = \$2\)\)/,
-            'WHERE 应同样双通道过滤',
+            /AND e\.first_triggered_at >= us\.created_at/,
+            'JOIN 应限定持仓期内触发（2026-09-04：新加入股只显示加入后触发的事件）',
         );
         assert.equal(sql.params[0], 'email-user-id', '第一个参数应为统一账户 id（邮箱用户）');
         assert.equal(sql.params[1], '', '第二个参数应为 openid（邮箱用户为空串）');

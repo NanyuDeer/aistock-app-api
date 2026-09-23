@@ -5,7 +5,7 @@ import type { TraceCandidate } from '../types';
 
 const now = new Date('2026-07-30T02:15:00.000Z');
 
-function source(id: string, kind: 'trigger_fact' | 'announcement' | 'sector_fact', level: 'A' | 'B' | 'D', occurredAt = now, payload: Record<string, unknown> = {}) {
+function source(id: string, kind: 'trigger_fact' | 'announcement' | 'sector_fact' | 'market_fact', level: 'A' | 'B' | 'D', occurredAt = now, payload: Record<string, unknown> = {}) {
   return { sourceId: id, kind, provider: 'test', sourceLevel: level, title: id, contentExcerpt: id, capturedAt: now, occurredAt, payload, contentHash: id.repeat(64).slice(0, 64) } as const
 }
 
@@ -59,11 +59,14 @@ test('non-supported sector candidate with an opposite fact is not blocked', () =
   assert.deepEqual(validateStockTraceResult(input), [])
 })
 
-test('capital_flow_disabled skips counter-evidence requirement for a supported sector claim', () => {
-  const sector = source('sector-down', 'sector_fact', 'B', now, { pct_change: -2 })
-  const input = validInput(source('announcement', 'announcement', 'A'), [sector])
-  input.candidates[1].status = 'supported'
-  assert.deepEqual(validateStockTraceResult({ ...input, missingCapabilities: ['capital_flow_disabled'] }), [])
+test('opposite-direction market facts require a supported market claim to cite counter evidence', () => {
+  // 2026-09-18：capital_flow_disabled 例外已移除，反证要求对 market 层同样不可绕过
+  const market = source('market-down', 'market_fact', 'B', now, { change_pct: -1 })
+  const input = validInput(source('announcement', 'announcement', 'A'), [market])
+  input.candidates[2].status = 'supported'
+  assert.ok(validateStockTraceResult(input).includes('candidate:market:missing_counter_evidence'))
+  input.candidates[2].counterEvidenceIds = [market.sourceId]
+  assert.deepEqual(validateStockTraceResult(input), [])
 })
 
 test('opposite-direction facts captured after the event window do not block artifact publication', () => {

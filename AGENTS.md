@@ -214,8 +214,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/insight/events/:eventId?openid=` | watchlist_insight | 自选股洞察详情（阶段 2.1 读层：事件 + 归因结果 + 最新证据包；openid 归属校验，无归属 404） |
 | `GET /internal/stock-trace/events?openid=&symbol=&limit=` | stock_trace | 自选股异动溯源列表（阶段 2.2 读层：价格异动/涨停雷达归因，复用 listUserEvents：openid 过滤 + analysis_status/primary_cause；symbol 可选过滤、limit 默认 50 上限 100） |
 | `GET /internal/stocks/basic` | stocks 表 | 全量 A 股基础信息 [{symbol, name, industry}]，内存 TTL 6h 缓存，供 Python 股票名称实体匹配（stock_event_detector company_event_rule） |
-| `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取） |
-| `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert） |
+| `GET /internal/calendar/events` | market_calendar_events | 事件日历查询（L1 交割日规则 + 事件日历，rhythm-master 前瞻读取；**2026-09-22 起 `listEvents` 读侧折叠近似重复 + `toContractEvent` 加性透传 `detail`**，含 consensus 前缀） |
+| `POST /internal/calendar/events` | market_calendar_events | 事件日历写入（幂等 upsert；**2026-09-22 行：透传 `result_source`/`result_attempted_at`，`upsertEvent` 用 CASE 保护 high 行 importance/source（X1）**） |
+| `DELETE /internal/calendar/events` | market_calendar_events | **事件日历删行（2026-09-22 新增）**：按 `{event_date, title}` 服务端算 dedupHash 删行，返回 `{deleted}`；不存在幂等 200（候选 rejected 清场/种子删除/误录清理） |
 | `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
 | `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
 | `POST /api/internal/attribution-feedback` | attribution_feedback_signals | **溯源弱反馈审计上报**（Task 7.1，2026-09-17）：body `{date, unit_key, mode, sample_size, hit_count, miss_count, hit_rate, suggestion, detail}`；`(date, unit_key)` upsert 幂等；**注意路径带 `/api` 前缀**（该 router 挂在 `/api` 下，同 attribution-chain）；本期只有观测层（不应用权重） |
@@ -251,6 +252,12 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
 | `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
+| `/api/agent/attribution-chain/:date` | GET | 当日大盘归因链（`attributionChainRouter`，须在 createAgentProxy 之前挂载）：`{date, chain \| null}`；查无 → 200 降级不报错 |
+| `/api/agent/sector-insight/:date` | GET | 板块四环聚合（`sectorInsightRouter`，须在 createAgentProxy 之前挂载）：风口板块 ∪ 溯源主因板块候选，按同花顺 `ts_code` 去重合并，每候选挂 `quote`/`trace`/`prediction` |
+
+> **`sector-insight` 的 `trace.summary` 取源（2026-09-18 根治）**：**链优先** —— 读当日 `attribution_chains.children[].trace_summary`（匹配顺序 `ts_code` 裸码 → `sector_std` → `sector`），与「市场洞见」页同源；链无该板块（或链表缺失/查询失败，接口降级不报错）→ 回退报告 `display_report.sector_traces[板块名]`（该板块**自己**的 stages）→ 再回退旧单板块形状 `market_trace.trace`。修复两个叠加问题：① `market_trace.trace` 是**单板块形状**（只承载当天第一个板块），多板块日所有 `review_primary` 候选原先共用同一份摘要（三个板块显示同一句话）；② 与大盘归因链口径分裂。纯函数 `extractPerSectorTraceEntries` / `indexChainTraceSummaries` + `buildCandidatesMap` 主因项新增可选 `item.trace`（缺省回退第 3 参，旧调用方行为不变）。**响应契约未变**（`SectorInsightTrace` 字段与形状不变，仅取值更准），两个前端 0 改动。**2026-09-18 R25（"折叠卡显示的应该是归因结论、不是触发"）**：报告侧摘要再加一层优先——**`conclusion`（agent-py 新增的一句话归因结论）→ 顶层 `summary`（旧数据兼容）→ trigger headline**；`extractTraceSummary` 内只做 `conclusion` → trigger（顶层 `summary` 的优先级在 `extractPerSectorTraceEntries`：`conclusion || top || extractTraceSummary(trace)`，**conclusion 必须压过顶层 summary**，有直测护栏）。根因：`SectorChainResult` 此前无结论字段 → 报告侧摘要只能落 trigger headline（= 原因第 1 段），于是市场洞见链分支 / 板块预判页 / 板块详情页三处折叠卡显示的都是「触发」。**仍未新增响应键**（结论折进 `trace.summary` 透出），`aistock-app-frontend` **0 改动**。
+>
+> **`trace.stages`：每板块 4 段原因链透出（2026-09-18 加性，界面消费待做）**：板块溯源本身就是一条原因链，但它是 **4 段** `现象 → 触发 → 传导 → 影响`（**不是**大盘主因链的 6 段 `structural_root/trigger/transmission/exposure/repricing/observable_result`）——板块的「触发」才是原因，其余三段是现象与后果。数据一直在 `display_report.sector_traces[板块名].stages`（agent-py `f600807` 起），但此前只取了 trigger 段 headline 当 `trace.summary`，过程/每段 `claims`/证据 URL 全未外露。现新增 `extractTraceStages(trace)` 纯函数并把结果加到 `SectorInsightTrace.stages?: {kind, headline, claims[], evidence[{url,title}]}[]`（加性可选键）：**保源序**（4 段顺序本身是语义）、段非对象或 `kind` 空白 → 丢、`headline` 缺失 → 空串（保留段）、`claims` 只留非空字符串、`evidence` 只留 url 或 title 至少一个非空的条目（url 缺失归一 null）、全空 → **省略键**（不编造空链）。**消费方待做（组长裁定：先只透出数据、界面稍后）**，届时**两处都放**：板块详情页板块研判卡（默认折叠「查看溯源过程 ▾」）+ 市场洞见链分支展开态。**展示硬约束（未实现）**：触发段未确认时（headline 为「未检索到…」）必须渲染成"未确认"而不是当原因，否则又变成"看起来已归因"。
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
@@ -327,14 +334,11 @@ pm2 logs aistock-api      # 查看日志
 - [aistock-agent-py](../aistock-agent-py) — Python Agent 推理服务
 - [aistock-api](../aistock-api) — 原 PC Web 后端（兼容参照）
 
-### 2026-09-03 更新：自选股洞察阶段 2（轻量预判 forecast 落库）
+### 2026-09-03 更新：自选股洞察阶段 2（轻量预判 forecast 落库）——已于 2026-09-13 移除
 
-| 端点 | 表 | 说明 |
-|------|------|------|
-| `GET /internal/stock-trace/light-predict-targets?trade_date=` | stock_trace_events | 轻量预判候选（按 symbol 去重：当日 active 事件 ∪ 重大资讯；trade_date 必填，需 X-Internal-Token） |
-| `PATCH /internal/stock-trace/events/:eventId/forecast` | stock_trace_events | 事件 forecast slot 级回写（slot=midday|close，JSONB 互不覆盖；slot 非法 400、事件不存在 404） |
-| `PATCH /internal/stock-info/judgements/:id/forecast` | stock_info_judgements | 资讯事件 forecast slot 级回写（crawler 子路由，仅重大资讯且无 stock_trace 事件；行不存在 404） |
-
-- `stock_trace_events` 新增 `is_limit_up BOOLEAN DEFAULT FALSE`、`forecast JSONB DEFAULT '{}'`；`stock_info_judgements` 新增 `forecast JSONB`。forecast 为 slot 级分存（`{midday?: ..., close?: ...}`），upsert 只覆盖目标 slot。
-- `types.ts`：`PriceFact.isLimitUp?: boolean`（涨停文章命中标记，行情打点不猜板阈值）、`ForecastSlot`、`LightPredictTarget { symbol, stockName, event?, intel? }`。
-- 定时预判（11:40/15:20）由 agent-py 调度，slot 级回写本仓库端点。
+> forecast（轻量预判）功能已彻底下线。迁移 `022_drop_forecast.sql` 已删除 `stock_trace_events` 与 `stock_info_judgements` 的 `forecast` 列（保留 `is_limit_up`）。以下端点/类型/Service 已全部删除：
+>
+> - `GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast`
+> - `ForecastSlot`、`LightPredictTarget` 类型（`types.ts`）
+> - `StockTraceService.listLightPredictTargets`、`upsertEventForecast`；`StockInfoService.upsertJudgementForecast`
+> - `PriceFact.isLimitUp?` 保留（涨停文章命中标记，仅 `is_limit_up` 断句）。
