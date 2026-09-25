@@ -152,9 +152,16 @@ app.use(cors({
     maxAge: 86400,
 }));
 
+// 重大事件时间线：GET /api/agent/event/timeline
+// 【必须最先注册】publicRouter 含通用路由 GET /event/:eventId，Express 按注册顺序匹配，
+// 若本路由注册在其之后，/event/timeline 会被 /event/:eventId 截获（eventId='timeline'）
+// → 404 'Event not found'（2026-09-25 线上 404 根因）。具体路径必须先于通用路径注册。
+app.use('/api/agent', eventTimelinePublicRouter);
+
 // ==================== Agent 公开路由（前端直接调用，无需 X-Internal-Token） ====================
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
+// 注意：本路由含通用路由 GET /event/:eventId，更具体的 /event/timeline 必须先注册（见上方）。
 app.use('/api/agent', publicRouter);
 
 // 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
@@ -163,9 +170,6 @@ app.use('/api/agent', rhythmMasterPublicRouter);
 
 // 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
 app.use('/api/agent', sectorInsightRouter);
-
-// 重大事件时间线：GET /api/agent/event/timeline（同上必须在反代之前，否则被转发到 Python）
-app.use('/api/agent', eventTimelinePublicRouter);
 
 // 归因链：POST /api/internal/attribution-chain（agent 落库）+ GET /api/agent/attribution-chain/:date
 // （前端读取；GET 路径同上必须在反代之前，否则被转发到 Python。POST 路由自带 json parser，
