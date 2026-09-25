@@ -244,6 +244,25 @@ describe('GET /api/agent/event/:eventId/article — 完整本地回归', () => {
         assertScrapeSqlSafe()
     })
 
+    it('A1b: source_name 为"未知来源"时按 source URL 域名兜底中文名', async () => {
+        const source = 'https://www.cls.cn/detail/1234568'
+        installResponder({
+            event_conduction: [conductionRow({
+                eventId: 'A1b',
+                content: { title: '未知来源兜底', source, source_name: '未知来源' },
+                reportDate: '2026-08-25',
+            })],
+            event_scrape: [eventScrapeRow([scrapeEvent({
+                title: '未知来源兜底',
+                url: source,
+                payload: { id: '1234568', content: '正文' },
+            })], '2026-08-25')],
+        })
+
+        const d = readData(await call(buildApp(), 'GET', '/api/agent/event/A1b/article'))
+        assert.strictEqual(d.sourceName, '财联社', 'source_name 为"未知来源"时应按 cls.cn 域名兜底为财联社')
+    })
+
     it('A2: 非财联社 URL 精确匹配 events[].url', async () => {
         const source = 'https://example.com/news/zzz'
         installResponder({

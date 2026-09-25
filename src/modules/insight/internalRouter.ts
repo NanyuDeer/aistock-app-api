@@ -35,6 +35,34 @@ router.use((req, res, next) => {
     next();
 });
 
+/**
+ * GET /internal/insight/sources?date=YYYY-MM-DD
+ * 按交易日期返回同花顺原创来源文章（Python event_scrape_sources.collect_ths_original 使用）。
+ *
+ * 2026-09-24：此前该路由缺失，Python 侧调用恒 404 → ths 源静默为空；
+ * 且 collect_ths_original 未映射 source_url，即使有数据事件也拿不到原文链接。
+ */
+router.get('/sources', async (req: Request, res: Response) => {
+    const date = queryStr(req, 'date');
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        res.status(400).json({ code: 400, message: 'Invalid date — 必须是 YYYY-MM-DD' });
+        return;
+    }
+    try {
+        const { rows } = await pool.query(
+            `SELECT source_id, source_url, article_id, title, keywords, content, published_at
+             FROM watchlist_insight_sources
+             WHERE trade_date = $1
+             ORDER BY published_at ASC`,
+            [date],
+        );
+        res.json({ code: 200, data: { total: rows.length, items: rows } });
+    } catch (err: unknown) {
+        console.error('[Internal] insight/sources error:', errMsg(err));
+        res.status(502).json({ code: 502, message: errMsg(err) });
+    }
+});
+
 /** Python 取归因上下文：事件信息 + 来源文章（LEFT JOIN，价格异动事件 source_id 为 NULL） + 最新证据包 */
 router.get('/events/:eventId/context', async (req: Request, res: Response) => {
     try {

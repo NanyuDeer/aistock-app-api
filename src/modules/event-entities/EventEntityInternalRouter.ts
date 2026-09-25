@@ -11,6 +11,7 @@ import { type Request, type Response, Router } from 'express'
 import {
     computeEventStatus,
     listEventEntities,
+    normalizeImpactSectors,
     toContractEventEntity,
     upsertEventEntity,
     withComputedStatus,
@@ -76,6 +77,14 @@ eventEntityInternalRouter.post('/', async (req: Request, res: Response) => {
         const publish_time = typeof body.publish_time === 'string' && body.publish_time ? body.publish_time : null
         const summary = typeof body.summary === 'string' ? body.summary : null
         const source_event_id = typeof body.source_event_id === 'string' && body.source_event_id ? body.source_event_id : null
+        // impact_sectors 可选：须为字符串数组（时间线展示板块，允许 []；非法值 400）
+        let impact_sectors: string[] | null = null
+        if (body.impact_sectors !== undefined && body.impact_sectors !== null) {
+            if (!Array.isArray(body.impact_sectors)) {
+                return res.status(400).json({ code: 400, message: 'impact_sectors 须为字符串数组' })
+            }
+            impact_sectors = normalizeImpactSectors(body.impact_sectors)
+        }
 
         const input: EventEntityInput = {
             title,
@@ -87,6 +96,7 @@ eventEntityInternalRouter.post('/', async (req: Request, res: Response) => {
             time_confidence,
             summary,
             source_event_id,
+            impact_sectors,
         }
         const { row } = await upsertEventEntity(input)
         const nowIso = new Date().toISOString()
