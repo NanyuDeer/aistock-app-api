@@ -103,8 +103,10 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 // calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
-import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
+import { listEvents, DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
+import { materializeCalendarRows } from './modules/event-entities/CalendarEntityMaterializer';
+import { eventTimelinePublicRouter } from './modules/event-entities/EventTimelinePublicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -161,6 +163,9 @@ app.use('/api/agent', rhythmMasterPublicRouter);
 
 // 板块四环聚合：/api/agent/sector-insight/:date（同上，必须在反代之前，否则被转发到 Python）
 app.use('/api/agent', sectorInsightRouter);
+
+// 重大事件时间线：GET /api/agent/event/timeline（同上必须在反代之前，否则被转发到 Python）
+app.use('/api/agent', eventTimelinePublicRouter);
 
 // 归因链：POST /api/internal/attribution-chain（agent 落库）+ GET /api/agent/attribution-chain/:date
 // （前端读取；GET 路径同上必须在反代之前，否则被转发到 Python。POST 路由自带 json parser，
@@ -837,6 +842,30 @@ cron.schedule('30 4 * * *', async () => {
         console.log(`[StockConceptMappingCron] 刷新完成: ${count} 条记录`);
     } catch (err: unknown) {
         console.error('[StockConceptMappingCron] 刷新失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 重大事件时间线：Calendar → Event Entity 物化（幂等 upsert）
+// 每天 3 次（盘前/盘中/盘后）：日历行由 agent-py L3 前瞻与 L4 种子写入，物化窗口取
+// [今天-1, 今天+180]，覆盖已发生与未来事件；幂等，重复执行不产生重复实体。
+cron.schedule('40 6,12,18 * * *', async () => {
+    try {
+        const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+        // dateFrom = 今天-1 天，覆盖已发生事件；dateTo = 今天+180 天，覆盖近期未来事件
+        const baseMs = new Date(`${today}T00:00:00+08:00`).getTime()
+        const dateFrom = new Date(baseMs - 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
+        const dateTo = new Date(baseMs + 180 * 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
+
+        const rows = await listEvents(dateFrom, dateTo)
+        const r = await materializeCalendarRows(rows)
+        console.log(
+            `[CalendarEntityCron] 物化完成: materialized=${r.materialized}, skipped=${r.skipped}, failed=${r.failed}`,
+        )
+    } catch (err: unknown) {
+        console.error(
+            '[CalendarEntityCron] 物化失败:',
+            err instanceof Error ? err.message : String(err),
+        )
     }
 }, { timezone: 'Asia/Shanghai' });
 

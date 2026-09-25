@@ -2,6 +2,33 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-09-25 — 重大事件时间线影响板块 + Calendar 物化 + 事件来源名对齐
+
+**开发者**: xusiyun
+
+### 新增
+
+- 新增 `event_entities.impact_sectors` 列（migration 023，`JSONB NOT NULL DEFAULT '[]'`）：时间线展示层「事件关联/预期影响板块」，与 Event Conduction 的 `impact_industries` 语义区分，允许为空。
+- 新增 `EventTimelinePublicRouter`：`GET /api/agent/event/timeline`，影响板块优先级为「传导 chain Top3（impactStrength 降序）> `impact_sectors` 列 > 空」；occurred 事件须存在 event_conduction 报告否则排除；标题展示层与传导报告对齐。
+- 新增 `CalendarEntityMaterializer`：Calendar 行确定性准入（`qualifyCalendarEvent`）→ Event Entity 物化（幂等 upsert）。
+- 新增 `scripts/materialize-calendar-entities.ts`：手动物化脚本（支持 `--dry-run`），部署后不必等 cron。
+- `index.ts`：挂载 timeline 路由（须在反代之前）+ 注册 06:40/12:40/18:40 物化 cron。
+
+### 修复
+
+- 事件列表 `source_name` 改用 `resolveArticleSourceName` 域名兜底，与详情(Article)接口一致（此前同一事件列表显示「未知来源」、详情显示媒体名）。
+- 补齐 `GET /internal/insight/sources` 路由：此前缺失导致 Python 侧 `collect_ths_original` 恒 404、同花顺原创源静默为空。
+
+### 改进
+
+- `EventEntityService`/`EventEntityInternalRouter`：`impact_sectors` 归一化（`normalizeImpactSectors`）+ upsert CASE 保护（防 Calendar 物化 cron 覆盖预计算结果）+ POST 参数校验（非数组 400）。
+
+### 测试
+
+- `CalendarEntityMaterializer.test.ts`、`__tests__/event_timeline.spec.ts`（4/4 通过：标题对齐、板块优先级、IN 标量参数、传导存在性过滤）。
+
+---
+
 ## [changer] 2026-09-22 — 节奏大师·事件前瞻主体化（日历侧）
 
 **开发者**: 37588

@@ -2653,7 +2653,11 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                 eventId,
                 title: content['title'] || '',
                 source: content['source'] || '',
-                source_name: content['source_name'] || '',
+                // 与详情(Article)接口一致的来源名解析：source_name 缺失/为"未知来源"时
+                // 按 source URL 域名兜底中文媒体名（如 cls.cn→财联社），保证列表与详情展示一致。
+                // 此前列表直接透传"未知来源"，导致同一事件列表显示"未知来源"、详情显示媒体名
+                // （2026-09-24）。
+                source_name: resolveArticleSourceName(content['source_name'], String(content['source'] || '')),
                 event_type: content['event_type'] || '',
                 publishTime: content['publishTime'] || row['report_date'] || '',
                 summary: eu['summary'] || '',
