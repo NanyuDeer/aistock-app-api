@@ -206,8 +206,12 @@ eventTimelinePublicRouter.get('/event/timeline', async (req: Request, res: Respo
             : computed
 
         // 按 event_start_time 排序（asc/desc）
+        // 注意：event_start_time 为 TIMESTAMPTZ，node-postgres 返回 **Date 对象**而非字符串
+        // （全仓无 setTypeParser 覆写），故必须按时间戳比较，不能用 localeCompare
+        // （Date 无该方法 → TypeError → 500，2026-09-25 线上 500 根因）。
         const sorted = [...filtered].sort((a, b) => {
-            const cmp = a.event_start_time.localeCompare(b.event_start_time)
+            const cmp =
+                new Date(a.event_start_time).getTime() - new Date(b.event_start_time).getTime()
             return order === 'desc' ? -cmp : cmp
         })
 
