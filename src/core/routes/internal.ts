@@ -2653,7 +2653,11 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                 eventId,
                 title: content['title'] || '',
                 source: content['source'] || '',
-                source_name: content['source_name'] || '',
+                // 与详情(Article)接口一致的来源名解析：source_name 缺失/为"未知来源"时
+                // 按 source URL 域名兜底中文媒体名（如 cls.cn→财联社），保证列表与详情展示一致。
+                // 此前列表直接透传"未知来源"，导致同一事件列表显示"未知来源"、详情显示媒体名
+                // （2026-09-24）。
+                source_name: resolveArticleSourceName(content['source_name'], String(content['source'] || '')),
                 event_type: content['event_type'] || '',
                 publishTime: content['publishTime'] || row['report_date'] || '',
                 summary: eu['summary'] || '',
@@ -2848,6 +2852,50 @@ function shiftArticleDate(isoDate: string, days: number): string {
     return dt.toISOString().slice(0, 10)
 }
 
+/** source URL 域名 → 中文媒体名兜底映射。
+ *
+ * 仅当 event_conduction 的 source_name 缺失/为"未知来源"时启用（防御性兜底）。
+ * 正常数据 source_name 已全覆盖（生产库 322/322），该映射不改变既有返回值。
+ * 映射域名为生产 event_conduction.source 真实出现的域名 + 常见财经媒体。
+ */
+const SOURCE_NAME_BY_HOST: Record<string, string> = {
+    'cls.cn': '财联社',
+    'eastmoney.com': '东方财富',
+    '163.com': '网易',
+    'sina.com.cn': '新浪',
+    'sina.cn': '新浪',
+    'stcn.com': '证券时报',
+    'sfccn.com': '南方财经全媒体集团',
+    '21jingji.com': '21财经',
+    'dahecube.com': '大河财立方',
+    'toutiao.com': '今日头条',
+    'investing.com': '英为财情',
+    'sohu.com': '搜狐',
+    'ycnews.cn': '盐城新闻网',
+    'qzwb.com': '泉州晚报',
+}
+
+/** 解析 Article 接口的 sourceName：优先数据库 source_name，缺失/未知时按 source URL 域名兜底，最终回退"未知来源"。 */
+function resolveArticleSourceName(raw: unknown, sourceUrl: string): string {
+    const name = String(raw ?? '').trim()
+    if (name && name !== '未知来源') return name
+
+    if (sourceUrl) {
+        let host = ''
+        try {
+            host = new URL(sourceUrl).hostname.replace(/^www\./, '')
+        } catch {
+            host = ''
+        }
+        if (host) {
+            for (const [suffix, label] of Object.entries(SOURCE_NAME_BY_HOST)) {
+                if (host === suffix || host.endsWith('.' + suffix)) return label
+            }
+        }
+    }
+    return '未知来源'
+}
+
 /**
  * GET /api/agent/event/:eventId/article
  * 事件原文 — 前端 APP 内展示的源网页正文。
@@ -2903,7 +2951,7 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
                 data: {
                     title: String(title || content['title'] || ''),
                     source: hasSource ? source : '',
-                    sourceName: String(content['source_name'] || ''),
+                    sourceName: resolveArticleSourceName(content['source_name'], hasSource ? source : ''),
                     publishTime: String(content['publishTime'] || reportDate),
                     content: '',
                     sourceUrl: hasSource ? source : '',
@@ -3012,7 +3060,7 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
                     data: {
                         title: matched.title || String(content['title'] || ''),
                         source,
-                        sourceName: String(content['source_name'] || ''),
+                        sourceName: resolveArticleSourceName(content['source_name'], hasSource ? source : ''),
                         publishTime: String(content['publishTime'] || reportDate),
                         content: body,
                         sourceUrl: source,
@@ -3042,7 +3090,7 @@ publicRouter.get('/event/:eventId/article', async (req: Request, res: Response) 
                     data: {
                         title: fulltext.title || String(content['title'] || ''),
                         source,
-                        sourceName: String(content['source_name'] || ''),
+                        sourceName: resolveArticleSourceName(content['source_name'], hasSource ? source : ''),
                         publishTime: String(content['publishTime'] || reportDate),
                         content: fulltext.content,
                         sourceUrl: source,
