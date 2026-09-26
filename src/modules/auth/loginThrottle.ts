@@ -24,7 +24,24 @@ redis.on('error', () => {
     redisAvailable = false;
 });
 
+// 内存兜底 Map 的容量上限（I2）：随机账号洪泛时条目无界增长会持续占用内存
+export const MEMORY_MAX_ENTRIES = 10000;
+
 const memoryFail = new Map<string, { count: number; expireAt: number }>();
+
+// 惰性清扫：仅当条目数超过上限时执行（摊薄成本，且不引入常驻 setInterval 定时器）
+function sweepMemory(now: number): void {
+    for (const [key, entry] of memoryFail) {
+        if (entry.expireAt <= now) memoryFail.delete(key);
+    }
+    if (memoryFail.size <= MEMORY_MAX_ENTRIES) return;
+    // 仍超上限：按 expireAt 升序（最旧先淘汰）删除至上限
+    const overflow = memoryFail.size - MEMORY_MAX_ENTRIES;
+    const ordered = [...memoryFail.entries()].sort((a, b) => a[1].expireAt - b[1].expireAt);
+    for (let i = 0; i < overflow; i += 1) {
+        memoryFail.delete(ordered[i][0]);
+    }
+}
 
 function memoryIncr(prefix: string, key: string): void {
     const now = Date.now();
@@ -32,9 +49,10 @@ function memoryIncr(prefix: string, key: string): void {
     const entry = memoryFail.get(mapKey);
     if (!entry || entry.expireAt <= now) {
         memoryFail.set(mapKey, { count: 1, expireAt: now + FAIL_WINDOW_SEC * 1000 });
-        return;
+    } else {
+        entry.count += 1;
     }
-    entry.count += 1;
+    if (memoryFail.size > MEMORY_MAX_ENTRIES) sweepMemory(now);
 }
 
 function memoryGet(prefix: string, key: string): number {
