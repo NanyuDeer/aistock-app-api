@@ -68,39 +68,53 @@ async function redisIncr(prefix: string, key: string, windowSec: number): Promis
     if (count === 1) await redis.expire(fullKey, windowSec);
 }
 
-export async function isThrottled(account: string): Promise<boolean> {
+// 频控三原语：登录失败计数与注册频控共用同一套 Redis 优先 / 内存兜底逻辑，
+// 仅 prefix、阈值与窗口常量不同；公开函数保持原有名字与签名，只做参数化薄封装。
+async function isThrottledFor(prefix: string, max: number, account: string): Promise<boolean> {
     if (redisAvailable) {
         try {
-            const acctRaw = await redis.get(ACCT_PREFIX + account);
-            const acct = parseInt(acctRaw ?? '0', 10) || 0;
-            return acct >= FAIL_MAX;
+            const raw = await redis.get(prefix + account);
+            const count = parseInt(raw ?? '0', 10) || 0;
+            return count >= max;
         } catch {
             redisAvailable = false;
         }
     }
-    return memoryGet(ACCT_PREFIX, account) >= FAIL_MAX;
+    return memoryGet(prefix, account) >= max;
+}
+
+async function recordAttempt(prefix: string, key: string, windowSec: number): Promise<void> {
+    memoryIncr(prefix, key, windowSec);
+    if (redisAvailable) {
+        try {
+            await redisIncr(prefix, key, windowSec);
+        } catch {
+            redisAvailable = false;
+        }
+    }
+}
+
+async function clearCount(prefix: string, key: string): Promise<void> {
+    memoryFail.delete(prefix + key);
+    if (redisAvailable) {
+        try {
+            await redis.del(prefix + key);
+        } catch {
+            redisAvailable = false;
+        }
+    }
+}
+
+export async function isThrottled(account: string): Promise<boolean> {
+    return isThrottledFor(ACCT_PREFIX, FAIL_MAX, account);
 }
 
 export async function recordFailure(account: string): Promise<void> {
-    memoryIncr(ACCT_PREFIX, account, FAIL_WINDOW_SEC);
-    if (redisAvailable) {
-        try {
-            await redisIncr(ACCT_PREFIX, account, FAIL_WINDOW_SEC);
-        } catch {
-            redisAvailable = false;
-        }
-    }
+    return recordAttempt(ACCT_PREFIX, account, FAIL_WINDOW_SEC);
 }
 
 export async function clearAccountFailure(account: string): Promise<void> {
-    memoryFail.delete(ACCT_PREFIX + account);
-    if (redisAvailable) {
-        try {
-            await redis.del(ACCT_PREFIX + account);
-        } catch {
-            redisAvailable = false;
-        }
-    }
+    return clearCount(ACCT_PREFIX, account);
 }
 
 // 注册频控（I4b）：独立账号维度计数，与登录失败计数完全隔离，避免首次设密码被误锁导致无法登录。
@@ -111,36 +125,13 @@ export const REG_MAX = 5;
 const REG_PREFIX = 'auth:reg:acct:';
 
 export async function isRegisterThrottled(account: string): Promise<boolean> {
-    if (redisAvailable) {
-        try {
-            const raw = await redis.get(REG_PREFIX + account);
-            const count = parseInt(raw ?? '0', 10) || 0;
-            return count >= REG_MAX;
-        } catch {
-            redisAvailable = false;
-        }
-    }
-    return memoryGet(REG_PREFIX, account) >= REG_MAX;
+    return isThrottledFor(REG_PREFIX, REG_MAX, account);
 }
 
 export async function recordRegisterAttempt(account: string): Promise<void> {
-    memoryIncr(REG_PREFIX, account, REG_WINDOW_SEC);
-    if (redisAvailable) {
-        try {
-            await redisIncr(REG_PREFIX, account, REG_WINDOW_SEC);
-        } catch {
-            redisAvailable = false;
-        }
-    }
+    return recordAttempt(REG_PREFIX, account, REG_WINDOW_SEC);
 }
 
 export async function clearRegisterCount(account: string): Promise<void> {
-    memoryFail.delete(REG_PREFIX + account);
-    if (redisAvailable) {
-        try {
-            await redis.del(REG_PREFIX + account);
-        } catch {
-            redisAvailable = false;
-        }
-    }
+    return clearCount(REG_PREFIX, account);
 }

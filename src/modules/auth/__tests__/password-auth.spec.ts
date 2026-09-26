@@ -16,6 +16,15 @@ import { FAIL_MAX, REG_MAX } from '../loginThrottle';
 type QueryResult = { rows: Array<Record<string, unknown>> };
 type ApiJson = { code: number; message: string; data: unknown } | null;
 
+// 每次运行生成唯一注册账号：本机 Redis 可达时注册频控会写入 900s TTL 的真实键，
+// 固定账号会在 15 分钟内二次运行该文件时命中 429。保持 11 位、以 139 开头。
+let uniqueRegSeq = 0;
+function uniqueRegAccount(): string {
+    uniqueRegSeq += 1;
+    const tail = (Date.now() + uniqueRegSeq * 7919) % 100000000;
+    return `139${String(tail).padStart(8, '0')}`;
+}
+
 const origQuery = pool.query.bind(pool);
 const origGet = (CacheService as unknown as { get: unknown }).get;
 
@@ -260,7 +269,7 @@ test('注册已设密码账号：提前判重返回 409 且不执行 upsert', as
 });
 
 test('注册频控：同账号尝试超过 REG_MAX 返回 429', async () => {
-    const account = '13900000025';
+    const account = uniqueRegAccount();
     const ip = '10.7.0.1';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) return { rows: [] };
@@ -281,7 +290,7 @@ test('注册频控：同账号尝试超过 REG_MAX 返回 429', async () => {
 });
 
 test('注册成功复位注册计数', async () => {
-    const account = '13900000026';
+    const account = uniqueRegAccount();
     const ip = '10.7.0.2';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) return { rows: [] };
