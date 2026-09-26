@@ -268,21 +268,39 @@ test('注册已设密码账号：提前判重返回 409 且不执行 upsert', as
     assert.equal(insertCount, 0);
 });
 
-test('注册频控：同账号尝试超过 REG_MAX 返回 429', async () => {
+test('注册频控不计未通过验证码的尝试：错误验证码不消耗配额', async () => {
     const account = uniqueRegAccount();
-    const ip = '10.7.0.1';
+    const ip = '10.8.0.1';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) return { rows: [] };
         if (sql.includes('INSERT INTO users')) {
-            return { rows: [{ id: 'u12', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
+            return { rows: [{ id: 'u15', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
         }
         return { rows: [] };
     });
     const app = buildApp();
-    for (let i = 0; i < REG_MAX; i += 1) {
-        // 验证码错误 → 400，但已计入注册尝试
+    // 错误验证码 → 400；这些尝试未经身份证明，不应占用注册频控配额
+    for (let i = 0; i < REG_MAX + 2; i += 1) {
         const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
         assert.equal(r.status, 400);
+    }
+    // 配额未被消耗：随后一次合法注册应成功（而非 429）
+    const ok = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+    assert.equal(ok.status, 200);
+});
+
+test('注册频控：验证码通过后的尝试超过 REG_MAX 返回 429', async () => {
+    const account = uniqueRegAccount();
+    const ip = '10.7.0.1';
+    // 验证码通过（NODE_ENV=test 后门）但账号已设密码 → 409，属「已通过验证码的尝试」，计入配额
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT password_hash')) return { rows: [{ password_hash: 'scrypt$16384$8$1$AA==$BB==' }] };
+        return { rows: [] };
+    });
+    const app = buildApp();
+    for (let i = 0; i < REG_MAX; i += 1) {
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+        assert.equal(r.status, 409);
     }
     const blocked = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
     assert.equal(blocked.status, 429);
@@ -292,24 +310,30 @@ test('注册频控：同账号尝试超过 REG_MAX 返回 429', async () => {
 test('注册成功复位注册计数', async () => {
     const account = uniqueRegAccount();
     const ip = '10.7.0.2';
+    let succeed = false;
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) return { rows: [] };
         if (sql.includes('INSERT INTO users')) {
-            return { rows: [{ id: 'u13', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
+            return succeed
+                ? { rows: [{ id: 'u13', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] }
+                : { rows: [] };
         }
         return { rows: [] };
     });
     const app = buildApp();
+    // 三次「验证码通过但 upsert 0 行」→ 409，累计 3 次已认证尝试
     for (let i = 0; i < 3; i += 1) {
-        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
-        assert.equal(r.status, 400);
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+        assert.equal(r.status, 409);
     }
+    succeed = true;
     const ok = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
     assert.equal(ok.status, 200);
-    // 若未复位，累计已达 4 次，本轮第 2 次即会 429；复位后 4 次尝试应全为 400
+    succeed = false;
+    // 若未复位，累计已达 4 次，本轮第 2 次即会 429；复位后 4 次尝试应全为 409
     for (let i = 0; i < 4; i += 1) {
-        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
-        assert.equal(r.status, 400);
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+        assert.equal(r.status, 409);
     }
 });
 

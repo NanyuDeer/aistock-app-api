@@ -118,7 +118,8 @@ export async function clearAccountFailure(account: string): Promise<void> {
 }
 
 // 注册频控（I4b）：独立账号维度计数，与登录失败计数完全隔离，避免首次设密码被误锁导致无法登录。
-// 口径：进入处理即计数（防刷注册接口本身），成功注册后复位。
+// 口径：验证码校验通过后才计数（仅已通过身份证明的尝试占用配额；否则任意人可用错验证码请求
+// 把他人账号的配额打满，使其无法首次设密码），成功注册后复位。
 export const REG_WINDOW_SEC = 900;
 export const REG_MAX = 5;
 

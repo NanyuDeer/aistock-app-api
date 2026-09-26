@@ -18,7 +18,7 @@
 - `POST /api/auth/email/login` — 邮箱验证码登录
 - `POST /api/auth/bind/email` — 绑定邮箱
 - `POST /api/auth/bind/wechat` — 通过邮箱或手机号验证码证明归属后绑定微信（前端当前仅邮箱入口）
-- `POST /api/auth/register` — 密码注册（注册即登录；账号已设密码时 409）
+- `POST /api/auth/register` — 密码注册（注册即登录；账号已设密码时 409；验证码通过后计入注册频控，900s 内 5 次上限，超限 429）
 - `POST /api/auth/password/login` — 密码登录（仅同账号维度防刷，15 分钟内失败达阈值返回 429，不降级验证码）
 - `GET /api/auth/feishu/callback` — 飞书 OAuth 回调
 - `GET /api/users/me/subscription` — 查询订阅状态
@@ -38,7 +38,7 @@
 - `EmailAuthController.ts` — 邮箱验证码登录、邮箱/微信绑定
 - `PasswordAuthController.ts` — 密码注册、密码登录、登录防刷
 - `passwordUtils.ts` — scrypt 密码散列（hash/verify/强度校验）
-- `loginThrottle.ts` — 登录失败计数（仅账号维度，Redis 优先 + 内存兜底）
+- `loginThrottle.ts` — 登录失败计数与注册频控（均仅账号维度，Redis 优先 + 内存兜底）
 
 ## 依赖的 shared 类型
 - `shared/utils/jwt` — JWT 签发/验证

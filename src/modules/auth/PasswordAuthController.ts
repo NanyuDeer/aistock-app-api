@@ -87,13 +87,14 @@ export class PasswordAuthController {
                 createResponse(res, 400, '参数错误');
                 return;
             }
-            // I4b：注册独立频控（账号维度，与登录失败计数隔离）；进入处理即计数，成功注册后复位
+            // I4b：注册独立频控（账号维度，与登录失败计数隔离）；成功注册后复位。
+            // A 修订（spec §10 A）：计数后移到 verifyCode 通过之后——未通过验证码的尝试不占配额，
+            // 避免任意人用错验证码请求把目标账号配额打满，导致其无法首次设密码。
             if (await isRegisterThrottled(identity.value)) {
                 PasswordAuthController.log('register', '⛔ 触发注册频控', { account: identity.value });
                 createResponse(res, 429, '操作过于频繁，请稍后再试');
                 return;
             }
-            await recordRegisterAttempt(identity.value);
             if (typeof password !== 'string' || !isStrongPassword(password)) {
                 // 超长属新增约束，单独给出可诊断文案；其余沿用原文案
                 const tooLong = typeof password === 'string' && password.length > MAX_PASSWORD_LENGTH;
@@ -109,6 +110,9 @@ export class PasswordAuthController {
                 createResponse(res, 400, '验证码错误或已过期');
                 return;
             }
+
+            // A：仅已通过验证码的尝试计入注册频控配额
+            await recordRegisterAttempt(identity.value);
 
             // I4a：提前判重，避免对已设密码账号白跑一次昂贵 scrypt。
             // 原子 upsert 仍是最终仲裁（并发漏网由 0 行 → 409 兜底）；判重查询失败不阻断主流程。
