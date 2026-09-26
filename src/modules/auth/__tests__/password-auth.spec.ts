@@ -97,7 +97,7 @@ function call(
 }
 
 test('注册成功：200 且返回 token，落库 hash 以 scrypt$ 开头', async () => {
-    const account = '13900000001';
+    const account = uniqueRegAccount();
     let insertedParams: unknown[] | undefined;
     mockQuery(async (sql, params) => {
         if (sql.includes('INSERT INTO users')) {
@@ -118,20 +118,20 @@ test('注册已设密码账号：409', async () => {
         if (sql.includes('INSERT INTO users')) return { rows: [] };
         return { rows: [] };
     });
-    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: '13900000011', password: 'abc12345', code: '123456' }, { ip: '10.1.0.2' });
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: uniqueRegAccount(), password: 'abc12345', code: '123456' }, { ip: '10.1.0.2' });
     assert.equal(res.status, 409);
     assert.equal(res.json?.message, '该账号已设置密码');
 });
 
 test('注册验证码错误：400', async () => {
     mockQuery(async () => ({ rows: [] }));
-    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: '13900000002', password: 'abc12345', code: '000000' }, { ip: '10.1.0.3' });
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: uniqueRegAccount(), password: 'abc12345', code: '000000' }, { ip: '10.1.0.3' });
     assert.equal(res.status, 400);
 });
 
 test('注册弱密码：400', async () => {
     mockQuery(async () => ({ rows: [] }));
-    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: '13900000012', password: '123', code: '123456' }, { ip: '10.1.0.4' });
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: uniqueRegAccount(), password: '123', code: '123456' }, { ip: '10.1.0.4' });
     assert.equal(res.status, 400);
 });
 
@@ -227,7 +227,7 @@ test('账号不存在时密码登录：401 统一文案（恒定成本路径不�
 test('注册超长密码：400 且文案为长度超限', async () => {
     mockQuery(async () => ({ rows: [] }));
     const longPassword = `a1${'x'.repeat(127)}`;
-    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: '13900000022', password: longPassword, code: '123456' }, { ip: '10.5.0.1' });
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: uniqueRegAccount(), password: longPassword, code: '123456' }, { ip: '10.5.0.1' });
     assert.equal(res.status, 400);
     assert.equal(res.json?.message, '密码长度不得超过 128 位');
 });
@@ -250,7 +250,7 @@ test('登录超长密码：401 统一文案，且不查询数据库', async () =
 });
 
 test('注册已设密码账号：提前判重返回 409 且不执行 upsert', async () => {
-    const account = '13900000024';
+    const account = uniqueRegAccount();
     let insertCount = 0;
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) {
