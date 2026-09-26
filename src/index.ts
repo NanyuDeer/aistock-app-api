@@ -55,6 +55,7 @@ import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
 import { SmsAuthController } from './modules/auth/SmsAuthController';
 import { EmailAuthController } from './modules/auth/EmailAuthController';
+import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
@@ -132,6 +133,7 @@ import { Application } from 'express';
 const app: Application = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const BACKGROUND_JOBS_ENABLED = shouldRunBackgroundJobs();
+app.set('trust proxy', process.env.TRUST_PROXY === 'false' ? false : 1);
 
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN || '';
 const allowedOrigins = corsAllowOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -245,6 +247,10 @@ app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailL
 app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
 // 微信绑定改走邮箱证明归属（前端仅邮箱入口）
 app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
+
+// 密码注册 / 密码登录（登录防刷，2026-09-26）
+app.post('/api/auth/register', (req, res, next) => PasswordAuthController.register(req, res, next));
+app.post('/api/auth/password/login', (req, res, next) => PasswordAuthController.passwordLogin(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
@@ -1242,6 +1248,14 @@ async function start() {
         console.log('[DB] users.is_vip ready');
     } catch (err: unknown) {
         console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // password_hash 密码登录（2026-09-26 登录防刷 + 注册密码；NULL 表示未设置密码）
+    try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`);
+        console.log('[DB] users.password_hash ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users.password_hash migration:', err instanceof Error ? err.message : String(err));
     }
 
     // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
