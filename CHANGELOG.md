@@ -2,6 +2,29 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-09-26 — 密码注册 / 密码登录 + 登录防刷（含防刷松绑与存量账号首次设置密码）
+
+**开发者**: Aria
+
+### 新增
+
+- `POST /api/auth/register`（手机号 / 邮箱 + 密码注册，注册即登录；原子 upsert `ON CONFLICT ... DO UPDATE SET password_hash = EXCLUDED.password_hash WHERE users.password_hash IS NULL`，已设密码命中 0 行 → 409「该账号已设置密码」）与 `POST /api/auth/password/login`（密码登录，接入 `loginThrottle` 防刷）。
+- 登录失败计数 `loginThrottle`（Redis 优先 + 内存 Map 兜底，与 `smsCodeStore` 同策略）：账号维度计数，窗口 900s。
+- 密码散列工具 `passwordUtils`（scrypt，零依赖）。
+- `src/index.ts`：注册上述路由；幂等迁移 `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`。
+
+### 改进
+
+- **防刷松绑**：`FAIL_MAX` 2 → 10，并**删除 IP 维度**（`isThrottled` / `recordFailure` 去掉 `ip` 入参，收敛为仅账号维度），避免 NAT / 共享出口误伤。
+- 密码登录 429 不再返回 `data.fallback`，文案改为「尝试过于频繁，请稍后再试」，不再引导降级验证码登录。
+- `GET /users/me` 加性新增 `hasPassword`（`(password_hash IS NOT NULL)`），与 `phoneBound` / `emailBound` 同范式，不破坏既有消费方。
+
+### 测试
+
+- `login-throttle.spec.ts`（3 例，仅账号维度 / 阈值 10）、`password-auth.spec.ts`（9 例，429 无 `fallback` + 新文案）、`me-is-vip.spec.ts`（3 例回归）全绿；`npx tsc --noEmit` exit 0。
+
+---
+
 ## [changer] 2026-09-22 — 节奏大师·事件前瞻主体化（日历侧）
 
 **开发者**: 37588

@@ -8,8 +8,9 @@ import redis from '../../../core/redis';
 import { CacheService } from '../../../shared/utils/CacheService';
 import { hashPassword } from '../passwordUtils';
 import { PasswordAuthController } from '../PasswordAuthController';
+import { FAIL_MAX } from '../loginThrottle';
 
-// 说明：用内存兜底（本地 Redis 不可用），每条用例使用互不相同的 account / IP，
+// 说明：用内存兜底（本地 Redis 不可用），每条用例使用互不相同的 account，
 // 避免 loginThrottle 的模块级内存 Map 在用例间串扰。
 
 type QueryResult = { rows: Array<Record<string, unknown>> };
@@ -152,7 +153,7 @@ test('密码错误：401 且统一文案', async () => {
     assert.equal(res.json?.message, '账号或密码错误');
 });
 
-test('同账号连续失败 2 次后第 3 次 429 且不再校验密码', async () => {
+test('同账号连续失败达到阈值后返回 429 且不再校验密码', async () => {
     const account = '13900000015';
     const ip = '10.3.0.1';
     let selectCount = 0;
@@ -164,32 +165,16 @@ test('同账号连续失败 2 次后第 3 次 429 且不再校验密码', async 
         return { rows: [] };
     });
     const app = buildApp();
-    const r1 = await call(app, 'POST', '/api/auth/password/login', { account, password: 'wrong1234' }, { ip });
-    const r2 = await call(app, 'POST', '/api/auth/password/login', { account, password: 'wrong1234' }, { ip });
-    const r3 = await call(app, 'POST', '/api/auth/password/login', { account, password: 'abc12345' }, { ip });
-    assert.equal(r1.status, 401);
-    assert.equal(r2.status, 401);
-    assert.equal(r3.status, 429);
-    assert.equal(selectCount, 2);
-    const data = r3.json?.data as { fallback?: string } | undefined;
-    assert.equal(data?.fallback, 'sms');
-});
-
-test('同 IP 不同账号各失败 1 次累计满 2 次后 429', async () => {
-    const ip = '10.3.0.2';
-    mockQuery(async (sql) => {
-        if (sql.includes('SELECT')) {
-            return { rows: [{ id: 'u8', openid: null, phone: null, email: 'x@y.com', nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
-        }
-        return { rows: [] };
-    });
-    const app = buildApp();
-    const r1 = await call(app, 'POST', '/api/auth/password/login', { account: '13900000016', password: 'wrong1234' }, { ip });
-    const r2 = await call(app, 'POST', '/api/auth/password/login', { account: '13900000017', password: 'wrong1234' }, { ip });
-    const r3 = await call(app, 'POST', '/api/auth/password/login', { account: '13900000018', password: 'abc12345' }, { ip });
-    assert.equal(r1.status, 401);
-    assert.equal(r2.status, 401);
-    assert.equal(r3.status, 429);
+    for (let i = 0; i < FAIL_MAX; i += 1) {
+        const r = await call(app, 'POST', '/api/auth/password/login', { account, password: 'wrong1234' }, { ip });
+        assert.equal(r.status, 401);
+    }
+    const blocked = await call(app, 'POST', '/api/auth/password/login', { account, password: 'abc12345' }, { ip });
+    assert.equal(blocked.status, 429);
+    assert.equal(selectCount, FAIL_MAX);
+    assert.equal(blocked.json?.message, '尝试过于频繁，请稍后再试');
+    const data = blocked.json?.data as { fallback?: string } | undefined;
+    assert.equal(data?.fallback, undefined);
 });
 
 test('登录成功后账号计数清除（同账号可再次正常尝试）', async () => {
@@ -223,22 +208,3 @@ test('账号未设置密码：401 统一文案', async () => {
     assert.equal(res.json?.message, '账号或密码错误');
 });
 
-test('trust proxy：req.ip 取 X-Forwarded-For，不同 IP 计数相互独立', async () => {
-    mockQuery(async (sql) => {
-        if (sql.includes('SELECT')) {
-            return { rows: [{ id: 'u11', openid: null, phone: null, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
-        }
-        return { rows: [] };
-    });
-    const app = buildApp();
-    const ipA = '12.0.0.1';
-    const ipB = '12.0.0.2';
-    const a1 = await call(app, 'POST', '/api/auth/password/login', { account: '13900005001', password: 'wrong1234' }, { ip: ipA });
-    const a2 = await call(app, 'POST', '/api/auth/password/login', { account: '13900005002', password: 'wrong1234' }, { ip: ipA });
-    const a3 = await call(app, 'POST', '/api/auth/password/login', { account: '13900005003', password: 'wrong1234' }, { ip: ipA });
-    const b1 = await call(app, 'POST', '/api/auth/password/login', { account: '13900005004', password: 'wrong1234' }, { ip: ipB });
-    assert.equal(a1.status, 401);
-    assert.equal(a2.status, 401);
-    assert.equal(a3.status, 429);
-    assert.equal(b1.status, 401);
-});

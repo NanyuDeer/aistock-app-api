@@ -1,12 +1,11 @@
 import redis from '../../core/redis';
 
-// 登录失败计数（登录防刷，2026-09-26）
+// 登录失败计数（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度，避免共享出口 NAT 误伤）
 // 结构对齐 core/sms/smsCodeStore：Redis 优先，不可用时降级内存 Map。
 export const FAIL_WINDOW_SEC = 900;
-export const FAIL_MAX = 2;
+export const FAIL_MAX = 10;
 
 const ACCT_PREFIX = 'auth:pwfail:acct:';
-const IP_PREFIX = 'auth:pwfail:ip:';
 
 let redisAvailable = false;
 
@@ -51,29 +50,24 @@ async function redisIncr(prefix: string, key: string): Promise<void> {
     if (count === 1) await redis.expire(fullKey, FAIL_WINDOW_SEC);
 }
 
-export async function isThrottled(account: string, ip: string): Promise<boolean> {
+export async function isThrottled(account: string): Promise<boolean> {
     if (redisAvailable) {
         try {
             const acctRaw = await redis.get(ACCT_PREFIX + account);
-            const ipRaw = ip ? await redis.get(IP_PREFIX + ip) : null;
             const acct = parseInt(acctRaw ?? '0', 10) || 0;
-            const ipCount = parseInt(ipRaw ?? '0', 10) || 0;
-            return acct >= FAIL_MAX || ipCount >= FAIL_MAX;
+            return acct >= FAIL_MAX;
         } catch {
             redisAvailable = false;
         }
     }
-    return memoryGet(ACCT_PREFIX, account) >= FAIL_MAX || (!!ip && memoryGet(IP_PREFIX, ip) >= FAIL_MAX);
+    return memoryGet(ACCT_PREFIX, account) >= FAIL_MAX;
 }
 
-export async function recordFailure(account: string, ip: string): Promise<void> {
-    // 双写：内存始终写，Redis 可用时同时写（与 smsCodeStore 一致）
+export async function recordFailure(account: string): Promise<void> {
     memoryIncr(ACCT_PREFIX, account);
-    if (ip) memoryIncr(IP_PREFIX, ip);
     if (redisAvailable) {
         try {
             await redisIncr(ACCT_PREFIX, account);
-            if (ip) await redisIncr(IP_PREFIX, ip);
         } catch {
             redisAvailable = false;
         }

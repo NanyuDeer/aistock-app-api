@@ -8,10 +8,9 @@ import { isValidEmail, EMAIL_DEV_TEST_CODE } from '../../core/email/EmailService
 import { hashPassword, verifyPassword, isStrongPassword } from './passwordUtils';
 import { isThrottled, recordFailure, clearAccountFailure } from './loginThrottle';
 
-// 密码注册 / 密码登录（登录防刷，2026-09-26）
+// 密码注册 / 密码登录（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度节流，不降级）
 // 路由：POST /api/auth/register、POST /api/auth/password/login
-// 口径：注册即登录；登录失败口径统一（不暴露账号是否存在）；同账号/同IP 15 分钟内失败不超两次。
-// 降级：验证码登录（sms/email）保持不变，作为触发防刷后的备用通道。
+// 口径：注册即登录；登录失败口径统一（不暴露账号是否存在）；同账号 15 分钟内失败达到阈值才节流。
 
 type Identity = { kind: 'phone' | 'email'; value: string };
 
@@ -159,10 +158,9 @@ export class PasswordAuthController {
             }
 
             const ip = getClientIp(req);
-            if (await isThrottled(identity.value, ip)) {
-                const fallback = identity.kind === 'phone' ? 'sms' : 'email';
+            if (await isThrottled(identity.value)) {
                 PasswordAuthController.log('login', '⛔ 触发登录防刷', { account: identity.value, ip });
-                createResponse(res, 429, '尝试过于频繁，请改用验证码登录', { fallback });
+                createResponse(res, 429, '尝试过于频繁，请稍后再试');
                 return;
             }
 
@@ -189,7 +187,7 @@ export class PasswordAuthController {
             const passOk = !!row && verifyPassword(password, row.password_hash ?? null);
             if (!passOk) {
                 // 账号不存在 / 未设置密码 / 密码错误，统一按失败处理并计数
-                await recordFailure(identity.value, ip);
+                await recordFailure(identity.value);
                 PasswordAuthController.log('login', '❌ 登录失败', { account: identity.value, ip });
                 createResponse(res, 401, '账号或密码错误');
                 return;
