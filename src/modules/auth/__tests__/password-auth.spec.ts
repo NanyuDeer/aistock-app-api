@@ -315,7 +315,7 @@ test('注册成功复位注册计数', async () => {
 
 test('注册验证码后门仅在 NODE_ENV=test 生效', async () => {
     const prev = process.env.NODE_ENV;
-    const account = '13900000027';
+    const account = uniqueRegAccount();
     mockQuery(async (sql) => {
         if (sql.includes('SELECT password_hash')) return { rows: [] };
         if (sql.includes('INSERT INTO users')) {
