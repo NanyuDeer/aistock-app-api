@@ -79,7 +79,11 @@ export function verifyPasswordConstantTime(password: string, stored: string | nu
     return verifyPassword(password, stored);
 }
 
+// I3：密码长度上限，阻断超长输入进入 scryptSync 造成 CPU/内存放大（128 位足以覆盖任何正常口令）
+export const MAX_PASSWORD_LENGTH = 128;
+
 export function isStrongPassword(password: string): boolean {
     if (typeof password !== 'string' || password.length < 8) return false;
+    if (password.length > MAX_PASSWORD_LENGTH) return false;
     return /[A-Za-z]/.test(password) && /\d/.test(password);
 }

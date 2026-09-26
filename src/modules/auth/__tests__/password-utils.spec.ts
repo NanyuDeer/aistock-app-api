@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { hashPassword, verifyPassword, isStrongPassword, verifyPasswordConstantTime } from '../passwordUtils';
+import { hashPassword, verifyPassword, isStrongPassword, verifyPasswordConstantTime, MAX_PASSWORD_LENGTH } from '../passwordUtils';
 
 test('hashPassword 生成 scrypt$ 前缀，且 verifyPassword 正确验证', () => {
     const stored = hashPassword('abc12345');
@@ -64,4 +64,14 @@ test('verifyPasswordConstantTime 对空 stored 仍执行 scrypt（耗时下界�
     // N=16384 的单次 scrypt 为数十毫秒量级；纯比较路径仅零点几毫秒。
     // 取 1ms 作为保守下界，避免 CI 抖动造成 flaky。
     assert.ok(elapsedMs > 1, `期望 scrypt 级耗时，实际 ${elapsedMs.toFixed(3)}ms`);
+});
+
+test('MAX_PASSWORD_LENGTH 为 128，isStrongPassword 接受 128 位并拒绝 129 位', () => {
+    assert.equal(MAX_PASSWORD_LENGTH, 128);
+    const ok = `a1${'x'.repeat(126)}`;
+    const tooLong = `a1${'x'.repeat(127)}`;
+    assert.equal(ok.length, 128);
+    assert.equal(tooLong.length, 129);
+    assert.equal(isStrongPassword(ok), true);
+    assert.equal(isStrongPassword(tooLong), false);
 });

@@ -215,3 +215,28 @@ test('账号不存在时密码登录：401 统一文案（恒定成本路径不�
     assert.equal(res.json?.message, '账号或密码错误');
 });
 
+test('注册超长密码：400 且文案为长度超限', async () => {
+    mockQuery(async () => ({ rows: [] }));
+    const longPassword = `a1${'x'.repeat(127)}`;
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account: '13900000022', password: longPassword, code: '123456' }, { ip: '10.5.0.1' });
+    assert.equal(res.status, 400);
+    assert.equal(res.json?.message, '密码长度不得超过 128 位');
+});
+
+test('登录超长密码：401 统一文案，且不查询数据库', async () => {
+    const account = '13900000023';
+    let selectCount = 0;
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT')) {
+            selectCount += 1;
+            return { rows: [{ id: 'u11', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+        }
+        return { rows: [] };
+    });
+    const longPassword = `a1${'x'.repeat(127)}`;
+    const res = await call(buildApp(), 'POST', '/api/auth/password/login', { account, password: longPassword }, { ip: '10.5.0.2' });
+    assert.equal(res.status, 401);
+    assert.equal(res.json?.message, '账号或密码错误');
+    assert.equal(selectCount, 0);
+});
+

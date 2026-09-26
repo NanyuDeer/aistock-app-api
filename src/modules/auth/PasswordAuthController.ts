@@ -5,7 +5,7 @@ import pool from '../../core/db';
 import { consumeCode, isValidMainlandPhone } from '../../core/sms/smsCodeStore';
 import { SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { isValidEmail, EMAIL_DEV_TEST_CODE } from '../../core/email/EmailService';
-import { hashPassword, isStrongPassword, verifyPasswordConstantTime } from './passwordUtils';
+import { hashPassword, isStrongPassword, MAX_PASSWORD_LENGTH, verifyPasswordConstantTime } from './passwordUtils';
 import { isThrottled, recordFailure, clearAccountFailure } from './loginThrottle';
 
 // 密码注册 / 密码登录（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度节流，不降级）
@@ -79,7 +79,9 @@ export class PasswordAuthController {
                 return;
             }
             if (typeof password !== 'string' || !isStrongPassword(password)) {
-                createResponse(res, 400, '密码至少 8 位且需包含字母和数字');
+                // 超长属新增约束，单独给出可诊断文案；其余沿用原文案
+                const tooLong = typeof password === 'string' && password.length > MAX_PASSWORD_LENGTH;
+                createResponse(res, 400, tooLong ? '密码长度不得超过 128 位' : '密码至少 8 位且需包含字母和数字');
                 return;
             }
             if (typeof code !== 'string' || !code) {
@@ -161,6 +163,14 @@ export class PasswordAuthController {
             if (await isThrottled(identity.value)) {
                 PasswordAuthController.log('login', '⛔ 触发登录防刷', { account: identity.value, ip });
                 createResponse(res, 429, '尝试过于频繁，请稍后再试');
+                return;
+            }
+
+            // I3：超长密码在进入 scrypt 之前按失败处理（不新增对外码，避免区分出「长度非法」信号，也不做 DB 查询）
+            if (password.length > MAX_PASSWORD_LENGTH) {
+                await recordFailure(identity.value);
+                PasswordAuthController.log('login', '❌ 登录失败（密码超长）', { account: identity.value, ip, len: password.length });
+                createResponse(res, 401, '账号或密码错误');
                 return;
             }
 
