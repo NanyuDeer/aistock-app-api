@@ -208,3 +208,10 @@ test('账号未设置密码：401 统一文案', async () => {
     assert.equal(res.json?.message, '账号或密码错误');
 });
 
+test('账号不存在时密码登录：401 统一文案（恒定成本路径不短路）', async () => {
+    mockQuery(async () => ({ rows: [] }));
+    const res = await call(buildApp(), 'POST', '/api/auth/password/login', { account: '13900000028', password: 'abc12345' }, { ip: '10.9.0.1' });
+    assert.equal(res.status, 401);
+    assert.equal(res.json?.message, '账号或密码错误');
+});
+

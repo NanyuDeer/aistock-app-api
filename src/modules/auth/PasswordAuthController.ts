@@ -5,7 +5,7 @@ import pool from '../../core/db';
 import { consumeCode, isValidMainlandPhone } from '../../core/sms/smsCodeStore';
 import { SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { isValidEmail, EMAIL_DEV_TEST_CODE } from '../../core/email/EmailService';
-import { hashPassword, verifyPassword, isStrongPassword } from './passwordUtils';
+import { hashPassword, isStrongPassword, verifyPasswordConstantTime } from './passwordUtils';
 import { isThrottled, recordFailure, clearAccountFailure } from './loginThrottle';
 
 // 密码注册 / 密码登录（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度节流，不降级）
@@ -184,7 +184,8 @@ export class PasswordAuthController {
                 return;
             }
 
-            const passOk = !!row && verifyPassword(password, row.password_hash ?? null);
+            // I1：保留 !!row 短路会让「账号不存在」路径零成本，形成时间侧信道；此处恒做等价成本校验
+            const passOk = verifyPasswordConstantTime(password, row?.password_hash ?? null);
             if (!passOk) {
                 // 账号不存在 / 未设置密码 / 密码错误，统一按失败处理并计数
                 await recordFailure(identity.value);
