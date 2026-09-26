@@ -96,7 +96,7 @@ src/
 |------|------|---------|
 | 行情 | modules/quote | 腾讯行情、K线、指数、个股分析 |
 | 推送 | modules/push | 微信模板消息、定时推送 |
-| 认证 | modules/auth | 扫码登录、微信授权 |
+| 认证 | modules/auth | 扫码登录、微信授权、验证码/密码登录（含登录防刷） |
 | 日历 | modules/calendar | L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 报告读取 |
 | 监控 | modules/monitor | 股票异动监控、风口龙头、十倍股评分、知识图谱、机构调研热门股 |
 | 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
@@ -125,6 +125,8 @@ src/
 | `/api/cn/wind-leaders` | 龙头股接口 |
 | `/api/cn/stock-monitors/*` | 重磅消息接口 |
 | `/api/auth/wechat/*` | 微信认证接口 |
+| `/api/auth/register` | 密码注册（注册即登录） |
+| `/api/auth/password/login` | 密码登录（同账号/同IP 防刷，超限返回 429） |
 | `/api/agent/*` | 反代到 Python FastAPI（SSE 流式透传，注入 X-Internal-Token；配置 `AGENT_PY_URL`，默认 `http://localhost:8080`）。**P0 身份鉴权（chat 三路径 `/chat/message`、`/chat/stream/messages`、`/chat/stream/updates`）**：校验 `Authorization: Bearer` JWT（非法/过期 401），覆写 body `user_id` 为服务端 openid（无 token 则 null）——客户端自报 user_id 失效；非 chat 路径行为不变 |
 | `/api/agent/ws/chat` | **Chat WS（P0 起经 app-api 桥接）**：upgrade 时验签 query `token`（无 token 放行 user_id=None；非法/过期 close 4401），桥接作为 WS 客户端连 agent-py（带 X-Internal-Token），双向转发并覆写消息体 `user_id` |
 | `/api/agent/event/list` | **事件传导报告列表**（公开，分页；每项含 chain_summary 行业影响摘要，Top5 按 impactStrength 降序，旧数据返回 []） | page, pageSize |

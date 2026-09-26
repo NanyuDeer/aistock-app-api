@@ -1,7 +1,7 @@
 # auth 认证模块
 
 ## 功能
-微信 OAuth 登录、扫码登录、飞书 OAuth 授权、用户管理、飞书消息接收。
+微信 OAuth 登录、扫码登录、飞书 OAuth 授权、短信/邮箱验证码登录、密码注册与密码登录（含登录防刷）、用户管理、飞书消息接收。
 
 ## 对外接口（路由）
 - `GET /api/auth/wechat/login` — 微信授权登录
@@ -11,6 +11,15 @@
 - `POST /api/auth/oauth/store` — 「分享到微信再授权」：H5 网页授权成功后按 state 回传 token（OAuthBridgeController）
 - `GET /api/auth/oauth/result` — 「分享到微信再授权」：App 轮询领取 token（OAuthBridgeController）
 - `POST /api/auth/logout` — 登出
+- `POST /api/auth/sms/send` — 发送短信验证码
+- `POST /api/auth/sms/login` — 短信验证码登录
+- `POST /api/auth/bind/phone` — 绑定手机号
+- `POST /api/auth/email/send` — 发送邮箱验证码
+- `POST /api/auth/email/login` — 邮箱验证码登录
+- `POST /api/auth/bind/email` — 绑定邮箱
+- `POST /api/auth/bind/wechat` — 通过邮箱验证码证明归属后绑定微信
+- `POST /api/auth/register` — 密码注册（注册即登录；账号已设密码时 409）
+- `POST /api/auth/password/login` — 密码登录（同账号/同 IP 防刷，超限返回 429 并提示改用验证码登录）
 - `GET /api/auth/feishu/callback` — 飞书 OAuth 回调
 - `GET /api/users/me/subscription` — 查询订阅状态
 - `POST /api/users/me/subscription` — 订阅/取消
@@ -25,12 +34,20 @@
 - `feishuAuthController.ts` — FeishuAuthController（飞书授权/订阅）
 - `userController.ts` — UserController（用户管理）
 - `feishuMessageController.ts` — FeishuMessageController（飞书消息、OCR及AI处理状态入库）
+- `SmsAuthController.ts` — 短信验证码登录、手机号绑定
+- `EmailAuthController.ts` — 邮箱验证码登录、邮箱/微信绑定
+- `PasswordAuthController.ts` — 密码注册、密码登录、登录防刷
+- `passwordUtils.ts` — scrypt 密码散列（hash/verify/强度校验）
+- `loginThrottle.ts` — 同账号/同 IP 失败计数
 
 ## 依赖的 shared 类型
 - `shared/utils/jwt` — JWT 签发/验证
 - `shared/utils/response` — 统一响应
 - `shared/utils/CacheService` — 微信 access_token 缓存
 - `core/db` — 数据库连接
+- `core/sms/smsCodeStore` — 短信验证码校验
+- `core/email/EmailService` — 邮箱格式校验与验证码发送
+- `modules/auth/loginThrottle` — 登录失败防刷计数
 
 ## 跨模块依赖
 - `modules/monitor/HotKeywordDetectorService` — 热词检测（飞书消息处理用）
