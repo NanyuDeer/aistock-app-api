@@ -17,7 +17,7 @@
 - `POST /api/auth/email/send` — 发送邮箱验证码
 - `POST /api/auth/email/login` — 邮箱验证码登录
 - `POST /api/auth/bind/email` — 绑定邮箱
-- `POST /api/auth/bind/wechat` — 通过邮箱验证码证明归属后绑定微信
+- `POST /api/auth/bind/wechat` — 通过邮箱或手机号验证码证明归属后绑定微信（前端当前仅邮箱入口）
 - `POST /api/auth/register` — 密码注册（注册即登录；账号已设密码时 409）
 - `POST /api/auth/password/login` — 密码登录（同账号/同 IP 防刷，超限返回 429 并提示改用验证码登录）
 - `GET /api/auth/feishu/callback` — 飞书 OAuth 回调
