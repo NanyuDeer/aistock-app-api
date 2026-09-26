@@ -37,7 +37,7 @@
 - `SmsAuthController.ts` — 短信验证码登录、手机号绑定
 - `EmailAuthController.ts` — 邮箱验证码登录、邮箱/微信绑定
 - `PasswordAuthController.ts` — 密码注册、密码登录、登录防刷
-- `passwordUtils.ts` — scrypt 密码散列（hash/verify/强度校验）
+- `passwordUtils.ts` — scrypt 密码散列（hash/verify/强度校验；异步 + 在途并发上限）
 - `loginThrottle.ts` — 登录失败计数与注册频控（均仅账号维度，Redis 优先 + 内存兜底）
 
 ## 依赖的 shared 类型
@@ -47,7 +47,7 @@
 - `core/db` — 数据库连接
 - `core/sms/smsCodeStore` — 短信验证码校验
 - `core/email/EmailService` — 邮箱格式校验与验证码发送
-- `modules/auth/loginThrottle` — 登录失败防刷计数
+- `modules/auth/loginThrottle` — 登录失败防刷计数与注册频控
 
 ## 跨模块依赖
 - `modules/monitor/HotKeywordDetectorService` — 热词检测（飞书消息处理用）

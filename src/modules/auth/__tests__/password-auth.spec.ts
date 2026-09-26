@@ -139,7 +139,7 @@ test('密码登录成功：200 且返回 token', async () => {
     const account = '13900000013';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT')) {
-            return { rows: [{ id: 'u5', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+            return { rows: [{ id: 'u5', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: await hashPassword('abc12345') }] };
         }
         return { rows: [] };
     });
@@ -153,7 +153,7 @@ test('密码错误：401 且统一文案', async () => {
     const account = '13900000014';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT')) {
-            return { rows: [{ id: 'u6', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+            return { rows: [{ id: 'u6', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: await hashPassword('abc12345') }] };
         }
         return { rows: [] };
     });
@@ -169,7 +169,7 @@ test('同账号连续失败达到阈值后返回 429 且不再校验密码', asy
     mockQuery(async (sql) => {
         if (sql.includes('SELECT')) {
             selectCount += 1;
-            return { rows: [{ id: 'u7', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+            return { rows: [{ id: 'u7', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: await hashPassword('abc12345') }] };
         }
         return { rows: [] };
     });
@@ -191,7 +191,7 @@ test('登录成功后账号计数清除（同账号可再次正常尝试）', as
     const ip = '10.3.0.3';
     mockQuery(async (sql) => {
         if (sql.includes('SELECT')) {
-            return { rows: [{ id: 'u9', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+            return { rows: [{ id: 'u9', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: await hashPassword('abc12345') }] };
         }
         return { rows: [] };
     });
@@ -238,7 +238,7 @@ test('登录超长密码：401 统一文案，且不查询数据库', async () =
     mockQuery(async (sql) => {
         if (sql.includes('SELECT')) {
             selectCount += 1;
-            return { rows: [{ id: 'u11', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: hashPassword('abc12345') }] };
+            return { rows: [{ id: 'u11', openid: null, phone: account, email: null, nickname: null, avatar_url: null, password_hash: await hashPassword('abc12345') }] };
         }
         return { rows: [] };
     });

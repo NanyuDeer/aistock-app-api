@@ -131,7 +131,7 @@ export class PasswordAuthController {
                 PasswordAuthController.log('register', '⚠️ 提前判重失败，降级直接 upsert', { account: identity.value, error: errMsg });
             }
 
-            const hash = hashPassword(password);
+            const hash = await hashPassword(password);
             // 原子 upsert：仅在 password_hash 为空时写入；已有密码时 WHERE 不成立 → 无返回行 → 409
             let row: UserRow;
             try {
@@ -233,7 +233,7 @@ export class PasswordAuthController {
             }
 
             // I1：保留 !!row 短路会让「账号不存在」路径零成本，形成时间侧信道；此处恒做等价成本校验
-            const passOk = verifyPasswordConstantTime(password, row?.password_hash ?? null);
+            const passOk = await verifyPasswordConstantTime(password, row?.password_hash ?? null);
             if (!passOk) {
                 // 账号不存在 / 未设置密码 / 密码错误，统一按失败处理并计数
                 await recordFailure(identity.value);
