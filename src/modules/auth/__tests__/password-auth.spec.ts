@@ -240,3 +240,22 @@ test('登录超长密码：401 统一文案，且不查询数据库', async () =
     assert.equal(selectCount, 0);
 });
 
+test('注册已设密码账号：提前判重返回 409 且不执行 upsert', async () => {
+    const account = '13900000024';
+    let insertCount = 0;
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT password_hash')) {
+            return { rows: [{ password_hash: 'scrypt$16384$8$1$AA==$BB==' }] };
+        }
+        if (sql.includes('INSERT INTO users')) {
+            insertCount += 1;
+            return { rows: [] };
+        }
+        return { rows: [] };
+    });
+    const res = await call(buildApp(), 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip: '10.6.0.1' });
+    assert.equal(res.status, 409);
+    assert.equal(res.json?.message, '该账号已设置密码');
+    assert.equal(insertCount, 0);
+});
+

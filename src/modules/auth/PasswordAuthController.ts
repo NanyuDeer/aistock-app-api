@@ -94,6 +94,23 @@ export class PasswordAuthController {
                 return;
             }
 
+            // I4a：提前判重，避免对已设密码账号白跑一次昂贵 scrypt。
+            // 原子 upsert 仍是最终仲裁（并发漏网由 0 行 → 409 兜底）；判重查询失败不阻断主流程。
+            try {
+                const existing =
+                    identity.kind === 'phone'
+                        ? await pool.query(`SELECT password_hash FROM users WHERE phone = $1`, [identity.value])
+                        : await pool.query(`SELECT password_hash FROM users WHERE email = $1`, [identity.value]);
+                const existingHash = (existing.rows[0] as { password_hash?: string | null } | undefined)?.password_hash;
+                if (existingHash) {
+                    createResponse(res, 409, '该账号已设置密码');
+                    return;
+                }
+            } catch (err: unknown) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                PasswordAuthController.log('register', '⚠️ 提前判重失败，降级直接 upsert', { account: identity.value, error: errMsg });
+            }
+
             const hash = hashPassword(password);
             // 原子 upsert：仅在 password_hash 为空时写入；已有密码时 WHERE 不成立 → 无返回行 → 409
             let row: UserRow;
