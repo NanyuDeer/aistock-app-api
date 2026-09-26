@@ -6,7 +6,14 @@ import { consumeCode, isValidMainlandPhone } from '../../core/sms/smsCodeStore';
 import { SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { isValidEmail, EMAIL_DEV_TEST_CODE } from '../../core/email/EmailService';
 import { hashPassword, isStrongPassword, MAX_PASSWORD_LENGTH, verifyPasswordConstantTime } from './passwordUtils';
-import { isThrottled, recordFailure, clearAccountFailure } from './loginThrottle';
+import {
+    clearAccountFailure,
+    clearRegisterCount,
+    isRegisterThrottled,
+    isThrottled,
+    recordFailure,
+    recordRegisterAttempt,
+} from './loginThrottle';
 
 // 密码注册 / 密码登录（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度节流，不降级）
 // 路由：POST /api/auth/register、POST /api/auth/password/login
@@ -78,6 +85,13 @@ export class PasswordAuthController {
                 createResponse(res, 400, '参数错误');
                 return;
             }
+            // I4b：注册独立频控（账号维度，与登录失败计数隔离）；进入处理即计数，成功注册后复位
+            if (await isRegisterThrottled(identity.value)) {
+                PasswordAuthController.log('register', '⛔ 触发注册频控', { account: identity.value });
+                createResponse(res, 429, '操作过于频繁，请稍后再试');
+                return;
+            }
+            await recordRegisterAttempt(identity.value);
             if (typeof password !== 'string' || !isStrongPassword(password)) {
                 // 超长属新增约束，单独给出可诊断文案；其余沿用原文案
                 const tooLong = typeof password === 'string' && password.length > MAX_PASSWORD_LENGTH;
@@ -145,6 +159,7 @@ export class PasswordAuthController {
                 return;
             }
 
+            await clearRegisterCount(identity.value);
             const token = PasswordAuthController.issueToken(res, row);
             PasswordAuthController.log('register', '✅ 注册成功', { id: row.id, kind: identity.kind });
             createResponse(res, 200, 'success', {

@@ -8,7 +8,7 @@ import redis from '../../../core/redis';
 import { CacheService } from '../../../shared/utils/CacheService';
 import { hashPassword } from '../passwordUtils';
 import { PasswordAuthController } from '../PasswordAuthController';
-import { FAIL_MAX } from '../loginThrottle';
+import { FAIL_MAX, REG_MAX } from '../loginThrottle';
 
 // 说明：用内存兜底（本地 Redis 不可用），每条用例使用互不相同的 account，
 // 避免 loginThrottle 的模块级内存 Map 在用例间串扰。
@@ -257,5 +257,50 @@ test('注册已设密码账号：提前判重返回 409 且不执行 upsert', as
     assert.equal(res.status, 409);
     assert.equal(res.json?.message, '该账号已设置密码');
     assert.equal(insertCount, 0);
+});
+
+test('注册频控：同账号尝试超过 REG_MAX 返回 429', async () => {
+    const account = '13900000025';
+    const ip = '10.7.0.1';
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT password_hash')) return { rows: [] };
+        if (sql.includes('INSERT INTO users')) {
+            return { rows: [{ id: 'u12', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
+        }
+        return { rows: [] };
+    });
+    const app = buildApp();
+    for (let i = 0; i < REG_MAX; i += 1) {
+        // 验证码错误 → 400，但已计入注册尝试
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
+        assert.equal(r.status, 400);
+    }
+    const blocked = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+    assert.equal(blocked.status, 429);
+    assert.equal(blocked.json?.message, '操作过于频繁，请稍后再试');
+});
+
+test('注册成功复位注册计数', async () => {
+    const account = '13900000026';
+    const ip = '10.7.0.2';
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT password_hash')) return { rows: [] };
+        if (sql.includes('INSERT INTO users')) {
+            return { rows: [{ id: 'u13', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
+        }
+        return { rows: [] };
+    });
+    const app = buildApp();
+    for (let i = 0; i < 3; i += 1) {
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
+        assert.equal(r.status, 400);
+    }
+    const ok = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip });
+    assert.equal(ok.status, 200);
+    // 若未复位，累计已达 4 次，本轮第 2 次即会 429；复位后 4 次尝试应全为 400
+    for (let i = 0; i < 4; i += 1) {
+        const r = await call(app, 'POST', '/api/auth/register', { account, password: 'abc12345', code: '000000' }, { ip });
+        assert.equal(r.status, 400);
+    }
 });
 
