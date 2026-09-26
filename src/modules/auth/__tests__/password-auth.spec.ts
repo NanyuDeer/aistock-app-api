@@ -313,3 +313,23 @@ test('注册成功复位注册计数', async () => {
     }
 });
 
+test('注册验证码后门仅在 NODE_ENV=test 生效', async () => {
+    const prev = process.env.NODE_ENV;
+    const account = '13900000027';
+    mockQuery(async (sql) => {
+        if (sql.includes('SELECT password_hash')) return { rows: [] };
+        if (sql.includes('INSERT INTO users')) {
+            return { rows: [{ id: 'u14', openid: null, phone: account, email: null, nickname: null, avatar_url: null }] };
+        }
+        return { rows: [] };
+    });
+    try {
+        process.env.NODE_ENV = 'development';
+        const res = await call(buildApp(), 'POST', '/api/auth/register', { account, password: 'abc12345', code: '123456' }, { ip: '10.10.0.1' });
+        assert.equal(res.status, 400);
+        assert.equal(res.json?.message, '验证码错误或已过期');
+    } finally {
+        process.env.NODE_ENV = prev;
+    }
+});
+

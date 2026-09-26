@@ -59,9 +59,11 @@ export class PasswordAuthController {
     }
 
     private static async verifyCode(identity: Identity, code: string): Promise<boolean> {
-        const isDev = process.env.NODE_ENV !== 'production';
+        // I4c：测试后门收紧为仅 NODE_ENV=test 生效
+        // （此前 !== 'production' 时，staging 或容器漏配 NODE_ENV 的环境也会放行万能码，属真实风险）
+        const isTest = process.env.NODE_ENV === 'test';
         const devCode = identity.kind === 'phone' ? SMS_DEV_TEST_CODE : EMAIL_DEV_TEST_CODE;
-        if (isDev && code === devCode) return true;
+        if (isTest && code === devCode) return true;
         return consumeCode(identity.value, code);
     }
 
