@@ -31,6 +31,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 推送 | `modules/push` | 微信模板消息、定时推送、事件订阅 | [push/AGENTS.md](./src/modules/push/AGENTS.md) |
 | 认证 | `modules/auth` | 扫码登录、微信授权、飞书登录 | [auth/AGENTS.md](./src/modules/auth/AGENTS.md) |
 | 日历 | `modules/calendar` | L1 交割日规则 + `market_calendar_events` 事件日历 + rhythm-master 报告读取 | [calendar/AGENTS.md](./src/modules/calendar/AGENTS.md) |
+| 重大事件时间线 | `modules/event-entities` | Event Entity 权威实体（`event_entities`）+ Calendar 物化 + 公开时间线读取 | [event-entities/AGENTS.md](./src/modules/event-entities/AGENTS.md) |
 | 监控 | `modules/monitor` | 风口龙头、异动监控、趋势股评分、知识图谱、机构调研、业绩预测、新闻 | [monitor/AGENTS.md](./src/modules/monitor/AGENTS.md) |
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
@@ -76,6 +77,7 @@ src/
 │   ├── push/               # 推送
 │   ├── auth/               # 认证
 │   ├── calendar/           # 日历（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
+│   ├── event-entities/     # 重大事件时间线（event_entities 权威实体 + Calendar 物化 + /api/agent/event/timeline）
 │   ├── chat/               # 会话元数据（P9）+ token 用量（P10 线 2）
 │   ├── monitor/            # 监控（异动/风口/趋势股评分/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫
@@ -219,6 +221,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `DELETE /internal/calendar/events` | market_calendar_events | **事件日历删行（2026-09-22 新增）**：按 `{event_date, title}` 服务端算 dedupHash 删行，返回 `{deleted}`；不存在幂等 200（候选 rejected 清场/种子删除/误录清理） |
 | `GET /internal/calendar/earnings-density` | market_calendar_events | 业绩披露密度（earnings-density，rhythm-master 择时用） |
 | `GET /internal/fear-greed` | 聚合指标 | 恐惧贪婪指数（rhythm-master 情绪维度） |
+| `POST /internal/event-entities` | event_entities | Event Entity 物化 upsert（canonical_event_key 确定性幂等；响应含权威 `event_id`/`event_status`；`impact_sectors` 可选字符串数组，缺省 null → 冲突时保留原值；信封恒 code:200——禁止 code:0） |
+| `GET /internal/event-entities` | event_entities | Event Entity 列表查询（status/dateFrom/dateTo 组合；status 读时重算；响应 `data.items`） |
 | `POST /api/internal/attribution-feedback` | attribution_feedback_signals | **溯源弱反馈审计上报**（Task 7.1，2026-09-17）：body `{date, unit_key, mode, sample_size, hit_count, miss_count, hit_rate, suggestion, detail}`；`(date, unit_key)` upsert 幂等；**注意路径带 `/api` 前缀**（该 router 挂在 `/api` 下，同 attribution-chain）；本期只有观测层（不应用权重） |
 
 > `prediction_records` 表（预测能力）：启动时自动建表（`src/index.ts`），列含 id/source_type/source_id/schema_version/prediction(JSONB)/verification(JSONB)/status(pending|verified|skipped)/due_dates(JSONB)/created_at；status `{pending, verified, skipped}`（无 expired）；**`appendVerification`（2026-08-31 起）改为 jsonb 按 horizon 原子合并写**（`verification || jsonb_build_object($1, COALESCE(verification->$1,'{}'::jsonb) || $2::jsonb)`，防并发读改写覆盖其他档位）；`status=verified` 只认各档位 entry 含合法 `result ∈ {hit,miss,insufficient}`（`PredictionVerificationEntry.result` 改可选 + 新增 `type`/`early_exit` 字段——早退标记与最终结果分离存储，early_exit-only entry 不置 verified）；skipped 行（gate_skipped/skip_reason）不计入命中率统计。Python agent-py scheduler 每日 16:00 到期验证任务消费（阶段 0 起验证口径 3.0，见 agent-py AGENTS.md B2）。
@@ -251,6 +255,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
+| `/api/agent/event/timeline` | GET | **重大事件时间线**（公开，Phase 1）：按事件发生时间组织，未来事件提前可见。query 全部可选 `dateFrom`（缺省=上海今天）/ `dateTo`（缺省=今天+90天）/ `status`（scheduled\|upcoming\|ongoing\|occurred）/ `order`（asc\|desc，缺省 asc）/ `page`（缺省 1）/ `pageSize`（缺省 20，上限 100）；响应 `{code:0, data:{items,total,page,pageSize,hasMore}}`，item camelCase 含 `date`（后端算好的上海时区 `YYYY-MM-DD` 分组键）与 `impactSectors: string[]`（传导 chain Top3 优先、空回退 `event_entities.impact_sectors` 列、再空 `[]`）；event_status 用读时重算值；**不读 `agent_analysis_reports`**（GI 旁路；2026-09-24 展示层例外：① `source_type='news'` 事件 title 读取 `event_conduction` 最新报告 `content.title` 做标题对齐覆盖，无报告回退原始 title；② 所有事件 impactSectors 按最新传导报告 chain `impact_strength` 降序 Top3 覆盖展示；③ **occurred 事件须存在 event_conduction 报告行，否则排除**（无报告点击详情 404 → 前端「服务异常」），未来事件无报告保留——均不改准入/状态/排序）；须在 createAgentProxy 之前挂载 |
 | `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
 | `/api/agent/attribution-chain/:date` | GET | 当日大盘归因链（`attributionChainRouter`，须在 createAgentProxy 之前挂载）：`{date, chain \| null}`；查无 → 200 降级不报错 |
 | `/api/agent/sector-insight/:date` | GET | 板块四环聚合（`sectorInsightRouter`，须在 createAgentProxy 之前挂载）：风口板块 ∪ 溯源主因板块候选，按同花顺 `ts_code` 去重合并，每候选挂 `quote`/`trace`/`prediction` |
@@ -261,7 +266,9 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 
 > **`chain_summary` 字段契约**（2026-08-10 新增）：`{industry, direction, impactStrength, reason}[]`，由 `src/core/routes/internal.ts` 的 `extractChainSummary` 从 `content.analysis_reports.event_transmission.chain` 提取（按 impactStrength 降序 Top5，过滤空 industry，不修改原 chain）。旧数据（无 chain）返回 `[]`，禁止返回 undefined/null。此字段专供前端展示，Python Agent 无需消费。
 
-> publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。
+> **时间线 `impactSectors` 字段契约**（2026-09-24 新增）：`string[]`（板块名，最多 3 个），数据优先级 **传导 chain Top3 > `event_entities.impact_sectors` 列（KG 预计算）> `[]`**。`EventTimelinePublicRouter` 的 `loadConductionPayloads` 对分页内全部 eventIds 一次 `IN (...)` 查最新 `event_conduction` 报告，`topImpactSectors(chain, 3)` 按 `impact_strength` 降序取板块名（过滤空 industry）；与 Event Conduction 的 `impact_industries`（无序 set）语义不同，**禁止混用**。agent-py 每日 07:00 `impact_sectors_precompute` cron 对 calendar 未来事件（scheduled/upcoming + 列值为空）用 KG 行业向量匹配 Top3 写回，宏观事件无可靠行业保持 `[]` 不 LLM 强猜。migration：`023_event_entities_impact_sectors.sql`。
+
+> publicRouter 必须在 createAgentProxy 之前挂载（`src/index.ts`），Express 按注册顺序匹配。`eventTimelinePublicRouter`（`/api/agent/event/timeline`）同样必须在 createAgentProxy 之前挂载，否则会被反代到 Python。
 
 ### 7.6 预测公开接口（前端直接调用，无需 X-Internal-Token）
 
@@ -312,6 +319,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 11:50 | ~~午盘补抓~~ | **已停用**（2026-08-15，数据一致性由 stocktrace 事件层保证） |
 | 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件，触发改接 stocktrace 事件层 |
 | 15:00 | 数据归档 | — |
+| 06:40 / 12:40 / 18:40 | Calendar → Event Entity 物化 | 读 `market_calendar_events`（窗口 `[今天-1, 今天+180]`）→ 确定性准入 → 幂等 upsert 到 `event_entities`（重大事件时间线数据源）；每天 3 次，单行失败不中断整批；日志前缀 `[CalendarEntityCron]` |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 19:05 | 收盘后任务 | — |
 

@@ -32,6 +32,52 @@
 
 - `modules/stock-trace/AGENTS.md` 新增 09-24 / 09-25 / 09-26 三批更新块。
 
+## [master] 2026-09-26 — 密码注册 / 密码登录 + 登录防刷（含防刷松绑与存量账号首次设置密码）
+
+**开发者**: Aria
+
+### 新增
+
+- `POST /api/auth/register`（手机号 / 邮箱 + 密码注册，注册即登录；原子 upsert `ON CONFLICT ... DO UPDATE SET password_hash = EXCLUDED.password_hash WHERE users.password_hash IS NULL`，已设密码命中 0 行 → 409「该账号已设置密码」）与 `POST /api/auth/password/login`（密码登录，接入 `loginThrottle` 防刷）。
+- 登录失败计数 `loginThrottle`（Redis 优先 + 内存 Map 兜底，与 `smsCodeStore` 同策略）：账号维度计数，窗口 900s。
+- 密码散列工具 `passwordUtils`（scrypt，零依赖）。
+- `src/index.ts`：注册上述路由；幂等迁移 `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`。
+
+### 改进
+
+- **防刷松绑**：`FAIL_MAX` 2 → 10，并**删除 IP 维度**（`isThrottled` / `recordFailure` 去掉 `ip` 入参，收敛为仅账号维度），避免 NAT / 共享出口误伤。
+- 密码登录 429 不再返回 `data.fallback`，文案改为「尝试过于频繁，请稍后再试」，不再引导降级验证码登录。
+- `GET /users/me` 加性新增 `hasPassword`（`(password_hash IS NOT NULL)`），与 `phoneBound` / `emailBound` 同范式，不破坏既有消费方。
+
+### 测试
+
+- `login-throttle.spec.ts`（3 例，仅账号维度 / 阈值 10）、`password-auth.spec.ts`（9 例，429 无 `fallback` + 新文案）、`me-is-vip.spec.ts`（3 例回归）全绿；`npx tsc --noEmit` exit 0。
+
+## [xusiyun] 2026-09-25 — 重大事件时间线影响板块 + Calendar 物化 + 事件来源名对齐
+
+**开发者**: xusiyun
+
+### 新增
+
+- 新增 `event_entities.impact_sectors` 列（migration 023，`JSONB NOT NULL DEFAULT '[]'`）：时间线展示层「事件关联/预期影响板块」，与 Event Conduction 的 `impact_industries` 语义区分，允许为空。
+- 新增 `EventTimelinePublicRouter`：`GET /api/agent/event/timeline`，影响板块优先级为「传导 chain Top3（impactStrength 降序）> `impact_sectors` 列 > 空」；occurred 事件须存在 event_conduction 报告否则排除；标题展示层与传导报告对齐。
+- 新增 `CalendarEntityMaterializer`：Calendar 行确定性准入（`qualifyCalendarEvent`）→ Event Entity 物化（幂等 upsert）。
+- 新增 `scripts/materialize-calendar-entities.ts`：手动物化脚本（支持 `--dry-run`），部署后不必等 cron。
+- `index.ts`：挂载 timeline 路由（须在反代之前）+ 注册 06:40/12:40/18:40 物化 cron。
+
+### 修复
+
+- 事件列表 `source_name` 改用 `resolveArticleSourceName` 域名兜底，与详情(Article)接口一致（此前同一事件列表显示「未知来源」、详情显示媒体名）。
+- 补齐 `GET /internal/insight/sources` 路由：此前缺失导致 Python 侧 `collect_ths_original` 恒 404、同花顺原创源静默为空。
+
+### 改进
+
+- `EventEntityService`/`EventEntityInternalRouter`：`impact_sectors` 归一化（`normalizeImpactSectors`）+ upsert CASE 保护（防 Calendar 物化 cron 覆盖预计算结果）+ POST 参数校验（非数组 400）。
+
+### 测试
+
+- `CalendarEntityMaterializer.test.ts`、`__tests__/event_timeline.spec.ts`（4/4 通过：标题对齐、板块优先级、IN 标量参数、传导存在性过滤）。
+
 ---
 
 ## [changer] 2026-09-22 — 节奏大师·事件前瞻主体化（日历侧）

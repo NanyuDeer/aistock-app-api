@@ -103,7 +103,7 @@ export class UserController {
 
         // 唯一按 id 查库处：拉取最新绑定状态（手机/邮箱/微信），供账号安全页展示
         const userResult = await pool.query(
-            'SELECT id, openid, phone, email, nickname, avatar_url, created_at, is_vip FROM users WHERE id = $1',
+            'SELECT id, openid, phone, email, nickname, avatar_url, created_at, is_vip, (password_hash IS NOT NULL) AS has_password FROM users WHERE id = $1',
             [id],
         );
         const user = userResult.rows[0];
@@ -136,6 +136,7 @@ export class UserController {
             wechatBound: !!user.openid,
             phoneBound: !!user.phone,
             emailBound: !!user.email,
+            hasPassword: !!user.has_password,
             自选股: stocksResult.rows.map((s: any) => ({
                 股票代码: s.symbol,
                 股票简称: s.name || null,

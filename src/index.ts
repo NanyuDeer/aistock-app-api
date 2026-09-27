@@ -55,6 +55,7 @@ import { ScanLoginController } from './modules/auth/scanLoginController';
 import { UserController } from './modules/auth/userController';
 import { SmsAuthController } from './modules/auth/SmsAuthController';
 import { EmailAuthController } from './modules/auth/EmailAuthController';
+import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
 // chat 会话元数据（P9 会话管理）
@@ -103,8 +104,10 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 // calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
-import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
+import { listEvents, DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
+import { materializeCalendarRows } from './modules/event-entities/CalendarEntityMaterializer';
+import { eventTimelinePublicRouter } from './modules/event-entities/EventTimelinePublicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -132,6 +135,7 @@ import { Application } from 'express';
 const app: Application = express();
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const BACKGROUND_JOBS_ENABLED = shouldRunBackgroundJobs();
+app.set('trust proxy', process.env.TRUST_PROXY === 'false' ? false : 1);
 
 const corsAllowOrigin = process.env.CORS_ALLOW_ORIGIN || '';
 const allowedOrigins = corsAllowOrigin.split(',').map(s => s.trim()).filter(Boolean);
@@ -150,9 +154,16 @@ app.use(cors({
     maxAge: 86400,
 }));
 
+// 重大事件时间线：GET /api/agent/event/timeline
+// 【必须最先注册】publicRouter 含通用路由 GET /event/:eventId，Express 按注册顺序匹配，
+// 若本路由注册在其之后，/event/timeline 会被 /event/:eventId 截获（eventId='timeline'）
+// → 404 'Event not found'（2026-09-25 线上 404 根因）。具体路径必须先于通用路径注册。
+app.use('/api/agent', eventTimelinePublicRouter);
+
 // ==================== Agent 公开路由（前端直接调用，无需 X-Internal-Token） ====================
 // 必须在反代之前挂载：Express 按注册顺序匹配，先匹配到 publicRouter 的路由不会转发到 Python。
 // 提供 /api/agent/report/:intent/:date（分析报告查询）和 /api/agent/audio/:filename（音频文件服务）。
+// 注意：本路由含通用路由 GET /event/:eventId，更具体的 /event/timeline 必须先注册（见上方）。
 app.use('/api/agent', publicRouter);
 
 // 节奏大师：/api/agent/rhythm-master/:date 三时点版本读取（必须位于 createAgentProxy 之前，
@@ -245,6 +256,10 @@ app.post('/api/auth/email/login', (req, res, next) => EmailAuthController.emailL
 app.post('/api/auth/bind/email', (req, res, next) => EmailAuthController.bindEmail(req, res, next));
 // 微信绑定改走邮箱证明归属（前端仅邮箱入口）
 app.post('/api/auth/bind/wechat', (req, res, next) => EmailAuthController.bindWechat(req, res, next));
+
+// 密码注册 / 密码登录（登录防刷，2026-09-26）
+app.post('/api/auth/register', (req, res, next) => PasswordAuthController.register(req, res, next));
+app.post('/api/auth/password/login', (req, res, next) => PasswordAuthController.passwordLogin(req, res, next));
 
 app.get('/api/users/me', (req, res, next) => UserController.me(req, res, next));
 app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings(req, res, next));
@@ -841,6 +856,30 @@ cron.schedule('30 4 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
+// 重大事件时间线：Calendar → Event Entity 物化（幂等 upsert）
+// 每天 3 次（盘前/盘中/盘后）：日历行由 agent-py L3 前瞻与 L4 种子写入，物化窗口取
+// [今天-1, 今天+180]，覆盖已发生与未来事件；幂等，重复执行不产生重复实体。
+cron.schedule('40 6,12,18 * * *', async () => {
+    try {
+        const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
+        // dateFrom = 今天-1 天，覆盖已发生事件；dateTo = 今天+180 天，覆盖近期未来事件
+        const baseMs = new Date(`${today}T00:00:00+08:00`).getTime()
+        const dateFrom = new Date(baseMs - 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
+        const dateTo = new Date(baseMs + 180 * 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
+
+        const rows = await listEvents(dateFrom, dateTo)
+        const r = await materializeCalendarRows(rows)
+        console.log(
+            `[CalendarEntityCron] 物化完成: materialized=${r.materialized}, skipped=${r.skipped}, failed=${r.failed}`,
+        )
+    } catch (err: unknown) {
+        console.error(
+            '[CalendarEntityCron] 物化失败:',
+            err instanceof Error ? err.message : String(err),
+        )
+    }
+}, { timezone: 'Asia/Shanghai' });
+
 // 个股资讯爬虫+实时推送：每天 8:00 和 15:00（包括节假日）
 // runCycle = 抓取 + AI研判 + 入库 + 触发自选股异动实时推送（飞书卡片+微信模板）
 cron.schedule('0 8 * * *', async () => {
@@ -1243,6 +1282,14 @@ async function start() {
         console.log('[DB] users.is_vip ready');
     } catch (err: unknown) {
         console.warn('[DB] users.is_vip migration:', err instanceof Error ? err.message : String(err));
+    }
+
+    // password_hash 密码登录（2026-09-26 登录防刷 + 注册密码；NULL 表示未设置密码）
+    try {
+        await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`);
+        console.log('[DB] users.password_hash ready');
+    } catch (err: unknown) {
+        console.warn('[DB] users.password_hash migration:', err instanceof Error ? err.message : String(err));
     }
 
     // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）

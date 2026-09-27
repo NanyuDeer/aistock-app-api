@@ -39,6 +39,7 @@ export interface EventEntityRow {
     event_status: string
     source_type: string
     source_event_id: string | null
+    impact_sectors: unknown
     created_at: string
     updated_at: string
 }
@@ -53,6 +54,12 @@ export interface EventEntityInput {
     time_confidence?: number | null
     summary?: string | null
     source_event_id?: string | null
+    /**
+     * 时间线展示层面的事件关联/预期影响板块（string[]，可为空 []）。
+     * 由 agent-py 未来事件 KG 预计算作业写回；缺省 null → upsert 冲突时保留原值
+     * （防止 Calendar 物化 cron 与预计算作业互相覆盖）。
+     */
+    impact_sectors?: string[] | null
 }
 
 /**
@@ -130,18 +137,38 @@ export interface UpsertResult {
     inserted: boolean
 }
 
+/** 归一化 impact_sectors（pg JSONB 解析后为 unknown）：仅保留非空去重字符串，非法/缺失返回 []。 */
+export function normalizeImpactSectors(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    const out: string[] = []
+    for (const v of value) {
+        if (typeof v === 'string') {
+            const t = v.trim()
+            if (t && !out.includes(t)) out.push(t)
+        }
+    }
+    return out
+}
+
 /** upsert：canonical_event_key 幂等（spec §3.1）。event_id/created_at 首写即定、
- * 冲突不更新；只更新易变业务字段；source_event_id 首次保留。 */
+ * 冲突不更新；只更新易变业务字段；source_event_id 首次保留。
+ * impact_sectors 缺省（null）时冲突分支保留现有值（CASE 保护，防物化 cron
+ * 与预计算作业互相覆盖）；显式传入才更新。 */
 export async function upsertEventEntity(input: EventEntityInput): Promise<UpsertResult> {
     const key = canonicalKey(startDateOf(input.event_start_time), input.title)
+    // impact_sectors 需以 JSON 字符串入参再 ::jsonb（pg 对 JS 数组参数按 PG 数组格式
+    // 序列化，直接传数组会写错类型；null → 冲突时保留原值）
+    const impactSectorsParam = input.impact_sectors
+        ? JSON.stringify(normalizeImpactSectors(input.impact_sectors))
+        : null
     const db = await pool.query<EventEntityRow & { inserted: unknown }>(
         `INSERT INTO event_entities
            (event_id, canonical_event_key, title, summary, scrape_at, publish_time,
             event_start_time, event_end_time, time_source, time_confidence,
-            event_status, source_type, source_event_id)
+            event_status, source_type, source_event_id, impact_sectors)
          VALUES
            ($1, $2, $3, $4, DEFAULT, $5, $6, $7, $8, $9,
-            $10, $11, $12)
+            $10, $11, $12, COALESCE($13::jsonb, '[]'::jsonb))
          ON CONFLICT (canonical_event_key) DO UPDATE SET
             title = EXCLUDED.title,
             summary = EXCLUDED.summary,
@@ -153,6 +180,8 @@ export async function upsertEventEntity(input: EventEntityInput): Promise<Upsert
             event_status = EXCLUDED.event_status,
             source_type = EXCLUDED.source_type,
             source_event_id = COALESCE(EXCLUDED.source_event_id, event_entities.source_event_id),
+            impact_sectors = CASE WHEN $13::jsonb IS NULL
+                THEN event_entities.impact_sectors ELSE $13::jsonb END,
             updated_at = now()
          RETURNING *, (xmax = 0) AS inserted`,
         [
@@ -172,6 +201,7 @@ export async function upsertEventEntity(input: EventEntityInput): Promise<Upsert
             ),
             input.source_type,
             input.source_event_id ?? null,
+            impactSectorsParam,
         ],
     )
     const r = db.rows[0]
@@ -246,5 +276,7 @@ export function toContractEventEntity(
         time_confidence: row.time_confidence === null ? null : Number(row.time_confidence),
         source_type: row.source_type,
         source_event_id: row.source_event_id,
+        // 时间线展示影响板块（string[]，可为空 []；pg JSONB 已解析为数组，防御归一化）
+        impact_sectors: normalizeImpactSectors(row.impact_sectors),
     }
 }
