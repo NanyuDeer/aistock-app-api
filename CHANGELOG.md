@@ -2,6 +2,31 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [feat/auth-hardening] 2026-09-27 — 密码认证加固后续（频控时序 / scrypt 并发 / 防刷原子性）
+
+**开发者**: Aria
+
+### 修复
+
+- **登录/注册频控计数原子性（M1）**：`loginThrottle.redisIncr` 由「`INCR` 后 `count === 1` 再 `EXPIRE`」两条命令改为单条 Lua 脚本原子执行（含 `TTL < 0` 自愈历史无 TTL 键），消除进程中断导致计数键无 TTL、账号永久 429 的缺陷；`redisIncr` 导出并可注入最小客户端接口 `ThrottleRedisClient`，Redis 集成边界首次可单测。
+- **scrypt 事件循环阻塞**：`passwordUtils` 的 `hashPassword` / `verifyPassword` / `verifyPasswordConstantTime` 由 `scryptSync` 改为线程池版 `crypto.scrypt`（异步），新增 `MAX_CONCURRENT_SCRYPT = 4` 在途并发上限；`PasswordAuthController` 调用点补 `await`。
+- **注册频控配额被误耗**：注册计数由「入口即计数」后移到验证码通过之后，未通过验证码的尝试不再占用配额，杜绝他人用错验证码把目标账号配额打满。
+- **测试后门过宽**：`SmsAuthController` / `EmailAuthController` 的 `verifyCode`、`bindWechat` 双身份判定与 `ws/handler.ts` 的 `user_<openid>` 本地联调前缀，统一收紧为仅 `NODE_ENV === 'test'` 生效。
+
+### 重构
+
+- `loginThrottle`：抽出 `isThrottledFor` / `recordAttempt` / `clearCount` 参数化内部函数，六个公开函数改为薄封装；名字/签名/常量/前缀均未变，行为等价。
+
+### 文档
+
+- `src/modules/auth/AGENTS.md`：修正密码登录与频控口径（删除「同 IP」「降级验证码登录」描述），补充注册频控与 `passwordUtils` 异步并发说明。
+
+### 测试
+
+- 新增 M1 Lua 原子性（可注入假客户端）、注册频控（错误验证码不消耗配额 / 通过后超限 429 与复位）、`NODE_ENV=development` 下万能码与 `user_` 前缀被拒等用例；注册频控集成用例改用每次运行唯一账号，消除 Redis TTL 残留污染。定向 auth 68 例全绿，`npx tsc --noEmit` exit 0，全库 `npm test` 保持基线（既有 12 例失败，无新增）。
+
+---
+
 ## [master] 2026-09-26 — 密码注册 / 密码登录 + 登录防刷（含防刷松绑与存量账号首次设置密码）
 
 **开发者**: Aria
