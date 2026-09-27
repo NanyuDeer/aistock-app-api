@@ -5,8 +5,15 @@ import pool from '../../core/db';
 import { consumeCode, isValidMainlandPhone } from '../../core/sms/smsCodeStore';
 import { SMS_DEV_TEST_CODE } from '../../core/sms/SmsService';
 import { isValidEmail, EMAIL_DEV_TEST_CODE } from '../../core/email/EmailService';
-import { hashPassword, verifyPassword, isStrongPassword } from './passwordUtils';
-import { isThrottled, recordFailure, clearAccountFailure } from './loginThrottle';
+import { hashPassword, isStrongPassword, MAX_PASSWORD_LENGTH, verifyPasswordConstantTime } from './passwordUtils';
+import {
+    clearAccountFailure,
+    clearRegisterCount,
+    isRegisterThrottled,
+    isThrottled,
+    recordFailure,
+    recordRegisterAttempt,
+} from './loginThrottle';
 
 // 密码注册 / 密码登录（登录防刷，2026-09-26；2026-09-26 修订：仅账号维度节流，不降级）
 // 路由：POST /api/auth/register、POST /api/auth/password/login
@@ -52,9 +59,11 @@ export class PasswordAuthController {
     }
 
     private static async verifyCode(identity: Identity, code: string): Promise<boolean> {
-        const isDev = process.env.NODE_ENV !== 'production';
+        // I4c：测试后门收紧为仅 NODE_ENV=test 生效
+        // （此前 !== 'production' 时，staging 或容器漏配 NODE_ENV 的环境也会放行万能码，属真实风险）
+        const isTest = process.env.NODE_ENV === 'test';
         const devCode = identity.kind === 'phone' ? SMS_DEV_TEST_CODE : EMAIL_DEV_TEST_CODE;
-        if (isDev && code === devCode) return true;
+        if (isTest && code === devCode) return true;
         return consumeCode(identity.value, code);
     }
 
@@ -78,8 +87,18 @@ export class PasswordAuthController {
                 createResponse(res, 400, '参数错误');
                 return;
             }
+            // I4b：注册独立频控（账号维度，与登录失败计数隔离）；成功注册后复位。
+            // A 修订（spec §10 A）：计数后移到 verifyCode 通过之后——未通过验证码的尝试不占配额，
+            // 避免任意人用错验证码请求把目标账号配额打满，导致其无法首次设密码。
+            if (await isRegisterThrottled(identity.value)) {
+                PasswordAuthController.log('register', '⛔ 触发注册频控', { account: identity.value });
+                createResponse(res, 429, '操作过于频繁，请稍后再试');
+                return;
+            }
             if (typeof password !== 'string' || !isStrongPassword(password)) {
-                createResponse(res, 400, '密码至少 8 位且需包含字母和数字');
+                // 超长属新增约束，单独给出可诊断文案；其余沿用原文案
+                const tooLong = typeof password === 'string' && password.length > MAX_PASSWORD_LENGTH;
+                createResponse(res, 400, tooLong ? '密码长度不得超过 128 位' : '密码至少 8 位且需包含字母和数字');
                 return;
             }
             if (typeof code !== 'string' || !code) {
@@ -92,7 +111,27 @@ export class PasswordAuthController {
                 return;
             }
 
-            const hash = hashPassword(password);
+            // A：仅已通过验证码的尝试计入注册频控配额
+            await recordRegisterAttempt(identity.value);
+
+            // I4a：提前判重，避免对已设密码账号白跑一次昂贵 scrypt。
+            // 原子 upsert 仍是最终仲裁（并发漏网由 0 行 → 409 兜底）；判重查询失败不阻断主流程。
+            try {
+                const existing =
+                    identity.kind === 'phone'
+                        ? await pool.query(`SELECT password_hash FROM users WHERE phone = $1`, [identity.value])
+                        : await pool.query(`SELECT password_hash FROM users WHERE email = $1`, [identity.value]);
+                const existingHash = (existing.rows[0] as { password_hash?: string | null } | undefined)?.password_hash;
+                if (existingHash) {
+                    createResponse(res, 409, '该账号已设置密码');
+                    return;
+                }
+            } catch (err: unknown) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                PasswordAuthController.log('register', '⚠️ 提前判重失败，降级直接 upsert', { account: identity.value, error: errMsg });
+            }
+
+            const hash = await hashPassword(password);
             // 原子 upsert：仅在 password_hash 为空时写入；已有密码时 WHERE 不成立 → 无返回行 → 409
             let row: UserRow;
             try {
@@ -126,6 +165,7 @@ export class PasswordAuthController {
                 return;
             }
 
+            await clearRegisterCount(identity.value);
             const token = PasswordAuthController.issueToken(res, row);
             PasswordAuthController.log('register', '✅ 注册成功', { id: row.id, kind: identity.kind });
             createResponse(res, 200, 'success', {
@@ -164,6 +204,14 @@ export class PasswordAuthController {
                 return;
             }
 
+            // I3：超长密码在进入 scrypt 之前按失败处理（不新增对外码，避免区分出「长度非法」信号，也不做 DB 查询）
+            if (password.length > MAX_PASSWORD_LENGTH) {
+                await recordFailure(identity.value);
+                PasswordAuthController.log('login', '❌ 登录失败（密码超长）', { account: identity.value, ip, len: password.length });
+                createResponse(res, 401, '账号或密码错误');
+                return;
+            }
+
             let row: UserRow | undefined;
             try {
                 const result =
@@ -184,7 +232,8 @@ export class PasswordAuthController {
                 return;
             }
 
-            const passOk = !!row && verifyPassword(password, row.password_hash ?? null);
+            // I1：保留 !!row 短路会让「账号不存在」路径零成本，形成时间侧信道；此处恒做等价成本校验
+            const passOk = await verifyPasswordConstantTime(password, row?.password_hash ?? null);
             if (!passOk) {
                 // 账号不存在 / 未设置密码 / 密码错误，统一按失败处理并计数
                 await recordFailure(identity.value);

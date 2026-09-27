@@ -1,7 +1,7 @@
 /**
  * 短信发送服务抽象
  *
- * - 开发/未接入服务商：仅日志回显验证码（login/bind 校验阶段放行固定测试码 SMS_DEV_TEST_CODE）。
+ * - 开发/未接入服务商：仅日志回显验证码（login/bind 校验阶段仅 test 环境放行固定测试码 SMS_DEV_TEST_CODE）。
  * - 生产接入：SMS_PROVIDER=aliyun 走阿里云"号码认证·短信认证"（dypnsapi.SendSmsVerifyCode）真实发短信——
  *   该产品免企业签名资质 / 模板审核，用号码认证工作台配置的系统签名 + 预置模板（登录 100001 / 绑定 100004 等）即可下发。
  *   验证码由本项目本地生成并存 store 校验（smsCodeStore），阿里云仅作为"发信通道"把本地验证码
@@ -12,7 +12,7 @@ import Client, { SendSmsVerifyCodeRequest } from '@alicloud/dypnsapi20170525';
 import { $OpenApiUtil } from '@alicloud/openapi-core';
 import { generateSmsCode, isValidMainlandPhone } from './smsCodeStore';
 
-/** 开发环境固定测试码：登录/绑定校验时放行（NODE_ENV !== 'production'） */
+/** 固定测试码：登录/绑定校验时仅 test 环境放行（NODE_ENV === 'test'） */
 export const SMS_DEV_TEST_CODE = '123456';
 
 /** 短信渠道类型 */
