@@ -2,6 +2,32 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-09-27 — 修复「注册已注册手机号显示注册失败」（生产 P0）
+
+**开发者**: Aria
+
+### 修复
+
+- **注册/登录 500 根因（表所有权导致启动迁移静默失败）**：`src/index.ts` 启动期 `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT` 以非 `users` 表 owner 的角色执行时抛 `must be owner of table users`，被 `console.warn` 静默吞掉 → `password_hash` 列永不存在 → 注册/登录命中 `column "password_hash" does not exist`，返回 500「注册失败，请稍后再试」。生产库已补齐该列，并将 15 张表 / 2 个序列所有权转移给应用角色 `aistock`。
+- **迁移失败不再静默**：`password_hash` 迁移失败日志由 `console.warn` 升级为 `console.error`；新增 `information_schema.columns` 显式自检，列缺失时打印可直接执行的修复 SQL，避免再次带旧 schema 运行。
+- **次生根因（PG `name[]` 未被 node-postgres 解析导致迁移崩溃、外键被丢弃）**：`users 统一账户模型` 迁移用 `array_agg(att.attname ...) AS columns`，返回 PG `name[]`，node-postgres 不解析该 OID 回传原始字符串 → `fk.columns.join is not a function`；崩溃点位于「摘除外键之后、重建之前」，导致 4 张表指向 `users(openid)` 的外键被丢弃且未重建。修复为 `array_agg(att.attname ORDER BY ord.ordinality)::text[]`。
+- **外键完整性恢复**：重建被丢弃的 4 个外键（`user_notifications.openid` / `user_subscriptions.user_openid` 沿用 `ON DELETE CASCADE`；`user_stocks.openid` / `user_settings.openid` 为 `NO ACTION`），并经重启迁移端到端验证「发现 → 解析列 → 摘除 → 重建」全链路成功。
+
+### 文档
+
+- `AGENTS.md` §8：新增「启动时 users 账户模型自动迁移」条目，标注应用角色 owner 权限硬要求。
+- `README.md` 部署段：新增「运维要求（2026-09-27）」，说明部署前须确保 `aistock` 角色对相关表拥有 owner 权限。
+- `project_memory.md`：记录「表所有权 + 启动内联迁移陷阱」与「node-postgres 不解析 `name[]`」两条教训。
+
+### 验证
+
+- 生产重启（2026-09-27 20:08:58）日志：出现 `[DB] users: 摘除引用 openid 的外键 user_notifications(openid); user_settings(openid); user_stocks(openid); user_subscriptions(user_openid)` 与 `[DB] users 统一账户模型 ready`；error.log 不再出现 `f.columns.join is not a function` 及 `must be owner of table ...`。
+- 重启后 `pg_constraint` 中指向 `users` 的外键仍为 4 条，`ON DELETE` 语义与修复前一致。
+- 注册 SQL 事务回放（`BEGIN … ROLLBACK`）：已注册手机号（无密码）→ 1 行（HTTP 200）；已注册手机号（有密码）→ 0 行（HTTP 409）；全新手机号 → 1 行。
+- 线上 HTTP：`POST /api/auth/password/login` 不存在账号 → 401；`POST /api/auth/register` 弱密码 → 400，均无 500。
+
+---
+
 ## [feat/auth-hardening] 2026-09-27 — 密码认证加固后续（频控时序 / scrypt 并发 / 防刷原子性）
 
 **开发者**: Aria

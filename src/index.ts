@@ -1284,11 +1284,31 @@ async function start() {
     }
 
     // password_hash 密码登录（2026-09-26 登录防刷 + 注册密码；NULL 表示未设置密码）
+    // 关键列：注册/登录强依赖。历史教训（2026-09-27）：应用以非 users 表 owner 的角色连库时，
+    // 该 ALTER 会抛 "must be owner of table users" 被静默吞掉，导致列缺失、注册/登录 500。
+    // 故此处失败升级为 error 级，并在下方做显式自检，避免再次静默带旧 schema 运行。
     try {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`);
         console.log('[DB] users.password_hash ready');
     } catch (err: unknown) {
-        console.warn('[DB] users.password_hash migration:', err instanceof Error ? err.message : String(err));
+        console.error(
+            '[DB] ⛔ users.password_hash 迁移失败（密码注册/登录将不可用）:',
+            err instanceof Error ? err.message : String(err),
+        );
+    }
+
+    // 关键 schema 自检：即使上面的 ALTER 因权限问题失败，也在此显式暴露，便于快速定位
+    try {
+        const col = await pool.query<{ exist: boolean }>(
+            `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'password_hash') AS exist`,
+        );
+        if (!col.rows[0]?.exist) {
+            console.error(
+                '[DB] ⛔ 自检失败：users.password_hash 列不存在。请以 users 表 owner 或超级用户执行：ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;',
+            );
+        }
+    } catch (err: unknown) {
+        console.error('[DB] users.password_hash 自检查询失败:', err instanceof Error ? err.message : String(err));
     }
 
     // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
@@ -1302,7 +1322,7 @@ async function start() {
                 c.conname AS name,
                 ct.relname AS table_name,
                 c.confdeltype::text AS on_delete,
-                array_agg(att.attname ORDER BY ord.ordinality) AS columns
+                array_agg(att.attname ORDER BY ord.ordinality)::text[] AS columns
             FROM pg_constraint c
             JOIN pg_class ct ON ct.oid = c.conrelid
             JOIN pg_class rt ON rt.oid = c.confrelid

@@ -307,6 +307,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 时间 | 任务 | 说明 |
 |------|------|------|
 | 启动时 | trend_scores 自动迁移 | CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT EXISTS ma60_excluded（堵住 deploy.sh 漏执行 SQL 的缺口） |
+| 启动时 | users 账户模型自动迁移 | `password_hash` / `is_vip` 列 + 统一账户模型（`id` 主键切换、`openid` 去 NOT NULL、引用 `users(openid)` 的外键摘除后重建、`user_stocks.user_id`）。**要求应用连接角色（`aistock`）拥有 `users` 及被引用表（`user_settings`/`user_stocks`/`user_notifications`/`user_subscriptions`）的 owner 权限**，否则 `ALTER TABLE` 抛 `must be owner of table ...` |
 | 00:00 | 业绩预测自动更新 | 同花顺数据 |
 | 00:05 | 数据同步 | — |
 | 02:00 | 趋势股批量评分 | TrendBatchService（含60日均线剔除），每天执行不检查交易日 |
