@@ -31,14 +31,22 @@ const originalQuery = pool.query.bind(pool) as any;
 let mockCalls: MockCall[] = [];
 let mockResponder: ((sql: string, params: unknown[]) => { rows: unknown[] }) | null = null;
 
-(pool as any).query = function (sql: string, ...rest: unknown[]): Promise<{ rows: unknown[] }> {
-    const params = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
-    mockCalls.push({ sql, params });
-    if (mockResponder) {
-        return Promise.resolve(mockResponder(sql, params));
-    }
-    return Promise.resolve({ rows: [] });
-};
+/**
+ * 安装 pool.query 打桩。
+ * 每个 describe 的 after() 会还原为真实 query，故需在各自 before() 重新安装。
+ */
+function installPoolMock(): void {
+    (pool as any).query = function (sql: string, ...rest: unknown[]): Promise<{ rows: unknown[] }> {
+        const params = rest.length === 1 && Array.isArray(rest[0]) ? rest[0] : rest;
+        mockCalls.push({ sql, params });
+        if (mockResponder) {
+            return Promise.resolve(mockResponder(sql, params));
+        }
+        return Promise.resolve({ rows: [] });
+    };
+}
+
+installPoolMock();
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 // ── Test helpers ──
@@ -134,6 +142,7 @@ const NEWS_CHAIN = [
 
 describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
     before(() => {
+        installPoolMock();
         mockResponder = (sql: string) => {
             // 事件传导报告增强查询（标题 + chain，最新一份）
             if (sql.includes('agent_analysis_reports')) {
@@ -226,5 +235,59 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         assert.equal(byId.has('EVT-news-1'), true, 'occurred 有报告必须保留');
         // scheduled 未来事件无报告 → 保留（点击就地展开不跳详情，不报错）
         assert.equal(byId.has('EVT-cal-1'), true, '未来事件无报告必须保留');
+    });
+});
+
+/**
+ * 回归测试：node-postgres 对 TIMESTAMPTZ 返回 **Date 对象**（非字符串）。
+ *
+ * 2026-09-25 线上 500 根因：handler 曾用 `event_start_time.localeCompare(...)` 排序，
+ * Date 无 localeCompare → TypeError → 500。上方用例 mock 全用字符串，掩盖了真实 DB
+ * 行为，故此处显式用 Date 复现（isDateOnly/computeEventStatus 已支持 Date 输入）。
+ */
+describe('EventTimelinePublicRouter TIMESTAMPTZ=Date 兼容（回归）', () => {
+    before(() => {
+        installPoolMock();
+        mockResponder = (sql: string) => {
+            // 无传导报告 → occurred 过滤不生效，纯验证排序不抛错
+            if (sql.includes('agent_analysis_reports')) return { rows: [] };
+            return {
+                rows: [
+                    {
+                        ...CALENDAR_ENTITY,
+                        event_id: 'EVT-d-2',
+                        event_start_time: new Date('2026-10-20T00:00:00+08:00'),
+                        event_end_time: new Date('2026-10-20T00:00:00+08:00'),
+                    },
+                    {
+                        ...CALENDAR_ENTITY,
+                        event_id: 'EVT-d-1',
+                        event_start_time: new Date('2026-10-01T00:00:00+08:00'),
+                        event_end_time: new Date('2026-10-01T00:00:00+08:00'),
+                    },
+                ],
+            };
+        };
+        mockCalls = [];
+    });
+    after(() => {
+        (pool as any).query = originalQuery;
+        mockResponder = null;
+    });
+
+    it('event_start_time 为 Date 时返回 200 且按时间升序', async () => {
+        const app = buildApp();
+        const result = await requestJson(
+            app,
+            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+        );
+        assert.equal(result.status, 200, 'Date 类型 event_start_time 不应导致 500');
+        assert.equal(result.body.code, 0);
+        const items = result.body.data?.items ?? [];
+        assert.deepEqual(
+            items.map((it) => it.eventId),
+            ['EVT-d-1', 'EVT-d-2'],
+            '应按 event_start_time 升序（时间戳比较，非 localeCompare）',
+        );
     });
 });
