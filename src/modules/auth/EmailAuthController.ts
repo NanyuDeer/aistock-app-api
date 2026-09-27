@@ -72,10 +72,12 @@ export class EmailAuthController {
         return { ok: true, id, openid: payload.openid };
     }
 
-    /** 验证码校验：dev 放行固定测试码，否则单次消费 Redis 中的验证码 */
+    /** 验证码校验：仅 test 放行固定测试码，否则单次消费 Redis 中的验证码 */
     private static async verifyCode(email: string, code: string): Promise<boolean> {
-        const isDev = process.env.NODE_ENV !== 'production';
-        if (isDev && code === EMAIL_DEV_TEST_CODE) return true;
+        // Important C：测试后门收紧为仅 NODE_ENV=test 生效
+        // （此前 !== 'production' 时，staging 或容器漏配 NODE_ENV 的环境也会放行万能码，属真实风险）
+        const isTest = process.env.NODE_ENV === 'test';
+        if (isTest && code === EMAIL_DEV_TEST_CODE) return true;
         return consumeCode(email, code);
     }
 
@@ -243,10 +245,11 @@ export class EmailAuthController {
         const identity = isValidEmail(email)
             ? { kind: 'email' as const, value: email }
             : { kind: 'phone' as const, value: phone };
-        // 验证码校验：dev 放行固定测试码（邮箱/短信测试码同为 123456），否则单次消费对应身份验证码
-        const isDev = process.env.NODE_ENV !== 'production';
+        // 验证码校验：仅 test 放行固定测试码（邮箱/短信测试码同为 123456），否则单次消费对应身份验证码
+        // Important C：测试后门收紧为仅 NODE_ENV=test 生效
+        const isTest = process.env.NODE_ENV === 'test';
         const devCode = identity.kind === 'phone' ? SMS_DEV_TEST_CODE : EMAIL_DEV_TEST_CODE;
-        if (!(isDev && code === devCode) && !(await consumeCode(identity.value, code))) {
+        if (!(isTest && code === devCode) && !(await consumeCode(identity.value, code))) {
             createResponse(res, 400, '验证码错误或已过期');
             return;
         }

@@ -1,13 +1,13 @@
 /**
  * 邮箱验证码发送服务（163 SMTP / nodemailer）
  *
- * - 开发/未配置 SMTP：仅日志回显验证码（login/bind 校验阶段放行固定测试码 EMAIL_DEV_TEST_CODE）。
+ * - 开发/未配置 SMTP：仅日志回显验证码（login/bind 校验阶段仅 test 环境放行固定测试码 EMAIL_DEV_TEST_CODE）。
  * - 生产：通过环境变量 EMAIL_SMTP_* 配置 163 邮箱授权码（个人邮箱即可，无需企业资质），
  *   发送真实邮件。未配置 EMAIL_SMTP_USER 视为未接入，send 抛明确错误引导配置。
  */
 import nodemailer from 'nodemailer';
 
-/** 开发环境固定测试码：登录/绑定校验时放行（NODE_ENV !== 'production'） */
+/** 固定测试码：登录/绑定校验时仅 test 环境放行（NODE_ENV === 'test'） */
 export const EMAIL_DEV_TEST_CODE = '123456';
 
 /** 邮箱格式校验（简单正则，够用即可） */
