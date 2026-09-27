@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import redis from '../../../core/redis';
-import { isThrottled, recordFailure, clearAccountFailure, FAIL_MAX, MEMORY_MAX_ENTRIES, REG_MAX, isRegisterThrottled, recordRegisterAttempt, clearRegisterCount } from '../loginThrottle';
+import { isThrottled, recordFailure, clearAccountFailure, FAIL_MAX, MEMORY_MAX_ENTRIES, REG_MAX, isRegisterThrottled, recordRegisterAttempt, clearRegisterCount, redisIncr } from '../loginThrottle';
 
 // 每次运行生成唯一账号：避免持久化 Redis 中上一轮残留计数导致用例 flaky
 const runId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -93,4 +93,22 @@ test('注册计数与登录失败计数相互隔离', async () => {
     assert.equal(await isThrottled(acct), false);
     await clearRegisterCount(acct);
     assert.equal(await isRegisterThrottled(acct), false);
+});
+
+test('redisIncr 以单条原子脚本设置计数与 TTL（不回退两步命令）', async () => {
+    const calls: Array<[string, number, (string | number)[]]> = [];
+    // 假客户端只实现 eval：若实现回退为 incr + expire 两步，调用将直接抛错
+    const fake = {
+        eval: async (script: string, numkeys: number, ...args: (string | number)[]) => {
+            calls.push([script, numkeys, args]);
+            return 1;
+        },
+    };
+    await redisIncr('p:', 'acct', 900, fake);
+    assert.equal(calls.length, 1);
+    const [script, numkeys, args] = calls[0];
+    assert.equal(numkeys, 1);
+    assert.deepEqual(args, ['p:acct', 900]);
+    assert.match(script, /INCR/);
+    assert.match(script, /EXPIRE/);
 });

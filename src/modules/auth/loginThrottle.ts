@@ -62,10 +62,30 @@ function memoryGet(prefix: string, key: string): number {
     return entry.count;
 }
 
-async function redisIncr(prefix: string, key: string, windowSec: number): Promise<void> {
-    const fullKey = prefix + key;
-    const count = await redis.incr(fullKey);
-    if (count === 1) await redis.expire(fullKey, windowSec);
+// 原子自增 + 首次设置 TTL：原实现「先 INCR、count === 1 时再 EXPIRE」两条命令之间存在
+// 进程崩溃/被杀的窗口，一旦中断则计数键被创建但无 TTL、计数永不过期 → 该账号永久 429。
+// 改为单条 Lua 在 Redis 内原子执行；并额外用 TTL < 0 自愈历史遗留的无 TTL 键。
+// 语义保持固定窗口：仅首次（或键无 TTL 时）设过期，后续 INCR 不刷新 TTL。
+const INCR_WITH_TTL_LUA = `
+local c = redis.call('INCR', KEYS[1])
+if c == 1 or redis.call('TTL', KEYS[1]) < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return c
+`;
+
+// 仅暴露 eval 的最小客户端接口：使 Redis 集成边界可注入、可单测，避免测试依赖真实 Redis。
+export interface ThrottleRedisClient {
+    eval(script: string, numkeys: number, ...args: (string | number)[]): Promise<unknown>;
+}
+
+export async function redisIncr(
+    prefix: string,
+    key: string,
+    windowSec: number,
+    client: ThrottleRedisClient = redis,
+): Promise<void> {
+    await client.eval(INCR_WITH_TTL_LUA, 1, prefix + key, windowSec);
 }
 
 // 频控三原语：登录失败计数与注册频控共用同一套 Redis 优先 / 内存兜底逻辑，
