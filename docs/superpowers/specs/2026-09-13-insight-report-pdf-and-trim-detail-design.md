@@ -221,3 +221,31 @@
 5. frontend：详情页精简 + 下载适配 +（异动卡片下端按钮）
 6. frontend：预判相关清理（insightCards/insight.vue/类型/spec）
 7. 端到端验收 + 文档同步（各仓 AGENTS.md / changelog / project_memory）
+
+## 10. 实施偏差记录（2026-09-24）
+
+本节记录与 §5 设计不一致的后续变更。**不改写上方原始设计**（保留决策历史）。
+
+| 项 | 设计（§5） | 实际（2026-09-24 起） | 原因 |
+|---|---|---|---|
+| 中文字体 | §5.2：`UnicodeCIDFont('STSong-Light')`，无需字体文件 | 内嵌 TTF：`src/aistock_agent/assets/fonts/NotoSansSC-Regular-Subset.ttf`（2.33MB，OFL 授权的 Noto Sans SC 子集） | **STSong-Light 属非嵌入 CID 字体**，PDF 只写字体名、不带字形（实测 `FontFile`/`FontFile2`/`FontFile3` 计数全为 0），阅读器未安装该字体即整篇乱码（2026-09-24 用户报障）。§8 风险表已预警此项，本次按"备选：内置字体文件并用 `TTFont` 嵌入"落地 |
+| §5.2 页眉 | 股票名 + 代码 + 报告日期 | 已实现：`build_report_header()` 生成「股票名（代码） · 交易日」，`render_insight_report(header=...)` 渲染为标题下灰色居中一行 | 补齐设计落差 |
+| §5.3-2 主因结论 | 一句话主因 + 置信度 + 归类标签 + 归因生成时间 | 已补齐：归类标签（layer 中文映射）、归因生成时间（`movementView.generatedAt`） | 补齐设计落差 |
+| §5.3-3/4 候选与因果链 | 含「支撑证据 ID」 | 已补齐：行尾追加 `（证据：e1, e2）` | 补齐设计落差 |
+| §5.3-5 证据清单 | kind/provider/title/content_excerpt/occurred_at/**canonical_url** | 实际为 `source_id｜provider｜kind｜occurred_at｜source_level｜title｜content_excerpt` | **真实 `artifact_json.evidence_index` 没有 `canonical_url` 字段**（实测键集：`kind/title/provider/source_id/captured_at/occurred_at/content_hash/source_level/content_excerpt`）。故补实际可用字段（额外带上 `source_level`），**未伪造链接** |
+| §5.4 输入契约 | `event.tradingDate` | 已由 app-api 透传；并给 `StockTraceService.getUserEvent` / `getRecentEvent` 投影补 `e.trading_date`（原先两条投影均未带该列，页眉交易日会恒为"暂缺"） | 补齐设计落差 + 修真实缺口 |
+
+## 11. 输出形态整体替换：PDF → SSE 流式（2026-09-25）
+
+**本设计文档描述的 PDF 报告方案已于 2026-09-25 被整体替换**，权威契约改见
+`docs/superpowers/specs/2026-09-25-insight-report-streaming-design.md`。本节仅记录偏差，**不改写上方原始设计**（保留决策历史）。
+
+| 项 | 本文档设计（§5） | 实际（2026-09-25 起） | 原因 |
+|---|---|---|---|
+| 输出形态 | PDF 文件下载（reportlab A4 渲染，`Content-Disposition: attachment`） | **页面内 SSE 流式输出**：`{"type":"start"}` → `{"type":"section"}` × N → `{"type":"done"}` | 移动端 PDF 需外部阅读器打开、每次都要下载文件，用户反馈体验不好 |
+| 端点 | `GET …/movements/:eventId/report.pdf` → `POST /api/agent/insight-report/render` | `GET …/movements/:eventId/report/stream` → `POST /api/agent/insight-report/sections` | 同上 |
+| 状态码语义 | 401/404/409/200/502（PDF 响应） | 401/404/409/502 **在开流前**返回真实状态码 + JSON；200 才进 SSE；开流后异常走 `data:{"type":"error"}` | 前端改用 `fetch + ReadableStream`（`EventSource` 无法带 `Authorization` 头），因此可直接读状态码 |
+| 章节产出 | agent-py 用 reportlab 渲染 PDF 文本 | agent-py 纯模板构建 `{header, sections}` JSON（无 LLM），app-api 分块推送（节间 80ms） | 同上；同时删除 reportlab 依赖与 2.33MB 字体资产（§10 表首行"内嵌 TTF"随之废弃） |
+| 前端入口 | 详情页 PDF 下载按钮 + 异动卡片"报告"按钮下载 | 详情页「生成完整洞察报告」按钮 + 按钮下方逐章节流式渲染区；卡片"报告 ›"改为跳详情页 `?autostart=1` 自动生成；删除 `shared/utils/downloadInsightReport.ts` | 对接新 SSE 端点 |
+
+**继续有效的既有结论**：§10 表中「`event.tradingDate` 透传 + `trading_date::text` 投影补齐」（页眉交易日仍用）与 agent-py 侧全部中文化映射（章节文案仍由 `insight_report.py` 产出）均**不受本次替换影响**。

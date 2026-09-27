@@ -70,6 +70,8 @@ function buildTriggerEvent(row: EventRow, revision: RevisionRow, fact: PriceFact
         thresholdValue: PRICE_TRIGGER_PERCENT,
         severity: revision.severity,
         ruleVersion: PRICE_RULE_VERSION,
+        // 涨停标记随 PriceFact 透传（DB 侧同名字段 is_limit_up 写入口径一致）
+        isLimitUp: Boolean(fact.isLimitUp),
     };
 }
 
@@ -589,7 +591,11 @@ export class StockTraceService {
             threshold_pct: event.thresholdValue,
             severity: event.severity,
             rule_version: event.ruleVersion,
-            analysis_status: 'pending',
+            // 与列表派生口径（listUserEvents 的 CASE：无 artifact/result → processing）保持一致：
+            // 推送时刚创建/修订，尚无 artifact 与 result，旧值硬编码 'pending' 会让同一事件
+            // 在 WS 卡片显示"待归因"、下拉刷新后立刻变成"归因中"（前端 analysis_status 三态文案不一致）。
+            analysis_status: 'processing',
+            is_limit_up: Boolean(event.isLimitUp),
         };
     }
 
@@ -606,7 +612,7 @@ export class StockTraceService {
         // 配合"加入即打点"（addFavorites 后立即检测，命中则建事件+归因），避免"刚加入即见加入前历史事件"。
         // agent 读层（internal 端点）走同一查询，同样只返回持仓期事件，语义一致。
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
@@ -655,6 +661,8 @@ export class StockTraceService {
                 event_type: 'price',
                 direction: row.direction,
                 triggered_at: (row.first_triggered_at as Date).toISOString(),
+                // 最近窗口结束时间（每次再触发/修订都会刷新）：前端按 `window_end_at || triggered_at` 取"最近异动时刻"
+                window_end_at: (row.window_end_at as Date).toISOString(),
                 latest_price: toNumber(row.latest_price as string | number),
                 previous_close: toNumber(row.previous_close as string | number),
                 change_pct: toNumber(row.change_pct as string | number),
@@ -683,7 +691,7 @@ export class StockTraceService {
         const cursorClause = cursor ? `AND e.first_triggered_at < $2::timestamptz` : '';
         if (cursor) params.push(cursor);
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.current_trigger_revision,
+            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version,
                    CASE
@@ -725,6 +733,8 @@ export class StockTraceService {
                 event_type: 'price',
                 direction: row.direction,
                 triggered_at: (row.first_triggered_at as Date).toISOString(),
+                // 最近窗口结束时间（每次再触发/修订都会刷新）：前端按 `window_end_at || triggered_at` 取"最近异动时刻"
+                window_end_at: (row.window_end_at as Date).toISOString(),
                 latest_price: toNumber(row.latest_price as string | number),
                 previous_close: toNumber(row.previous_close as string | number),
                 change_pct: toNumber(row.change_pct as string | number),
@@ -747,8 +757,10 @@ export class StockTraceService {
         // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up, ue.read_at,
+            SELECT e.event_id, e.symbol, e.stock_name, e.trading_date::text AS trading_date,
+                   e.direction, e.first_triggered_at,
+                   e.window_start_at, e.window_end_at, e.current_trigger_revision, e.current_severity,
+                   e.is_limit_up, ue.read_at,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             -- 详情归属同样实时跟随当前自选（INNER JOIN user_stocks）：
@@ -768,6 +780,7 @@ export class StockTraceService {
             trigger_revision: row.current_trigger_revision,
             symbol: row.symbol,
             stock_name: row.stock_name,
+            trading_date: row.trading_date,
             event_type: 'price',
             direction: row.direction,
             triggered_at: row.triggered_at,
@@ -792,8 +805,10 @@ export class StockTraceService {
         // 返回格式与 getUserEvent 一致，read_at 固定为 null（未登录无法标记已读）。
         await this.ensureSchema();
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_start_at,
-                   e.window_end_at, e.current_trigger_revision, e.current_severity, e.is_limit_up,
+            SELECT e.event_id, e.symbol, e.stock_name, e.trading_date::text AS trading_date,
+                   e.direction, e.first_triggered_at,
+                   e.window_start_at, e.window_end_at, e.current_trigger_revision, e.current_severity,
+                   e.is_limit_up,
                    r.triggered_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
                    r.threshold_value, r.rule_version, r.data_quality
             FROM stock_trace_events e
@@ -809,6 +824,7 @@ export class StockTraceService {
             trigger_revision: row.current_trigger_revision,
             symbol: row.symbol,
             stock_name: row.stock_name,
+            trading_date: row.trading_date,
             event_type: 'price',
             direction: row.direction,
             triggered_at: row.triggered_at,

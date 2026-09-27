@@ -44,6 +44,8 @@ export interface TriggerEvent {
     thresholdValue: number;
     severity: TraceSeverity;
     ruleVersion: string;
+    /** 涨停标记：仅涨停雷达文章命中（强时效）置 true；对外投影（toPublicEvent）透出为 is_limit_up */
+    isLimitUp?: boolean;
 }
 
 export interface PriceMutationResult {

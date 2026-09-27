@@ -2,6 +2,38 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-09-26 — 洞察报告 PDF 改 SSE 流式 + 章节结构化 blocks + stock-trace 事件载荷补齐
+
+**开发者**: 李俊良
+
+### 新增
+
+- `GET /api/cn/favorites/movements/:eventId/report/stream`（SSE）：完整洞察报告改为分块推送，替代原 `report.pdf`。**前置校验（401 未登录 / 404 无归属 / 409 无有效归因 / 502 agent-py 不可用或结构非法）全部在开流前完成，失败返回真实 HTTP 状态码 + JSON**；仅开流后的异常走 `data: {"type":"error"}` 兜底。`REPORT_SECTION_INTERVAL_MS = 80` 控制节间节奏（模板构建是毫秒级的，不加节奏前端会"瞬间铺满"），15s `: keep-alive` 心跳，`finally` 清心跳 + `res.end()`。
+- `InsightReportService.fetchSections(data)`：调 agent-py `POST /api/agent/insight-report/sections`（`X-Internal-Token`，10s 超时），含**上游边界归一化**（章节缺 `blocks` 或非数组 → 补 `[]`，`sections` 非数组抛错转 502）。
+- `ReportBlock` 判别联合（`kv`/`verdict`/`candidates`/`chain`/`evidence`/`list`）与 `ReportChainStage` / `ReportKvItem` 类型；候选项补 `statusKey`（机器值，供前端做中性弱化判定，避免匹配中文标签、改文案即静默失效）。
+- 设计文档 `docs/superpowers/specs/2026-09-25-insight-report-streaming-design.md`（含 §11 blocks 演进 / §12 App 端双通道演进）。
+- 测试 `stock-trace/__tests__/eventPayloadFields.spec.ts`（8 例）。
+
+### 变更
+
+- `StockTraceController.report()`（PDF 下载）→ `reportStream()`（SSE）；`src/index.ts` 路由同步更换；`InsightReportService.renderPdf` 删除、改为 `fetchSections`。
+- section 事件由 `lines` 改为 **`blocks`** 透传（`data: {"type":"section", index, heading, blocks}`）。
+- `StockTraceService`：`listUserEvents` / `listRecentEvents` 的 SELECT 增选 `e.window_end_at`（前端"最近异动时刻"语义真正生效）；`toPublicEvent` 增出 `is_limit_up`、`analysis_status` 由硬编码 `'pending'` 对齐为 `'processing'`；`buildTriggerEvent` 透传 `isLimitUp`。`types.ts` 的 `TriggerEvent` 增可选 `isLimitUp?`。
+
+### 修复
+
+- 测试环境耦合红：`listAnalysisStatus.spec.ts` 的 fixture 注释声明"与 SELECT 列一致"却缺 `window_end_at`；`eventStoreEvidence.spec.ts` 被本机 `.env` 的 `AGENT_PY_URL` 盖过 `PYTHON_AGENT_URL`（读库 base URL 解析顺序为 `AGENT_PY_URL || PYTHON_AGENT_URL`）导致 URL 前缀断言失败 → 改为 `beforeEach` 把两者同时指向测试地址。
+
+### 测试
+
+- `npx tsc --noEmit` **0 错误**；`insightReport.spec.ts` 8 → **11 例**（成功用例断言 `blocks` 原样透传含 `chain.stages[0].stageKey`，新增归一化 3 例——归一化用例最初误写在 controller 层，但该层 `fetchSections` 被整个 mock 掉、测不到，已移到服务层 mock `axios.post`）；stock-trace 相关 spec 全绿。
+
+### 文档
+
+- `modules/stock-trace/AGENTS.md` 新增 09-24 / 09-25 / 09-26 三批更新块。
+
+---
+
 ## [changer] 2026-09-22 — 节奏大师·事件前瞻主体化（日历侧）
 
 **开发者**: 37588

@@ -27,6 +27,8 @@ function row(analysisStatus?: string): Record<string, unknown> {
         stock_name: '中国平安',
         direction: 'up',
         first_triggered_at: new Date('2026-08-19T07:26:22.789Z'),
+        // SELECT 列同步（2026-09-24 列表透出最近窗口结束时间）
+        window_end_at: new Date('2026-08-19T07:26:22.789Z'),
         current_severity: 'high',
         read_at: null,
         latest_price: '100',

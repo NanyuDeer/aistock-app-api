@@ -42,6 +42,9 @@ function triggerRevision(event: Record<string, unknown>): number {
     return Number.isInteger(value) && value > 0 ? value : 0;
 }
 
+/** 报告章节之间的推送间隔（ms）：模板构建是毫秒级的，不加节奏则前端"瞬间铺满"、失去流式观感；调 0 即瞬时。 */
+const REPORT_SECTION_INTERVAL_MS = 80;
+
 async function presentEventAnalysis(eventId: string, event: Record<string, unknown>) {
     const revision = triggerRevision(event);
     const artifact = revision > 0
@@ -104,23 +107,24 @@ export class StockTraceController {
         }
     }
 
-    /** 完整洞察报告 PDF：登录 + 自选归属 + 有效归因校验 → 组装数据 → agent-py 渲染 → 流式下载 */
-    static async report(req: Request, res: Response, next: NextFunction): Promise<void> {
+    /**
+     * 完整洞察报告（前端用 fetch + ReadableStream 消费，故可带 Authorization 头并读状态码）：
+     * 登录 + 自选归属 + 有效归因校验 + 章节构建**全部在开流前完成**，前置失败回真实
+     * HTTP 状态码 + JSON；仅在开流后才异常时走 `data: {"type":"error"}` 兜底。
+     */
+    static async reportStream(req: Request, res: Response): Promise<void> {
         try {
             const auth = await authFromRequest(req);
-            // 报告属于用户资产：未登录直接 401（不做未登录全局降级）
             if (!auth || !auth.id) {
-                res.status(401).json({ code: 401, message: 'unauthorized' });
+                res.status(401).json({ code: 401, message: '请先登录查看' });
                 return;
             }
             const eventId = eventIdFromRequest(req);
-            if (!eventId) {
-                res.status(404).json({ code: 404, message: 'not found' });
-                return;
-            }
-            const event = await StockTraceService.getUserEvent(auth.id, auth.openid, eventId);
-            if (!event) {
-                res.status(404).json({ code: 404, message: 'Event not found' });
+            const event = eventId
+                ? await StockTraceService.getUserEvent(auth.id, auth.openid, eventId)
+                : null;
+            if (!eventId || !event) {
+                res.status(404).json({ code: 404, message: '该异动不在你的自选范围内，或已过期' });
                 return;
             }
             const presentation = await presentEventAnalysis(eventId, event);
@@ -133,15 +137,43 @@ export class StockTraceController {
                 ? await StockTraceResultService.getLatestForEventRevision(eventId, revision)
                 : null;
             const data = InsightReportService.buildReportData(event, presentation.artifact, result);
-            const pdf = await InsightReportService.renderPdf(data);
-            const date = String(event.triggered_at ?? '').slice(0, 10) || 'report';
-            res.setHeader('Content-Type', 'application/pdf');
-            res.setHeader('Content-Disposition', `attachment; filename="insight-report-${String(event.symbol ?? '')}-${date}.pdf"`);
-            res.send(pdf);
+            // 章节在开流前取回：agent-py 不可用/结构非法时仍能回 502 状态码
+            const report = await InsightReportService.fetchSections(data);
+
+            res.setHeader('Content-Type', 'text/event-stream;charset=UTF-8');
+            res.setHeader('Cache-Control', 'no-cache, no-transform');
+            res.setHeader('Connection', 'keep-alive');
+            res.setHeader('X-Accel-Buffering', 'no');
+            res.flushHeaders();
+
+            // 不分发具名事件（不写 `event:` 行），type 放进 data，前端按 `data: {...}\n\n` 分帧
+            const send = (payload: { type: string } & Record<string, unknown>): void => {
+                res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            };
+            const heartbeat = setInterval(() => { res.write(': keep-alive\n\n'); }, 15_000);
+            try {
+                send({ type: 'start', header: report.header, total: report.sections.length });
+                for (let i = 0; i < report.sections.length; i += 1) {
+                    const section = report.sections[i];
+                    send({ type: 'section', index: i, heading: section.heading, blocks: section.blocks });
+                    if (i < report.sections.length - 1) {
+                        await new Promise((resolve) => { setTimeout(resolve, REPORT_SECTION_INTERVAL_MS); });
+                    }
+                }
+                send({ type: 'done', message: 'success' });
+            } finally {
+                clearInterval(heartbeat);
+                res.end();
+            }
         } catch (error) {
-            console.error('[InsightReport] render failed:', error instanceof Error ? error.message : error);
-            // agent-py 不可用/渲染失败 → 502（前端提示稍后重试）
-            res.status(502).json({ code: 502, message: '报告生成失败，请重试' });
+            console.error('[InsightReport] stream failed:', error instanceof Error ? error.message : error);
+            const message = '报告生成失败，请重试';
+            if (res.headersSent) {
+                res.write(`data: ${JSON.stringify({ type: 'error', code: 502, message })}\n\n`);
+                res.end();
+                return;
+            }
+            res.status(502).json({ code: 502, message });
         }
     }
 
