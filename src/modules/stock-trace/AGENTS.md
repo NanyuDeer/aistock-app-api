@@ -2,6 +2,16 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-09-30 更新：列表接口透出 `confidence_level`（低置信不展示卡片口径）
+
+- **动机**：产品口径——**低置信（`low`）的归因不展示异动卡片**（`medium`/`high` 照常展示）。判定在前端做，因此列表接口须把归因置信度透出（此前只透出 `primary_cause`）。
+- **改动**：`listUserEvents` / `listRecentEvents` 的 SELECT 各新增 `(SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level`，items 映射为 `confidence_level: row.confidence_level ? String(row.confidence_level) : null`。**与 `primary_cause` 同源**（均取 effective artifact 对应 result，`r3.result_id = a.result_id`）——若改用"最新 result"会与主因短语指向不同版本、口径不一致。
+- **枚举**：`low` / `medium` / `high`（阈值 `score >= 0.75 → high`、`>= 0.5 → medium`，见 `StockTraceResultService`）。
+- **降级语义**：无归因结果（事件仍在归因/归因失败）时返回 `null`；前端据此**不隐藏**，只隐藏显式 `low` —— 避免"字段缺失/null 即隐藏"误杀全部卡片。
+- **加性改动**：新增 SELECT 列与返回字段，不改排序/游标/可见性，旧前端未消费该字段时零影响。
+- 测试：`__tests__/eventPayloadFields.spec.ts` 新增 describe「列表接口透出 confidence_level（低置信不展示口径）」5 例（两列表取值 + SELECT 断言 + `null` 透传；SQL 断言用设计中立的 `/confidence_level/`，不绑定实现别名）→ **13 pass / 0 fail**；`npx tsc --noEmit` exit 0。
+- **前端配套**（详见 aistock-app-frontend `modules/favorites/AGENTS.md`）：`isUnattributableMovement` 增加 `if (m.confidence_level === 'low') return true`。
+
 ### 2026-09-24 更新：列表/推送载荷补齐（window_end_at + is_limit_up + analysis_status 口径对齐）
 
 - **列表接口透出 `window_end_at`**：`listUserEvents` / `listRecentEvents` 的 SELECT 增选 `e.window_end_at`，items 映射为 `window_end_at`（ISO 字符串）。原因：前端卡片按 `window_end_at || triggered_at` 取"最近异动时间"，缺该字段时恒退化为**首次**触发时刻（每次再触发/修订都会刷新 `window_end_at`，见 `processPriceFact` 的 `SET window_end_at = $2`）。加性改动，排序/游标仍按 `first_triggered_at`，未变。

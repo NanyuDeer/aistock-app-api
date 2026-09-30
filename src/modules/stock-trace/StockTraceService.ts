@@ -620,7 +620,10 @@ export class StockTraceService {
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
                      ELSE 'processing'
                    END AS analysis_status,
-                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
+                   -- 归因置信度（low/medium/high）：与 primary_cause 同源（均取 effective artifact 的结果），
+                   -- 供前端"低置信不展示卡片"口径；无归因结果时为 NULL（前端不据此隐藏）
+                   (SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level
             -- 列表可见性实时跟随当前自选 + 持仓期下界（INNER JOIN user_stocks，JOIN ON 限定
             -- e.first_triggered_at >= us.created_at）：老自选可见全历史 + 今日新触发；新加入股只显加入后触发，
             -- 配合"加入即打点"避免"刚加入即见加入前历史事件"（2026-09-04 决策修订）。
@@ -674,6 +677,8 @@ export class StockTraceService {
                 analysis_status: String(row.analysis_status ?? 'processing'),
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
+                // 归因置信度（low/medium/high）：前端"低置信不展示卡片"口径；无归因结果时为 null（前端不隐藏）
+                confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
@@ -699,7 +704,9 @@ export class StockTraceService {
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
                      ELSE 'processing'
                    END AS analysis_status,
-                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
+                   -- 归因置信度：与 primary_cause 同源（effective artifact 的结果），无归因结果时为 NULL
+                   (SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level
             FROM stock_trace_events e
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
@@ -746,6 +753,8 @@ export class StockTraceService {
                 analysis_status: String(row.analysis_status ?? 'processing'),
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
+                // 归因置信度（low/medium/high）：前端"低置信不展示卡片"口径；无归因结果时为 null（前端不隐藏）
+                confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
             nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
