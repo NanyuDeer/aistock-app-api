@@ -16,6 +16,11 @@
 
 - `__tests__/event_timeline.spec.ts`：TIMESTAMPTZ=Date 回归用例的夹具由硬编码绝对日期（2026-10-01 / 2026-10-20）改为**相对当前时间的未来 date-only 日期**（今天+7 / 今天+14）。原夹具随时钟推进会过期——date-only 事件次日 0 点起变 occurred，随即命中「occurred 必须有传导报告」准入被排除（2026-10-02 该用例实际失败：夹具 2026-10-01 已变为已发生）。
 
+### 清理（物化废弃后的残留）
+
+- 删除 `scripts/materialize-calendar-entities.ts`：该脚本只服务已废弃的物化流程，且其 `import` 的 `CalendarEntityMaterializer` 已删除——因 `tsconfig.include` 仅覆盖 `src/**/*`，`tsc` 不检查 `scripts/`，属静默失效（运行时必挂）。
+- 根 `AGENTS.md`（模块表 / 目录树 / §8 定时任务速查表）与 `README.md`（模块表 / 目录树）：同步「Calendar 物化」→「Calendar 读时直查」，并标注原 `06:40/12:40/18:40` cron 已移除。
+
 ### 验证
 
 - `node --import tsx --test src/modules/event-entities/__tests__/event_timeline.spec.ts` → **5 passed / 0 failed**（修复前 4 passed / 1 failed）

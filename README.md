@@ -83,7 +83,7 @@ src/
 │   ├── push/               # 推送模块
 │   ├── auth/               # 认证模块
 │   ├── calendar/           # 日历模块（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
-│   ├── event-entities/     # 重大事件时间线模块（event_entities 权威实体 + Calendar 物化 + 公开时间线读取）
+│   ├── event-entities/     # 重大事件时间线模块（event_entities 权威实体 + Calendar 读时直查 + 公开时间线读取）
 │   ├── monitor/            # 监控模块（异动/风口/十倍股/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫模块
 │   └── agent/              # Agent 反代模块（Phase 5）
@@ -99,7 +99,7 @@ src/
 | 推送 | modules/push | 微信模板消息、定时推送 |
 | 认证 | modules/auth | 扫码登录、微信授权、验证码/密码登录（含登录防刷） |
 | 日历 | modules/calendar | L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 报告读取 |
-| 重大事件时间线 | modules/event-entities | Event Entity 权威实体（event_entities）+ Calendar 物化 + 公开时间线读取 |
+| 重大事件时间线 | modules/event-entities | Event Entity 权威实体（event_entities）+ Calendar 读时直查 + 公开时间线读取 |
 | 监控 | modules/monitor | 股票异动监控、风口龙头、十倍股评分、知识图谱、机构调研热门股 |
 | 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
 | Agent | modules/agent | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） |
