@@ -4,11 +4,11 @@
 
 ## 功能范围
 
-重大事件时间线的数据层：维护 Event Entity 权威实体表（`event_entities`），承载 News / Calendar 两通道物化的重大事件，对前端提供按事件发生时间组织的时间线读取。
+重大事件时间线的数据层：维护 Event Entity 权威实体表（`event_entities`），承载 News 通道物化的重大事件；Calendar 通道事件由时间线公开 API **读时直查** `market_calendar_events`（2026-10-01 物化方案废弃），对前端提供按事件发生时间组织的时间线读取。
 
 - **Event Entity 权威实体**：`event_id` 仅由 app-api 首写生成（不可变），`canonical_event_key` 只做确定性幂等（不做语义 Merge）；`event_status` 由确定性纯函数计算、**读时重算**为权威
 - **News 通道**：`aistock-agent-py` 经 `POST /internal/event-entities` 写入重大事件（agent-py 侧 `event_entity_enabled` 开关控制）
-- **Calendar → Event Entity 物化（Phase 0.5）**：`CalendarEntityMaterializer` 对日历行做确定性准入后逐行幂等 upsert，由 `src/index.ts` cron 调度（每天 06:40 / 12:40 / 18:40）
+- **Calendar 通道（读时直查，2026-10-01 起）**：不再物化进 `event_entities`，由 `EventTimelinePublicRouter` 直查 `market_calendar_events`（与节奏大师同源），按确定性准入 `qualifyCalendarEvent`（importance='high' 或 source='L4'）过滤后实时合并展示——不依赖物化 cron，calendar 表更新即刻反映到时间线
 - **时间线公开 API（Phase 1）**：`GET /api/agent/event/timeline`，按上海时区日期组织，未来事件提前可见；**不读 `agent_analysis_reports`**（GI 旁路，时间线不依赖事件传导完成度；2026-09-24 展示层例外：news 事件标题按传导报告 `content.title` 对齐 + 全部事件 impactSectors 按传导 chain Top3 覆盖展示，见「关键契约」）
 
 ## 核心文件与职责
@@ -17,8 +17,7 @@
 | ---- | ---- |
 | `EventEntityService.ts` | 领域服务与纯函数：`computeEventStatus`（确定性状态机，禁 LLM）、`normalizeTitle`（canonical 归一化）、`canonicalKey`（`event_start_date\|canonical_title`）、`startDateOf`（上海时区日期）、`isDateOnly`、`normalizeImpactSectors`（impact_sectors 归一化：过滤非字符串/空串/重复，返回 string[]）；`upsertEventEntity`（`ON CONFLICT (canonical_event_key)` 幂等 upsert，`event_id`/`created_at` 首写不更新；`impact_sectors` 缺省 null 时保留原值）、`listEventEntities`（日期过滤）、`withComputedStatus`（读时重算）、`toContractEventEntity`（对外契约） |
 | `EventEntityInternalRouter.ts` | Python Agent 专用 internal API：`POST /`（幂等 upsert，字段/枚举校验）、`GET /`（日期 + status 过滤）；独立 `x-internal-token` 鉴权，信封 `{code:200}` |
-| `CalendarEntityMaterializer.ts` | Calendar → Event Entity 物化：`qualifyCalendarEvent`（确定性准入）、`toCalendarEntityInput`（date-only 映射）、`materializeCalendarRows`（逐行幂等 upsert，单行失败不中断整批）；**本文件不 import calendar 模块**，只接收 rows（读表由 index.ts 编排） |
-| `EventTimelinePublicRouter.ts` | 前端公开 API：`GET /event/timeline`（分页、排序、status 过滤、上海时区 `date` 分组键），无 token；`loadConductionPayloads` 对分页内**全部** eventIds 一次 `IN (...)` 查询最新 `event_conduction` 报告（取 `content.title` + `content.analysis_reports.event_transmission.chain`）；`topImpactSectors(chain, 3)` 按 impactStrength 降序取 Top3 板块名（过滤空 industry）；组装时 news 事件标题按 `content.title` 对齐（无报告回退原始标题）、impactSectors = chain Top3（空则回退 `event_entities.impact_sectors` 列，再空为 `[]`） |
+| `EventTimelinePublicRouter.ts` | 前端公开 API：`GET /event/timeline`（分页、排序、status 过滤、上海时区 `date` 分组键），无 token；**Calendar 事件读时直查**：`loadCalendarRows` 直查 `market_calendar_events`（窗口内，`qualifyCalendarEvent` 确定性准入过滤后按日期升序返回，与节奏大师同源口径），`event_entities` 中残留的 `source_type='calendar'` 行被排除（防与直查结果重复）；直查行映射为事件行（`event_id='CAL-{date}-{title}'`、date-only 单日 `end=start`、`time_source='calendar'`、`time_confidence=0.95`、`computed_status=computeEventStatus`）；`loadConductionPayloads` 对分页内**全部非 calendar** eventIds 一次 `IN (...)` 查询最新 `event_conduction` 报告（取 `content.title` + `content.analysis_reports.event_transmission.chain`）；`topImpactSectors(chain, 3)` 按 impactStrength 降序取 Top3 板块名（过滤空 industry）；组装时 news 事件标题按 `content.title` 对齐（无报告回退原始标题）、impactSectors = chain Top3（空则回退 `event_entities.impact_sectors` 列，再空为 `[]`） |
 
 ## 数据模型（migration 019 + 023，人工 psql 执行）
 
@@ -32,15 +31,13 @@
 
 - **`event_id`**：仅 app-api 首写生成（`EVT-${randomUUID()}`），`ON CONFLICT DO UPDATE` **不更新** `event_id`/`created_at`；`source_event_id` 承接 agent-py event_store 旧 id（首次保留，`COALESCE(EXCLUDED.source_event_id, 现有值)`）。
 
-- **`canonical_event_key` = `event_start_date|canonical_title`**：`event_start_date` 用 `startDateOf`（上海时区 `YYYY-MM-DD`），`canonical_title` 由 `normalizeTitle` 归一化（NFKC 全角→半角 + 去空白/标点/符号 + 小写；**只去书写噪声、不做语义归并**）。**只做确定性幂等，不做语义 Merge**（"2026-09" 与 "9月" 不等价）。`normalizeTitle` 是 Event Entity canonical 的统一口径，Calendar→Entity 物化与 News 通道共用。
+- **`canonical_event_key` = `event_start_date|canonical_title`**：`event_start_date` 用 `startDateOf`（上海时区 `YYYY-MM-DD`），`canonical_title` 由 `normalizeTitle` 归一化（NFKC 全角→半角 + 去空白/标点/符号 + 小写；**只去书写噪声、不做语义归并**）。**只做确定性幂等，不做语义 Merge**（"2026-09" 与 "9月" 不等价）。`normalizeTitle` 是 Event Entity canonical 的统一口径，News 通道写入时使用。
 
 - **`event_status`**：`computeEventStatus` 确定性纯函数（禁 LLM），取值 ∈ `scheduled` / `upcoming` / `ongoing` / `occurred`；date-only（上海墙钟 00:00）→ 当日整天 ongoing、次日 0 点 occurred；单日（无 end）end=start；多日 start≤now≤end → ongoing、now>end → occurred；start 缺失 → 保守 occurred。**写库列为 display-only 快照，读时 `withComputedStatus` 按 now 重算为权威**（无刷新作业的闭合）。`upcoming`（预热窗口）待 P1 定义，P0 一律落 `scheduled`。
 
-- **Calendar 准入（禁 LLM 红线）**：`qualifyCalendarEvent` = 仅 `importance='high'` 或 `source='L4'` 允许，其余拒绝——防止时间线退化成普通活动日历（日常公告/低优提醒不进时间线）。
+- **Calendar 准入（禁 LLM 红线）**：`qualifyCalendarEvent`（位于 `EventTimelinePublicRouter.ts`）= 仅 `importance='high'` 或 `source='L4'` 允许，其余拒绝——防止时间线退化成普通活动日历（日常公告/低优提醒不进时间线）。2026-10-01 物化方案废弃后，该准入在时间线接口**读时直查过滤**时生效（不再写入 `event_entities`）。
 
-- **Calendar 映射**：`toCalendarEntityInput`——date-only → `${event_date}T00:00:00+08:00`、`event_end_time = event_start_time`（单日 end=start）、`time_source='calendar'`、`time_confidence=0.95`、`source_type='calendar'`；**用原始 `event_date`，不套用 calendar 对外契约的 US 隔夜顺延**（时间线按真实发生日展示）。
-
-- **物化容错**：`materializeCalendarRows` 逐行 try/catch，单行失败 `failed++` 并 warning，绝不中断整批；返回 `{materialized, skipped, failed}`；幂等 upsert，重复执行不产生重复实体。
+- **Calendar 读时直查映射（2026-10-01 起）**：`loadCalendarRows` 直查 `market_calendar_events`（`event_date BETWEEN dateFrom AND dateTo`，按 `event_date ASC, event_time ASC NULLS LAST, title ASC`），`qualifyCalendarEvent` 过滤后映射为时间线行：`event_id='CAL-{event_date}-{title}'`、date-only → `${event_date}T00:00:00+08:00`、`event_end_time = event_start_time`（单日 end=start）、`time_source='calendar'`、`time_confidence=0.95`、`source_type='calendar'`、`summary=detail`、`computed_status=computeEventStatus(start,start,now)`；**用原始 `event_date`，不套用 calendar 对外契约的 US 隔夜顺延**（时间线按真实发生日展示）。`event_entities` 中残留的 `source_type='calendar'` 行一律排除（防与直查结果重复）。
 
 - **时间线 `date` 分组键**：item 的 `date` 是后端算好的 `startDateOf(event_start_time)`（上海时区 `YYYY-MM-DD`），前端据此分组。
 
@@ -49,7 +46,7 @@
   2. 所有事件的 `impactSectors` = 最新传导报告 `chain`（`impact_strength` 降序 Top3，过滤空 industry，`topImpactSectors`）优先；chain 为空回退 `event_entities.impact_sectors` 列（KG 预计算，`normalizeImpactSectors`）；再空为 `[]`（前端整块不渲染）。
   3. **occurred 事件传导存在性过滤**：occurred 事件必须在 `agent_analysis_reports` 中存在 event_conduction 报告行，否则从时间线排除（无报告事件点击详情 404 → 前端「服务异常」）；scheduled/upcoming/ongoing 未来事件保留（点击就地展开不跳详情）。`loadConductionPayloads` 对排序后**全部**事件（而非分页内）查询，保证过滤后 total 准确。
 
-- **impactSectors 数据优先级契约（2026-09-24）**：传导 chain（Top3）> `event_entities.impact_sectors` 列 > `[]`。**与 `impact_industries`（Event Conduction 无序 set）语义不同，禁止混用**；真正的有序传导结果是 `chain`（含 `impact_strength`）。`impact_sectors` 列写入方为 agent-py 预计算作业（07:00，仅处理 calendar + scheduled/upcoming + 列值为空的行，KG 行业向量匹配 Top3，宏观事件无可靠行业保持 `[]` 不 LLM 强猜）；upsert 时 `impact_sectors` 参数为 null 则保留原值（`CASE WHEN $13::jsonb IS NULL ...`），防 Calendar 物化 cron 覆盖预计算结果。
+- **impactSectors 数据优先级契约（2026-09-24）**：传导 chain（Top3）> `event_entities.impact_sectors` 列 > `[]`。**与 `impact_industries`（Event Conduction 无序 set）语义不同，禁止混用**；真正的有序传导结果是 `chain`（含 `impact_strength`）。`impact_sectors` 列写入方为 agent-py 预计算作业（07:00，仅处理 calendar + scheduled/upcoming + 列值为空的行，KG 行业向量匹配 Top3，宏观事件无可靠行业保持 `[]` 不 LLM 强猜）；upsert 时 `impact_sectors` 参数为 null 则保留原值（`CASE WHEN $13::jsonb IS NULL ...`）。注意：物化废弃后 calendar 事件不再进入 `event_entities`，该预计算作业对 calendar 事件自然空转（直查行 impact_sectors 为 null → 展示 `[]`）；残留物化行的板块值不影响直查展示。
 
 ## 接口表
 
@@ -64,12 +61,12 @@
 ## 依赖
 
 - 共享：`core/db`（pool）
-- 跨模块读取由 `src/index.ts`（composition root）编排：读取 calendar 行（`listEvents`）后把 rows 传给 `materializeCalendarRows`，**模块间不直接 import**（模块解耦硬约束）
+- Calendar 直查在 `EventTimelinePublicRouter` 内直接 `pool.query('market_calendar_events')`（只读，不写 `event_entities`），**不再需要 index.ts composition root 编排读 calendar 行**（2026-10-01 物化方案废弃后无跨模块写编排；模块解耦硬约束仍适用：模块间禁止互相 import）
 - 消费端：`aistock-agent-py` 经 `/internal/event-entities` 写入 News 通道实体；`aistock-app-frontend` 经 `/api/agent/event/timeline` 读时间线
-- 挂载（`src/index.ts`）：`app.use('/internal/event-entities', eventEntityInternalRouter)`；`app.use('/api/agent', eventTimelinePublicRouter)` **必须在 `createAgentProxy` 之前**（否则被反代到 Python）；cron `40 6,12,18 * * *`（`{ timezone: 'Asia/Shanghai' }`）执行 Calendar 物化，窗口 `[今天-1, 今天+180]`，日志前缀 `[CalendarEntityCron]`
+- 挂载（`src/index.ts`）：`app.use('/internal/event-entities', eventEntityInternalRouter)`；`app.use('/api/agent', eventTimelinePublicRouter)` **必须在 `createAgentProxy` 之前**（否则被反代到 Python）；**无 Calendar 物化 cron**（原 `40 6,12,18 * * *` 已移除，2026-10-01）
 
 ## 测试
 
-- 运行：`node --import tsx --test src/modules/event-entities/CalendarEntityMaterializer.test.ts src/modules/event-entities/__tests__/event_timeline.spec.ts`（Calendar 物化 10 个纯函数单测 + timeline 3 个接口单测：标题对齐 / impactSectors 优先级 chain>列>[] / 增强查询全分页 id `IN (...)`）
+- 运行：`node --import tsx --test src/modules/event-entities/__tests__/event_timeline.spec.ts`（timeline 接口单测：标题对齐 / impactSectors 优先级 chain>列>[] / 增强查询全分页 id `IN (...)` 且排除直查 calendar 行 / occurred 无报告排除 / calendar 直查与残留物化行防重复；另含 TIMESTAMPTZ=Date 兼容回归）
 - 类型检查：`npx tsc --noEmit`
 - 仓库惯例：node:test；纯函数优先直测，禁止触碰真实数据库

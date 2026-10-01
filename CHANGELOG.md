@@ -2,6 +2,28 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-10-02 — 重大事件时间线：Calendar 物化方案废弃，改为读时直查
+
+**开发者**: xusiyun
+
+### 重构
+
+- **Calendar 事件改为读时直查（物化方案废弃）**：删除 `modules/event-entities/CalendarEntityMaterializer.ts` 及其单测，把确定性准入（`qualifyCalendarEvent`：`importance='high'` 或 `source='L4'`）内联进 `EventTimelinePublicRouter`；`GET /api/agent/event/timeline` 请求时直查 `market_calendar_events`（与节奏大师同源，`listEvents` 口径），并排除 `event_entities` 中残留的 `source_type='calendar'` 行以防重复。收益：不再依赖物化 cron，calendar 变更实时生效；`event_entities` 不再写入 calendar 行。
+- `src/index.ts`：移除 `CalendarEntityCron`（06:40/12:40/18:40）与 `CalendarEntityMaterializer` 导入。
+- 口径保持：calendar 直查行不参与传导报告增强查询与 occurred 存在性校验（恒无传导报告，已发生的 calendar 行不展示——未来事件提前可见的原有定位不变）。
+
+### 修复
+
+- `__tests__/event_timeline.spec.ts`：TIMESTAMPTZ=Date 回归用例的夹具由硬编码绝对日期（2026-10-01 / 2026-10-20）改为**相对当前时间的未来 date-only 日期**（今天+7 / 今天+14）。原夹具随时钟推进会过期——date-only 事件次日 0 点起变 occurred，随即命中「occurred 必须有传导报告」准入被排除（2026-10-02 该用例实际失败：夹具 2026-10-01 已变为已发生）。
+
+### 验证
+
+- `node --import tsx --test src/modules/event-entities/__tests__/event_timeline.spec.ts` → **5 passed / 0 failed**（修复前 4 passed / 1 failed）
+- `tsc --noEmit` → exit 0；`node --import tsx --test tests/timelineRouteOrder.test.ts` → 1 passed
+- 全仓无 `CalendarEntityMaterializer` / `materializeCalendarRows` 残留引用
+
+---
+
 ## [master] 2026-09-27 — 修复「注册已注册手机号显示注册失败」（生产 P0）
 
 **开发者**: Aria

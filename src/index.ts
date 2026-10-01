@@ -104,9 +104,8 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 // calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
-import { listEvents, DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
+import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
-import { materializeCalendarRows } from './modules/event-entities/CalendarEntityMaterializer';
 import { eventTimelinePublicRouter } from './modules/event-entities/EventTimelinePublicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
@@ -855,29 +854,9 @@ cron.schedule('30 4 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-// 重大事件时间线：Calendar → Event Entity 物化（幂等 upsert）
-// 每天 3 次（盘前/盘中/盘后）：日历行由 agent-py L3 前瞻与 L4 种子写入，物化窗口取
-// [今天-1, 今天+180]，覆盖已发生与未来事件；幂等，重复执行不产生重复实体。
-cron.schedule('40 6,12,18 * * *', async () => {
-    try {
-        const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
-        // dateFrom = 今天-1 天，覆盖已发生事件；dateTo = 今天+180 天，覆盖近期未来事件
-        const baseMs = new Date(`${today}T00:00:00+08:00`).getTime()
-        const dateFrom = new Date(baseMs - 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
-        const dateTo = new Date(baseMs + 180 * 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
-
-        const rows = await listEvents(dateFrom, dateTo)
-        const r = await materializeCalendarRows(rows)
-        console.log(
-            `[CalendarEntityCron] 物化完成: materialized=${r.materialized}, skipped=${r.skipped}, failed=${r.failed}`,
-        )
-    } catch (err: unknown) {
-        console.error(
-            '[CalendarEntityCron] 物化失败:',
-            err instanceof Error ? err.message : String(err),
-        )
-    }
-}, { timezone: 'Asia/Shanghai' });
+// 重大事件时间线：Calendar 事件由 EventTimelinePublicRouter 读时直查
+// market_calendar_events（2026-10-01 物化方案废弃，见 EventTimelinePublicRouter 注释）。
+// 原 Calendar → Event Entity 物化 cron（06:40/12:40/18:40）已移除，不再依赖 event_entities 物化。
 
 // 个股资讯爬虫+实时推送：每天 8:00 和 15:00（包括节假日）
 // runCycle = 抓取 + AI研判 + 入库 + 触发自选股异动实时推送（飞书卡片+微信模板）
