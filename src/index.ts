@@ -299,7 +299,8 @@ app.get('/api/cn/favorites/movements', (req, res, next) => StockTraceController.
 app.post('/api/cn/favorites/movements/detect', (req, res, next) => StockTraceController.detect(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/analysis', (req, res, next) => StockTraceController.analysis(req, res, next));
 app.get('/api/cn/favorites/movements/:eventId/evidence/:sourceId', (req, res, next) => StockTraceController.evidence(req, res, next));
-app.get('/api/cn/favorites/movements/:eventId/report.pdf', (req, res, next) => StockTraceController.report(req, res, next));
+// 完整洞察报告（SSE 流式）：前端 EventSource 消费，逐章节渲染（含 401/404/409/502 走 error 数据事件）
+app.get('/api/cn/favorites/movements/:eventId/report/stream', (req, res) => StockTraceController.reportStream(req, res));
 app.get('/api/cn/favorites/movements/:eventId', (req, res, next) => StockTraceController.get(req, res, next));
 app.post('/api/cn/favorites/movements/:eventId/read', (req, res, next) => StockTraceController.markRead(req, res, next));
 

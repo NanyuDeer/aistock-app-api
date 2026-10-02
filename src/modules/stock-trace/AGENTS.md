@@ -2,6 +2,14 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-09-24 更新：列表/推送载荷补齐（window_end_at + is_limit_up + analysis_status 口径对齐）
+
+- **列表接口透出 `window_end_at`**：`listUserEvents` / `listRecentEvents` 的 SELECT 增选 `e.window_end_at`，items 映射为 `window_end_at`（ISO 字符串）。原因：前端卡片按 `window_end_at || triggered_at` 取"最近异动时间"，缺该字段时恒退化为**首次**触发时刻（每次再触发/修订都会刷新 `window_end_at`，见 `processPriceFact` 的 `SET window_end_at = $2`）。加性改动，排序/游标仍按 `first_triggered_at`，未变。
+- **`toPublicEvent` 透出 `is_limit_up`**：`TriggerEvent` 新增可选 `isLimitUp`（来自 `PriceFact.isLimitUp`，由 `buildTriggerEvent` 透传；与 DB 列 `is_limit_up` 写入口径一致），投影为 `is_limit_up`（缺省 `false`）。原先 WS 新建推送/`internalRouter` 触发响应缺该字段，前端「涨停」徽标在推送卡片上恒不显示（须等 refresh 才有）。
+- **`analysis_status` 口径对齐**：`toPublicEvent` 原先硬编码 `'pending'`，而列表 `analysis_status` 是 SQL 派生（无 artifact/result → `'processing'`，见 2026-08-19 条目）→ 同一事件在 WS 卡片显示"待归因"、下拉刷新后立刻变"归因中"。现统一为 `'processing'`（推送时刚创建/修订，必然尚无 artifact 与 result）。
+- **护栏**：新增 `__tests__/eventPayloadFields.spec.ts`（8 例：两列表的 `window_end_at` 取值 + SELECT 断言、`is_limit_up` 真/缺省、`analysis_status === 'processing'`、`window_end_at` ISO 回归）；同步 `__tests__/listAnalysisStatus.spec.ts` 的 fixture（其 `row()` 注释即"与 SELECT 列一致"，补 `window_end_at`）。
+- **未改**：`stock_trace_events` 无 `analysis_status` 列（状态始终派生）；`getUserEvent`（详情）本就 SELECT `e.window_end_at`，未变。
+
 ### 2026-09-18 更新：capital 候选层降级为条件准入层（agent-py 侧口径变更）
 
 - **背景**：资金净流入/流出方向与价格涨跌是同义反复（价格本即资金博弈结果），作为候选归因维度信息增量为零，且因"永远存在且天然同向"成为五层中最易置 supported 的一层，会挤压 company/sector/market 真因；但资金的结构/来源/背离（分单结构、席位来源、量价背离）含价格读不出的增量信息 → **保留维度、收紧准入**。
@@ -109,7 +117,45 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 >
 > `is_limit_up` 列保留不变（涨停文章命中标记，前端涨停文案仍依赖）。
 
+### 2026-09-26 更新：报告章节由 `lines` 改为结构化 `blocks`（六阶段因果链纵向时间轴）
+
+- **动机**：用户反馈完整报告"排版不美观"、六阶段因果链希望用表格/流程图。纯文本 `lines: string[]` 无法承载节点卡与表格 → 整份报告改结构化输出（三仓同步），`lines` 彻底移除（唯一消费方是本仓，不留兼容壳）。
+- **契约**：`sections` 元素由 `{heading, lines}` 改为 **`{heading, blocks}`**；空节 → `blocks: []`（前端渲染"暂缺"）。Block 判别联合 6 类：`kv` / `verdict` / `candidates` / `chain` / `evidence` / `list`（类型定义见 `InsightReportService.ts` 的 `ReportBlock`，与 agent-py 逐字段一致）。
+- **本仓改动**：① `InsightReportService` 新增 `ReportBlock`/`ReportKvItem`/`ReportChainStage` 类型，`ReportSection.lines` → `.blocks`；`fetchSections` 增加**边界归一化**（章节缺 `blocks`/非数组 → 补 `[]`，不把 `undefined` 透给前端）。② `controller.reportStream` 推送的 section 事件由 `lines` 改为 `blocks`（`data: {"type":"section", index, heading, blocks}`）。
+- **`chain` 只含主链**：由 agent-py `_primary_chain()` 筛选（真实 artifact 通常有 primary + alternative 各 6 节点，旧实现把 12 个节点平铺混淆）。节点同时带中文标签与机器 key（`stageKey`/`epistemicKey`/`statusKey`），供前端做中性弱化判定；**候选项同理带 `statusKey`**（前端用 `statusKey !== 'supported'` 判弱化，不匹配中文 `status` 标签）。
+- **`buildReportData` 不变**：主因正文的三级兜底（`primaryPhrase ?? primaryCandidate.verdict ?? primary_cause`）继续**只在本仓**做，agent-py 不重复兜底（两侧同兜底会各自演化、口径漂移）。
+- 测试：`__tests__/insightReport.spec.ts` 改为断言 `blocks` 透传（含 `chain.stages` 与 `stageKey`）；新增 `fetchSections` 边界归一化 3 例（缺 blocks → `[]`、缺 header → 空串、`sections` 非数组 → 抛错转 502）→ **11 pass / 0 fail**；`npx tsc --noEmit` exit 0。
+- 前端配套：新增 `modules/favorites/components/InsightReportBody.vue` 按 `block.type` 分派渲染，六阶段因果链为**纵向时间轴**（序号圆点 + 竖线 + 节点卡）。
+
+### 2026-09-25 更新：洞察报告由 PDF 下载改为 SSE 流式输出
+
+- **背景**：用户反馈完整洞察报告以 PDF 文件形式体验不好（移动端需外部阅读器打开、每次都要下载文件）。**决策：彻底移除 PDF 链路**，改为在洞察详情页点击「生成完整洞察报告」后，在按钮下方**逐章节流式输出**。
+- **端点变更**：`StockTraceController.report()`（`GET /api/cn/favorites/movements/:eventId/report.pdf`）→ **`reportStream(req, res)`**（`GET /api/cn/favorites/movements/:eventId/report/stream`），响应 `text/event-stream;charset=UTF-8`。
+  - **鉴权与前置校验全部在"开流前"完成** → 失败仍返回**真实 HTTP 状态码 + JSON**：`401`（未登录）、`404`（事件不存在/不在当前自选）、`409`（无有效归因 artifact）、`502`（agent-py 不可用或章节结构非法）。仅**开流之后**才发生的异常才走 `data: {"type":"error"}` 兜底 + `res.end()`。
+  - **为什么能返回真实状态码**：前端改用 `fetch + ReadableStream` 消费（`EventSource` 无法设置 `Authorization` 头，而本端点需 JWT），因此可以直接读状态码。
+  - **事件序列**（不写具名 `event:` 行，`type` 放进 data，前端按 `data: {...}\n\n` 分帧）：`{"type":"start", header, total}` → `{"type":"section", index, heading, blocks}` × N → `{"type":"done", message:"success"}`（**注**：section 事件在 2026-09-26 由 `lines` 改为 `blocks`，见上一条）；单条 `section` 之间 `REPORT_SECTION_INTERVAL_MS = 80ms` 节奏（模板构建是毫秒级的，不加节奏前端会"瞬间铺满"、失去流式观感；调 0 即瞬时）；15s `: keep-alive` 心跳，响应头含 `X-Accel-Buffering: no`。
+- **Service 层变更**：`InsightReportService` 删除 `renderPdf`，新增 `fetchSections(data)` → `POST /api/agent/insight-report/sections`（agent-py，`X-Internal-Token`，10s 超时），返回 `{header, sections}`；结构与返回非法时抛错，由 controller 转 502。`buildReportData`（报告数据组装）与 `event.tradingDate`/`attribution.primaryLayer`/`generatedAt` 字段**保持不变**（章节文案仍由 agent-py `insight_report.py` 模板 + 中文化映射产出）。
+- **数据流**：app-api 组装报告数据 → agent-py 纯模板构建章节 JSON（无 LLM）→ app-api 分块推 SSE → 前端逐章节渲染。
+- 测试：`__tests__/insightReport.spec.ts` 改为 SSE 用例集（新增 `fakeSseRes()`/`sseEvents()` 辅助，覆盖 401/404/409/成功 `start→section×2→done`/agent-py 失败 502 共 5 例）→ **8 pass / 0 fail**；`npx tsc --noEmit` exit 0。
+- 前端配套（详见 aistock-app-frontend）：新增 `useInsightReportSSE.ts`（fetch+ReadableStream，60s 超时 + AbortController）；详情页按钮改为「生成完整洞察报告」（生成中可点击停止、完成后变「重新生成」）；monitor 卡片「报告 ›」改为跳详情页带 `autostart=1` 自动开始生成；删除 `shared/utils/downloadInsightReport.ts`。
+- **设计文档**：`docs/superpowers/specs/2026-09-25-insight-report-streaming-design.md`（本章节的权威契约来源）。
+
+### 2026-09-24 更新：洞察报告 PDF 字体内嵌（修乱码）+ 页眉与字段补齐
+
+> **注：2026-09-25 起 PDF 链路已整体替换为 SSE 流式输出**（见上一条），本节记载的是当时排查 PDF 乱码的根因与修复过程，其中「`trading_date::text` 补齐」与「中文化映射」两项结论在流式方案中**继续有效**。
+
+- **用户报障**：下载的 PDF 中文大量乱码（尤其章节标题）。**根因**：agent-py 侧原用非嵌入 CID 字体 `STSong-Light`，PDF 只写字体名不带字形（实测 `FontFile`/`FontFile2`/`FontFile3` 计数全为 **0**），阅读器未安装该字体即整篇回退乱码。与"能否生成图片/彩色"无关。
+- **修复（agent-py 侧，详见其 changelog）**：改用内嵌 TTF `assets/fonts/NotoSansSC-Regular-Subset.ttf`（2.33MB，OFL 授权的 Noto Sans SC 子集）；`pyproject.toml` 的 package-data 增 `assets/fonts/*.ttf`。
+- **app-api 侧配套**：
+  - `InsightReportService.buildReportData` 给 agent-py 的内部 payload 新增 `event.tradingDate`、`attribution.primaryLayer`（归类标签，渲染层映射中文）、`attribution.generatedAt`（归因生成时间）。
+  - `StockTraceService.getUserEvent` / `getRecentEvent` 的 SELECT 增选 `e.trading_date::text AS trading_date`、返回投影新增 `trading_date`。**这是本次发现的真实缺口**：两条投影原先都未带该列（`getInternalEvent` 本就带，故此前未暴露），导致 PDF 页眉交易日恒为"暂缺"。用 `::text` 是为避开 PG `DATE` 列被 node-postgres 解析成 `Date` 后 JSON 化为 UTC ISO 串（实测页眉曾显示 `2026-09-23T16:00:00.000Z`，应为 `2026-09-24`）。**加性改动**：前端未消费该字段，零破坏。
+- **报告内容变化**：页眉新增「股票名（代码） · 交易日」；主因结论新增归类标签与归因生成时间；分层候选行/六阶段链节点行追加证据 ID；证据清单行扩为 `source_id｜provider｜kind｜occurred_at｜source_level｜title｜摘要`。
+- 测试：`__tests__/insightReport.spec.ts` **10 例全过**（新增 `getUserEvent` 投影含 `trading_date` 的 mock-pool 用例）；`npx tsc --noEmit` exit 0。
+- 跨端（cross-repo-impact-analyzer 已确认）：`trading_date` 为纯加性字段，**无需同步前端**；`/insight-report/render` 唯一调用方是 app-api。
+
 ### 2026-09-13 更新：完整洞察报告 PDF + 预判彻底移除（迁移 022）
+
+> **注：本节描述的 PDF 报告端点已于 2026-09-25 被 SSE 流式输出整体替换**（`report.pdf` → `report/stream`，见上文最新条目）。迁移 022 与"彻底移除预判"部分仍然有效。
 
 - **新增端点**：`GET /api/cn/favorites/movements/:eventId/report.pdf`（StockTraceController.report）——JWT 鉴权，返回实时渲染的 PDF。
   - 状态码：`401`（无/无效 JWT）、`404`（事件不存在或不属于当前用户）、`409`（事件无归因完成结果，不可生成报告）、`200`（正常返回 PDF 字节流，Content-Type: application/pdf）、`502`（上游 agent-py 渲染服务不可用/超时/非 PDF 响应）。

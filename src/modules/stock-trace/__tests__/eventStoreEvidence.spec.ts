@@ -14,7 +14,7 @@
  *
  * 运行：node --import tsx --test src/modules/stock-trace/__tests__/eventStoreEvidence.spec.ts
  */
-import { afterEach, before, describe, it, mock } from 'node:test';
+import { afterEach, before, beforeEach, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { ClsStockNewsService } from '../../monitor/ClsStockNewsService';
 import { StockInfoService } from '../../crawler/StockInfoService';
@@ -28,6 +28,17 @@ before(() => {
     _envBackup.AGENT_PY_URL = process.env.AGENT_PY_URL;
     _envBackup.INTERNAL_API_TOKEN = process.env.INTERNAL_API_TOKEN;
     _envBackup.INTERNAL_TOKEN = process.env.INTERNAL_TOKEN;
+});
+
+/**
+ * 读库 base URL 解析顺序是 `AGENT_PY_URL || PYTHON_AGENT_URL`（见 `loadEventStoreEvidence`
+ * 与 `StockTraceSnapshotService`）。本机 `.env` 常带 `AGENT_PY_URL`，若用例只设
+ * `PYTHON_AGENT_URL`，实际请求会走 `.env` 里的地址 → URL 前缀断言失败（环境耦合红）。
+ * 故默认把两者指向同一测试地址；用例内可再各自覆盖（如优先级用例）。
+ */
+beforeEach(() => {
+    process.env.AGENT_PY_URL = 'http://python-agent:8000';
+    process.env.PYTHON_AGENT_URL = 'http://python-agent:8000';
 });
 
 afterEach(() => {
