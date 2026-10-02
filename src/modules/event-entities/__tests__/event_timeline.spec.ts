@@ -1,12 +1,15 @@
 /**
- * 重大事件时间线公开 API — 单测（标题对齐 + 影响板块，2026-09-24）
+ * 重大事件时间线公开 API — 单测（标题对齐 + 影响板块 + calendar 直查，2026-10-01）
  *
  * 覆盖：
  * 1. news 事件标题按事件传导报告 content.title（LLM 提炼）覆盖展示；无传导报告回退
- *    event_entities.title（原始标题）；calendar 事件原样透传。
+ *    event_entities.title（原始标题）；calendar 事件原样透传（直查源）。
  * 2. impactSectors 优先级：传导 chain（impactStrength 降序 Top3）> event_entities.impact_sectors
  *    列 > []（有 chain→Top3；无 chain→列字段；都无→[]）。
- * 3. 增强查询带全部分页 eventIds 且用 IN 标量参数（记忆：= ANY($n) JS 数组会触发 PG 42P18）。
+ * 3. 增强查询带全部分页 eventIds 且用 IN 标量参数（记忆：= ANY($n) JS 数组会触发 PG 42P18）；
+ *    calendar 直查行不参与报告增强查询（恒无传导报告）。
+ * 4. calendar 事件由市场日历表直查提供（物化方案废弃后），event_entities 中残留的
+ *    calendar 源行被排除（防重复）。
  *
  * Mock 策略：monkey-patch pool.query（EventTimelinePublicRouter 持有同一对象引用），
  * 按 SQL 文本分派响应，不连数据库。
@@ -115,10 +118,11 @@ const NEWS_ENTITY_NO_REPORT_ROW = {
     impact_sectors: [],
 };
 
-const CALENDAR_ENTITY = {
-    event_id: 'EVT-cal-1',
-    title: '中国10月LPR报价',
-    summary: '央行每月20日报价',
+/** event_entities 中残留的历史物化 calendar 行：新逻辑应排除（由直查替代，防重复） */
+const STALE_CALENDAR_ENTITY = {
+    event_id: 'EVT-cal-stale',
+    title: '中国10月LPR报价（残留物化行）',
+    summary: null,
     publish_time: null,
     event_start_time: '2026-10-20T00:00:00+08:00',
     event_end_time: '2026-10-20T00:00:00+08:00',
@@ -127,8 +131,20 @@ const CALENDAR_ENTITY = {
     time_confidence: 0.95,
     source_type: 'calendar',
     source_event_id: null,
-    impact_sectors: [], // 无 chain 也无列值 → []
+    impact_sectors: [],
 };
+
+/** market_calendar_events 直查行（qualify: importance=high → 通过） */
+const CALENDAR_ROW = {
+    event_date: '2026-10-20',
+    title: '中国10月LPR报价',
+    importance: 'high',
+    source: 'L4',
+    detail: '央行每月20日报价',
+};
+
+/** 直查行映射后的稳定 eventId（与路由内构造口径一致） */
+const CALENDAR_EVENT_ID = 'CAL-2026-10-20-中国10月LPR报价';
 
 const REFINED_TITLE = '央行开展7620亿元逆回购，含6000亿隔夜操作';
 
@@ -140,7 +156,7 @@ const NEWS_CHAIN = [
     { industry: '半导体', direction: 'bullish', impactStrength: 0.6, reason: '' },
 ];
 
-describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
+describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直查', () => {
     before(() => {
         installPoolMock();
         mockResponder = (sql: string) => {
@@ -154,8 +170,19 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
                     ],
                 };
             }
-            // listEventEntities（event_entities 全量查询）
-            return { rows: [NEWS_ENTITY, NEWS_ENTITY_NO_REPORT, NEWS_ENTITY_NO_REPORT_ROW, CALENDAR_ENTITY] };
+            // 日历直查（market_calendar_events）
+            if (sql.includes('market_calendar_events')) {
+                return { rows: [CALENDAR_ROW] };
+            }
+            // listEventEntities（event_entities 全量查询，含残留物化 calendar 行）
+            return {
+                rows: [
+                    NEWS_ENTITY,
+                    NEWS_ENTITY_NO_REPORT,
+                    NEWS_ENTITY_NO_REPORT_ROW,
+                    STALE_CALENDAR_ENTITY,
+                ],
+            };
         };
         mockCalls = [];
     });
@@ -164,7 +191,7 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         mockResponder = null;
     });
 
-    it('news 事件标题被传导报告提炼标题覆盖；calendar 原样透传', async () => {
+    it('news 事件标题被传导报告提炼标题覆盖；calendar 原样透传（直查源）', async () => {
         const app = buildApp();
         const result = await requestJson(
             app,
@@ -173,7 +200,8 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         assert.equal(result.status, 200);
         assert.equal(result.body.code, 0);
         const items = result.body.data?.items ?? [];
-        // EVT-news-3（occurred 且无传导报告行）被传导存在性过滤排除 → 剩余 3 条
+        // EVT-news-3（occurred 且无传导报告行）被传导存在性过滤排除；STALE_CALENDAR_ENTITY
+        // 残留物化行被排除（直查替代）→ 剩余 3 条：news×2 + 直查 calendar×1
         assert.equal(items.length, 3);
 
         const byId = new Map(items.map((it) => [it.eventId, it]));
@@ -181,10 +209,14 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         assert.equal(byId.get('EVT-news-1')?.title, REFINED_TITLE);
         // 有报告行但标题为空 → 回退原始标题
         assert.equal(byId.get('EVT-news-2')?.title, '无有效报告内容的新闻事件原始标题');
-        // calendar 事件不参与标题增强，原样透传
-        assert.equal(byId.get('EVT-cal-1')?.title, '中国10月LPR报价');
-        // 无传导报告的 occurred 事件被排除
-        assert.equal(byId.has('EVT-news-3'), false);
+        // calendar 事件不参与标题增强，原样透传（由直查源提供）
+        assert.equal(byId.get(CALENDAR_EVENT_ID)?.title, '中国10月LPR报价');
+        assert.equal(byId.has('EVT-news-3'), false, '无传导报告的 occurred 事件被排除');
+        assert.equal(
+            byId.has('EVT-cal-stale'),
+            false,
+            'event_entities 残留物化 calendar 行被排除（直查替代）',
+        );
     });
 
     it('impactSectors 优先级：chain Top3 > 列字段 > 空', async () => {
@@ -200,11 +232,11 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         assert.deepEqual(byId.get('EVT-news-1')?.impactSectors, ['光模块', 'AI算力', '半导体']);
         // 有报告行但 chain 空 → 回退 event_entities.impact_sectors 列
         assert.deepEqual(byId.get('EVT-news-2')?.impactSectors, ['半导体', 'PCB']);
-        // 无 chain 也无列值 → []
-        assert.deepEqual(byId.get('EVT-cal-1')?.impactSectors, []);
+        // 直查 calendar 行无 chain 也无列值 → []
+        assert.deepEqual(byId.get(CALENDAR_EVENT_ID)?.impactSectors, []);
     });
 
-    it('增强查询带全部分页 eventIds 且用 IN 标量参数（非 = ANY）', async () => {
+    it('增强查询带全部实体 eventIds（不含直查 calendar 行）且用 IN 标量参数（非 = ANY）', async () => {
         const app = buildApp();
         await requestJson(
             app,
@@ -213,11 +245,11 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         const enrichCall = mockCalls.find((c) => c.sql.includes('agent_analysis_reports'));
         assert.ok(enrichCall, '应发起事件传导报告增强查询');
         assert.ok(!enrichCall.sql.includes('= ANY'), '禁止 = ANY($n) 数组参数');
-        assert.ok(enrichCall.sql.includes('IN ($1, $2, $3, $4)'), '应用 IN 标量参数');
+        assert.ok(enrichCall.sql.includes('IN ($1, $2, $3)'), '应用 IN 标量参数');
         assert.deepEqual(
             (enrichCall.params as string[]).slice().sort(),
-            ['EVT-cal-1', 'EVT-news-1', 'EVT-news-2', 'EVT-news-3'].sort(),
-            '应查询全部实体 eventId（标题 + chain 增强 + occurred 存在性校验）',
+            ['EVT-news-1', 'EVT-news-2', 'EVT-news-3'].sort(),
+            '只查询实体源 eventId（calendar 直查行恒无报告，不参与增强查询）',
         );
     });
 
@@ -233,8 +265,8 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
         assert.equal(byId.has('EVT-news-3'), false, 'occurred 无报告必须排除');
         // occurred + 有传导报告行 → 保留
         assert.equal(byId.has('EVT-news-1'), true, 'occurred 有报告必须保留');
-        // scheduled 未来事件无报告 → 保留（点击就地展开不跳详情，不报错）
-        assert.equal(byId.has('EVT-cal-1'), true, '未来事件无报告必须保留');
+        // scheduled 未来事件（含直查 calendar）无报告 → 保留（点击就地展开不跳详情，不报错）
+        assert.equal(byId.has(CALENDAR_EVENT_ID), true, '未来事件无报告必须保留');
     });
 });
 
@@ -248,22 +280,49 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块', () => {
 describe('EventTimelinePublicRouter TIMESTAMPTZ=Date 兼容（回归）', () => {
     before(() => {
         installPoolMock();
+        // 夹具必须用「相对当前时间」的未来日期（date-only，上海墙钟 00:00）：
+        // 硬编码绝对日期会随时钟推进过期 —— date-only 事件次日 0 点起变 occurred，
+        // 随即命中「occurred 必须有传导报告」准入被排除（2026-10-02 本用例即因此失败：
+        // 夹具 2026-10-01 已变成已发生）。本用例只验证 TIMESTAMPTZ 返回 Date 时
+        // 排序不抛 500，与「事件是否已发生」无关，故用相对日期保证永不随时间失效。
+        const shanghaiDateStr = (offsetDays: number): string =>
+            new Date(Date.now() + 8 * 3600 * 1000 + offsetDays * 86400000).toISOString().slice(0, 10)
+        const start1 = new Date(`${shanghaiDateStr(7)}T00:00:00+08:00`) // EVT-d-1（较早）
+        const start2 = new Date(`${shanghaiDateStr(14)}T00:00:00+08:00`) // EVT-d-2（较晚）
         mockResponder = (sql: string) => {
             // 无传导报告 → occurred 过滤不生效，纯验证排序不抛错
             if (sql.includes('agent_analysis_reports')) return { rows: [] };
+            // 日历直查无数据（本用例只验证实体源 Date 排序）
+            if (sql.includes('market_calendar_events')) return { rows: [] };
             return {
                 rows: [
                     {
-                        ...CALENDAR_ENTITY,
                         event_id: 'EVT-d-2',
-                        event_start_time: new Date('2026-10-20T00:00:00+08:00'),
-                        event_end_time: new Date('2026-10-20T00:00:00+08:00'),
+                        title: '实体事件2',
+                        summary: null,
+                        publish_time: null,
+                        event_start_time: start2,
+                        event_end_time: start2,
+                        event_status: 'scheduled',
+                        time_source: 'calendar',
+                        time_confidence: 0.95,
+                        source_type: 'news',
+                        source_event_id: null,
+                        impact_sectors: [],
                     },
                     {
-                        ...CALENDAR_ENTITY,
                         event_id: 'EVT-d-1',
-                        event_start_time: new Date('2026-10-01T00:00:00+08:00'),
-                        event_end_time: new Date('2026-10-01T00:00:00+08:00'),
+                        title: '实体事件1',
+                        summary: null,
+                        publish_time: null,
+                        event_start_time: start1,
+                        event_end_time: start1,
+                        event_status: 'scheduled',
+                        time_source: 'news_extraction',
+                        time_confidence: 0.9,
+                        source_type: 'news',
+                        source_event_id: null,
+                        impact_sectors: [],
                     },
                 ],
             };

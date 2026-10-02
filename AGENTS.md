@@ -31,7 +31,7 @@ AiStock App 后端，基于 Express 5 + TypeScript，作为 App/H5/小程序的�
 | 推送 | `modules/push` | 微信模板消息、定时推送、事件订阅 | [push/AGENTS.md](./src/modules/push/AGENTS.md) |
 | 认证 | `modules/auth` | 扫码登录、微信授权、飞书登录 | [auth/AGENTS.md](./src/modules/auth/AGENTS.md) |
 | 日历 | `modules/calendar` | L1 交割日规则 + `market_calendar_events` 事件日历 + rhythm-master 报告读取 | [calendar/AGENTS.md](./src/modules/calendar/AGENTS.md) |
-| 重大事件时间线 | `modules/event-entities` | Event Entity 权威实体（`event_entities`）+ Calendar 物化 + 公开时间线读取 | [event-entities/AGENTS.md](./src/modules/event-entities/AGENTS.md) |
+| 重大事件时间线 | `modules/event-entities` | Event Entity 权威实体（`event_entities`）+ Calendar 读时直查 + 公开时间线读取 | [event-entities/AGENTS.md](./src/modules/event-entities/AGENTS.md) |
 | 监控 | `modules/monitor` | 风口龙头、异动监控、趋势股评分、知识图谱、机构调研、业绩预测、新闻 | [monitor/AGENTS.md](./src/modules/monitor/AGENTS.md) |
 | 爬虫 | `modules/crawler` | 数据爬取、OCR、资讯研判、飞书研报 | [crawler/AGENTS.md](./src/modules/crawler/AGENTS.md) |
 | Agent | `modules/agent` | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） | — |
@@ -77,7 +77,7 @@ src/
 │   ├── push/               # 推送
 │   ├── auth/               # 认证
 │   ├── calendar/           # 日历（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
-│   ├── event-entities/     # 重大事件时间线（event_entities 权威实体 + Calendar 物化 + /api/agent/event/timeline）
+│   ├── event-entities/     # 重大事件时间线（event_entities 权威实体 + Calendar 读时直查 + /api/agent/event/timeline）
 │   ├── chat/               # 会话元数据（P9）+ token 用量（P10 线 2）
 │   ├── monitor/            # 监控（异动/风口/趋势股评分/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫
@@ -320,11 +320,12 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 11:50 | ~~午盘补抓~~ | **已停用**（2026-08-15，数据一致性由 stocktrace 事件层保证） |
 | 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件，触发改接 stocktrace 事件层 |
 | 15:00 | 数据归档 | — |
-| 06:40 / 12:40 / 18:40 | Calendar → Event Entity 物化 | 读 `market_calendar_events`（窗口 `[今天-1, 今天+180]`）→ 确定性准入 → 幂等 upsert 到 `event_entities`（重大事件时间线数据源）；每天 3 次，单行失败不中断整批；日志前缀 `[CalendarEntityCron]` |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 19:05 | 收盘后任务 | — |
 
 > 所有 cron 任务必须指定 `{ timezone: 'Asia/Shanghai' }`。
+>
+> **2026-10-02 起**：原 `06:40 / 12:40 / 18:40` 的「Calendar → Event Entity 物化」cron（`CalendarEntityCron`）**已移除**——物化方案废弃，时间线改为 `EventTimelinePublicRouter` 请求时直查 `market_calendar_events`（确定性准入 `qualifyCalendarEvent`），不依赖任何 cron，calendar 表更新即刻反映到时间线。
 
 ## 9. 常用命令
 

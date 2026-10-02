@@ -21,6 +21,7 @@ import { type Request, type Response, Router } from 'express'
 
 import pool from '../../core/db'
 import {
+    computeEventStatus,
     listEventEntities,
     normalizeImpactSectors,
     withComputedStatus,
@@ -112,6 +113,50 @@ async function loadConductionPayloads(eventIds: string[]): Promise<Map<string, C
 }
 
 /**
+ * 日历行窄接口（直查 `market_calendar_events`，与节奏大师同源口径）。
+ */
+interface CalendarRowLike {
+    event_date: string // 'YYYY-MM-DD'
+    title: string
+    importance: string // 'high' | 'medium' | 'low'
+    source: string // 'L1' | 'L2' | 'L3' | 'L4'
+    detail?: string | null
+}
+
+/**
+ * 日历事件确定性准入（禁 LLM，2026-10-01 自 CalendarEntityMaterializer 内联迁移——
+ * 物化方案废弃后本路由直查 calendar 表，准入口径保持不变）：
+ * - importance='high' → true（高优宏观/财报/政策事件，代表已确认为重大事件）
+ * - source='L4' → true（种子事件，人工显式录入）
+ * - 其他 → false（防止时间线退化成普通活动日历）
+ */
+function qualifyCalendarEvent(row: CalendarRowLike): boolean {
+    if (row.importance === 'high') return true
+    if (row.source === 'L4') return true
+    return false
+}
+
+/**
+ * 直查日历事件（dateFrom/dateTo 窗口），确定性准入过滤后按日期升序返回。
+ * 与节奏大师共用 `market_calendar_events` 表（listEvents 口径），不依赖物化 cron，
+ * 实时反映 calendar 最新状态（物化方案废弃后的唯一数据源）。
+ */
+async function loadCalendarRows(
+    dateFrom: string,
+    dateTo: string,
+): Promise<CalendarRowLike[]> {
+    const { rows } = await pool.query<CalendarRowLike>(
+        `SELECT to_char(event_date, 'YYYY-MM-DD') AS event_date,
+                title, importance, source, detail
+         FROM market_calendar_events
+         WHERE event_date BETWEEN $1 AND $2
+         ORDER BY event_date ASC, event_time ASC NULLS LAST, title ASC`,
+        [dateFrom, dateTo],
+    )
+    return rows.filter(qualifyCalendarEvent)
+}
+
+/**
  * 从传导 chain 提取时间线展示的核心影响板块（纯函数）。
  *
  * 规则（对齐 internal.ts extractChainSummary 的行业口径）：
@@ -194,11 +239,35 @@ eventTimelinePublicRouter.get('/event/timeline', async (req: Request, res: Respo
         const order = (orderRaw ?? 'asc') as 'asc' | 'desc'
 
         // --- 查询与处理 ---
+        // 实体源（news/announcement 等已物化事件；calendar 行由下方直查提供，
+        // 排除历史物化残留的 calendar 实体，避免与直查结果重复）
         const rows = await listEventEntities({ dateFrom, dateTo })
+        const entityRows = rows.filter((r) => r.source_type !== 'calendar')
+
+        // 日历源直查（2026-10-01 物化方案废弃后，calendar 事件实时读
+        // market_calendar_events，与节奏大师同源，不依赖物化 cron）
+        const calRows = await loadCalendarRows(dateFrom, dateTo)
 
         // 读时重算 event_status（spec §3.3：写库列仅 display-only 快照，读时重算为权威）
         const nowIso = new Date().toISOString()
-        const computed = withComputedStatus(rows, nowIso)
+        const computedEntities = withComputedStatus(entityRows, nowIso)
+        const calendarTimelineRows = calRows.map((row) => {
+            const startTime = `${row.event_date}T00:00:00+08:00`
+            return {
+                ...row,
+                event_id: `CAL-${row.event_date}-${row.title}`,
+                event_start_time: startTime,
+                event_end_time: startTime, // 单日事件 end = start
+                time_source: 'calendar',
+                time_confidence: 0.95,
+                source_type: 'calendar',
+                source_event_id: null,
+                impact_sectors: null,
+                summary: row.detail ?? null,
+                computed_status: computeEventStatus(startTime, startTime, nowIso),
+            }
+        })
+        const computed = [...computedEntities, ...calendarTimelineRows]
 
         // 按 computed_status 过滤（若传了 status 参数）
         const filtered = statusRaw
@@ -221,7 +290,12 @@ eventTimelinePublicRouter.get('/event/timeline', async (req: Request, res: Respo
         // 传导存在性过滤（2026-09-24 用户验收）：occurred 事件必须在事件传导报告存在，
         // 否则前端点击详情 404 显示「服务异常」→ 从时间线排除；
         // scheduled/upcoming/ongoing 未来事件保留（点击就地展开「尚未发生」，不跳详情不报错）。
-        const allPayloads = await loadConductionPayloads(sorted.map((row) => row.event_id))
+        // 只对实体源查询传导报告（calendar 直查行恒无报告：不做标题增强/无 chain，
+        // 也不参与 occurred 存在性校验——occurred 的 calendar 行直接走过滤排除）
+        const reportableIds = sorted
+            .filter((row) => row.source_type !== 'calendar')
+            .map((row) => row.event_id)
+        const allPayloads = await loadConductionPayloads(reportableIds)
         const shown = sorted.filter((row) => {
             if (row.computed_status !== 'occurred') return true
             return allPayloads.has(row.event_id)
