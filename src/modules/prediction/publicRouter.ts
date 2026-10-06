@@ -84,6 +84,75 @@ interface LongStats {
   hitRate: number | null;
 }
 
+/** 方向/档位子桶统计（与主桶同形：n/hits/hitRate/sufficientSample + flat 指标） */
+interface SubBucketStats {
+  n: number;
+  hits: number;
+  hitRate: number | null;
+  sufficientSample: boolean;
+  flat_rate: number | null;
+  flat_count: number;
+  directional_count: number;
+}
+
+/**
+ * 给定一组已结算 entry（4.0 hit/miss、非近似、非 long）→ 命中率子桶摘要。
+ *
+ * 方向桶 / 档位桶共用的**唯一聚合实现**（避免为每个维度手写一份聚合）。
+ * 无样本时 hitRate=null（与 long 单列、agent-py `_bucket_metrics` 同口径，不用 0）；
+ * flat_rate 分母 = 该组内方向预判数（bullish/bearish；无方向样本 → null）。
+ */
+function summarizeSettled(entries: PredictionVerificationEntry[]): SubBucketStats {
+  const n = entries.length;
+  const hits = entries.filter((e) => e.result === 'hit').length;
+  const directional = entries.filter((e) => e.direction === 'bullish' || e.direction === 'bearish');
+  const flatCount = directional.filter((e) => e.flat === true).length;
+  const directionalCount = directional.length;
+  return {
+    n,
+    hits,
+    hitRate: n ? round4(hits / n) : null,
+    sufficientSample: n >= 30,
+    flat_rate: directionalCount ? round4(flatCount / directionalCount) : null,
+    flat_count: flatCount,
+    directional_count: directionalCount,
+  };
+}
+
+/** 方向维度子桶（每个带 flat_rate；分母 = 该方向已结算数，用于判读"看多方向是否特别容易落在无信息带"） */
+interface DirectionBuckets {
+  bullish: SubBucketStats;
+  bearish: SubBucketStats;
+  neutral: SubBucketStats;
+}
+
+/** 档位维度子桶；long 单列并标注 iteration_board=false（不参与迭代判读，§4.7） */
+interface HorizonBuckets {
+  short: SubBucketStats;
+  mid: SubBucketStats;
+  long: SubBucketStats & { iteration_board: false };
+}
+
+/** 按方向 / 档位切分子桶（与主桶同口径：4.0 + hit/miss + 非近似；long 不进方向桶）。 */
+function dimensionBuckets(
+  settledEntries: PredictionVerificationEntry[],
+  longSettledEntries: PredictionVerificationEntry[],
+): { directionBuckets: DirectionBuckets; horizonBuckets: HorizonBuckets } {
+  return {
+    directionBuckets: {
+      bullish: summarizeSettled(settledEntries.filter((e) => e.direction === 'bullish')),
+      bearish: summarizeSettled(settledEntries.filter((e) => e.direction === 'bearish')),
+      neutral: summarizeSettled(settledEntries.filter((e) => e.direction === 'neutral')),
+    },
+    horizonBuckets: {
+      short: summarizeSettled(settledEntries.filter((e) => e.horizon === 'short')),
+      mid: summarizeSettled(settledEntries.filter((e) => e.horizon === 'mid')),
+      // long 单列：显式标注不参与迭代判读（与既有 long 字段口径一致）
+      long: { ...summarizeSettled(longSettledEntries), iteration_board: false },
+    },
+  };
+}
+
 /** 单桶统计（combined/index/sector 同形；Task 5 补 long 排除与看板指标） */
 interface BucketStats {
   n: number;
@@ -100,6 +169,9 @@ interface BucketStats {
   directional_count: number;
   /** long 档命中率单列交付（用户可见；不进迭代看板） */
   long: LongStats;
+  /** §8-3 方向桶 × 档位桶（与 computeStats 同口径同值；long 单列并标注不参与迭代判读） */
+  directionBuckets: DirectionBuckets;
+  horizonBuckets: HorizonBuckets;
 }
 
 /** 声明档位槽：来源 = 记录声明的 horizons（而非仅 verification entry），含真 pending。 */
@@ -193,6 +265,13 @@ function bucketStats(rows: PredictionRecordRow[]): {
     const longSettled = longScope.filter((s) => isSettledCurrent(s.entry));
     const longN = longSettled.length;
     const longHits = longSettled.filter((s) => s.entry?.result === 'hit').length;
+    // §8-3 方向桶 × 档位桶：与该 target_type 桶同口径（同一 settled entry 集合切分）
+    const settledEntries = settled
+      .map((s) => s.entry)
+      .filter((e): e is PredictionVerificationEntry => !!e);
+    const longEntries = longSettled
+      .map((s) => s.entry)
+      .filter((e): e is PredictionVerificationEntry => !!e);
     return {
       n,
       hits,
@@ -205,6 +284,7 @@ function bucketStats(rows: PredictionRecordRow[]): {
       flat_count: flatCount,
       directional_count: directionalCount,
       long: { n: longN, hits: longHits, hitRate: longN ? round4(longHits / longN) : null },
+      ...dimensionBuckets(settledEntries, longEntries),
     };
   };
   return { combined: bucket(null), index: bucket('index'), sector: bucket('sector') };
@@ -218,6 +298,8 @@ function bucketStats(rows: PredictionRecordRow[]): {
  * Task 5：long 档（120 交易日）不计入迭代看板（仅标记 long_excluded + 单列 long 命中率，档位进度照旧）；
  * 补 settled_ratio（已结算 / 声明非-long、非-近似档位槽，含真 pending）与 flat_rate。
  * flat / direction 由 agent-py 写入侧落库（k 的唯一来源在 Python）——此处只读，不自行算 k。
+ * §8-3：补 directionBuckets（bullish/bearish/neutral，各带 flat_rate）与 horizonBuckets
+ * （short/mid/long；long 单列并标注 iteration_board=false），与 bucketStats 同口径同值。
  */
 function computeStats(rows: PredictionRecordRow[]) {
   let pendingCount = 0;
@@ -235,6 +317,9 @@ function computeStats(rows: PredictionRecordRow[]) {
   // long 档命中率单列（不进迭代看板）
   let longN = 0;
   let longHits = 0;
+  // §8-3 方向桶 × 档位桶：收集已结算 entry（4.0 hit/miss、非近似、非 long）与 long 单列 entry
+  const settledEntries: PredictionVerificationEntry[] = [];
+  const longSettledEntries: PredictionVerificationEntry[] = [];
   for (const row of rows) {
     if (row.status === 'skipped') {
       skippedCount += 1;
@@ -261,6 +346,7 @@ function computeStats(rows: PredictionRecordRow[]) {
         // long 命中率单列：long + hit/miss + 当前版本 + 非近似（与 agent-py long 口径一致）
         if (entry && !isApprox && isSettledCurrent(entry)) {
           longN += 1;
+          longSettledEntries.push(entry);
           if (entry.result === 'hit') longHits += 1;
         }
         continue;
@@ -276,6 +362,7 @@ function computeStats(rows: PredictionRecordRow[]) {
         // 分子：当前版本已结算（hit/miss）
         if (entry.result === 'hit') hitCount += 1;
         else missCount += 1;
+        settledEntries.push(entry);
         const dir = entry.direction;
         if (dir === 'bullish' || dir === 'bearish') {
           directionalCount += 1;
@@ -310,6 +397,7 @@ function computeStats(rows: PredictionRecordRow[]) {
     flat_count: flatCount,
     directional_count: directionalCount,
     long: { n: longN, hits: longHits, hitRate: longN > 0 ? round4(longHits / longN) : null },
+    ...dimensionBuckets(settledEntries, longSettledEntries),
     bucketStats: bucketStats(rows),
   };
 }
