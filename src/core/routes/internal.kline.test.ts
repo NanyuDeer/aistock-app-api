@@ -110,6 +110,8 @@ test('GET /internal/quote/600519/kline?days=30 -> 200 rows', async () => {
             low: 0.5,
             close: 1.5,
             pct_chg: 1.2,
+            vol: null,
+            amount: null,
         })
     } finally {
         ;(TushareKlineService as unknown as { getKLine: unknown }).getKLine = originalGetKLine
