@@ -709,3 +709,114 @@ test('GET /api/predictions -> 200：无 long 样本时 long.hitRate 为 null（�
   const body = res.body as { data: { stats: { long: { n: number; hits: number; hitRate: number | null } } } }
   assert.deepEqual(body.data.stats.long, { n: 0, hits: 0, hitRate: null })
 })
+
+// ============ Task 5 二轮修复：insufficient 计 pending + long_excluded 近似排除 + 舍入对齐 ============
+
+test('GET /api/predictions -> 200：4.0 insufficient 计入 pending（数据可用性状态非判定结论）→ settled_ratio 0.5', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'pending',
+      due_dates: { short: '2026-08-17', mid: '2026-09-08' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', actual: '+1.20%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        // mid 的 insufficient 属数据可用性状态（数据源故障/无数据），非判定结论 → 计入 pending
+        mid: { horizon: 'mid', result: 'insufficient' as const, methodology_version: '4.0' as const, target_type: 'index' as const, actual: '', reason: '无数据源', verified_at: '2026-09-08T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  const body = res.body as { data: { stats: { settled_ratio: number | null; bucketStats: BucketStatsShape } } }
+  // 1 settled(hit) / (1 settled + 1 insufficient pending) = 0.5（若把 insufficient 双排除会得 1）
+  assert.equal(body.data.stats.settled_ratio, 0.5)
+  assert.equal(body.data.stats.settled_ratio, body.data.stats.bucketStats.combined.settled_ratio)
+})
+
+test('GET /api/predictions -> 200：approximate-long 的 long_excluded 在 computeStats 与 bucketStats 一致（同源，均 false）', async () => {
+  const rows = [
+    baseRow({
+      id: 1,
+      status: 'verified',
+      prediction: { ...baseRow().prediction, due_dates_approximate: ['long'] },
+      due_dates: { short: '2026-08-17', long: '2027-01-05' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, actual: '+1.20%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        long: { horizon: 'long', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, actual: '+8.00%', reason: 'x', verified_at: '2027-01-05T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  const body = res.body as { data: { stats: { long_excluded: boolean; bucketStats: BucketStatsShape } } }
+  // 近似 long 不算「被排除的 long 档」（bucketStats 已排除近似）→ computeStats 必须同源同值（false）
+  assert.equal(body.data.stats.long_excluded, false)
+  assert.equal(body.data.stats.long_excluded, body.data.stats.bucketStats.combined.long_excluded)
+})
+
+test('GET /api/predictions -> 200：settled_ratio / flat_rate 舍入到 4 位（两侧同值 0.3333）', async () => {
+  // settled_ratio：1 settled + 2 pending = 1/3 → 0.3333（与 agent-py round(...,4) 同值）
+  const rows1 = [
+    baseRow({
+      id: 1,
+      status: 'pending',
+      prediction: { ...baseRow().prediction, horizons: [{ horizon: 'short' }, { horizon: 'mid' }] },
+      due_dates: { short: '2026-08-17', mid: '2026-09-08' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, actual: '+1.20%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+      },
+    }),
+    baseRow({
+      id: 2,
+      status: 'pending',
+      source_id: 'review:2026-08-08',
+      created_at: '2026-08-08T12:00:00.000Z',
+      prediction: { ...baseRow().prediction, horizons: [{ horizon: 'short' }] },
+      due_dates: { short: '2026-08-18' },
+      verification: {},
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows1
+  __predictionPublicDependencies.list = async () => ({ rows: rows1, total: rows1.length })
+  const res1 = await makeJsonRequest(port, '/api/predictions')
+  const body1 = res1.body as { data: { stats: { settled_ratio: number | null; bucketStats: BucketStatsShape } } }
+  assert.equal(body1.data.stats.settled_ratio, 0.3333)
+  assert.equal(body1.data.stats.settled_ratio, body1.data.stats.bucketStats.combined.settled_ratio)
+
+  // flat_rate：3 方向已结算、1 个 flat = 1/3 → 0.3333
+  const rows2 = [
+    baseRow({
+      id: 3,
+      status: 'verified',
+      prediction: { ...baseRow().prediction, horizons: [{ horizon: 'short' }, { horizon: 'mid' }] },
+      due_dates: { short: '2026-08-17', mid: '2026-09-08' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', flat: true, actual: '+0.10%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', actual: '-2.00%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+      },
+    }),
+    baseRow({
+      id: 4,
+      status: 'verified',
+      source_id: 'review:2026-08-08',
+      created_at: '2026-08-08T12:00:00.000Z',
+      prediction: { ...baseRow().prediction, horizons: [{ horizon: 'short' }] },
+      due_dates: { short: '2026-08-18' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bearish', actual: '+1.20%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
+      },
+    }),
+  ]
+  __predictionPublicDependencies.listAllForStats = async () => rows2
+  __predictionPublicDependencies.list = async () => ({ rows: rows2, total: rows2.length })
+  const res2 = await makeJsonRequest(port, '/api/predictions')
+  const body2 = res2.body as { data: { stats: { directional_count: number; flat_count: number; flat_rate: number | null; bucketStats: BucketStatsShape } } }
+  assert.equal(body2.data.stats.directional_count, 3)
+  assert.equal(body2.data.stats.flat_count, 1)
+  assert.equal(body2.data.stats.flat_rate, 0.3333)
+  assert.equal(body2.data.stats.flat_rate, body2.data.stats.bucketStats.combined.flat_rate)
+})
