@@ -9,8 +9,9 @@ const VALID_SOURCE_TYPES = ['market_trace', 'sector_prediction'] as const;
 
 /**
  * 当前生产验证口径版本（版本 4.0：默认过滤 4.0，防跳变/混桶）。
- * 四处同步：agent-py prediction_stats._CURRENT_METHODOLOGY_VERSION、
- * prediction_validator._METHODOLOGY_VERSION / _BACKFILL_METHODOLOGY_VERSION、本文件。
+ * 四处同批保持 4.0：agent-py prediction_stats._CURRENT_METHODOLOGY_VERSION、
+ * prediction_validator._METHODOLOGY_VERSION、skills/prediction_validation._PROFILE_METHODOLOGY_VERSION、本文件。
+ * ⚠️ prediction_validator._BACKFILL_METHODOLOGY_VERSION（"2.0"）是存量回补口径、独立保持不动，不在此清单。
  * 存量记录按各自旧版本隔离统计（无版本记录随 2.0 时代隔离，不再兼容计入）。
  */
 const CURRENT_METHODOLOGY_VERSION = '4.0'
