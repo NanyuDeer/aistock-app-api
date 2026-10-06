@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import pool from '../../core/db';
 import { getStockIdentity } from '../../shared/utils/stock';
+import { StockInfoPredictionService } from './services/StockInfoPredictionService';
 
 export type StockInfoTargetSource = 'all' | 'favorites' | 'leaders';
 export type StockInfoType = 'news' | 'announcement';
@@ -442,6 +443,15 @@ export class StockInfoService {
                 summary.failed += 1;
                 results.push({ status: 'failed', error: err instanceof Error ? err.message : String(err), raw });
             }
+        }
+
+        // P2：个股情报入验证环——落库成功后按「当日该 symbol 最强口径」转发 agent-py 生成可验证预判。
+        // fail-safe：任何失败只告警，绝不阻断研判落库（对齐 aistock-workflow 的"永不 500"）。
+        try {
+            await StockInfoPredictionService.ingest(rawItems);
+        } catch (err: unknown) {
+            console.warn('[StockInfoPrediction] ingest failed (non-blocking):',
+                err instanceof Error ? err.message : String(err));
         }
 
         return { summary, results };

@@ -22,6 +22,13 @@ const stockInfoPredictionModule = require(
 const { StockInfoPredictionService, __stockInfoPredictionDependencies } = stockInfoPredictionModule;
 
 /**
+ * StockInfoService 也须用 require 加载：它静态 import 了 StockInfoPredictionService，
+ * 若用顶层 ESM import 会先于上面的 env 注入执行，导致模块级 URL/token 常量取到默认值。
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { StockInfoService } = require('../StockInfoService') as typeof import('../StockInfoService');
+
+/**
  * 注入 forward 依赖并记录调用参数；用例结束后复位（避免跨用例污染）。
  * 返回的 calls 收集传给 forward 的候选（运行时即 HTTP body 的来源）。
  */
@@ -346,4 +353,75 @@ test('defaultForward：未知 status（既非 saved 也非 skipped）→ 告警'
 
   await __stockInfoPredictionDependencies.forward(defaultForwardCandidate);
   assert.equal(io.warnCount(), 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P2-T4：研判落库成功后触发 ingest，且 ingest 失败不阻断落库
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 按 SQL 文本分流的 pool.query 打桩：`upsertJudgements` 开头会 await `ensureSchema()`，
+ * 它会跑 CREATE TABLE / CREATE INDEX 等多条 DDL；单一返回值会与这些调用冲突。
+ * 因此 INSERT 分支返回 inserted 行，其余（DDL/查询）返回空行集。
+ */
+function stubPoolQueryBySql(t: { after: (fn: () => void) => void }): void {
+  const m = mock.method(pool, 'query', async (sql: string) => {
+    if (String(sql).includes('INSERT INTO stock_info_judgements')) {
+      return { rows: [{ id: 1, inserted: true }] };
+    }
+    return { rows: [] };
+  });
+  t.after(() => m.mock.restore());
+}
+
+/** 一条可通过 normalizeStockInfoJudgementInput 校验的原始入参 */
+const validJudgementRaw = {
+  symbol: '600383',
+  stock_name: '金地集团',
+  info_type: 'news',
+  source: 'test-source',
+  title: '测试标题',
+  url: 'https://example.com/a',
+  published_at: '2026-09-29T09:00:00+08:00',
+  ai_impact: '利好',
+  ai_horizon: '中期',
+  ai_summary: '一句话结论',
+};
+
+test('upsertJudgements 落库成功后触发 ingest，入参为本批次原始 rawItems', async (t) => {
+  stubPoolQueryBySql(t);
+  const ingestMock = mock.method(StockInfoPredictionService, 'ingest', async () => {});
+  t.after(() => ingestMock.mock.restore());
+
+  const rawItems = [{ ...validJudgementRaw }];
+  const out = await StockInfoService.upsertJudgements(rawItems);
+
+  assert.equal(out.summary.inserted, 1, '应正常落库 1 条');
+  assert.equal(out.summary.failed, 0);
+  assert.equal(out.results.length, 1);
+  assert.equal(ingestMock.mock.calls.length, 1, 'ingest 应恰好调用 1 次');
+  // 入参必须是本批次原始 rawItems（而非候选或归一化后的对象）
+  const passed: unknown = ingestMock.mock.calls[0].arguments[0];
+  assert.deepEqual(passed, rawItems, 'ingest 入参须为本批次原始 rawItems');
+});
+
+test('ingest 抛异常不阻断 upsertJudgements（fail-safe，返回结构与计数不变）', async (t) => {
+  stubPoolQueryBySql(t);
+  const ingestMock = mock.method(StockInfoPredictionService, 'ingest', async () => {
+    throw new Error('ingest boom');
+  });
+  t.after(() => ingestMock.mock.restore());
+  const warnMock = mock.method(console, 'warn', () => {});
+  t.after(() => warnMock.mock.restore());
+
+  const rawItems = [{ ...validJudgementRaw }];
+  const out = await StockInfoService.upsertJudgements(rawItems);
+
+  assert.equal(out.summary.inserted, 1, 'ingest 抛异常不得影响落库计数');
+  assert.equal(out.summary.updated, 0);
+  assert.equal(out.summary.failed, 0);
+  assert.equal(out.results.length, 1);
+  assert.equal(out.results[0].status, 'inserted');
+  assert.equal(ingestMock.mock.calls.length, 1, 'ingest 仍应被调用 1 次');
+  assert.equal(warnMock.mock.calls.length, 1, 'ingest 失败应告警一次（fail-safe）');
 });
