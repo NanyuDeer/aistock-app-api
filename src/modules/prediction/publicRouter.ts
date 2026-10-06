@@ -67,50 +67,98 @@ function approximateHorizonSet(row: PredictionRecordRow): Set<string> {
   return new Set(approx.filter((h): h is string => typeof h === 'string'));
 }
 
+/** 单桶统计（combined/index/sector 同形；Task 5 补 long 排除与看板指标） */
+interface BucketStats {
+  n: number;
+  hits: number;
+  hitRate: number;
+  sufficientSample: boolean;
+  /** 是否检测到 long 档样本并被排除出迭代看板（§4.7） */
+  long_excluded: boolean;
+  /** 已结算 / 该桶非-long 档位总数（含未结算；无档位时为 null） */
+  settled_ratio: number | null;
+  /** flat 占比 = flatCount / directionalCount（无方向样本时为 null；由 agent-py 写入侧判定 |x| < k） */
+  flat_rate: number | null;
+  flatCount: number;
+  directionalCount: number;
+}
+
 /**
  * 按 target_type 分桶的命中统计（与 agent-py 统计口径对齐）。
- * 只计入 result ∈ {hit, miss} 且非 approximate 的档位；旧记录无 target_type 视为 index 兼容；
+ * 只计入 result ∈ {hit, miss} 且非 approximate 的**非 long** 档位；旧记录无 target_type 视为 index 兼容；
  * skipped 行与 computeStats 口径一致，不参与分桶。
+ * Task 5：long 档排除出迭代看板（long_excluded）；补 settled_ratio / flat_rate 及其计数。
+ * flat 标记由 agent-py 写入侧落库（k 的唯一来源在 Python）——此处只读，不自行算 k。
  */
 function bucketStats(rows: PredictionRecordRow[]): {
-  combined: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
-  index: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
-  sector: { n: number; hits: number; hitRate: number; sufficientSample: boolean }
+  combined: BucketStats;
+  index: BucketStats;
+  sector: BucketStats;
 } {
-  const entries: Array<{ result: string; target_type: string; approximate: boolean; prediction_id: number }> = []
+  const all: Array<{
+    result?: string;
+    target_type: string;
+    approximate: boolean;
+    horizon: string;
+    direction: string;
+    flat: boolean;
+  }> = [];
   for (const r of rows) {
     // skipped 行即使带 verification 内容也不计入（与 computeStats 一致）
-    if (r.status === 'skipped') continue
-    const v = r.verification as Record<string, { result?: string; target_type?: string; approximate?: boolean; methodology_version?: string }> | null
-    if (!v) continue
+    if (r.status === 'skipped') continue;
+    const v = r.verification as Record<string, {
+      result?: string; target_type?: string; approximate?: boolean;
+      methodology_version?: string; direction?: unknown; flat?: unknown;
+    }> | null;
+    if (!v) continue;
     for (const horizon of Object.keys(v)) {
-      const e = v[horizon]
+      const e = v[horizon];
       // 版本分桶：只统计当前生产版本（4.0；旧版本记录隔离，防混桶）
-      if ((e?.result === 'hit' || e?.result === 'miss') && versionOk(e)) {
-        entries.push({
-          result: e.result,
-          target_type: e.target_type || 'index', // 旧记录兼容
-          approximate: Boolean(e.approximate),
-          prediction_id: r.id,
-        })
-      }
+      if (!versionOk(e)) continue;
+      all.push({
+        result: e?.result,
+        target_type: typeof e?.target_type === 'string' ? e.target_type : 'index', // 旧记录兼容
+        approximate: Boolean(e?.approximate),
+        horizon,
+        direction: typeof e?.direction === 'string' ? e.direction : '',
+        flat: e?.flat === true,
+      });
     }
   }
-  const pick = (tt: string | null) => entries.filter((e) => !e.approximate && (tt === null || e.target_type === tt))
-  const sum = (arr: typeof entries) => {
-    const n = arr.length
-    const hits = arr.filter((e) => e.result === 'hit').length
-    return { n, hits, hitRate: n ? hits / n : 0, sufficientSample: n >= 30 }
-  }
-  return { combined: sum(pick(null)), index: sum(pick('index')), sector: sum(pick('sector')) }
+  const bucket = (tt: string | null): BucketStats => {
+    // 分母 = 该桶全部非-long 档位（含未结算/insufficient/近似；排除 long）
+    const inScope = all.filter((e) => e.horizon !== 'long' && (tt === null || e.target_type === tt));
+    // 分子 = 已结算（hit/miss）且非近似
+    const settled = inScope.filter((e) => !e.approximate && (e.result === 'hit' || e.result === 'miss'));
+    const n = settled.length;
+    const hits = settled.filter((e) => e.result === 'hit').length;
+    const directionalCount = settled.filter((e) => e.direction === 'bullish' || e.direction === 'bearish').length;
+    const flatCount = settled.filter((e) => (e.direction === 'bullish' || e.direction === 'bearish') && e.flat).length;
+    const longCount = all.filter((e) => e.horizon === 'long' && (tt === null || e.target_type === tt)).length;
+    return {
+      n,
+      hits,
+      hitRate: n ? hits / n : 0,
+      sufficientSample: n >= 30,
+      long_excluded: longCount > 0,
+      settled_ratio: inScope.length ? n / inScope.length : null,
+      // flat_rate 分母必须是方向预判已结算数（design §4.3：33% ≈ 瞎猜的跨粒度基准线）
+      flat_rate: directionalCount ? flatCount / directionalCount : null,
+      flatCount,
+      directionalCount,
+    };
+  };
+  return { combined: bucket(null), index: bucket('index'), sector: bucket('sector') };
 }
 
 /**
  * 按已验证档位口径统计（hit/(hit+miss)，insufficient 不计）。
  * status='skipped' 的行显式跳过（不计入 pending/verified/命中统计），单独累加 skippedCount；
  * total 仍含 skipped 行（口径与列表 items 对齐）。
- * P2 裁决：越年近似档（due_dates_approximate）照常验证，但 hit/miss 不计入命中率分母
- * （近似到期日语义与精确档不同，分桶避免统计失真）。
+ * P2 裁决：越年近似档（due_dates_approximate）照常验证，但 hit/miss 不计入命中率分母。
+ * Task 5：long 档（120 交易日）不计入迭代看板（仅标记 long_excluded，档位进度照旧）；
+ * 补 settled_ratio（已结算 / 全部非-long 档位，含未结算）与 flat_rate（方向预判落 |x| < k 无信息带的占比）。
+ * flat 标记由 agent-py 写入侧落库（k 的唯一来源在 Python）——此处只读，不自行算 k。
  */
 function computeStats(rows: PredictionRecordRow[]) {
   let pendingCount = 0;
@@ -120,6 +168,11 @@ function computeStats(rows: PredictionRecordRow[]) {
   let missCount = 0;
   let skippedCount = 0;
   let approximateHorizonCount = 0;
+  let longExcluded = false;
+  let directionalCount = 0;
+  let flatCount = 0;
+  // settled_ratio 分母：全部非-long 档位（含未结算/未到期的 pending 档）
+  let scopeSlotCount = 0;
   for (const row of rows) {
     if (row.status === 'skipped') {
       skippedCount += 1;
@@ -133,6 +186,17 @@ function computeStats(rows: PredictionRecordRow[]) {
     else pendingCount += 1;
     for (const h of keys) {
       const entry = verification[h];
+      if (h === 'long') {
+        // long 档（120 交易日，≈半年一个样本）不计入迭代看板（§4.7）：仅检测并标记排除。
+        // 档位进度/近似计数照旧（版本无关），便于展示覆盖度。
+        if (entry) {
+          longExcluded = true;
+          verifiedHorizonCount += 1;
+          if (approxSet.has(h)) approximateHorizonCount += 1;
+        }
+        continue;
+      }
+      scopeSlotCount += 1; // 分母：含未结算/无 entry 的 pending 档
       if (!entry) continue;
       // 档位进度全量（版本无关，反映验证覆盖度）
       verifiedHorizonCount += 1;
@@ -145,6 +209,12 @@ function computeStats(rows: PredictionRecordRow[]) {
       if (!versionOk(entry)) continue;
       if (entry.result === 'hit') hitCount += 1;
       else if (entry.result === 'miss') missCount += 1;
+      else continue; // insufficient / 无 result → 不计入已结算
+      const dir = entry.direction;
+      if (dir === 'bullish' || dir === 'bearish') {
+        directionalCount += 1;
+        if (entry.flat === true) flatCount += 1;
+      }
     }
   }
   const comparable = hitCount + missCount;
@@ -158,6 +228,11 @@ function computeStats(rows: PredictionRecordRow[]) {
     hitCount,
     missCount,
     approximateHorizonCount,
+    long_excluded: longExcluded,
+    settled_ratio: scopeSlotCount > 0 ? comparable / scopeSlotCount : null,
+    flat_rate: directionalCount > 0 ? flatCount / directionalCount : null,
+    flatCount,
+    directionalCount,
     bucketStats: bucketStats(rows),
   };
 }
