@@ -203,7 +203,7 @@ function bucketStats(rows: PredictionRecordRow[]): {
       flat_rate: directionalCount ? round4(flatCount / directionalCount) : null,
       flat_count: flatCount,
       directional_count: directionalCount,
-      long: { n: longN, hits: longHits, hitRate: longN ? longHits / longN : null },
+      long: { n: longN, hits: longHits, hitRate: longN ? round4(longHits / longN) : null },
     };
   };
   return { combined: bucket(null), index: bucket('index'), sector: bucket('sector') };
@@ -308,7 +308,7 @@ function computeStats(rows: PredictionRecordRow[]) {
     flat_rate: directionalCount > 0 ? round4(flatCount / directionalCount) : null,
     flat_count: flatCount,
     directional_count: directionalCount,
-    long: { n: longN, hits: longHits, hitRate: longN > 0 ? longHits / longN : null },
+    long: { n: longN, hits: longHits, hitRate: longN > 0 ? round4(longHits / longN) : null },
     bucketStats: bucketStats(rows),
   };
 }

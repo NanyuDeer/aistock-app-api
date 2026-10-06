@@ -68,6 +68,8 @@ export interface SectorInsightHorizon {
   confidence?: string
   /** 基准走势短语（4~6 字，2026-09-03 起新数据携带；旧记录无则省略） */
   label?: string
+  /** 该档口径说明（LLM 生成，2026-10-06 起透出；旧记录无/空白则省略，前端不兜底） */
+  metric_projection?: string
 }
 
 export interface SectorInsightCondition {
@@ -447,6 +449,10 @@ export function toPredictionSummary(record: PredictionRecordRow): SectorInsightP
           ? { confidence: h.confidence }
           : {}),
         ...(typeof h.label === 'string' && h.label.trim() ? { label: h.label.trim() } : {}),
+        // 口径说明：仅非空字符串才下发（空缺/空白即省略，前端字段驱动不渲染，不兜底拼装）
+        ...(typeof h.metric_projection === 'string' && h.metric_projection.trim()
+          ? { metric_projection: h.metric_projection.trim() }
+          : {}),
       }
     },
   )
