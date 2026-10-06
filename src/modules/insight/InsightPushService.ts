@@ -60,10 +60,12 @@ export async function pushWithKind(eventId: string, kind: string): Promise<numbe
          FROM watchlist_insight_events e
          JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
          JOIN user_stocks us ON us.symbol = e.symbol
-         JOIN users u ON u.openid = us.openid
+         -- 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（合并账户会把 openid 置 NULL）
+         JOIN users u ON (u.id = us.user_id OR (us.user_id IS NULL AND u.openid = us.openid))
          LEFT JOIN user_subscriptions fs ON fs.user_openid = u.openid AND fs.status = 'subscribed' AND fs.feishu_open_id IS NOT NULL AND fs.feishu_open_id != ''
          LEFT JOIN user_settings s ON s.openid = u.openid AND s.setting_type = 'watchlist_insight_push'
-         WHERE e.event_id = $1 AND (s.enabled IS NULL OR s.enabled != 0)`, [eventId],
+         WHERE e.event_id = $1 AND (s.enabled IS NULL OR s.enabled != 0)
+           AND u.openid IS NOT NULL AND u.openid != ''`, [eventId],
     );
     let sent = 0;
     for (const row of rows) {

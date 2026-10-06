@@ -12,9 +12,12 @@ import { isTokenRevoked, REVOKED_MESSAGE } from '../../shared/utils/tokenBlackli
 
 export class StockMonitorController {
     /**
-     * 从请求中提取用户openid（需要登录）
+     * 从请求中提取用户身份（需要登录）
+     *
+     * 统一账户模型：id 为账户主键（手机号/微信登录签发处必填），openid 仅作老数据兜底
+     * （手机号账户签空串 ''）。只取 openid 会让手机号账户查不到自选股（2026-10-06 修复）。
      */
-    private static async requireAuth(req: Request): Promise<{ ok: true; openid: string } | { ok: false; code: number; message: string }> {
+    private static async requireAuth(req: Request): Promise<{ ok: true; id: string; openid: string } | { ok: false; code: number; message: string }> {
         // 优先从 Authorization: Bearer <token> header 读取
         let token: string | undefined;
         const authHeader = req.headers.authorization;
@@ -31,7 +34,9 @@ export class StockMonitorController {
         if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
         // token-revocation Step 2：验签通过后查黑名单（读侧 fail-open，命中即拒绝）
         if (await isTokenRevoked(payload.jti)) return { ok: false, code: 401, message: REVOKED_MESSAGE };
-        return { ok: true, openid: payload.openid };
+        // 与 SmsAuthController.resolveAuth 对齐：id 优先，旧 token（无 id）用 openid 回填
+        const id = payload.id ?? payload.openid;
+        return { ok: true, id, openid: payload.openid };
     }
     /**
      * GET /api/cn/stock-monitors/events
@@ -125,14 +130,14 @@ export class StockMonitorController {
                 createResponse(res, auth.code, auth.message);
                 return;
             }
-            const { openid } = auth;
+            const { id, openid } = auth;
 
             const cycle = String(req.query.cycle || 'all');
             const change_type = req.query.change_type ? String(req.query.change_type) : undefined;
             const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10), 1), 100);
             const offset = Math.max(parseInt(String(req.query.offset || '0'), 10), 0);
 
-            const result = await StockMonitorService.getEventsByUserFavorites(openid, {
+            const result = await StockMonitorService.getEventsByUserFavorites(id, openid, {
                 cycle,
                 change_type,
                 limit,

@@ -2,6 +2,27 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-06 — 准确性体检修复：event_entities 补列 + 登录后「个股情报」归属双通道
+
+**开发者**: Aria
+
+### 修复
+
+- **event_entities 缺 `impact_sectors` 列（fix1，100% 恢复）**：迁移 `023_event_entities_impact_sectors.sql` 从未在生产库执行（本仓 migrations 为人工 psql、无启动自动执行器）→ 列缺失 → news 通道事件物化全部 `502 column "impact_sectors" does not exist`、`event_entities` 自 2026-09-24 停更。已在生产库执行 `ALTER TABLE event_entities ADD COLUMN IF NOT EXISTS impact_sectors JSONB NOT NULL DEFAULT '[]'::jsonb`（非破坏性）。9/24–10/06 未持久化的历史事件不在库中，无法从库精确补跑，后续每日抓取自动恢复。
+- **登录后「个股情报」空数据 —— `user_stocks` 归属读取统一为双通道**：统一账户模型下自选股归属为「`user_id`（主）+ `openid`（兜底）」，但合并账户（`auth/accountMerge.ts`）把自选股写为 `user_id` 有值 + `openid = NULL`，而部分读取端**仅按 openid 过滤** → 命中 0 行；手机号账户（`users.openid IS NULL`、JWT `openid=''`）在 openid-only 读取端更是永远查不到。
+  - `src/modules/monitor/controller.ts`：`requireAuth` 由「仅取 `payload.openid`」改为 `id = payload.id ?? payload.openid`（与 `SmsAuthController.resolveAuth` 对齐），返回 `{ id, openid }`。
+  - `src/modules/monitor/service.ts`：`getEventsByUserFavorites(userId, openid, ...)`，自选股按 `user_id = $1 OR (user_id IS NULL AND openid = $2)`。
+  - `src/modules/insight/internalRouter.ts`：列表/详情 JOIN 改 `us.user_id IN (SELECT id FROM users WHERE openid=$1) OR (us.user_id IS NULL AND us.openid=$1)`。
+  - `src/modules/insight/InsightPushService.ts`、`src/core/notification/NotificationService.ts`、`src/modules/push/WechatPushService.ts`、`src/modules/push/MessagePushService.ts`：fan-out（WS / 站内通知 / 微信 / 飞书）的自选股归属同样改双通道。
+
+### 验证
+
+- 新增 `src/modules/monitor/__tests__/controller.spec.ts`（3 例：未登录 401 不触库 / 手机号 token 按 `user_id` 命中 / 旧微信 token 回填），更新 `src/modules/insight/__tests__/internalRouter.spec.ts` 断言；目标 4 个 spec **31/31 通过**，`tsc --noEmit` exit 0。
+- 生产库数据修复：`user_stocks` 按 `users.openid` 回填 **5 行**（`d173015e`），全库 `openid IS NULL` 12 → 7（余 7 行属 `users.openid` 本身为空的账户，由代码双通道兜底）；复核 18907076228 命中 5 支自选股、15999539553 命中 6 支（旧口径 0 支）。
+- 全量 `npm test` 失败 12 例为**既存基线**（`tests/*.test.ts` 陈旧 import 路径等），与本次无关。
+
+---
+
 ## [xusiyun] 2026-10-02 — 重大事件时间线：Calendar 物化方案废弃，改为读时直查
 
 **开发者**: xusiyun

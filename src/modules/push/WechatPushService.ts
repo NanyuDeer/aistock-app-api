@@ -362,11 +362,12 @@ export class WechatPushService {
     }
 
     static async dispatchMonitorEvent(event: MonitorEvent): Promise<PushResult> {
+        // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（合并账户会把 openid 置 NULL）
         const result = await pool.query(
             `SELECT DISTINCT u.openid
              FROM users u
-             INNER JOIN user_stocks us ON u.openid = us.openid
-             WHERE us.symbol = $1`,
+             INNER JOIN user_stocks us ON (u.id = us.user_id OR (us.user_id IS NULL AND u.openid = us.openid))
+             WHERE us.symbol = $1 AND u.openid IS NOT NULL AND u.openid != ''`,
             [event.symbol],
         );
 
@@ -523,11 +524,12 @@ export class WechatPushService {
     }
 
     static async dispatchStockInfoJudgement(event: StockInfoPushEvent): Promise<PushResult> {
+        // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（合并账户会把 openid 置 NULL）
         const result = await pool.query(
             `SELECT DISTINCT u.openid
              FROM users u
-             INNER JOIN user_stocks us ON u.openid = us.openid
-             WHERE us.symbol = $1`,
+             INNER JOIN user_stocks us ON (u.id = us.user_id OR (us.user_id IS NULL AND u.openid = us.openid))
+             WHERE us.symbol = $1 AND u.openid IS NOT NULL AND u.openid != ''`,
             [event.symbol],
         );
 
