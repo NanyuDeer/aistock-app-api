@@ -2,6 +2,32 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-06 — 个股情报入环 P2：研判落库后自动入验证环
+
+**开发者**: Aria
+
+### 新增
+
+- `modules/crawler/services/StockInfoPredictionService.ts`：取「该 symbol 当日最强口径」候选（一条批次 SQL：`DISTINCT ON (symbol, published_at 上海自然日)` + 强度排序），随后逐个转发 agent-py `from-stock-info`；本服务**不做门槛/映射/`due_dates`**，`ingest` 全程 fail-safe（只 `console.warn`、绝不抛）。
+- `shared/utils/stock.ts#normalizeStockSymbol`：抽出写库侧与入环侧**共用**的符号归一化（吃掉 `SH600383` / `600383.SH` 等前后缀），消除「写库成功、入环侧严格匹配失败」的静默漏入环。
+- `modules/crawler/StockInfoService.ts`：`upsertJudgements` 研判落库成功后调用 `StockInfoPredictionService.ingest(rawItems)`（旁路、不阻断落库）。
+
+### 修复
+
+- 转发响应处理：仅 `status='skipped'` 且 `reason_code='below_threshold'`（门槛未达）静默；`invalid_input` / `unmapped_value` / 缺失或未知 `reason_code`、非 2xx、网络异常、解析失败、`saved` 但 `record` 为空，一律告警（文案带 `symbol` / `reason_code` / `reason`）。此前所有 `skipped` 一律静默 → 映射失败无人知。
+
+### 验证
+
+- 新增 `modules/crawler/__tests__/stockInfoPrediction.spec.ts`（候选聚合与去重、SQL 契约、上海自然日、符号归一化、`defaultForward` 四分支告警语义、fail-safe）。
+- `npx tsc --noEmit` = 0；`npm test` = 802 / 790 / 12（基线 796 / 784 / 12 → **新增失败 0**；12 条既有失败与本次无关）。
+
+### 说明
+
+- 入环记录 `source_type='stock_info'`；**入环门槛唯一判定点在 agent-py**（本仓只做候选聚合与转发）；未改表结构、无迁移。
+- **尚未部署**；部署顺序必须**先 agent-py 后 app-api**（详见 agent-py 同批条目）。
+
+---
+
 ## [master] 2026-10-06 — 准确性体检修复：event_entities 补列 + 登录后「个股情报」归属双通道
 
 **开发者**: Aria
