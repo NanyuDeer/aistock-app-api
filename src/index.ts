@@ -310,6 +310,8 @@ app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightContro
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
+// 二级页「AI解读」首屏快评：按 symbol 取最新一条个股情报
+app.get('/api/cn/stock-info/latest', (req, res, next) => StockInfoJudgementController.getLatest(req, res, next));
 
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));

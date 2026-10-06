@@ -70,6 +70,16 @@ export interface StockInfoJudgementRow {
     created_at: Date;
 }
 
+export interface StockInfoJudgementBrief {
+    symbol: string;
+    stock_name: string;
+    ai_impact: string;
+    ai_horizon: string;
+    ai_summary: string;
+    published_at: string | null;
+    url: string | null;
+}
+
 export interface StockInfoQueryParams {
     symbol?: string;
     info_type?: StockInfoType;
@@ -506,6 +516,19 @@ export class StockInfoService {
                 ai_keywords: Array.isArray(row.ai_keywords) ? row.ai_keywords : [],
             })),
         };
+    }
+
+    /** 取某只股票最新一条个股情报（供二级页首屏「快评」）。无数据返回 null。 */
+    static async getLatestBySymbol(symbol: string): Promise<StockInfoJudgementBrief | null> {
+        const { rows } = await pool.query(
+            `SELECT symbol, stock_name, ai_impact, ai_horizon, ai_summary, published_at, url
+               FROM stock_info_judgements
+              WHERE symbol = $1
+              ORDER BY published_at DESC NULLS LAST, created_at DESC
+              LIMIT 1`,
+            [symbol],
+        );
+        return (rows[0] as StockInfoJudgementBrief | undefined) ?? null;
     }
 
     static async getPushCandidates(window: StockInfoPushWindow): Promise<StockInfoJudgementRow[]> {
