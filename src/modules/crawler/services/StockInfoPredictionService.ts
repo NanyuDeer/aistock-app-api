@@ -15,6 +15,7 @@
  */
 
 import pool from '../../../core/db';
+import { normalizeStockSymbol } from '../../../shared/utils/stock';
 
 /** 透明转发上游地址（复用 internalRouter.ts 同一 env 表达式） */
 const AGENT_PY_URL = process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || 'http://localhost:8000';
@@ -65,14 +66,21 @@ function shanghaiDateOf(raw: unknown): string | null {
   return new Date(time + 8 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-/** 从 rawItems 提取去重后的 (symbol, publishedDate) 集合；非法条目跳过 */
+/**
+ * 从 rawItems 提取去重后的 (symbol, publishedDate) 集合；非法条目跳过。
+ *
+ * symbol 用与写库侧（StockInfoService）**同一份** `normalizeStockSymbol` 归一化：
+ * DB 里存的是归一化后的裸码，若这里用严格 `/^\d{6}$/`，带前后缀的 symbol 会
+ * 「写库成功、入环侧跳过」→ 静默漏入环且不告警（本设计要消灭的正是这种静默）。
+ */
 function extractCandidatePairs(
   rawItems: Record<string, unknown>[],
 ): Array<{ symbol: string; publishedDate: string }> {
   const seen = new Set<string>();
   const pairs: Array<{ symbol: string; publishedDate: string }> = [];
   for (const raw of rawItems) {
-    const symbol = typeof raw.symbol === 'string' ? raw.symbol.trim() : '';
+    // 归一化后可提取 6 位裸码才继续；无法提取（如 'ABC'）仍跳过、不查库不转发
+    const symbol = normalizeStockSymbol(raw.symbol);
     if (!/^\d{6}$/.test(symbol)) continue;
     const publishedDate = shanghaiDateOf(raw.published_at);
     if (!publishedDate) continue;
@@ -86,8 +94,11 @@ function extractCandidatePairs(
 
 /**
  * 默认转发实现：POST agent-py `from-stock-info`（转发失败只告警，不抛）。
- * 三分支（控制者已裁定）：非 2xx/解析失败/网络异常 → warn；`skipped` → 不告警（正常降级）；
- * `saved` 但 record 为空 → warn（agent-py 侧落库失败）。
+ *
+ * `skipped` 只代表"服务端未落库"，其内部可能同时是①门槛未达（预期正常）或
+ * ②输入非法/③映射缺档（系统性失败信号）。agent-py 用机器可读的 `reason_code`
+ * 区分这三种：仅 `below_threshold` 静默；其余（含缺失/未知 `reason_code`）一律告警
+ * 并带上 symbol / reason_code / reason，避免系统性映射失败整批静默。
  */
 async function defaultForward(candidate: StockInfoCandidate): Promise<void> {
   const tag = `${candidate.symbol}@${candidate.published_date}`;
@@ -109,16 +120,28 @@ async function defaultForward(candidate: StockInfoCandidate): Promise<void> {
     return;
   }
 
-  let payload: { status?: unknown; record?: unknown };
+  let payload: { status?: unknown; reason_code?: unknown; reason?: unknown; record?: unknown };
   try {
-    payload = (await response.json()) as { status?: unknown; record?: unknown };
+    payload = (await response.json()) as {
+      status?: unknown;
+      reason_code?: unknown;
+      reason?: unknown;
+      record?: unknown;
+    };
   } catch {
     console.warn(`[StockInfoPrediction] forward failed: invalid JSON response (${tag})`);
     return;
   }
 
   if (payload.status === 'skipped') {
-    // 门槛未达：正常降级，不告警
+    if (payload.reason_code === 'below_threshold') {
+      // 门槛未达：正常降级，不告警
+      return;
+    }
+    // invalid_input / unmapped_value / 缺失或未知 reason_code → 系统性失败信号，必须告警
+    console.warn(
+      `[StockInfoPrediction] forward skipped: symbol=${candidate.symbol} reason_code=${String(payload.reason_code)} reason=${String(payload.reason)} (${tag})`,
+    );
     return;
   }
   if (payload.status === 'saved') {

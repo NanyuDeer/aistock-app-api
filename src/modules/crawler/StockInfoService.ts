@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import pool from '../../core/db';
-import { getStockIdentity } from '../../shared/utils/stock';
+import { getStockIdentity, normalizeStockSymbol } from '../../shared/utils/stock';
 import { StockInfoPredictionService } from './services/StockInfoPredictionService';
 
 export type StockInfoTargetSource = 'all' | 'favorites' | 'leaders';
@@ -113,12 +113,6 @@ function cleanText(value: unknown): string {
     return String(value ?? '').trim().replace(/\s+/g, ' ');
 }
 
-function normalizeSymbol(raw: unknown): string {
-    const text = cleanText(raw).toUpperCase();
-    const match = text.match(/\d{6}/);
-    return match ? match[0] : '';
-}
-
 function normalizeMarket(rawMarket: unknown, symbol: string): string {
     const raw = cleanText(rawMarket).toUpperCase();
     if (raw === 'SH' || raw === 'SZ' || raw === 'BJ') return raw;
@@ -133,7 +127,7 @@ function addTarget(targets: Map<string, StockInfoTarget>, item: {
     favorite_user_count?: number;
     leader_reason?: unknown;
 }): void {
-    const symbol = normalizeSymbol(item.symbol);
+    const symbol = normalizeStockSymbol(item.symbol);
     if (!/^\d{6}$/.test(symbol)) return;
 
     const existing = targets.get(symbol);
@@ -252,7 +246,7 @@ export function buildStockInfoExistingKeys(rawItems: StockInfoExistingInput[]): 
 }
 
 export function normalizeStockInfoJudgementInput(raw: Record<string, any>): NormalizedStockInfoJudgementInput {
-    const symbol = normalizeSymbol(raw.symbol);
+    const symbol = normalizeStockSymbol(raw.symbol);
     if (!/^\d{6}$/.test(symbol)) throw new Error('symbol must be a 6-digit A-share code');
 
     const infoType = cleanText(raw.info_type) as StockInfoType;
@@ -481,7 +475,7 @@ export class StockInfoService {
         const values: any[] = [];
 
         if (params.symbol) {
-            const symbol = normalizeSymbol(params.symbol);
+            const symbol = normalizeStockSymbol(params.symbol);
             if (symbol) {
                 values.push(symbol);
                 conditions.push(`symbol = $${values.length}`);

@@ -212,9 +212,89 @@ test('symbol 非法或 published_at 缺失/非法时跳过，不查库不转发'
     { symbol: '600383', published_at: null },
     { symbol: '600383' },
     { symbol: '600383', published_at: 'not-a-date' },
+    // 完全无法提取 6 位数字：仍须跳过（不查库不转发）
+    { symbol: 'SH', published_at: '2026-09-29T09:00:00+08:00' },
   ]);
 
   assert.equal(m.mock.calls.length, 0);
+  assert.equal(calls.length, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 终审 #1：入环符号归一化口径须与写库侧（StockInfoService）一致
+// 上游若传带交易所前后缀的 symbol，写库侧会归一化为裸码落库；入环侧若用严格
+// /^\d{6}$/ 会静默跳过 → 该条永不入环且不告警。故两侧共用归一化，入环侧须能吃掉后缀。
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('带交易所前缀的 symbol（SH600383）归一化为裸码 600383 后照常转发（不静默跳过）', async (t) => {
+  const m = mock.method(pool, 'query', async () => ({
+    rows: [
+      {
+        symbol: '600383',
+        stock_name: '金地集团',
+        published_date: '2026-09-29',
+        ai_impact: '利好',
+        ai_horizon: '中期',
+        ai_summary: '一句话结论',
+        url: null,
+      },
+    ],
+  }));
+  t.after(() => m.mock.restore());
+  const { calls } = stubForward(t, async () => {});
+
+  await StockInfoPredictionService.ingest([
+    { symbol: 'SH600383', published_at: '2026-09-29T09:00:00+08:00' },
+  ]);
+
+  // 查库用的是归一化裸码
+  const params: unknown = m.mock.calls[0].arguments[1];
+  assert.deepEqual(params, [['600383'], ['2026-09-29']], '须用归一化后的裸码查库');
+  // 且该候选被转发（而非被静默跳过）
+  assert.equal(calls.length, 1, '带前后缀 symbol 的候选必须被转发，不得静默跳过');
+  assert.equal(calls[0].symbol, '600383', '转发的 body.symbol 应为归一化裸码');
+});
+
+test('带交易所后缀的 symbol（600383.SH）同样归一化后转发', async (t) => {
+  const m = mock.method(pool, 'query', async () => ({
+    rows: [
+      {
+        symbol: '600383',
+        stock_name: '金地集团',
+        published_date: '2026-09-29',
+        ai_impact: '利好',
+        ai_horizon: '中期',
+        ai_summary: 'x',
+        url: null,
+      },
+    ],
+  }));
+  t.after(() => m.mock.restore());
+  const { calls } = stubForward(t, async () => {});
+
+  await StockInfoPredictionService.ingest([
+    { symbol: '600383.SH', published_at: '2026-09-29T09:00:00+08:00' },
+  ]);
+
+  const params: unknown = m.mock.calls[0].arguments[1];
+  assert.deepEqual(params, [['600383'], ['2026-09-29']]);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].symbol, '600383');
+});
+
+test('带前缀与带后缀的同 symbol 同 day 归一化后视为同一条（去重为 1）', async (t) => {
+  const m = mock.method(pool, 'query', async () => ({ rows: [] }));
+  t.after(() => m.mock.restore());
+  const { calls } = stubForward(t, async () => {});
+
+  await StockInfoPredictionService.ingest([
+    { symbol: 'SH600383', published_at: '2026-09-29T09:00:00+08:00' },
+    { symbol: '600383.SH', published_at: '2026-09-29T15:00:00+08:00' },
+  ]);
+
+  assert.equal(m.mock.calls.length, 1, '归一化后应合并为一次查询');
+  const params: unknown = m.mock.calls[0].arguments[1];
+  assert.deepEqual(params, [['600383'], ['2026-09-29']]);
   assert.equal(calls.length, 0);
 });
 
@@ -255,7 +335,11 @@ const defaultForwardCandidate: StockInfoCandidate = {
 function stubForwardIo(
   t: { after: (fn: () => void) => void },
   respond: (url: string, init: FetchInit) => Response,
-): { fetchCalls: Array<{ url: string; init: FetchInit }>; warnCount: () => number } {
+): {
+  fetchCalls: Array<{ url: string; init: FetchInit }>;
+  warnCount: () => number;
+  warnArgs: () => unknown[];
+} {
   const originalTimeout = __stockInfoPredictionDependencies.timeoutMs;
   __stockInfoPredictionDependencies.timeoutMs = 1234;
   const fetchCalls: Array<{ url: string; init: FetchInit }> = [];
@@ -275,7 +359,11 @@ function stubForwardIo(
     warnMock.mock.restore();
     __stockInfoPredictionDependencies.timeoutMs = originalTimeout;
   });
-  return { fetchCalls, warnCount: () => warnMock.mock.calls.length };
+  return {
+    fetchCalls,
+    warnCount: () => warnMock.mock.calls.length,
+    warnArgs: () => warnMock.mock.calls.map((call) => call.arguments[0]),
+  };
 }
 
 test('defaultForward（a）：URL/headers/body 请求形态正确', async (t) => {
@@ -308,14 +396,59 @@ test('defaultForward（b）：非 2xx → console.warn 且不抛', async (t) => 
   assert.equal(io.warnCount(), 1, '非 2xx 必须告警一次');
 });
 
-test('defaultForward（c）：status=skipped（HTTP 200）→ 不告警（正常降级，硬需求）', async (t) => {
+test('defaultForward（c）：status=skipped 且 reason_code=below_threshold → 不告警（正常降级，硬需求）', async (t) => {
+  const io = stubForwardIo(
+    t,
+    () =>
+      new Response(JSON.stringify({ status: 'skipped', reason_code: 'below_threshold' }), {
+        status: 200,
+      }),
+  );
+
+  await __stockInfoPredictionDependencies.forward(defaultForwardCandidate);
+  assert.equal(io.warnCount(), 0, '门槛未达是正常降级，不得告警');
+});
+
+test('defaultForward（c.1）：status=skipped 且 reason_code=invalid_input → 告警（终审 #2）', async (t) => {
+  const io = stubForwardIo(
+    t,
+    () =>
+      new Response(
+        JSON.stringify({ status: 'skipped', reason_code: 'invalid_input', reason: '输入非法' }),
+        { status: 200 },
+      ),
+  );
+
+  await __stockInfoPredictionDependencies.forward(defaultForwardCandidate);
+  assert.equal(io.warnCount(), 1, 'invalid_input 属系统性失败信号，必须告警');
+  const warnText = String(io.warnArgs()[0]);
+  assert.ok(warnText.includes('600383'), '告警文案须带 symbol');
+  assert.ok(warnText.includes('invalid_input'), '告警文案须带 reason_code');
+  assert.ok(warnText.includes('输入非法'), '告警文案须带 reason');
+});
+
+test('defaultForward（c.2）：status=skipped 且 reason_code=unmapped_value → 告警（终审 #2）', async (t) => {
+  const io = stubForwardIo(
+    t,
+    () =>
+      new Response(JSON.stringify({ status: 'skipped', reason_code: 'unmapped_value' }), {
+        status: 200,
+      }),
+  );
+
+  await __stockInfoPredictionDependencies.forward(defaultForwardCandidate);
+  assert.equal(io.warnCount(), 1, 'unmapped_value 属映射缺档，必须告警');
+  assert.ok(String(io.warnArgs()[0]).includes('unmapped_value'));
+});
+
+test('defaultForward（c.3）：status=skipped 但缺失 reason_code → 告警（不静默）', async (t) => {
   const io = stubForwardIo(
     t,
     () => new Response(JSON.stringify({ status: 'skipped' }), { status: 200 }),
   );
 
   await __stockInfoPredictionDependencies.forward(defaultForwardCandidate);
-  assert.equal(io.warnCount(), 0, 'skipped 是正常降级，不得告警');
+  assert.equal(io.warnCount(), 1, '缺失 reason_code 无法判定是否正常降级，必须告警');
 });
 
 test('defaultForward（d）：status=saved 但 record 为空 → console.warn', async (t) => {
