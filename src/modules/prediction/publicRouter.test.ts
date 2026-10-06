@@ -39,7 +39,7 @@ const baseRow = (overrides: Record<string, unknown> = {}) => ({
   },
   due_dates: { short: '2026-08-17', mid: '2026-09-08', long: '2027-01-05' },
   verification: {
-    short: { horizon: 'short', result: 'hit' as const, actual: '+1.23%', reason: '方向=bullish', verified_at: '2026-08-17T08:00:00.000Z' },
+    short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+1.23%', reason: '方向=bullish', verified_at: '2026-08-17T08:00:00.000Z' },
   },
   status: 'pending',
   created_at: '2026-08-07T12:00:00.000Z',
@@ -111,8 +111,8 @@ test('GET /api/predictions -> 200：列表/统计/分页正确', async () => {
       status: 'verified',
       due_dates: { short: '2026-08-18', mid: '2026-09-09', long: '2027-01-06' },
       verification: {
-        short: { horizon: 'short', result: 'hit' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
-        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
         long: { horizon: 'long', result: 'insufficient' as const, actual: '', reason: '无数据源', verified_at: '2027-01-06T08:00:00.000Z' },
       },
     }),
@@ -256,7 +256,7 @@ test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skip
     baseRow({
       id: 1,
       status: 'pending',
-      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
+      verification: { short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
     }),
     baseRow({
       id: 2,
@@ -265,8 +265,8 @@ test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skip
       created_at: '2026-08-08T12:00:00.000Z',
       due_dates: { short: '2026-08-18', mid: '2026-09-09', long: '2027-01-06' },
       verification: {
-        short: { horizon: 'short', result: 'hit' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
-        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+0.50%', reason: 'x', verified_at: '2026-08-18T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-09T08:00:00.000Z' },
         long: { horizon: 'long', result: 'insufficient' as const, actual: '', reason: '无数据源', verified_at: '2027-01-06T08:00:00.000Z' },
       },
     }),
@@ -276,7 +276,7 @@ test('GET /api/predictions -> 200：computeStats 显式跳过 skipped 行（skip
       status: 'skipped',
       source_id: 'review:2026-08-09',
       created_at: '2026-08-09T12:00:00.000Z',
-      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
+      verification: { short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
     }),
   ]
   __predictionPublicDependencies.listAllForStats = async () => rows
@@ -308,9 +308,9 @@ test('GET /api/predictions -> 200：越年近似档不计入命中率分母（ap
         due_dates_approximate: ['mid', 'long'],
       },
       verification: {
-        short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
-        mid: { horizon: 'mid', result: 'miss' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
-        long: { horizon: 'long', result: 'hit' as const, actual: '+1.50%', reason: 'x', verified_at: '2027-01-05T08:00:00.000Z' },
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+        long: { horizon: 'long', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+1.50%', reason: 'x', verified_at: '2027-01-05T08:00:00.000Z' },
       },
     }),
   ]
@@ -351,8 +351,8 @@ test('GET /api/predictions -> 200：bucketStats 按 target_type 分桶（index/s
       source_id: 'review:2026-08-07',
       due_dates: { short: '2026-08-17', mid: '2026-09-08', long: '2027-01-05' },
       verification: {
-        short: { horizon: 'short', result: 'hit' as const, target_type: 'index', actual: '+1.23%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
-        mid: { horizon: 'mid', result: 'miss' as const, target_type: 'sector', actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index', actual: '+1.23%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, target_type: 'sector', actual: '-0.80%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
       },
     }),
   ]
@@ -380,7 +380,7 @@ test('GET /api/predictions -> 200：bucketStats 旧记录无 target_type 归 ind
     baseRow({
       id: 1,
       status: 'pending',
-      verification: { short: { horizon: 'short', result: 'hit' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
+      verification: { short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' } },
     }),
     // skipped 行即使带 verification（sector hit）也不计入分桶（与 computeStats 口径一致）
     baseRow({
@@ -388,7 +388,7 @@ test('GET /api/predictions -> 200：bucketStats 旧记录无 target_type 归 ind
       status: 'skipped',
       source_id: 'review:2026-08-09',
       created_at: '2026-08-09T12:00:00.000Z',
-      verification: { short: { horizon: 'short', result: 'hit' as const, target_type: 'sector', actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
+      verification: { short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'sector', actual: '+2.00%', reason: 'x', verified_at: '2026-08-19T08:00:00.000Z' } },
     }),
   ]
   __predictionPublicDependencies.listAllForStats = async () => rows
@@ -407,9 +407,9 @@ test('GET /api/predictions -> 200：bucketStats 旧记录无 target_type 归 ind
   assert.equal(body.data.stats.bucketStats.combined.hits, 1)
 })
 
-// ============ 阶段 0：methodology_version 版本过滤（默认 2.0，防跳变/混桶） ============
+// ============ methodology_version 版本过滤（默认当前生产版本 4.0，防跳变/混桶） ============
 
-test('GET /api/predictions -> 200：版本过滤（默认 2.0）——3.0 命中不计入命中率但计入档位进度', async () => {
+test('GET /api/predictions -> 200：版本过滤（默认 4.0）——3.0 命中不计入命中率但计入档位进度', async () => {
   const rows = [
     baseRow({
       id: 1,
@@ -417,7 +417,7 @@ test('GET /api/predictions -> 200：版本过滤（默认 2.0）——3.0 命中
       source_id: 'review:2026-08-07',
       due_dates: { short: '2026-08-17' },
       verification: {
-        short: { horizon: 'short', result: 'hit' as const, methodology_version: '2.0' as const, target_type: 'index' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
       },
     }),
     baseRow({
@@ -442,7 +442,7 @@ test('GET /api/predictions -> 200：版本过滤（默认 2.0）——3.0 命中
   }
   // 进度全量（版本无关）：1(row1) + 2(row2) = 3 档
   assert.equal(body.data.stats.verifiedHorizonCount, 3)
-  // 命中率只统计 2.0：row1 short hit → hitCount=1, missCount=0, hitRate=1（3.0 两档隔离）
+  // 命中率只统计 4.0：row1 short hit → hitCount=1, missCount=0, hitRate=1（3.0 两档隔离）
   assert.equal(body.data.stats.hitCount, 1)
   assert.equal(body.data.stats.missCount, 0)
   assert.equal(body.data.stats.hitRate, 1)
@@ -453,8 +453,8 @@ test('GET /api/predictions -> 200：版本过滤（默认 2.0）——3.0 命中
   assert.equal(body.data.stats.hitRate, body.data.stats.bucketStats.combined.hitRate)
 })
 
-test('GET /api/predictions -> 200：无版本旧记录兼容视为 2.0（默认过滤，防跳变）', async () => {
-  // verification entry 缺 methodology_version（2.0 时代存量）→ 默认过滤 2.0 下计入
+test('GET /api/predictions -> 200：无版本旧记录默认（4.0）下隔离，不再兼容计入', async () => {
+  // verification entry 缺 methodology_version（2.0 时代存量）→ 默认过滤 4.0 下不计入命中率
   const rows = [
     baseRow({
       id: 1,
@@ -474,8 +474,7 @@ test('GET /api/predictions -> 200：无版本旧记录兼容视为 2.0（默认�
   const body = res.body as {
     data: { stats: { hitCount: number; hitRate: number | null; bucketStats: BucketStatsShape } }
   }
-  assert.equal(body.data.stats.hitCount, 1)
-  assert.equal(body.data.stats.hitRate, 1)
-  assert.equal(body.data.stats.bucketStats.combined.n, 1)
-  assert.equal(body.data.stats.hitRate, body.data.stats.bucketStats.combined.hitRate)
+  assert.equal(body.data.stats.hitCount, 0)
+  assert.equal(body.data.stats.hitRate, null)
+  assert.equal(body.data.stats.bucketStats.combined.n, 0)
 })

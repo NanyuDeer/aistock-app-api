@@ -8,19 +8,18 @@ const VALID_STATUSES = ['pending', 'verified', 'skipped'] as const;
 const VALID_SOURCE_TYPES = ['market_trace', 'sector_prediction'] as const;
 
 /**
- * 当前生产验证口径版本（阶段 0：默认过滤 2.0 防跳变/混桶）。
+ * 当前生产验证口径版本（版本 4.0：默认过滤 4.0，防跳变/混桶）。
  * 四处同步：agent-py prediction_stats._CURRENT_METHODOLOGY_VERSION、
  * prediction_validator._METHODOLOGY_VERSION / _BACKFILL_METHODOLOGY_VERSION、本文件。
- * 切换 3.0 为默认过滤版本时，将此处改为 '3.0'（存量无版本记录随之隔离）。
+ * 存量记录按各自旧版本隔离统计（无版本记录随 2.0 时代隔离，不再兼容计入）。
  */
-const CURRENT_METHODOLOGY_VERSION = '2.0'
+const CURRENT_METHODOLOGY_VERSION = '4.0'
 
-/** verification entry 是否属于当前统计版本（旧记录无 methodology_version → 兼容视为 2.0） */
+/** verification entry 是否属于当前统计版本（严格等于 CURRENT_METHODOLOGY_VERSION；无版本旧记录随之隔离不计入） */
 function versionOk(e: unknown): boolean {
   if (!e || typeof e !== 'object') return false
   const mv = (e as { methodology_version?: unknown }).methodology_version
   return mv === CURRENT_METHODOLOGY_VERSION
-    || (CURRENT_METHODOLOGY_VERSION === '2.0' && (mv === undefined || mv === null))
 }
 
 /** 测试注入点（tsx ESM live binding 无法 patch 模块私有函数，沿用仓库 __xxxDependencies 模式） */
@@ -86,7 +85,7 @@ function bucketStats(rows: PredictionRecordRow[]): {
     if (!v) continue
     for (const horizon of Object.keys(v)) {
       const e = v[horizon]
-      // 版本分桶：只统计当前生产版本（2.0 默认；3.0 记录隔离，防混桶）
+      // 版本分桶：只统计当前生产版本（4.0；旧版本记录隔离，防混桶）
       if ((e?.result === 'hit' || e?.result === 'miss') && versionOk(e)) {
         entries.push({
           result: e.result,
@@ -142,7 +141,7 @@ function computeStats(rows: PredictionRecordRow[]) {
         approximateHorizonCount += 1;
         continue;
       }
-      // 命中率按版本过滤（阶段 0：默认 2.0，3.0 记录隔离防混桶）
+      // 命中率按版本过滤（默认 4.0，旧版本记录隔离防混桶）
       if (!versionOk(entry)) continue;
       if (entry.result === 'hit') hitCount += 1;
       else if (entry.result === 'miss') missCount += 1;
