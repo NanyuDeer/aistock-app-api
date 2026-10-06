@@ -27,7 +27,7 @@
 - `services/EastmoneyCrawler.ts` — 东方财富爬虫
 - `services/StockInfoCrawlService.ts` — 爬虫调度器
 - `services/StockInfoJudgeService.ts` — AI 研判
-- `services/StockInfoPredictionService.ts` — 个股情报入环候选聚合（当日最强口径） + 转发 agent-py（不做门槛/映射/due_dates，fail-safe）
+- `services/StockInfoPredictionService.ts` — 个股情报入环候选聚合（当日最强口径） + 转发 agent-py（不做门槛/映射/due_dates，fail-safe；符号经 `shared/utils/stock.ts#normalizeStockSymbol` 与写库侧同口径归一）
 
 ## 依赖的 shared 类型
 - `shared/types/cache` — 缓存键定义
@@ -46,6 +46,7 @@
 - 爬虫调度由 cron 管理（每天 8:00 和 15:00）
 - AI 研判使用 LLM，失败时跳过返回纯数据
 - 个股情报入环：**在研判落库成功后触发**（`StockInfoService.upsertJudgements` 末尾挂 `StockInfoPredictionService.ingest`），fail-safe 任何异常只 `console.warn`，**不阻断研判落库**。
+- 转发响应处理（**不得把映射失败当正常降级**）：agent-py 返回 `{status, reason_code, reason, record}`；**仅** `status='skipped'` 且 `reason_code='below_threshold'`（门槛未达）静默，`invalid_input` / `unmapped_value` / 缺失或未知 `reason_code` 一律 `console.warn`（带 `symbol`/`reason_code`/`reason`）；非 2xx / 网络异常 / 解析失败 / `saved` 但 `record` 为空亦告警。任何情况都不抛。
 - 入环记录 `source_type='stock_info'`、`source_id=stock_info:{symbol}:{published_date}`（`published_date` = `published_at` 的上海自然日）。
 - **入环门槛唯一判定点在 agent-py**（`meets_entry_threshold`）；app-api 只做候选聚合与转发，**不得实现门槛**（候选 SQL 的 `CASE ... ORDER BY` 只是"当日最强口径"排序，非门槛）。
 - `due_dates` 只由 agent-py `_compute_due_dates` 产出，app-api 侧**不得引入第二套交易日历**。
