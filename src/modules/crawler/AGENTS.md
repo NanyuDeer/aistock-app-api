@@ -12,6 +12,7 @@
 - `POST /api/cn/stocks/ocr` — OCR 识别
 - `POST /api/internal/crawl/run` — 手动触发爬虫
 - `POST /api/internal/crawl/cycle` — 完整爬虫周期
+- `POST {AGENT_PY_URL}/api/agent/internal/predictions/from-stock-info` — 个股情报入环转发（Node→Python 内部调用，非本模块对外路由）
 
 ## 核心文件
 - `controller.ts` — StockInfoController（批量信息查询）
@@ -26,6 +27,7 @@
 - `services/EastmoneyCrawler.ts` — 东方财富爬虫
 - `services/StockInfoCrawlService.ts` — 爬虫调度器
 - `services/StockInfoJudgeService.ts` — AI 研判
+- `services/StockInfoPredictionService.ts` — 个股情报入环候选聚合（当日最强口径） + 转发 agent-py（不做门槛/映射/due_dates，fail-safe）
 
 ## 依赖的 shared 类型
 - `shared/types/cache` — 缓存键定义
@@ -43,6 +45,11 @@
 - 东方财富不允许对外暴露，仅限内部爬虫使用
 - 爬虫调度由 cron 管理（每天 8:00 和 15:00）
 - AI 研判使用 LLM，失败时跳过返回纯数据
+- 个股情报入环：**在研判落库成功后触发**（`StockInfoService.upsertJudgements` 末尾挂 `StockInfoPredictionService.ingest`），fail-safe 任何异常只 `console.warn`，**不阻断研判落库**。
+- 入环记录 `source_type='stock_info'`、`source_id=stock_info:{symbol}:{published_date}`（`published_date` = `published_at` 的上海自然日）。
+- **入环门槛唯一判定点在 agent-py**（`meets_entry_threshold`）；app-api 只做候选聚合与转发，**不得实现门槛**（候选 SQL 的 `CASE ... ORDER BY` 只是"当日最强口径"排序，非门槛）。
+- `due_dates` 只由 agent-py `_compute_due_dates` 产出，app-api 侧**不得引入第二套交易日历**。
+- **不得恢复 `stock_info_judgements.forecast` 列或前端预判区**（迁移 022 已删该列；P2 入环统一走 `prediction_records`）。
 
 ### 2026-09-03 更新：资讯 forecast 回写端点——已于 2026-09-13 移除
 
