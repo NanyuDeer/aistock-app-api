@@ -2,6 +2,109 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-06 — 末项 Important 修复：sufficientSample 统一为复合判据
+
+**开发者**: Aria
+
+### 修复
+
+- **问题**：`sufficientSample` 判据两侧/各桶不一致——既有聚合桶 `n>=30`，而本批新增下钻桶也是 `n>=30`，agent-py 侧聚合桶却是 `n>=30 and n_predictions>=30`。后果：同响应内会出现 `bucketStats.combined.sufficientSample=false` 而 `directionBuckets.bullish.sufficientSample=true`，且同一字段两侧判据不同 → 假信心。
+- **改法（统一为复合判据）**：`publicRouter.ts` 的 `summarizeSettled`（下钻桶唯一实现）与 `bucketStats`（聚合桶）统一为 `n >= 30 && nPredictions >= 30`，`nPredictions` = 桶内**不同预测数**（按记录 id 去重）。因 app-api 的 entry 不携带记录 id，新增 `interface SettledEntry { entry; predictionId }`：`collectSlots` 槽位带 `predictionId: r.id`，`computeStats` push 时带 `row.id`，两条路径同源同值（`computeStats` 与 `bucketStats.combined` 同维桶仍相等）。
+- **行为变更（有意收紧）**：既有聚合桶 `combined/index/sector` 的 `sufficientSample` 在「档位条目 n>=30 但不同预测数 <30」时由 `true` → `false`；顶层下钻桶同理。只会更保守，不会反向。判据为 `n>=30` 的真子集。
+
+### 验证
+
+- **测试**：`__tests__/publicRouter.spec.ts` +2（RED→GREEN：15 行 × 2 同方向档 = n30/pred15 → false；30 行 × 1 档 → true）。既有 `sufficientSample` 断言仅 `:410/:414/:992`（均 false），无需同步。
+- **验证**：`npm test` → 876 tests / 864 pass / 12 既有基线失败（`publicRouter.spec.ts` 全绿，未在失败清单）；`npx tsc --noEmit` exit 0。
+
+---
+
+## [master] 2026-10-06 — 终评修复：I1 关键测试进入 CI + §8-3 方向/档位桶
+
+**开发者**: Aria
+
+### 修复
+
+- **I1（关键假信心修复）**：`publicRouter.test.ts` / `internalRouter.test.ts` 原不匹配 `npm test` 的任一 glob（`src/**/__tests__/**/*.spec.ts` 与 `tests/**/*.test.ts`）→ 版本过滤 / long 排除 / `flat_rate` / `settled_ratio` 等关键断言**从不被 CI 执行**。**选方案 (b)**：迁入 `src/modules/prediction/__tests__/` 并改用 `.spec.ts`（对齐仓库既有布局），把原有小 spec `__tests__/publicRouter.spec.ts`（long 舍入 1 条）**合并进同名文件**，删除旧 `publicRouter.test.ts` 与 `internalRouter.test.ts`。（未选 (a) 扩展 glob：会把 `src/` 下另外 8 个既有 `.test.ts`（calendar / core-routes / fear-greed）一并扫入，风险与范围都超出本改造。）
+
+### 新增
+
+- **I2（§8-3 落地下钻桶）**：`publicRouter.ts` 新增共用聚合 `summarizeSettled` 与 `dimensionBuckets`：`computeStats` 与 `bucketStats` 的**每个桶**同时输出 `directionBuckets`（bullish/bearish/neutral，各带 `flat_rate`，分母 = 该方向已结算数）与 `horizonBuckets`（short/mid/long；**long 单列并标注 `iteration_board:false`**）。口径与主桶逐条一致：4.0、排除 approximate、long 不入迭代桶、无样本 hitRate=null（不用 0）、`sufficientSample=n>=30`、小数 `round4`；同响应 `computeStats` 与 `bucketStats.combined` 同维桶同值。
+
+### 验证
+
+- **测试**：`src/modules/prediction/__tests__/publicRouter.spec.ts` 合并后 35 条（含新增 6 条方向/档位桶用例）；`src/modules/prediction/__tests__/internalRouter.spec.ts` 35 条。
+- **验证**：`npm test` → 874 tests / 862 pass / 12 既有基线失败（fail 数与基线持平；新收集的 prediction 两文件 70 条全部通过）；`npx tsc --noEmit` exit 0。（另注：全量偶见 `src/shared/utils/__tests__/jwt.spec.ts`「篡改签名」1 条 flaky，单跑 5/5 通过、二次全量回落 12，非本改动引入。）
+
+---
+
+## [master] 2026-10-06 — Task 10：板块 horizon `metric_projection` 透传 + long 命中率舍入结转
+
+**开发者**: Aria
+
+### 新增
+
+- **改动（2 生产文件 + 2 测试）**：
+  - `src/core/routes/sectorInsightRouter.ts`：`SectorInsightHorizon` 补可选 `metric_projection`；`toPredictionSummary` 的 horizon 投影新增透传（`typeof === 'string'` 且 `trim()` 非空才下发，缺失/空白即省略——方案 B 字段驱动，前端不兜底）。`metric_projection` 本就在库（prompt/schema 早已要求），无需改 prompt/schema、无需 LLM 重跑。
+  - `src/modules/prediction/publicRouter.ts`（Task 5 终评 Minor 结转）：`computeStats` / `bucketStats` 两处 `long.hitRate` 用已有 `round4` 舍入到 4 位，与 agent-py `round(...,4)` 对齐（此前 long 样本非 2 的幂时 1/3 得 `0.3333333333333333` vs `0.3333`）；**主 `hitRate` 舍入行为不变**。
+
+### 验证
+
+- **测试**：`src/core/routes/__tests__/sectorInsight.spec.ts` +2（透传 / 缺失空白不下发，并同步主用例整形状断言）；新增 `src/modules/prediction/__tests__/publicRouter.spec.ts`（1/3 → `long.hitRate === 0.3333`）。两者均落在 `npm test` glob（`src/**/__tests__/**/*.spec.ts`）内。
+- **验证**：`npm test` → 805 tests / 793 pass / 12 既有基线失败（fail 数与基线持平，新用例均被采集且通过）；`npx tsc --noEmit` exit 0。
+
+---
+
+## [master] 2026-10-06 — Task 5 二轮修复：long_excluded 近似排除 + 舍入对齐 + insufficient 计 pending 定调
+
+**开发者**: Aria
+
+### 修复
+
+- **I2（真 bug 修复）**：`publicRouter.computeStats` 的 long 检测补 `!isApprox`（复用循环内已有的 `isApprox` 判定，与 `bucketStats.longScope` 同源）——修掉「approximate-long 令 `stats.long_excluded=true` 而 `bucketStats.combined.long_excluded=false`」的两侧不一致。新增测试断言两侧一致（均 false）。
+- **I1（定义确认，不改行为）**：`computeStats` 最终 else 与 `bucketStats` pending 分支各补「为什么」注释——insufficient 属**数据可用性状态**、非**判定结论**，故计入 pending_slots。新增测试（scope={4.0 hit, 4.0 insufficient} → settled_ratio 0.5）。
+- **M1（舍入对齐）**：新增 `round4`（`Math.round(x*1e4)/1e4`），对**新增字段** `settled_ratio` / `flat_rate`（computeStats + bucketStats）统一舍入 4 位，与 agent-py `round(...,4)` 同值；既有 `hitRate` 舍入行为不改。新增测试锁死 1/3 → 0.3333。
+
+### 验证
+
+- `node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 28 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关）。
+
+---
+
+## [master] 2026-10-06 — Task 5 修复：settled_ratio 统一口径 + long 命中率交付 + 计数键 snake_case
+
+**开发者**: Aria
+
+### 修复
+
+- **Important 1（settled_ratio 口径统一为「声明档位槽」）**：`src/modules/prediction/publicRouter.ts`——新增 `collectSlots`（来源 = 记录声明的 `prediction.horizons`，含真 pending）与 `isSettledCurrent`；`computeStats` / `bucketStats` 分母改为「声明非-long、非-近似档位槽」，分子 = 其中 4.0 已结算（hit/miss），**旧版本已结算槽位既不入分子也不入 pending**（口径隔离）。`bucketStats` 从 verification 键枚举改为声明档枚举（顺带修正其把 c{i} 条件键误当档位的既有偏差）；同响应 `stats.settled_ratio === stats.bucketStats.combined.settled_ratio`（新增测试锁死）。
+- **Important 2（long 命中率交付）**：`computeStats` / `bucketStats` 补 `long: { n, hits, hitRate }`（long + hit/miss + 4.0 + 非近似；无样本 hitRate=null）。前端 `prediction-history.vue` 展示 long 命中率与 n/hits（保留「long 档样本积累中，不参与迭代判读」标注）。
+- **Minor**：① `flat_count` / `directional_count` 由 camel 改 snake（与 `settled_ratio`/`flat_rate`/`long_excluded` 一致）；② `long_excluded` 统一为「存在当前版本 long 档」（computeStats 补版本过滤，与 agent-py `_long_entries`、bucketStats 一致）。
+
+### 验证
+
+- **测试**：`publicRouter.test.ts` +4（真 pending 使 settled_ratio<1 且 =bucketStats.combined、旧版本已结算双隔离、long 命中率交付、无 long 样本 hitRate=null）；既有 long/flat/settled 用例同步 snake 键名。
+- **验证**：`node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 25 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关，且该测试文件不在 npm test glob 内）。
+
+---
+
+## [master] 2026-10-06 — Task 5：long 档不计入迭代看板 + 补看板指标（computeStats / bucketStats）
+
+**开发者**: Aria
+
+### 新增
+
+- **改动（1 文件 + 1 测试文件）**：`src/modules/prediction/publicRouter.ts`——`computeStats` / `bucketStats` 排除 `long` 档（`long_excluded` 标记），并按 agent-py 同口径新增 `settled_ratio`（已结算 / 全部非-long 档位，含未结算 pending）、`flat_rate`（分母 = 方向预判已结算数）、`flatCount`、`directionalCount`；`flat` 标记从 entry 读（由 agent-py 写入侧落库，app-api 不自行算 k）；新增 `BucketStats` 类型（三桶同形）。
+- **口径**：`flat_rate = flatCount / directionalCount`（direction 从 entry.direction 读）；无方向样本 → null。`settled_ratio` 分母含未结算档位；无档位 → null。**观察项（保持原样）**：`computeStats.hitRate` 无样本返回 null，而 `bucketStats.hitRate` 返回 0 —— 口径不一致，本任务不改，留待后续。
+
+### 验证
+
+- **测试**：`publicRouter.test.ts` +4（long 排除且命中率不含 long、flat_rate 分母、无方向样本 null、settled_ratio 含 pending + 空档位 null）。
+- **验证**：`node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 21 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关，且本测试文件不在 npm test glob 内）。
+- **未提交**：无（随本任务 commit 提交）。app-frontend 两处改动（PredictionStats 可选字段 + long 文案）按任务约定未由本仓提交。
+
+---
+
 ## [master] 2026-10-06 — 个股情报入环 P2：研判落库后自动入验证环
 
 **开发者**: Aria
