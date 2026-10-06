@@ -1091,3 +1091,56 @@ test('GET /api/predictions -> 200：computeStats 与 bucketStats.combined 同维
   assert.deepEqual(body.data.stats.directionBuckets, body.data.stats.bucketStats.combined.directionBuckets)
   assert.deepEqual(body.data.stats.horizonBuckets, body.data.stats.bucketStats.combined.horizonBuckets)
 })
+
+// ============ sufficientSample 复合判据（n>=30 且不同预测数>=30，两侧统一） ============
+
+/** 构造「同一记录 2 档、同方向 bullish、4.0 已结算」的行：15 行 → bullish 桶 n=30、预测数=15 */
+function bullishTwoHorizonRow(id: number): PredictionRecordRow {
+  return twoHorizonRow(id, `review:2026-08-${String(id).padStart(2, '0')}`, {
+    verification: {
+      short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+      mid: { horizon: 'mid', result: 'miss' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', actual: '-1.00%', reason: 'x', verified_at: '2026-09-08T08:00:00.000Z' },
+    },
+  })
+}
+
+test('GET /api/predictions -> 200：n>=30 但不同预测<30 → sufficientSample=false（去重判据，下钻桶与主桶一致）', async () => {
+  // 15 条预测各产出 2 条同方向已结算档位 → bullish 桶 n=30、n_predictions=15
+  const rows = Array.from({ length: 15 }, (_, i) => bullishTwoHorizonRow(i + 1))
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  const body = res.body as { data: { stats: DimBucketsShape & { bucketStats: BucketStatsShape } } }
+  const b = body.data.stats.directionBuckets.bullish
+  assert.equal(b.n, 30)
+  assert.equal(b.sufficientSample, false)
+  // 主桶同判据：档位条目多但预测条数少 → 由 true 收紧为 false
+  assert.equal(body.data.stats.bucketStats.combined.n, 30)
+  assert.equal(body.data.stats.bucketStats.combined.sufficientSample, false)
+})
+
+test('GET /api/predictions -> 200：n>=30 且不同预测>=30 → sufficientSample=true', async () => {
+  // 30 条记录各 1 条已结算档位 → n=30、n_predictions=30
+  const rows = Array.from({ length: 30 }, (_, i) =>
+    baseRow({
+      id: i + 1,
+      source_id: `review:2026-08-${String(i + 1).padStart(2, '0')}`,
+      status: 'verified',
+      prediction: { ...baseRow().prediction, horizons: [{ horizon: 'short' }] },
+      due_dates: { short: '2026-08-17' },
+      verification: {
+        short: { horizon: 'short', result: 'hit' as const, methodology_version: '4.0' as const, target_type: 'index' as const, direction: 'bullish', actual: '+1.00%', reason: 'x', verified_at: '2026-08-17T08:00:00.000Z' },
+      },
+    }),
+  )
+  __predictionPublicDependencies.listAllForStats = async () => rows
+  __predictionPublicDependencies.list = async () => ({ rows, total: rows.length })
+
+  const res = await makeJsonRequest(port, '/api/predictions')
+  const body = res.body as { data: { stats: DimBucketsShape & { bucketStats: BucketStatsShape } } }
+  const b = body.data.stats.directionBuckets.bullish
+  assert.equal(b.n, 30)
+  assert.equal(b.sufficientSample, true)
+  assert.equal(body.data.stats.bucketStats.combined.sufficientSample, true)
+})

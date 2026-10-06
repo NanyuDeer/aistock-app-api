@@ -96,23 +96,37 @@ interface SubBucketStats {
 }
 
 /**
+ * 已结算 entry + 所属记录 id。`sufficientSample` 需按**不同预测数**去重计数：
+ * 同一记录的多档位是相关样本，不能当多条独立样本（否则档位条目多但预测条数少 → 假信心）。
+ */
+interface SettledEntry {
+  entry: PredictionVerificationEntry;
+  predictionId: number;
+}
+
+/**
  * 给定一组已结算 entry（4.0 hit/miss、非近似、非 long）→ 命中率子桶摘要。
  *
  * 方向桶 / 档位桶共用的**唯一聚合实现**（避免为每个维度手写一份聚合）。
  * 无样本时 hitRate=null（与 long 单列、agent-py `_bucket_metrics` 同口径，不用 0）；
+ * sufficientSample 与聚合桶统一为复合判据：n>=30 **且** 不同预测数>=30（按预测去重）。
  * flat_rate 分母 = 该组内方向预判数（bullish/bearish；无方向样本 → null）。
  */
-function summarizeSettled(entries: PredictionVerificationEntry[]): SubBucketStats {
+function summarizeSettled(entries: SettledEntry[]): SubBucketStats {
   const n = entries.length;
-  const hits = entries.filter((e) => e.result === 'hit').length;
-  const directional = entries.filter((e) => e.direction === 'bullish' || e.direction === 'bearish');
-  const flatCount = directional.filter((e) => e.flat === true).length;
+  const hits = entries.filter((s) => s.entry.result === 'hit').length;
+  const nPredictions = new Set(entries.map((s) => s.predictionId)).size;
+  const directional = entries.filter((s) => {
+    const dir = s.entry.direction;
+    return dir === 'bullish' || dir === 'bearish';
+  });
+  const flatCount = directional.filter((s) => s.entry.flat === true).length;
   const directionalCount = directional.length;
   return {
     n,
     hits,
     hitRate: n ? round4(hits / n) : null,
-    sufficientSample: n >= 30,
+    sufficientSample: n >= 30 && nPredictions >= 30,
     flat_rate: directionalCount ? round4(flatCount / directionalCount) : null,
     flat_count: flatCount,
     directional_count: directionalCount,
@@ -135,18 +149,18 @@ interface HorizonBuckets {
 
 /** 按方向 / 档位切分子桶（与主桶同口径：4.0 + hit/miss + 非近似；long 不进方向桶）。 */
 function dimensionBuckets(
-  settledEntries: PredictionVerificationEntry[],
-  longSettledEntries: PredictionVerificationEntry[],
+  settledEntries: SettledEntry[],
+  longSettledEntries: SettledEntry[],
 ): { directionBuckets: DirectionBuckets; horizonBuckets: HorizonBuckets } {
   return {
     directionBuckets: {
-      bullish: summarizeSettled(settledEntries.filter((e) => e.direction === 'bullish')),
-      bearish: summarizeSettled(settledEntries.filter((e) => e.direction === 'bearish')),
-      neutral: summarizeSettled(settledEntries.filter((e) => e.direction === 'neutral')),
+      bullish: summarizeSettled(settledEntries.filter((s) => s.entry.direction === 'bullish')),
+      bearish: summarizeSettled(settledEntries.filter((s) => s.entry.direction === 'bearish')),
+      neutral: summarizeSettled(settledEntries.filter((s) => s.entry.direction === 'neutral')),
     },
     horizonBuckets: {
-      short: summarizeSettled(settledEntries.filter((e) => e.horizon === 'short')),
-      mid: summarizeSettled(settledEntries.filter((e) => e.horizon === 'mid')),
+      short: summarizeSettled(settledEntries.filter((s) => s.entry.horizon === 'short')),
+      mid: summarizeSettled(settledEntries.filter((s) => s.entry.horizon === 'mid')),
       // long 单列：显式标注不参与迭代判读（与既有 long 字段口径一致）
       long: { ...summarizeSettled(longSettledEntries), iteration_board: false },
     },
@@ -180,6 +194,8 @@ interface HorizonSlot {
   targetType: string;
   approximate: boolean;
   entry: PredictionVerificationEntry | undefined;
+  /** 所属记录 id（sufficientSample 去重计数用；同一记录多档位只算一个预测） */
+  predictionId: number;
 }
 
 /** 该 entry 是否已按当前生产版本结算（hit/miss + 当前版本）：settled_ratio 的分子口径。 */
@@ -215,7 +231,7 @@ function collectSlots(rows: PredictionRecordRow[]): HorizonSlot[] {
       const targetType = slotEntry && typeof slotEntry.target_type === 'string'
         ? slotEntry.target_type
         : recordType;
-      slots.push({ horizon: h, targetType, approximate: approxSet.has(h), entry: slotEntry });
+      slots.push({ horizon: h, targetType, approximate: approxSet.has(h), entry: slotEntry, predictionId: r.id });
     }
   }
   return slots;
@@ -242,6 +258,8 @@ function bucketStats(rows: PredictionRecordRow[]): {
     const settled = scope.filter((s) => isSettledCurrent(s.entry));
     const n = settled.length;
     const hits = settled.filter((s) => s.entry?.result === 'hit').length;
+    // 不同预测数（按记录 id 去重）：sufficientSample 复合判据的第二分量
+    const nPredictions = new Set(settled.map((s) => s.predictionId)).size;
     const directionalCount = settled.filter((s) => {
       const dir = s.entry?.direction;
       return dir === 'bullish' || dir === 'bearish';
@@ -266,17 +284,17 @@ function bucketStats(rows: PredictionRecordRow[]): {
     const longN = longSettled.length;
     const longHits = longSettled.filter((s) => s.entry?.result === 'hit').length;
     // §8-3 方向桶 × 档位桶：与该 target_type 桶同口径（同一 settled entry 集合切分）
-    const settledEntries = settled
-      .map((s) => s.entry)
-      .filter((e): e is PredictionVerificationEntry => !!e);
-    const longEntries = longSettled
-      .map((s) => s.entry)
-      .filter((e): e is PredictionVerificationEntry => !!e);
+    const settledEntries: SettledEntry[] = settled
+      .filter((s): s is HorizonSlot & { entry: PredictionVerificationEntry } => !!s.entry)
+      .map((s) => ({ entry: s.entry, predictionId: s.predictionId }));
+    const longEntries: SettledEntry[] = longSettled
+      .filter((s): s is HorizonSlot & { entry: PredictionVerificationEntry } => !!s.entry)
+      .map((s) => ({ entry: s.entry, predictionId: s.predictionId }));
     return {
       n,
       hits,
       hitRate: n ? hits / n : 0,
-      sufficientSample: n >= 30,
+      sufficientSample: n >= 30 && nPredictions >= 30,
       long_excluded: longScope.some((s) => versionOk(s.entry)),
       settled_ratio: denom ? round4(n / denom) : null,
       // flat_rate 分母必须是方向预判已结算数（design §4.3：33% ≈ 瞎猜的跨粒度基准线）
@@ -317,9 +335,10 @@ function computeStats(rows: PredictionRecordRow[]) {
   // long 档命中率单列（不进迭代看板）
   let longN = 0;
   let longHits = 0;
-  // §8-3 方向桶 × 档位桶：收集已结算 entry（4.0 hit/miss、非近似、非 long）与 long 单列 entry
-  const settledEntries: PredictionVerificationEntry[] = [];
-  const longSettledEntries: PredictionVerificationEntry[] = [];
+  // §8-3 方向桶 × 档位桶：收集已结算 entry（4.0 hit/miss、非近似、非 long）与 long 单列 entry；
+  // 携带所属记录 id（row.id）供 sufficientSample 按不同预测去重
+  const settledEntries: SettledEntry[] = [];
+  const longSettledEntries: SettledEntry[] = [];
   for (const row of rows) {
     if (row.status === 'skipped') {
       skippedCount += 1;
@@ -346,7 +365,7 @@ function computeStats(rows: PredictionRecordRow[]) {
         // long 命中率单列：long + hit/miss + 当前版本 + 非近似（与 agent-py long 口径一致）
         if (entry && !isApprox && isSettledCurrent(entry)) {
           longN += 1;
-          longSettledEntries.push(entry);
+          longSettledEntries.push({ entry, predictionId: row.id });
           if (entry.result === 'hit') longHits += 1;
         }
         continue;
@@ -362,7 +381,7 @@ function computeStats(rows: PredictionRecordRow[]) {
         // 分子：当前版本已结算（hit/miss）
         if (entry.result === 'hit') hitCount += 1;
         else missCount += 1;
-        settledEntries.push(entry);
+        settledEntries.push({ entry, predictionId: row.id });
         const dir = entry.direction;
         if (dir === 'bullish' || dir === 'bearish') {
           directionalCount += 1;
