@@ -2,6 +2,31 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-06 — 收编被 glob 遗漏的 8 个测试文件 + 修正 kline 陈旧断言
+
+**开发者**: Aria
+
+### 改进
+
+- **修掉测试盲区**：`package.json` 的 `test` glob 追加 `"src/**/*.test.ts"`。此前 `src/` 下按 `*.test.ts` 命名、且不在 `__tests__/` 目录内的 **8 个测试文件**（calendar ×3、core/routes ×4、fear-greed ×1）**从不被 `npm test` 执行** —— 等于永久盲区。
+- `npm test` 收集量：**876 → 936 tests**（+60，恰为新收编的 8 个文件），pass 864 → 924。
+
+### 修复
+
+- `src/core/routes/internal.kline.test.ts`（约 L106）：断言未跟上接口契约变更 —— `GET /internal/quote/:code/kline` 自 2026-09-05 起透传 `vol` / `amount`（缺失为 `null`），期望对象补上这两个字段。
+
+### 验证
+
+- `npm test` → **936 tests / 924 pass / 12 fail**，12 条与基线逐条同名同源（全部位于既有 `tests/**`）→ **零新增失败**。
+- `npx tsc --noEmit` → EXIT 0。
+
+### 说明
+
+- 只放宽 glob，未重命名/移动任何测试文件；未使用 `skip`/`todo`/注释断言；未改动任何生产代码。
+- 约定提醒：后续在 `src/**/__tests__/` 下新增测试请沿用 `*.spec.ts`（Node 对重复 pattern 会去重，但统一命名更清晰）。
+
+---
+
 ## [master] 2026-10-06 — 末项 Important 修复：sufficientSample 统一为复合判据
 
 **开发者**: Aria
