@@ -59,6 +59,8 @@ export class StockTraceJobService {
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_trace_jobs_status_created ON stock_trace_jobs(status, created_at)');
         await pool.query("CREATE INDEX IF NOT EXISTS idx_stock_trace_outbox_pending ON stock_trace_outbox(status, created_at) WHERE status = 'pending'");
         await pool.query('ALTER TABLE stock_trace_outbox ADD COLUMN IF NOT EXISTS held_until TIMESTAMPTZ');
+        // 归因 job 失败明细（可观测性改造 A）：存量库幂等补列，与 migration 024 一致
+        await pool.query('ALTER TABLE stock_trace_jobs ADD COLUMN IF NOT EXISTS last_error_detail TEXT');
     }
 
     static async enqueue(client: PoolClient, input: StockTraceJobInput): Promise<string> {
@@ -168,16 +170,32 @@ export class StockTraceJobService {
     static async reportStatus(
         jobId: string,
         status: StockTraceJobStatus,
-        options: { lastErrorCode?: string; incrementAttempt?: boolean } = {},
+        options: { lastErrorCode?: string; lastErrorDetail?: string; incrementAttempt?: boolean } = {},
     ): Promise<{ attemptCount: number } | null> {
         await this.ensureSchema();
         const result = await pool.query<{ attempt_count: number }>(`
             UPDATE stock_trace_jobs
             SET status = $2, attempt_count = attempt_count + CASE WHEN $3 THEN 1 ELSE 0 END,
-                last_error_code = $4, updated_at = CURRENT_TIMESTAMP
+                last_error_code = $4, last_error_detail = COALESCE($5, last_error_detail),
+                updated_at = CURRENT_TIMESTAMP
             WHERE job_id = $1
             RETURNING attempt_count
-        `, [jobId, status, options.incrementAttempt === true, options.lastErrorCode || null]);
+        `, [jobId, status, options.incrementAttempt === true, options.lastErrorCode || null, options.lastErrorDetail || null]);
         return result.rows[0] ? { attemptCount: Number(result.rows[0].attempt_count) } : null;
+    }
+
+    /** 指定事件+修订下最新 job 状态（created_at DESC LIMIT 1），无 job 返回 null。
+     * 用于详情接口派生 failed（dead_letter）：有 job 记录才可能是"归因失败"。 */
+    static async getLatestJobStatusForEventRevision(
+        eventId: string,
+        triggerRevision: number,
+    ): Promise<string | null> {
+        const result = await pool.query<{ status: string }>(`
+            SELECT status FROM stock_trace_jobs
+            WHERE event_id = $1 AND trigger_revision = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+        `, [eventId, triggerRevision]);
+        return result.rows[0]?.status ?? null;
     }
 }

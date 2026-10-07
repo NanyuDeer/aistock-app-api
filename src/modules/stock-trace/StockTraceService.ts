@@ -43,6 +43,37 @@ interface RevisionRow {
 
 const EVENT_SCRAPE_RETRY_DELAYS_MS = [500, 2000]; // 指数退避：500ms → 2s
 
+/** visible_only 过滤前置两条谓词（2026-10-07 计划 Task 1）：
+ * ① 排除"不可归因"：无有效 artifact 且当前修订最新 result rejected/failed。
+ *    **必须带 a.event_id IS NULL 守卫**：SQL 的 CASE "有 artifact → completed" 优先于 unavailable，
+ *    故"有有效 artifact（重新归因场景）但当前修订最新 result 被拒/失败"的行前端会**显示**；
+ *    若缺守卫这类行会被 SQL 提前排除 → 静默丢卡（计划审查抓出的关键缺陷）。
+ * ② 排除低置信 low：用 `IS DISTINCT FROM 'low'` 放行 NULL（字段缺失/无归因结果 → 前端不隐藏）；
+ *    不得用 `<> 'low'`（后者对 NULL 求值为 NULL → 把"无归因结果的进行中事件"误隐藏）。
+ * 谓词①只针对 *result* 的 rejected/failed，**不碰 job 状态**（analysis_status='failed'/dead_letter 的行刻意保持可见）。 */
+const VISIBLE_ONLY_PREDICATES = `
+    AND NOT (a.event_id IS NULL
+             AND rr.result_id IS NOT NULL
+             AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed'))
+    AND (SELECT r4.confidence_level FROM stock_trace_results r4
+         WHERE r4.result_id = a.result_id LIMIT 1) IS DISTINCT FROM 'low'`;
+
+/** 拆分复合 cursor（"<ts ISO>|<event_id>"）为两个下页游标值。 */
+function splitCompositeCursor(cursor: string): { ts: string; eid: string } {
+    const sep = cursor.indexOf('|');
+    if (sep === -1) return { ts: cursor, eid: '' };
+    return { ts: cursor.slice(0, sep), eid: cursor.slice(sep + 1) };
+}
+
+/** since（YYYY-MM-DD 时间下界）合法性：先过严格格式校验，再回读 UTC 成分拒绝非真实日期（2026-13-45 / 2026-02-31），
+ * 避免非法值传入 `$N::date` 抛出 SQL 错误。非法返回 false，调用方忽略该参数。 */
+function isValidSinceDate(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const dt = new Date(Date.UTC(year, month - 1, day));
+    return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+
 let schemaPromise: Promise<void> | null = null;
 
 function toNumber(value: string | number): number {
@@ -599,18 +630,38 @@ export class StockTraceService {
         };
     }
 
-    static async listUserEvents(id: string, openid: string, limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+    static async listUserEvents(
+        id: string,
+        openid: string,
+        limit: number,
+        cursor?: string,
+        options?: { visibleOnly?: boolean; since?: string },
+    ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
-        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 可选尾部参数（序号动态追加）
+        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 与 since 都是动态追加，SQL 子句顺序必须与 params.push 严格一致
         const params: unknown[] = [id, openid, limit + 1];
         let windowClause = '';
-        if (cursor) { windowClause += ` AND e.first_triggered_at < $${params.length + 1}::timestamptz`; params.push(cursor); }
+        if (cursor) {
+            const { ts, eid } = splitCompositeCursor(cursor);
+            // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
+            windowClause += ` AND (e.first_triggered_at, e.event_id) < ($${params.length + 1}::timestamptz, $${params.length + 2})`;
+            params.push(ts, eid);
+        }
+        // since（opt-in）：最近 14 个自然日窗口的时间下界，后端只做纯日期比较；严格校验 YYYY-MM-DD，
+        // 非法则忽略该参数（加性参数不返回 400，避免破坏调用方）。谓词紧跟在 cursor 之后，序号随 params 追加。
+        let sinceClause = '';
+        if (options?.since && isValidSinceDate(options.since)) {
+            sinceClause += ` AND e.trading_date >= $${params.length + 1}::date`;
+            params.push(options.since);
+        }
         // 2026-09-04 决策（修订）：movements 可见性 = 该股"当前持仓期内触发"（JOIN ON 下界 e.first_triggered_at >= us.created_at）：
         // 老自选（created_at 早）全历史 + 今日新触发照常；新加入股只显示加入时刻之后触发/仍活跃的异动，
         // 配合"加入即打点"（addFavorites 后立即检测，命中则建事件+归因），避免"刚加入即见加入前历史事件"。
         // agent 读层（internal 端点）走同一查询，同样只返回持仓期事件，语义一致。
+        // visible_only（opt-in）：追加两条过滤前置谓词（unavailable + 低置信 low），消除"被丢掉的行走占窗口"。
+        const visibleClause = options?.visibleOnly === true ? VISIBLE_ONLY_PREDICATES : '';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
@@ -618,9 +669,13 @@ export class StockTraceService {
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     WHEN j.status = 'dead_letter' THEN 'failed'
                      ELSE 'processing'
                    END AS analysis_status,
-                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
+                   -- 归因置信度（low/medium/high）：与 primary_cause 同源（均取 effective artifact 的结果），
+                   -- 供前端"低置信不展示卡片"口径；无归因结果时为 NULL（前端不据此隐藏）
+                   (SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level
             -- 列表可见性实时跟随当前自选 + 持仓期下界（INNER JOIN user_stocks，JOIN ON 限定
             -- e.first_triggered_at >= us.created_at）：老自选可见全历史 + 今日新触发；新加入股只显加入后触发，
             -- 配合"加入即打点"避免"刚加入即见加入前历史事件"（2026-09-04 决策修订）。
@@ -647,8 +702,13 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
-            WHERE true ${windowClause}
-            ORDER BY e.first_triggered_at DESC
+            LEFT JOIN LATERAL (
+                SELECT j.status FROM stock_trace_jobs j
+                WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
+                ORDER BY j.created_at DESC LIMIT 1
+            ) j ON TRUE
+            WHERE true ${windowClause}${sinceClause}${visibleClause}
+            ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $3
         `, params);
         const rows = result.rows.slice(0, limit);
@@ -674,9 +734,13 @@ export class StockTraceService {
                 analysis_status: String(row.analysis_status ?? 'processing'),
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
+                // 归因置信度（low/medium/high）：前端"低置信不展示卡片"口径；无归因结果时为 null（前端不隐藏）
+                confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
-            nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
+            nextCursor: result.rows.length > limit
+                ? `${(rows[rows.length - 1]?.first_triggered_at as Date).toISOString()}|${rows[rows.length - 1]?.event_id}`
+                : null,
         };
     }
 
@@ -685,11 +749,27 @@ export class StockTraceService {
      * 用于 monitor 页面在用户未登录时也能看到系统真实数据，符合"登录非必需"项目约束。
      * read_at 始终为 null（未登录无法记录已读状态）。
      */
-    static async listRecentEvents(limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+    static async listRecentEvents(
+        limit: number,
+        cursor?: string,
+        options?: { visibleOnly?: boolean; since?: string },
+    ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         const params: unknown[] = [limit + 1];
-        const cursorClause = cursor ? `AND e.first_triggered_at < $2::timestamptz` : '';
-        if (cursor) params.push(cursor);
+        let cursorClause = '';
+        if (cursor) {
+            const { ts, eid } = splitCompositeCursor(cursor);
+            // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
+            cursorClause += ` AND (e.first_triggered_at, e.event_id) < ($2::timestamptz, $3)`;
+            params.push(ts, eid);
+        }
+        // since（opt-in）：时间下界纯日期比较，严格校验 YYYY-MM-DD，非法忽略；谓词紧跟在 cursor 之后，序号随 params 追加。
+        let sinceClause = '';
+        if (options?.since && isValidSinceDate(options.since)) {
+            sinceClause += ` AND e.trading_date >= $${params.length + 1}::date`;
+            params.push(options.since);
+        }
+        const visibleClause = options?.visibleOnly === true ? VISIBLE_ONLY_PREDICATES : '';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, r.latest_price, r.previous_close, r.actual_value AS change_pct,
@@ -697,9 +777,12 @@ export class StockTraceService {
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     WHEN j.status = 'dead_letter' THEN 'failed'
                      ELSE 'processing'
                    END AS analysis_status,
-                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause
+                   (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
+                   -- 归因置信度：与 primary_cause 同源（effective artifact 的结果），无归因结果时为 NULL
+                   (SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level
             FROM stock_trace_events e
             INNER JOIN stock_trace_event_revisions r ON r.event_id = e.event_id
                 AND r.trigger_revision = e.current_trigger_revision
@@ -719,8 +802,13 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
-            WHERE e.event_status = 'active' ${cursorClause}
-            ORDER BY e.first_triggered_at DESC
+            LEFT JOIN LATERAL (
+                SELECT j.status FROM stock_trace_jobs j
+                WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
+                ORDER BY j.created_at DESC LIMIT 1
+            ) j ON TRUE
+            WHERE e.event_status = 'active' ${cursorClause}${sinceClause}${visibleClause}
+            ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $1
         `, params);
         const rows = result.rows.slice(0, limit);
@@ -746,9 +834,13 @@ export class StockTraceService {
                 analysis_status: String(row.analysis_status ?? 'processing'),
                 // 简短主因短语（LLM 生成），供列表/卡片展示；无归因结果时为 null
                 primary_cause: row.primary_cause ? String(row.primary_cause) : null,
+                // 归因置信度（low/medium/high）：前端"低置信不展示卡片"口径；无归因结果时为 null（前端不隐藏）
+                confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
-            nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
+            nextCursor: result.rows.length > limit
+                ? `${(rows[rows.length - 1]?.first_triggered_at as Date).toISOString()}|${rows[rows.length - 1]?.event_id}`
+                : null,
         };
     }
 

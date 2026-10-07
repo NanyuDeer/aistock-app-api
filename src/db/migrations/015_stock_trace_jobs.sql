@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS stock_trace_jobs (
         CHECK (status IN ('queued', 'published', 'processing', 'completed', 'failed', 'dead_letter')),
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     last_error_code VARCHAR(64),
+    last_error_detail TEXT,
     stream_message_id VARCHAR(64),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

@@ -91,6 +91,36 @@ describe('列表接口透出 window_end_at（最近异动时间）', () => {
     });
 });
 
+describe('列表接口透出 confidence_level（低置信不展示口径）', () => {
+    it('listUserEvents 返回 confidence_level', async () => {
+        mockMainQuery([row({ confidence_level: 'low' })]);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
+        assert.equal(page.items[0]?.confidence_level, 'low');
+    });
+
+    it('listUserEvents 的 SELECT 含 confidence_level（与 primary_cause 同源：effective artifact 的结果）', async () => {
+        const sql = await captureMainSql(() => StockTraceService.listUserEvents('user-id-1', 'openid-1', 5));
+        assert.match(sql, /confidence_level/, 'listUserEvents 应 SELECT 归因置信度');
+    });
+
+    it('listRecentEvents 返回 confidence_level', async () => {
+        mockMainQuery([row({ confidence_level: 'medium' })]);
+        const page = await StockTraceService.listRecentEvents(5);
+        assert.equal(page.items[0]?.confidence_level, 'medium');
+    });
+
+    it('listRecentEvents 的 SELECT 含 confidence_level', async () => {
+        const sql = await captureMainSql(() => StockTraceService.listRecentEvents(5));
+        assert.match(sql, /confidence_level/, 'listRecentEvents 应 SELECT 归因置信度');
+    });
+
+    it('无归因结果时 confidence_level 为 null（前端据此不隐藏）', async () => {
+        mockMainQuery([row({ confidence_level: null })]);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
+        assert.equal(page.items[0]?.confidence_level, null);
+    });
+});
+
 describe('toPublicEvent 字段完整性（WS 新建推送 / internal 触发响应）', () => {
     function event(over: Partial<TriggerEvent> = {}): TriggerEvent {
         return {

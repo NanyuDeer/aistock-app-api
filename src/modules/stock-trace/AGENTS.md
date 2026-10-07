@@ -2,6 +2,45 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-10-07 更新：movements 列表 `visible_only` 过滤前置（opt-in）+ cursor 复合键 tiebreaker
+
+- **动机**：`GET /api/cn/favorites/movements` 是「**先 LIMIT、前端再过滤**」——前端用 `isUnattributableMovement` 隐藏 `unavailable` 与低置信 `low`、再对同日同股去重，因此**被隐藏的行白占了窗口**，较早的有效异动可能因窗口被占满而取不到（实测 mxfff：50 条里 27 条是 `low`）。
+- **`visible_only`（加性、opt-in）**：`listUserEvents(id, openid, limit, cursor?, options?: { visibleOnly?: boolean })` 与 `listRecentEvents(limit, cursor?, options?)`，仅 `options.visibleOnly === true` 时在 WHERE 追加 `VISIBLE_ONLY_PREDICATES`（两处共用同一常量，零新增占位符 → 不打乱 `params`/cursor 序号）。controller 解析 `?visible_only=1|true`（其它值一律不开启）。
+  - 谓词①（排除"不可归因"）**必须带 `a.event_id IS NULL` 守卫**：`CASE` 中 `WHEN a.event_id IS NOT NULL THEN 'completed'` **优先于** unavailable，故"有有效 artifact（重新归因场景）但当前修订最新 result 被拒/失败"的行**前端会显示**；漏掉守卫会静默丢卡（计划审查抓出的缺陷）。
+  - 谓词②用 `IS DISTINCT FROM 'low'` 而非 `<> 'low'`：后者对 NULL 求值为 NULL，会把"无归因结果的进行中事件"误隐藏。
+  - 谓词①只针对 *result* 的 rejected/failed，**不碰 job 状态** → `analysis_status='failed'`（job `dead_letter`）的行刻意保持可见（2026-10-06 口径）。
+  - **`internalRouter` 不改**：agent-py 读层走同一个 `listUserEvents`，不传 `options` → WHERE 不追加谓词。
+- **cursor 复合键 + tiebreaker**：`ORDER BY e.first_triggered_at DESC, e.event_id DESC`；`nextCursor` 改为 `"<first_triggered_at ISO>|<event_id>"`；下页条件改行值比较 `(e.first_triggered_at, e.event_id) < ($ts::timestamptz, $eid)`。原因：单字段 cursor 在**同一毫秒**的多条事件上会漏行，而翻页是本次新引入的能力（此前 `nextCursor` **无任何消费方**，故该不透明字符串格式由本次定义）。
+  - ⚠️ **tiebreaker 是无条件加的**：所以"不传 `visible_only` 时 SQL 逐字不变"只对 WHERE 成立；`ORDER BY` 变了 → 在 `first_triggered_at` **完全并列**的边界行上入选行可能与改动前不同（agent-py 读层同样受此影响，仅并列边界，且使排序确定化）。
+- **测试**：`__tests__/visibleOnly.spec.ts`（不传 options 时 SQL 不含谓词 / `a.event_id IS NULL` 守卫断言 / `IS DISTINCT FROM` / cursor + visibleOnly 联合时占位符序号 / 未超页 `nextCursor === null`）；`internalRouter-events.spec.ts` 补断言（该路径 `options` 为 `undefined`）。
+- **`since` 时间下界（同轮追加，opt-in）**：`options.since`（`YYYY-MM-DD`）存在且**合法**时，两处查询各追加 `AND e.trading_date >= $N::date`（`trading_date` 是真正的 `date` 列 → 纯日期比较，无时区换算）。
+  - **校验必须两层**：`/^\d{4}-\d{2}-\d{2}$/` **加上** `Date.UTC` 回读三成分比对——纯格式正则会放过 `2026-13-45` 这类"格式合法但日期非法"的值，进而让 `$N::date` 抛错 → 500。非法一律**忽略该参数**（加性参数不返回 400）。
+  - **口径归属**：`since` 由**调用方**计算（前端算"最近 14 个自然日" = `今天-13`）；后端只做日期比较，不承担"两周"这个业务口径。
+  - 参数序号：`since` 与 cursor 均为动态追加，SQL 子句顺序与 `params.push` 顺序严格一致（`listUserEvents`：LIMIT `$3` → cursor `$4/$5` → since `$6`；`listRecentEvents`：LIMIT `$1` → cursor `$2/$3` → since `$4`）。
+  - 测试：`__tests__/sinceWindow.spec.ts`（不传即无谓词 / 三者同传时序号正确 / 非法值枚举含 `2026-13-45` / 空页 `nextCursor === null`）。
+  - **前端配套**：两页首屏与触底都传 `since: shanghaiDateKeyDaysAgo(TWO_WEEK_WINDOW_DAYS = 13)`；实测两页卡片由 ~60 张收敛到 **8 张**（日期范围 09-24 → 09-30，无早于 09-24 的卡片）。
+- **前端配套**（2026-10-07）：见 aistock-app-frontend `modules/favorites/AGENTS.md`（两页 cursor 翻页 + `@scrolltolower` + `upsertEventById`）。
+
+### 2026-10-06 更新：归因失败可观测（`last_error_detail`）+ `analysis_status` 第 4 值 `failed`
+
+- **动机**：2026-09-30 海正生材 688203 事故——某股当日 3 条异动，**最新一条**归因 job 三次尝试后进入终态 `dead_letter`，因无 result 被派生为 `processing`，卡片永久显示「归因中」，并在"同日同股取最新"的展示口径下**遮盖了当日已有的有效归因**。排查时又发现：`last_error_code` 只存 worker 的通用兜底码 `LLM_OR_DEPENDENCY_UNAVAILABLE`，真实异常（类名+消息）既没落库、日志也没留存 → 事后完全无法定位根因。
+- **可观测性**：`stock_trace_jobs` 新增 `last_error_detail TEXT` —— migration `024_stock_trace_job_error_detail.sql` + `StockTraceJobService.ensureSchema()` 幂等 `ADD COLUMN IF NOT EXISTS`（存量库启动即自动补列）+ `015_stock_trace_jobs.sql` 回写冷部署表定义。`PATCH /internal/stock-trace/jobs/:jobId` 请求体新增可选 `last_error_detail`（**服务端强制截断 500 字符**）；`reportStatus` 用 `SET last_error_detail = COALESCE($5, last_error_detail)`，**仅在本次带明细时覆盖**，避免后续 `completed` 报告把已存明细清空。上报侧见 agent-py `StockTraceWorkerOutcome.error_detail`。
+- **状态区分**：`analysis_status` 新增第 4 个值 **`failed`**（终态失败）。`listUserEvents` / `listRecentEvents` 两处 SQL 各新增 `LEFT JOIN LATERAL (SELECT j.status FROM stock_trace_jobs j WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision ORDER BY j.created_at DESC LIMIT 1) j ON TRUE` 与 `CASE` 分支 `WHEN j.status = 'dead_letter' THEN 'failed'`；详情链路新增 `StockTraceJobService.getLatestJobStatusForEventRevision(eventId, triggerRevision)` 并透传给 `presentStockTraceAnalysis`（其 `processingStatus` 联合类型加 `'failed'`）。
+- **优先级口径（重要）**：`unavailable` **优先于** `failed` —— 存在被拒/失败 result 时不算"归因失败"（确有产出可回退展示），只有 job `dead_letter` **且无 result** 才落 `failed`。两处派生点（列表 SQL 与详情 presentation）**必须保持一致**。
+- **不改**：WS/推送的 `toPublicEvent` 仍返回 `'processing'`（仅在事件创建/修订时调用，此时必然尚无结果）；`stock_trace_results`/快照/worker 错误码语义与 `REPLAYABLE_ERROR_CODES` 均未动。
+- **前端配套**（详见 aistock-app-frontend `modules/favorites/AGENTS.md`）：`failed` 显示「归因失败」（5 处文案映射）；`dedupeDailyMovements` 挑最新时跳过 `failed`（当日有有效归因则回退显示它，全 failed 才保留最新）；`failed` **不被** `isUnattributableMovement` 隐藏。
+- 测试：`listAnalysisStatus.spec.ts`（两处 SQL 的 job LATERAL 与 `unavailable > failed` 分支**位置**断言）、`presentation.spec.ts`（dead_letter→failed / artifact 优先 / unavailable 优先）、`presentEventAnalysis.spec.ts`（controller 详情链路透传）→ `npx tsc --noEmit` exit 0。
+
+### 2026-09-30 更新：列表接口透出 `confidence_level`（低置信不展示卡片口径）
+
+- **动机**：产品口径——**低置信（`low`）的归因不展示异动卡片**（`medium`/`high` 照常展示）。判定在前端做，因此列表接口须把归因置信度透出（此前只透出 `primary_cause`）。
+- **改动**：`listUserEvents` / `listRecentEvents` 的 SELECT 各新增 `(SELECT r3.confidence_level FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS confidence_level`，items 映射为 `confidence_level: row.confidence_level ? String(row.confidence_level) : null`。**与 `primary_cause` 同源**（均取 effective artifact 对应 result，`r3.result_id = a.result_id`）——若改用"最新 result"会与主因短语指向不同版本、口径不一致。
+- **枚举**：`low` / `medium` / `high`（阈值 `score >= 0.75 → high`、`>= 0.5 → medium`，见 `StockTraceResultService`）。
+- **降级语义**：无归因结果（事件仍在归因/归因失败）时返回 `null`；前端据此**不隐藏**，只隐藏显式 `low` —— 避免"字段缺失/null 即隐藏"误杀全部卡片。
+- **加性改动**：新增 SELECT 列与返回字段，不改排序/游标/可见性，旧前端未消费该字段时零影响。
+- 测试：`__tests__/eventPayloadFields.spec.ts` 新增 describe「列表接口透出 confidence_level（低置信不展示口径）」5 例（两列表取值 + SELECT 断言 + `null` 透传；SQL 断言用设计中立的 `/confidence_level/`，不绑定实现别名）→ **13 pass / 0 fail**；`npx tsc --noEmit` exit 0。
+- **前端配套**（详见 aistock-app-frontend `modules/favorites/AGENTS.md`）：`isUnattributableMovement` 增加 `if (m.confidence_level === 'low') return true`。
+
 ### 2026-09-24 更新：列表/推送载荷补齐（window_end_at + is_limit_up + analysis_status 口径对齐）
 
 - **列表接口透出 `window_end_at`**：`listUserEvents` / `listRecentEvents` 的 SELECT 增选 `e.window_end_at`，items 映射为 `window_end_at`（ISO 字符串）。原因：前端卡片按 `window_end_at || triggered_at` 取"最近异动时间"，缺该字段时恒退化为**首次**触发时刻（每次再触发/修订都会刷新 `window_end_at`，见 `processPriceFact` 的 `SET window_end_at = $2`）。加性改动，排序/游标仍按 `first_triggered_at`，未变。
@@ -53,6 +92,7 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 ### 2026-08-19 更新：列表接口归因状态派生
 
 - `listUserEvents` / `listRecentEvents` 的 `analysis_status` 改为 SQL 派生（LEFT JOIN LATERAL artifact + 最新 result），与详情接口 `presentStockTraceAnalysis` 一致：有 effective artifact → `completed`；最新 result rejected/failed → `unavailable`；其余 → `processing`。不再硬编码 `pending`。
+- ⚠️ **已被 2026-10-06 扩展**：新增第 4 值 `failed`（job `dead_letter`），且该分支位于 `unavailable` **之后**（即 `unavailable` 优先）。当前完整口径见本文件顶部 2026-10-06 条目。
 
 ### 2026-08-19 更新：主因短语 primary_phrase / primary_cause
 

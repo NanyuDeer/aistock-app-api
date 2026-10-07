@@ -9,7 +9,7 @@ export interface TraceUnavailableView {
 }
 
 export interface StockTraceAnalysisPresentation {
-    processingStatus: 'processing' | 'completed' | 'unavailable';
+    processingStatus: 'processing' | 'completed' | 'unavailable' | 'failed';
     artifact: StockTraceArtifact | null;
     unavailable?: TraceUnavailableView;
 }
@@ -32,9 +32,12 @@ export function presentStockTraceAnalysis(
     event: Record<string, unknown>,
     artifact: StockTraceArtifact | null,
     latestResult: StockTraceResult | null,
+    jobStatus?: string | null,
 ): StockTraceAnalysisPresentation {
     if (artifact) return { processingStatus: 'completed', artifact };
 
+    // unavailable 优先于 failed：有 rejected/failed result 表示归因跑完并给出"无结论"结论，
+    // 信息量高于 job 死信；与列表 SQL 的派生顺序（artifact→unavailable→dead_letter→processing）保持一致。
     if (latestResult?.validationStatus === 'rejected' || latestResult?.processingStatus === 'failed') {
         return {
             processingStatus: 'unavailable',
@@ -45,6 +48,10 @@ export function presentStockTraceAnalysis(
                 triggerFacts: triggerFacts(event),
             },
         };
+    }
+    // 当前版本归因 job 死信（无 artifact/result）→ 归因失败
+    if (jobStatus === 'dead_letter') {
+        return { processingStatus: 'failed', artifact: null };
     }
     return { processingStatus: 'processing', artifact: null };
 }

@@ -5,6 +5,7 @@ import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
+import { StockTraceJobService } from './StockTraceJobService';
 import { InsightReportService } from './InsightReportService';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 
@@ -53,13 +54,18 @@ async function presentEventAnalysis(eventId: string, event: Record<string, unkno
     const latestResult = revision > 0
         ? await StockTraceResultService.getLatestForEventRevision(eventId, revision)
         : null;
+    // 当前版本最新 job 状态（dead_letter → failed）；无 job 为 null，不透传 failed。
+    // 优先级（unavailable > failed）由 presentStockTraceAnalysis 内部保证，与列表 SQL 一致。
+    const jobStatus = revision > 0
+        ? await StockTraceJobService.getLatestJobStatusForEventRevision(eventId, revision)
+        : null;
     // 当前版本归因失败（无 artifact 且最新 result 被拒/失败）时，回退到该事件最近的有效归因，
     // 避免"有异动却看不到归因"（如重新归因失败会覆盖原本有效的旧版本归因）。
     if (!artifact && latestResult && (latestResult.validationStatus === 'rejected' || latestResult.processingStatus === 'failed')) {
         const fallback = await StockTraceArtifactService.getEffectiveArtifact(eventId);
-        if (fallback) return presentStockTraceAnalysis(event, fallback, latestResult);
+        if (fallback) return presentStockTraceAnalysis(event, fallback, latestResult, jobStatus);
     }
-    return presentStockTraceAnalysis(event, artifact, latestResult);
+    return presentStockTraceAnalysis(event, artifact, latestResult, jobStatus);
 }
 
 export class StockTraceController {
@@ -68,12 +74,26 @@ export class StockTraceController {
             const auth = await authFromRequest(req);
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
+            // visible_only（opt-in）：前端显式传参把过滤前置到 SQL（unavailable + 低置信 low）。
+            // 仅当为 1/true 时透传 options.visibleOnly。不传 visible_only 时 WHERE 不追加任何谓词、参数序号不变；
+            // 但 ORDER BY 新增了 e.event_id DESC tiebreaker 以使并列行排序确定——在 first_triggered_at 完全并列的
+            // 边界行上，入选行可能与改动前不同（tiebreaker 是计划明确要求，不是偏差）。
+            const visibleRaw = Array.isArray(req.query.visible_only) ? req.query.visible_only[0] : req.query.visible_only;
+            const visibleOnly = visibleRaw === '1' || visibleRaw === 'true';
+            // since（opt-in，YYYY-MM-DD）：最近 14 个自然日窗口的时间下界，前端算出 since=今天-13 天传入；
+            // 后端只做纯日期比较。透传原始字符串，非法值由 service 严格校验后忽略（加性参数不返回 400）。
+            const sinceRaw = Array.isArray(req.query.since) ? req.query.since[0] : req.query.since;
+            const since = typeof sinceRaw === 'string' && sinceRaw.length > 0 ? sinceRaw : undefined;
+            const opts: { visibleOnly?: boolean; since?: string } = {};
+            if (visibleOnly) opts.visibleOnly = true;
+            if (since !== undefined) opts.since = since;
+            const options = opts.visibleOnly !== undefined || opts.since !== undefined ? opts : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
             // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动；
             // 可见性下界 = 持仓期（listUserEvents JOIN ON e.first_triggered_at >= us.created_at，2026-09-04）。
             const result = auth && auth.id
-                ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr)
-                : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr);
+                ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr, options)
+                : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr, options);
             res.json({ code: 200, data: result });
         } catch (error) {
             next(error);

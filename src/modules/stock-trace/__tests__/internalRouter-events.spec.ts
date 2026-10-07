@@ -94,9 +94,14 @@ describe('GET /events 只读列表（阶段 2.2）', () => {
     it('正常返回列表（openid 过滤 + limit 透传），无 symbol 不过滤', async () => {
         let capturedOpenid = '';
         let capturedLimit = 0;
-        mock.method(StockTraceService, 'listUserEvents', (async (_id: string, openid: string, limit: number) => {
-            capturedOpenid = openid;
-            capturedLimit = limit;
+        // args 数组捕获完整实参：断言 internal 路径**不传** options（第 5 个实参为 undefined，
+        // 保护 agent-py 读层语义：SQL 与行为逐字不变、不追加可见性谓词）。
+        let capturedArgs: unknown[] | null = null;
+        mock.method(StockTraceService, 'listUserEvents', (async (...args: unknown[]) => {
+            capturedArgs = args;
+            const params = args as [string, string, number];
+            capturedOpenid = params[1];
+            capturedLimit = params[2];
             return { items: [item('000001'), item('600519', '培育钻石概念')], nextCursor: null };
         }) as unknown as typeof StockTraceService.listUserEvents);
 
@@ -111,6 +116,8 @@ describe('GET /events 只读列表（阶段 2.2）', () => {
         assert.equal(body.data.length, 2);
         assert.equal(capturedOpenid, 'o_test');
         assert.equal(capturedLimit, 10);
+        assert.equal(capturedArgs?.[3], undefined, 'internal 路径不传 cursor');
+        assert.equal(capturedArgs?.[4], undefined, 'internal 路径不传 options（agent-py 读层走原 SQL）');
     });
 
     it('symbol 过滤：只返回该股票事件', async () => {
