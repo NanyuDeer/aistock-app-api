@@ -43,6 +43,28 @@ interface RevisionRow {
 
 const EVENT_SCRAPE_RETRY_DELAYS_MS = [500, 2000]; // 指数退避：500ms → 2s
 
+/** visible_only 过滤前置两条谓词（2026-10-07 计划 Task 1）：
+ * ① 排除"不可归因"：无有效 artifact 且当前修订最新 result rejected/failed。
+ *    **必须带 a.event_id IS NULL 守卫**：SQL 的 CASE "有 artifact → completed" 优先于 unavailable，
+ *    故"有有效 artifact（重新归因场景）但当前修订最新 result 被拒/失败"的行前端会**显示**；
+ *    若缺守卫这类行会被 SQL 提前排除 → 静默丢卡（计划审查抓出的关键缺陷）。
+ * ② 排除低置信 low：用 `IS DISTINCT FROM 'low'` 放行 NULL（字段缺失/无归因结果 → 前端不隐藏）；
+ *    不得用 `<> 'low'`（后者对 NULL 求值为 NULL → 把"无归因结果的进行中事件"误隐藏）。
+ * 谓词①只针对 *result* 的 rejected/failed，**不碰 job 状态**（analysis_status='failed'/dead_letter 的行刻意保持可见）。 */
+const VISIBLE_ONLY_PREDICATES = `
+    AND NOT (a.event_id IS NULL
+             AND rr.result_id IS NOT NULL
+             AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed'))
+    AND (SELECT r4.confidence_level FROM stock_trace_results r4
+         WHERE r4.result_id = a.result_id LIMIT 1) IS DISTINCT FROM 'low'`;
+
+/** 拆分复合 cursor（"<ts ISO>|<event_id>"）为两个下页游标值。 */
+function splitCompositeCursor(cursor: string): { ts: string; eid: string } {
+    const sep = cursor.indexOf('|');
+    if (sep === -1) return { ts: cursor, eid: '' };
+    return { ts: cursor.slice(0, sep), eid: cursor.slice(sep + 1) };
+}
+
 let schemaPromise: Promise<void> | null = null;
 
 function toNumber(value: string | number): number {
@@ -599,18 +621,31 @@ export class StockTraceService {
         };
     }
 
-    static async listUserEvents(id: string, openid: string, limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+    static async listUserEvents(
+        id: string,
+        openid: string,
+        limit: number,
+        cursor?: string,
+        options?: { visibleOnly?: boolean },
+    ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
-        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 可选尾部参数（序号动态追加）
+        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 拆分 ts+eid 两个可选尾部参数（序号动态追加）
         const params: unknown[] = [id, openid, limit + 1];
         let windowClause = '';
-        if (cursor) { windowClause += ` AND e.first_triggered_at < $${params.length + 1}::timestamptz`; params.push(cursor); }
+        if (cursor) {
+            const { ts, eid } = splitCompositeCursor(cursor);
+            // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
+            windowClause += ` AND (e.first_triggered_at, e.event_id) < ($${params.length + 1}::timestamptz, $${params.length + 2})`;
+            params.push(ts, eid);
+        }
         // 2026-09-04 决策（修订）：movements 可见性 = 该股"当前持仓期内触发"（JOIN ON 下界 e.first_triggered_at >= us.created_at）：
         // 老自选（created_at 早）全历史 + 今日新触发照常；新加入股只显示加入时刻之后触发/仍活跃的异动，
         // 配合"加入即打点"（addFavorites 后立即检测，命中则建事件+归因），避免"刚加入即见加入前历史事件"。
         // agent 读层（internal 端点）走同一查询，同样只返回持仓期事件，语义一致。
+        // visible_only（opt-in）：追加两条过滤前置谓词（unavailable + 低置信 low），消除"被丢掉的行走占窗口"。
+        const visibleClause = options?.visibleOnly === true ? VISIBLE_ONLY_PREDICATES : '';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, ue.read_at, r.latest_price, r.previous_close, r.actual_value AS change_pct,
@@ -656,8 +691,8 @@ export class StockTraceService {
                 WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
                 ORDER BY j.created_at DESC LIMIT 1
             ) j ON TRUE
-            WHERE true ${windowClause}
-            ORDER BY e.first_triggered_at DESC
+            WHERE true ${windowClause}${visibleClause}
+            ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $3
         `, params);
         const rows = result.rows.slice(0, limit);
@@ -687,7 +722,9 @@ export class StockTraceService {
                 confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
-            nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
+            nextCursor: result.rows.length > limit
+                ? `${(rows[rows.length - 1]?.first_triggered_at as Date).toISOString()}|${rows[rows.length - 1]?.event_id}`
+                : null,
         };
     }
 
@@ -696,11 +733,21 @@ export class StockTraceService {
      * 用于 monitor 页面在用户未登录时也能看到系统真实数据，符合"登录非必需"项目约束。
      * read_at 始终为 null（未登录无法记录已读状态）。
      */
-    static async listRecentEvents(limit: number, cursor?: string): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
+    static async listRecentEvents(
+        limit: number,
+        cursor?: string,
+        options?: { visibleOnly?: boolean },
+    ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         const params: unknown[] = [limit + 1];
-        const cursorClause = cursor ? `AND e.first_triggered_at < $2::timestamptz` : '';
-        if (cursor) params.push(cursor);
+        let cursorClause = '';
+        if (cursor) {
+            const { ts, eid } = splitCompositeCursor(cursor);
+            // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
+            cursorClause += ` AND (e.first_triggered_at, e.event_id) < ($2::timestamptz, $3)`;
+            params.push(ts, eid);
+        }
+        const visibleClause = options?.visibleOnly === true ? VISIBLE_ONLY_PREDICATES : '';
         const result = await pool.query(`
             SELECT e.event_id, e.symbol, e.stock_name, e.direction, e.first_triggered_at, e.window_end_at, e.current_trigger_revision,
                    e.current_severity, e.is_limit_up, r.latest_price, r.previous_close, r.actual_value AS change_pct,
@@ -738,8 +785,8 @@ export class StockTraceService {
                 WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
                 ORDER BY j.created_at DESC LIMIT 1
             ) j ON TRUE
-            WHERE e.event_status = 'active' ${cursorClause}
-            ORDER BY e.first_triggered_at DESC
+            WHERE e.event_status = 'active' ${cursorClause}${visibleClause}
+            ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $1
         `, params);
         const rows = result.rows.slice(0, limit);
@@ -769,7 +816,9 @@ export class StockTraceService {
                 confidence_level: row.confidence_level ? String(row.confidence_level) : null,
                 is_limit_up: Boolean(row.is_limit_up),
             })),
-            nextCursor: result.rows.length > limit ? (rows[rows.length - 1]?.first_triggered_at as Date).toISOString() : null,
+            nextCursor: result.rows.length > limit
+                ? `${(rows[rows.length - 1]?.first_triggered_at as Date).toISOString()}|${rows[rows.length - 1]?.event_id}`
+                : null,
         };
     }
 

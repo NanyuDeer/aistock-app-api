@@ -74,12 +74,17 @@ export class StockTraceController {
             const auth = await authFromRequest(req);
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
+            // visible_only（opt-in）：前端显式传参把过滤前置到 SQL（unavailable + 低置信 low）。
+            // 仅当为 1/true 时透传 options.visibleOnly；internalRouter 不传该参 → 走原 SQL，语义逐字不变。
+            const visibleRaw = Array.isArray(req.query.visible_only) ? req.query.visible_only[0] : req.query.visible_only;
+            const visibleOnly = visibleRaw === '1' || visibleRaw === 'true';
+            const options = visibleOnly ? { visibleOnly: true } : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
             // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动；
             // 可见性下界 = 持仓期（listUserEvents JOIN ON e.first_triggered_at >= us.created_at，2026-09-04）。
             const result = auth && auth.id
-                ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr)
-                : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr);
+                ? await StockTraceService.listUserEvents(auth.id, auth.openid, limitFromRequest(req), cursorStr, options)
+                : await StockTraceService.listRecentEvents(limitFromRequest(req), cursorStr, options);
             res.json({ code: 200, data: result });
         } catch (error) {
             next(error);
