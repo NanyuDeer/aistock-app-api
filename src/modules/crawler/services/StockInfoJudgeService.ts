@@ -18,6 +18,22 @@ const SYSTEM_PROMPT_ANNOUNCEMENT =
 const SYSTEM_PROMPT_NEWS =
     '你是A股新闻研判助手。只根据用户提供的新闻信息判断对股票的影响。必须只返回JSON，不要解释，不要Markdown。';
 
+/** prompt 版本（改动硬规则时递增，便于日志追溯与灰度对比）。 */
+export const PROMPT_VERSION = 'judge-2.0-evidence';
+
+/**
+ * 证据硬规则（对齐「AI 解读」链路的约束口径）。
+ * 目的：让抓取时的「一句话结论」有证据、有方向、有期限，而不是复述公告。
+ */
+const JUDGE_EVIDENCE_RULES =
+    '【研判硬规则】\n' +
+    '1. 只依据给定材料；结论必须能在材料中找到支撑（证据可回溯）。\n' +
+    '2. 禁止给出目标价、绝对点位或买卖建议。\n' +
+    '3. 区分事实与推断：推断必须显式标注（如「预计」「可能」）。\n' +
+    '4. 结论必须落到「对股价/基本面的影响方向 + 影响期限」，而非复述公告。\n' +
+    '5. 材料不足以判断时，ai_impact 取「中性」并在 ai_summary 中说明依据不足。\n' +
+    `（prompt_version=${PROMPT_VERSION}）\n\n`;
+
 /** 截断文本 */
 function trim(value: string, maxChars: number): string {
     if (value.length <= maxChars) return value;
@@ -25,9 +41,10 @@ function trim(value: string, maxChars: number): string {
 }
 
 /** 构建公告研判 prompt */
-function buildAnnouncementPrompt(announcement: EastmoneyAnnouncement, pdf: PdfContent): string {
+export function buildAnnouncementPrompt(announcement: EastmoneyAnnouncement, pdf: PdfContent): string {
     const tables = pdf.tables.join('\n\n');
     return (
+        JUDGE_EVIDENCE_RULES +
         '请研判这份A股公告对股票的影响，并返回严格JSON：\n' +
         '{' +
         '"ai_impact":"重大利好|利好|中性|利空|重大利空",' +
@@ -47,8 +64,9 @@ function buildAnnouncementPrompt(announcement: EastmoneyAnnouncement, pdf: PdfCo
 }
 
 /** 构建新闻研判 prompt */
-function buildNewsPrompt(news: EastmoneyNews): string {
+export function buildNewsPrompt(news: EastmoneyNews): string {
     return (
+        JUDGE_EVIDENCE_RULES +
         '请研判这条A股新闻对股票的影响，并返回严格JSON：\n' +
         '{' +
         '"ai_impact":"重大利好|利好|中性|利空|重大利空",' +

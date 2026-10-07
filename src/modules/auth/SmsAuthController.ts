@@ -8,7 +8,7 @@
  *
  * 冲突策略（2026-08-31 起）：phone 已属其他 id 时调用 accountMerge.mergeConflictAccount
  * 自动合并（自选股并集 / 设置以主账户为准 / VIP 继承 / 身份转移），不再 409 拒绝。
- * dev 环境放行固定测试码 SMS_DEV_TEST_CODE（登录/绑定校验共用）。
+ * 仅 test 环境放行固定测试码 SMS_DEV_TEST_CODE（登录/绑定校验共用）。
  */
 import { Request, Response, NextFunction } from 'express';
 import { signJwt, verifyJwt } from '../../shared/utils/jwt';
@@ -53,10 +53,12 @@ export class SmsAuthController {
         return { ok: true, id, openid: payload.openid };
     }
 
-    /** 验证码校验：dev 放行固定测试码，否则单次消费 Redis 中的验证码 */
+    /** 验证码校验：仅 test 放行固定测试码，否则单次消费 Redis 中的验证码 */
     private static async verifyCode(phone: string, code: string): Promise<boolean> {
-        const isDev = process.env.NODE_ENV !== 'production';
-        if (isDev && code === SMS_DEV_TEST_CODE) return true;
+        // Important C：测试后门收紧为仅 NODE_ENV=test 生效
+        // （此前 !== 'production' 时，staging 或容器漏配 NODE_ENV 的环境也会放行万能码，属真实风险）
+        const isTest = process.env.NODE_ENV === 'test';
+        if (isTest && code === SMS_DEV_TEST_CODE) return true;
         return consumeCode(phone, code);
     }
 

@@ -83,7 +83,7 @@ src/
 │   ├── push/               # 推送模块
 │   ├── auth/               # 认证模块
 │   ├── calendar/           # 日历模块（L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 读取）
-│   ├── event-entities/     # 重大事件时间线模块（event_entities 权威实体 + Calendar 物化 + 公开时间线读取）
+│   ├── event-entities/     # 重大事件时间线模块（event_entities 权威实体 + Calendar 读时直查 + 公开时间线读取）
 │   ├── monitor/            # 监控模块（异动/风口/十倍股/知识图谱/机构调研）
 │   ├── crawler/            # 爬虫模块
 │   └── agent/              # Agent 反代模块（Phase 5）
@@ -99,7 +99,7 @@ src/
 | 推送 | modules/push | 微信模板消息、定时推送 |
 | 认证 | modules/auth | 扫码登录、微信授权、验证码/密码登录（含登录防刷） |
 | 日历 | modules/calendar | L1 交割日规则 + market_calendar_events 事件日历 + rhythm-master 报告读取 |
-| 重大事件时间线 | modules/event-entities | Event Entity 权威实体（event_entities）+ Calendar 物化 + 公开时间线读取 |
+| 重大事件时间线 | modules/event-entities | Event Entity 权威实体（event_entities）+ Calendar 读时直查 + 公开时间线读取 |
 | 监控 | modules/monitor | 股票异动监控、风口龙头、十倍股评分、知识图谱、机构调研热门股 |
 | 爬虫 | modules/crawler | 数据爬取、OCR、资讯研判 |
 | Agent | modules/agent | `/api/agent/*` 反代到 Python FastAPI（SSE 透传 + 502 降级） |
@@ -223,3 +223,5 @@ pm2 logs aistock-api
 > 新增（2026-09-03，已于 2026-09-13 移除）：自选股洞察阶段 2 — `stock_trace_events` 曾增加 `is_limit_up`/`forecast` 列（迁移 018，forecast 列已由迁移 022 删除，保留 `is_limit_up`）；曾新增 `GET /internal/stock-trace/light-predict-targets`、`PATCH /internal/stock-trace/events/:eventId/forecast`、`PATCH /internal/stock-info/judgements/:id/forecast` 三个 Internal 端点（已于 2026-09-13 删除）；涨停雷达命中自动置 `is_limit_up` + `immediateEnqueue`。
 
 > 变更（2026-09-17）：大盘归因链 `attribution_chains` 转 migration 管理（`src/db/migrations/020_attribution_chains.sql`，路由不再内联建表）——**部署须先执行该迁移再重启服务**：`psql "$DATABASE_URL" -f src/db/migrations/020_attribution_chains.sql`（本仓 migrations 均为人工 psql 执行，无启动自动执行器）；`POST /api/internal/attribution-chain` 校验收紧（`date` 必须 `YYYY-MM-DD`、`children` 子项 `sector`/`relation`/`pct` 逐项校验，非法 400 且错误文案带下标）。
+
+> 运维要求（2026-09-27）：服务以应用角色（`aistock`）连库并在启动时执行内联迁移（`users` 的 `password_hash`/`is_vip`/统一账户模型、引用 `users(openid)` 的外键摘除重建等）。**部署前须确保该角色对相关表拥有 owner 权限**（`ALTER TABLE <t> OWNER TO aistock`），否则 `ALTER TABLE` 会抛 `must be owner of table ...` 导致迁移静默失败、注册/登录因缺 `password_hash` 列报 500「注册失败」（2026-09-27 生产 P0 事故根因）。

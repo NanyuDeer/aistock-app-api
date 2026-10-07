@@ -45,6 +45,259 @@
 - `visible_only`（同账号 `limit=50`）：不带时 50 条含 **27 条 `low`**；带上后 `low` 为 0，被剔除的 27 条**全部**是 `low`，`failed` 行保留。
 - `since=2026-09-24`：返回 **13 条**，无早于该日期的行；`since=2026-13-45`（非法）被忽略并等价于不传（**未 500**）。
 
+## [master] 2026-10-06 — 收编被 glob 遗漏的 8 个测试文件 + 修正 kline 陈旧断言
+
+**开发者**: Aria
+
+### 改进
+
+- **修掉测试盲区**：`package.json` 的 `test` glob 追加 `"src/**/*.test.ts"`。此前 `src/` 下按 `*.test.ts` 命名、且不在 `__tests__/` 目录内的 **8 个测试文件**（calendar ×3、core/routes ×4、fear-greed ×1）**从不被 `npm test` 执行** —— 等于永久盲区。
+- `npm test` 收集量：**876 → 936 tests**（+60，恰为新收编的 8 个文件），pass 864 → 924。
+
+### 修复
+
+- `src/core/routes/internal.kline.test.ts`（约 L106）：断言未跟上接口契约变更 —— `GET /internal/quote/:code/kline` 自 2026-09-05 起透传 `vol` / `amount`（缺失为 `null`），期望对象补上这两个字段。
+
+### 验证
+
+- `npm test` → **936 tests / 924 pass / 12 fail**，12 条与基线逐条同名同源（全部位于既有 `tests/**`）→ **零新增失败**。
+- `npx tsc --noEmit` → EXIT 0。
+
+### 说明
+
+- 只放宽 glob，未重命名/移动任何测试文件；未使用 `skip`/`todo`/注释断言；未改动任何生产代码。
+- 约定提醒：后续在 `src/**/__tests__/` 下新增测试请沿用 `*.spec.ts`（Node 对重复 pattern 会去重，但统一命名更清晰）。
+
+---
+
+## [master] 2026-10-06 — 末项 Important 修复：sufficientSample 统一为复合判据
+
+**开发者**: Aria
+
+### 修复
+
+- **问题**：`sufficientSample` 判据两侧/各桶不一致——既有聚合桶 `n>=30`，而本批新增下钻桶也是 `n>=30`，agent-py 侧聚合桶却是 `n>=30 and n_predictions>=30`。后果：同响应内会出现 `bucketStats.combined.sufficientSample=false` 而 `directionBuckets.bullish.sufficientSample=true`，且同一字段两侧判据不同 → 假信心。
+- **改法（统一为复合判据）**：`publicRouter.ts` 的 `summarizeSettled`（下钻桶唯一实现）与 `bucketStats`（聚合桶）统一为 `n >= 30 && nPredictions >= 30`，`nPredictions` = 桶内**不同预测数**（按记录 id 去重）。因 app-api 的 entry 不携带记录 id，新增 `interface SettledEntry { entry; predictionId }`：`collectSlots` 槽位带 `predictionId: r.id`，`computeStats` push 时带 `row.id`，两条路径同源同值（`computeStats` 与 `bucketStats.combined` 同维桶仍相等）。
+- **行为变更（有意收紧）**：既有聚合桶 `combined/index/sector` 的 `sufficientSample` 在「档位条目 n>=30 但不同预测数 <30」时由 `true` → `false`；顶层下钻桶同理。只会更保守，不会反向。判据为 `n>=30` 的真子集。
+
+### 验证
+
+- **测试**：`__tests__/publicRouter.spec.ts` +2（RED→GREEN：15 行 × 2 同方向档 = n30/pred15 → false；30 行 × 1 档 → true）。既有 `sufficientSample` 断言仅 `:410/:414/:992`（均 false），无需同步。
+- **验证**：`npm test` → 876 tests / 864 pass / 12 既有基线失败（`publicRouter.spec.ts` 全绿，未在失败清单）；`npx tsc --noEmit` exit 0。
+
+---
+
+## [master] 2026-10-06 — 终评修复：I1 关键测试进入 CI + §8-3 方向/档位桶
+
+**开发者**: Aria
+
+### 修复
+
+- **I1（关键假信心修复）**：`publicRouter.test.ts` / `internalRouter.test.ts` 原不匹配 `npm test` 的任一 glob（`src/**/__tests__/**/*.spec.ts` 与 `tests/**/*.test.ts`）→ 版本过滤 / long 排除 / `flat_rate` / `settled_ratio` 等关键断言**从不被 CI 执行**。**选方案 (b)**：迁入 `src/modules/prediction/__tests__/` 并改用 `.spec.ts`（对齐仓库既有布局），把原有小 spec `__tests__/publicRouter.spec.ts`（long 舍入 1 条）**合并进同名文件**，删除旧 `publicRouter.test.ts` 与 `internalRouter.test.ts`。（未选 (a) 扩展 glob：会把 `src/` 下另外 8 个既有 `.test.ts`（calendar / core-routes / fear-greed）一并扫入，风险与范围都超出本改造。）
+
+### 新增
+
+- **I2（§8-3 落地下钻桶）**：`publicRouter.ts` 新增共用聚合 `summarizeSettled` 与 `dimensionBuckets`：`computeStats` 与 `bucketStats` 的**每个桶**同时输出 `directionBuckets`（bullish/bearish/neutral，各带 `flat_rate`，分母 = 该方向已结算数）与 `horizonBuckets`（short/mid/long；**long 单列并标注 `iteration_board:false`**）。口径与主桶逐条一致：4.0、排除 approximate、long 不入迭代桶、无样本 hitRate=null（不用 0）、`sufficientSample=n>=30`、小数 `round4`；同响应 `computeStats` 与 `bucketStats.combined` 同维桶同值。
+
+### 验证
+
+- **测试**：`src/modules/prediction/__tests__/publicRouter.spec.ts` 合并后 35 条（含新增 6 条方向/档位桶用例）；`src/modules/prediction/__tests__/internalRouter.spec.ts` 35 条。
+- **验证**：`npm test` → 874 tests / 862 pass / 12 既有基线失败（fail 数与基线持平；新收集的 prediction 两文件 70 条全部通过）；`npx tsc --noEmit` exit 0。（另注：全量偶见 `src/shared/utils/__tests__/jwt.spec.ts`「篡改签名」1 条 flaky，单跑 5/5 通过、二次全量回落 12，非本改动引入。）
+
+---
+
+## [master] 2026-10-06 — Task 10：板块 horizon `metric_projection` 透传 + long 命中率舍入结转
+
+**开发者**: Aria
+
+### 新增
+
+- **改动（2 生产文件 + 2 测试）**：
+  - `src/core/routes/sectorInsightRouter.ts`：`SectorInsightHorizon` 补可选 `metric_projection`；`toPredictionSummary` 的 horizon 投影新增透传（`typeof === 'string'` 且 `trim()` 非空才下发，缺失/空白即省略——方案 B 字段驱动，前端不兜底）。`metric_projection` 本就在库（prompt/schema 早已要求），无需改 prompt/schema、无需 LLM 重跑。
+  - `src/modules/prediction/publicRouter.ts`（Task 5 终评 Minor 结转）：`computeStats` / `bucketStats` 两处 `long.hitRate` 用已有 `round4` 舍入到 4 位，与 agent-py `round(...,4)` 对齐（此前 long 样本非 2 的幂时 1/3 得 `0.3333333333333333` vs `0.3333`）；**主 `hitRate` 舍入行为不变**。
+
+### 验证
+
+- **测试**：`src/core/routes/__tests__/sectorInsight.spec.ts` +2（透传 / 缺失空白不下发，并同步主用例整形状断言）；新增 `src/modules/prediction/__tests__/publicRouter.spec.ts`（1/3 → `long.hitRate === 0.3333`）。两者均落在 `npm test` glob（`src/**/__tests__/**/*.spec.ts`）内。
+- **验证**：`npm test` → 805 tests / 793 pass / 12 既有基线失败（fail 数与基线持平，新用例均被采集且通过）；`npx tsc --noEmit` exit 0。
+
+---
+
+## [master] 2026-10-06 — Task 5 二轮修复：long_excluded 近似排除 + 舍入对齐 + insufficient 计 pending 定调
+
+**开发者**: Aria
+
+### 修复
+
+- **I2（真 bug 修复）**：`publicRouter.computeStats` 的 long 检测补 `!isApprox`（复用循环内已有的 `isApprox` 判定，与 `bucketStats.longScope` 同源）——修掉「approximate-long 令 `stats.long_excluded=true` 而 `bucketStats.combined.long_excluded=false`」的两侧不一致。新增测试断言两侧一致（均 false）。
+- **I1（定义确认，不改行为）**：`computeStats` 最终 else 与 `bucketStats` pending 分支各补「为什么」注释——insufficient 属**数据可用性状态**、非**判定结论**，故计入 pending_slots。新增测试（scope={4.0 hit, 4.0 insufficient} → settled_ratio 0.5）。
+- **M1（舍入对齐）**：新增 `round4`（`Math.round(x*1e4)/1e4`），对**新增字段** `settled_ratio` / `flat_rate`（computeStats + bucketStats）统一舍入 4 位，与 agent-py `round(...,4)` 同值；既有 `hitRate` 舍入行为不改。新增测试锁死 1/3 → 0.3333。
+
+### 验证
+
+- `node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 28 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关）。
+
+---
+
+## [master] 2026-10-06 — Task 5 修复：settled_ratio 统一口径 + long 命中率交付 + 计数键 snake_case
+
+**开发者**: Aria
+
+### 修复
+
+- **Important 1（settled_ratio 口径统一为「声明档位槽」）**：`src/modules/prediction/publicRouter.ts`——新增 `collectSlots`（来源 = 记录声明的 `prediction.horizons`，含真 pending）与 `isSettledCurrent`；`computeStats` / `bucketStats` 分母改为「声明非-long、非-近似档位槽」，分子 = 其中 4.0 已结算（hit/miss），**旧版本已结算槽位既不入分子也不入 pending**（口径隔离）。`bucketStats` 从 verification 键枚举改为声明档枚举（顺带修正其把 c{i} 条件键误当档位的既有偏差）；同响应 `stats.settled_ratio === stats.bucketStats.combined.settled_ratio`（新增测试锁死）。
+- **Important 2（long 命中率交付）**：`computeStats` / `bucketStats` 补 `long: { n, hits, hitRate }`（long + hit/miss + 4.0 + 非近似；无样本 hitRate=null）。前端 `prediction-history.vue` 展示 long 命中率与 n/hits（保留「long 档样本积累中，不参与迭代判读」标注）。
+- **Minor**：① `flat_count` / `directional_count` 由 camel 改 snake（与 `settled_ratio`/`flat_rate`/`long_excluded` 一致）；② `long_excluded` 统一为「存在当前版本 long 档」（computeStats 补版本过滤，与 agent-py `_long_entries`、bucketStats 一致）。
+
+### 验证
+
+- **测试**：`publicRouter.test.ts` +4（真 pending 使 settled_ratio<1 且 =bucketStats.combined、旧版本已结算双隔离、long 命中率交付、无 long 样本 hitRate=null）；既有 long/flat/settled 用例同步 snake 键名。
+- **验证**：`node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 25 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关，且该测试文件不在 npm test glob 内）。
+
+---
+
+## [master] 2026-10-06 — Task 5：long 档不计入迭代看板 + 补看板指标（computeStats / bucketStats）
+
+**开发者**: Aria
+
+### 新增
+
+- **改动（1 文件 + 1 测试文件）**：`src/modules/prediction/publicRouter.ts`——`computeStats` / `bucketStats` 排除 `long` 档（`long_excluded` 标记），并按 agent-py 同口径新增 `settled_ratio`（已结算 / 全部非-long 档位，含未结算 pending）、`flat_rate`（分母 = 方向预判已结算数）、`flatCount`、`directionalCount`；`flat` 标记从 entry 读（由 agent-py 写入侧落库，app-api 不自行算 k）；新增 `BucketStats` 类型（三桶同形）。
+- **口径**：`flat_rate = flatCount / directionalCount`（direction 从 entry.direction 读）；无方向样本 → null。`settled_ratio` 分母含未结算档位；无档位 → null。**观察项（保持原样）**：`computeStats.hitRate` 无样本返回 null，而 `bucketStats.hitRate` 返回 0 —— 口径不一致，本任务不改，留待后续。
+
+### 验证
+
+- **测试**：`publicRouter.test.ts` +4（long 排除且命中率不含 long、flat_rate 分母、无方向样本 null、settled_ratio 含 pending + 空档位 null）。
+- **验证**：`node --import tsx --test src/modules/prediction/publicRouter.test.ts` → 21 passed；`npx tsc --noEmit` 通过；`npm test` → 790 passed / 12 既有基线失败（与 prediction/publicRouter 无关，且本测试文件不在 npm test glob 内）。
+- **未提交**：无（随本任务 commit 提交）。app-frontend 两处改动（PredictionStats 可选字段 + long 文案）按任务约定未由本仓提交。
+
+---
+
+## [master] 2026-10-06 — 个股情报入环 P2：研判落库后自动入验证环
+
+**开发者**: Aria
+
+### 新增
+
+- `modules/crawler/services/StockInfoPredictionService.ts`：取「该 symbol 当日最强口径」候选（一条批次 SQL：`DISTINCT ON (symbol, published_at 上海自然日)` + 强度排序），随后逐个转发 agent-py `from-stock-info`；本服务**不做门槛/映射/`due_dates`**，`ingest` 全程 fail-safe（只 `console.warn`、绝不抛）。
+- `shared/utils/stock.ts#normalizeStockSymbol`：抽出写库侧与入环侧**共用**的符号归一化（吃掉 `SH600383` / `600383.SH` 等前后缀），消除「写库成功、入环侧严格匹配失败」的静默漏入环。
+- `modules/crawler/StockInfoService.ts`：`upsertJudgements` 研判落库成功后调用 `StockInfoPredictionService.ingest(rawItems)`（旁路、不阻断落库）。
+
+### 修复
+
+- 转发响应处理：仅 `status='skipped'` 且 `reason_code='below_threshold'`（门槛未达）静默；`invalid_input` / `unmapped_value` / 缺失或未知 `reason_code`、非 2xx、网络异常、解析失败、`saved` 但 `record` 为空，一律告警（文案带 `symbol` / `reason_code` / `reason`）。此前所有 `skipped` 一律静默 → 映射失败无人知。
+
+### 验证
+
+- 新增 `modules/crawler/__tests__/stockInfoPrediction.spec.ts`（候选聚合与去重、SQL 契约、上海自然日、符号归一化、`defaultForward` 四分支告警语义、fail-safe）。
+- `npx tsc --noEmit` = 0；`npm test` = 802 / 790 / 12（基线 796 / 784 / 12 → **新增失败 0**；12 条既有失败与本次无关）。
+
+### 说明
+
+- 入环记录 `source_type='stock_info'`；**入环门槛唯一判定点在 agent-py**（本仓只做候选聚合与转发）；未改表结构、无迁移。
+- **尚未部署**；部署顺序必须**先 agent-py 后 app-api**（详见 agent-py 同批条目）。
+
+---
+
+## [master] 2026-10-06 — 准确性体检修复：event_entities 补列 + 登录后「个股情报」归属双通道
+
+**开发者**: Aria
+
+### 修复
+
+- **event_entities 缺 `impact_sectors` 列（fix1，100% 恢复）**：迁移 `023_event_entities_impact_sectors.sql` 从未在生产库执行（本仓 migrations 为人工 psql、无启动自动执行器）→ 列缺失 → news 通道事件物化全部 `502 column "impact_sectors" does not exist`、`event_entities` 自 2026-09-24 停更。已在生产库执行 `ALTER TABLE event_entities ADD COLUMN IF NOT EXISTS impact_sectors JSONB NOT NULL DEFAULT '[]'::jsonb`（非破坏性）。9/24–10/06 未持久化的历史事件不在库中，无法从库精确补跑，后续每日抓取自动恢复。
+- **登录后「个股情报」空数据 —— `user_stocks` 归属读取统一为双通道**：统一账户模型下自选股归属为「`user_id`（主）+ `openid`（兜底）」，但合并账户（`auth/accountMerge.ts`）把自选股写为 `user_id` 有值 + `openid = NULL`，而部分读取端**仅按 openid 过滤** → 命中 0 行；手机号账户（`users.openid IS NULL`、JWT `openid=''`）在 openid-only 读取端更是永远查不到。
+  - `src/modules/monitor/controller.ts`：`requireAuth` 由「仅取 `payload.openid`」改为 `id = payload.id ?? payload.openid`（与 `SmsAuthController.resolveAuth` 对齐），返回 `{ id, openid }`。
+  - `src/modules/monitor/service.ts`：`getEventsByUserFavorites(userId, openid, ...)`，自选股按 `user_id = $1 OR (user_id IS NULL AND openid = $2)`。
+  - `src/modules/insight/internalRouter.ts`：列表/详情 JOIN 改 `us.user_id IN (SELECT id FROM users WHERE openid=$1) OR (us.user_id IS NULL AND us.openid=$1)`。
+  - `src/modules/insight/InsightPushService.ts`、`src/core/notification/NotificationService.ts`、`src/modules/push/WechatPushService.ts`、`src/modules/push/MessagePushService.ts`：fan-out（WS / 站内通知 / 微信 / 飞书）的自选股归属同样改双通道。
+
+### 验证
+
+- 新增 `src/modules/monitor/__tests__/controller.spec.ts`（3 例：未登录 401 不触库 / 手机号 token 按 `user_id` 命中 / 旧微信 token 回填），更新 `src/modules/insight/__tests__/internalRouter.spec.ts` 断言；目标 4 个 spec **31/31 通过**，`tsc --noEmit` exit 0。
+- 生产库数据修复：`user_stocks` 按 `users.openid` 回填 **5 行**（`d173015e`），全库 `openid IS NULL` 12 → 7（余 7 行属 `users.openid` 本身为空的账户，由代码双通道兜底）；复核 18907076228 命中 5 支自选股、15999539553 命中 6 支（旧口径 0 支）。
+- 全量 `npm test` 失败 12 例为**既存基线**（`tests/*.test.ts` 陈旧 import 路径等），与本次无关。
+
+---
+
+## [xusiyun] 2026-10-02 — 重大事件时间线：Calendar 物化方案废弃，改为读时直查
+
+**开发者**: xusiyun
+
+### 重构
+
+- **Calendar 事件改为读时直查（物化方案废弃）**：删除 `modules/event-entities/CalendarEntityMaterializer.ts` 及其单测，把确定性准入（`qualifyCalendarEvent`：`importance='high'` 或 `source='L4'`）内联进 `EventTimelinePublicRouter`；`GET /api/agent/event/timeline` 请求时直查 `market_calendar_events`（与节奏大师同源，`listEvents` 口径），并排除 `event_entities` 中残留的 `source_type='calendar'` 行以防重复。收益：不再依赖物化 cron，calendar 变更实时生效；`event_entities` 不再写入 calendar 行。
+- `src/index.ts`：移除 `CalendarEntityCron`（06:40/12:40/18:40）与 `CalendarEntityMaterializer` 导入。
+- 口径保持：calendar 直查行不参与传导报告增强查询与 occurred 存在性校验（恒无传导报告，已发生的 calendar 行不展示——未来事件提前可见的原有定位不变）。
+
+### 修复
+
+- `__tests__/event_timeline.spec.ts`：TIMESTAMPTZ=Date 回归用例的夹具由硬编码绝对日期（2026-10-01 / 2026-10-20）改为**相对当前时间的未来 date-only 日期**（今天+7 / 今天+14）。原夹具随时钟推进会过期——date-only 事件次日 0 点起变 occurred，随即命中「occurred 必须有传导报告」准入被排除（2026-10-02 该用例实际失败：夹具 2026-10-01 已变为已发生）。
+
+### 清理（物化废弃后的残留）
+
+- 删除 `scripts/materialize-calendar-entities.ts`：该脚本只服务已废弃的物化流程，且其 `import` 的 `CalendarEntityMaterializer` 已删除——因 `tsconfig.include` 仅覆盖 `src/**/*`，`tsc` 不检查 `scripts/`，属静默失效（运行时必挂）。
+- 根 `AGENTS.md`（模块表 / 目录树 / §8 定时任务速查表）与 `README.md`（模块表 / 目录树）：同步「Calendar 物化」→「Calendar 读时直查」，并标注原 `06:40/12:40/18:40` cron 已移除。
+
+### 验证
+
+- `node --import tsx --test src/modules/event-entities/__tests__/event_timeline.spec.ts` → **5 passed / 0 failed**（修复前 4 passed / 1 failed）
+- `tsc --noEmit` → exit 0；`node --import tsx --test tests/timelineRouteOrder.test.ts` → 1 passed
+- 全仓无 `CalendarEntityMaterializer` / `materializeCalendarRows` 残留引用
+
+---
+
+## [master] 2026-09-27 — 修复「注册已注册手机号显示注册失败」（生产 P0）
+
+**开发者**: Aria
+
+### 修复
+
+- **注册/登录 500 根因（表所有权导致启动迁移静默失败）**：`src/index.ts` 启动期 `ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT` 以非 `users` 表 owner 的角色执行时抛 `must be owner of table users`，被 `console.warn` 静默吞掉 → `password_hash` 列永不存在 → 注册/登录命中 `column "password_hash" does not exist`，返回 500「注册失败，请稍后再试」。生产库已补齐该列，并将 15 张表 / 2 个序列所有权转移给应用角色 `aistock`。
+- **迁移失败不再静默**：`password_hash` 迁移失败日志由 `console.warn` 升级为 `console.error`；新增 `information_schema.columns` 显式自检，列缺失时打印可直接执行的修复 SQL，避免再次带旧 schema 运行。
+- **次生根因（PG `name[]` 未被 node-postgres 解析导致迁移崩溃、外键被丢弃）**：`users 统一账户模型` 迁移用 `array_agg(att.attname ...) AS columns`，返回 PG `name[]`，node-postgres 不解析该 OID 回传原始字符串 → `fk.columns.join is not a function`；崩溃点位于「摘除外键之后、重建之前」，导致 4 张表指向 `users(openid)` 的外键被丢弃且未重建。修复为 `array_agg(att.attname ORDER BY ord.ordinality)::text[]`。
+- **外键完整性恢复**：重建被丢弃的 4 个外键（`user_notifications.openid` / `user_subscriptions.user_openid` 沿用 `ON DELETE CASCADE`；`user_stocks.openid` / `user_settings.openid` 为 `NO ACTION`），并经重启迁移端到端验证「发现 → 解析列 → 摘除 → 重建」全链路成功。
+
+### 文档
+
+- `AGENTS.md` §8：新增「启动时 users 账户模型自动迁移」条目，标注应用角色 owner 权限硬要求。
+- `README.md` 部署段：新增「运维要求（2026-09-27）」，说明部署前须确保 `aistock` 角色对相关表拥有 owner 权限。
+- `project_memory.md`：记录「表所有权 + 启动内联迁移陷阱」与「node-postgres 不解析 `name[]`」两条教训。
+
+### 验证
+
+- 生产重启（2026-09-27 20:08:58）日志：出现 `[DB] users: 摘除引用 openid 的外键 user_notifications(openid); user_settings(openid); user_stocks(openid); user_subscriptions(user_openid)` 与 `[DB] users 统一账户模型 ready`；error.log 不再出现 `f.columns.join is not a function` 及 `must be owner of table ...`。
+- 重启后 `pg_constraint` 中指向 `users` 的外键仍为 4 条，`ON DELETE` 语义与修复前一致。
+- 注册 SQL 事务回放（`BEGIN … ROLLBACK`）：已注册手机号（无密码）→ 1 行（HTTP 200）；已注册手机号（有密码）→ 0 行（HTTP 409）；全新手机号 → 1 行。
+- 线上 HTTP：`POST /api/auth/password/login` 不存在账号 → 401；`POST /api/auth/register` 弱密码 → 400，均无 500。
+
+---
+
+## [feat/auth-hardening] 2026-09-27 — 密码认证加固后续（频控时序 / scrypt 并发 / 防刷原子性）
+
+**开发者**: Aria
+
+### 修复
+
+- **登录/注册频控计数原子性（M1）**：`loginThrottle.redisIncr` 由「`INCR` 后 `count === 1` 再 `EXPIRE`」两条命令改为单条 Lua 脚本原子执行（含 `TTL < 0` 自愈历史无 TTL 键），消除进程中断导致计数键无 TTL、账号永久 429 的缺陷；`redisIncr` 导出并可注入最小客户端接口 `ThrottleRedisClient`，Redis 集成边界首次可单测。
+- **scrypt 事件循环阻塞**：`passwordUtils` 的 `hashPassword` / `verifyPassword` / `verifyPasswordConstantTime` 由 `scryptSync` 改为线程池版 `crypto.scrypt`（异步），新增 `MAX_CONCURRENT_SCRYPT = 4` 在途并发上限；`PasswordAuthController` 调用点补 `await`。
+- **注册频控配额被误耗**：注册计数由「入口即计数」后移到验证码通过之后，未通过验证码的尝试不再占用配额，杜绝他人用错验证码把目标账号配额打满。
+- **测试后门过宽**：`SmsAuthController` / `EmailAuthController` 的 `verifyCode`、`bindWechat` 双身份判定与 `ws/handler.ts` 的 `user_<openid>` 本地联调前缀，统一收紧为仅 `NODE_ENV === 'test'` 生效。
+
+### 重构
+
+- `loginThrottle`：抽出 `isThrottledFor` / `recordAttempt` / `clearCount` 参数化内部函数，六个公开函数改为薄封装；名字/签名/常量/前缀均未变，行为等价。
+
+### 文档
+
+- `src/modules/auth/AGENTS.md`：修正密码登录与频控口径（删除「同 IP」「降级验证码登录」描述），补充注册频控与 `passwordUtils` 异步并发说明。
+
+### 测试
+
+- 新增 M1 Lua 原子性（可注入假客户端）、注册频控（错误验证码不消耗配额 / 通过后超限 429 与复位）、`NODE_ENV=development` 下万能码与 `user_` 前缀被拒等用例；注册频控集成用例改用每次运行唯一账号，消除 Redis TTL 残留污染。定向 auth 68 例全绿，`npx tsc --noEmit` exit 0，全库 `npm test` 保持基线（既有 12 例失败，无新增）。
+
+---
+
 ## [junliang] 2026-09-26 — 洞察报告 PDF 改 SSE 流式 + 章节结构化 blocks + stock-trace 事件载荷补齐
 
 **开发者**: 李俊良

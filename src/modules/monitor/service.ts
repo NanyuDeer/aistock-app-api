@@ -185,16 +185,21 @@ export class StockMonitorService {
     /**
      * 根据用户自选股过滤研判资讯
      */
-    static async getEventsByUserFavorites(openid: string, params?: {
+    static async getEventsByUserFavorites(userId: string, openid: string, params?: {
         cycle?: string;
         change_type?: string;
         limit?: number;
         offset?: number;
     }): Promise<{ total: number; events: MonitorEventItem[] }> {
         // 获取用户自选股列表
+        // 自选股归属双通道（与 userController.favoritesScope / stock-trace 一致）：
+        // user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 为空的历史行）。
+        // 合并账户（accountMerge）会把自选股写成 user_id + openid NULL，
+        // 仅按 openid 过滤会漏掉这些行 → 登录后"个股情报"空数据（2026-10-06 修复）。
         const stocksResult = await pool.query(
-            `SELECT symbol FROM user_stocks WHERE openid = $1`,
-            [openid],
+            `SELECT symbol FROM user_stocks
+             WHERE (user_id = $1 OR (user_id IS NULL AND openid = $2))`,
+            [userId, openid],
         );
         const symbols = stocksResult.rows.map((r: any) => r.symbol as string);
         if (symbols.length === 0) {

@@ -109,7 +109,11 @@ router.get('/events', async (req: Request, res: Response) => {
                     r.attribution_status, r.confidence, r.primary_driver, r.secondary_drivers, r.display_report,
                     snap.move_bps, snap.change_pct, snap.open_price, snap.latest_price, snap.price_source
              FROM watchlist_insight_events e
-             JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+             -- 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据。
+             -- 合并账户（accountMerge）会把自选股写成 user_id + openid NULL，仅按 openid 过滤会漏（2026-10-06 修复）。
+             JOIN user_stocks us ON us.symbol = e.symbol
+                 AND (us.user_id IN (SELECT id FROM users WHERE openid = $1)
+                      OR (us.user_id IS NULL AND us.openid = $1))
              LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
              LEFT JOIN LATERAL (
                  SELECT move_bps, change_pct, open_price, latest_price, price_source
@@ -145,7 +149,10 @@ router.get('/events/:eventId', async (req: Request, res: Response) => {
                     r.display_report, r.podcast_brief, s.title, s.keywords, s.source_url, s.published_at,
                     snap.move_bps, snap.snap_direction, snap.open_price, snap.latest_price, snap.price_source
              FROM watchlist_insight_events e
-             JOIN user_stocks us ON us.symbol = e.symbol AND us.openid = $1
+             -- 自选股归属双通道（同上）：user_id 优先，openid 兜底，避免合并账户漏归属
+             JOIN user_stocks us ON us.symbol = e.symbol
+                 AND (us.user_id IN (SELECT id FROM users WHERE openid = $1)
+                      OR (us.user_id IS NULL AND us.openid = $1))
              LEFT JOIN watchlist_insight_results r ON r.event_id = e.event_id AND r.analysis_version = 'watchlist-insight-v1'
              LEFT JOIN watchlist_insight_sources s ON s.source_id = e.source_id
              LEFT JOIN LATERAL (

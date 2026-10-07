@@ -5,6 +5,22 @@ export interface StockIdentity {
     tencentPrefix: 'sh' | 'sz' | 'bj';
 }
 
+/**
+ * 归一化 A 股 6 位裸码（入环/写库两侧**共用同一实现**，禁止第二份正则）。
+ *
+ * 吃掉交易所前后缀与空白后再提取 6 位数字：`SH600383` / `600383.SH` / ` sh 600383 `
+ * → `600383`；无法提取 6 位数字（如 `ABC`）→ 空串。
+ *
+ * 为什么共用：写库侧（StockInfoService.normalizeStockInfoJudgementInput）与入环候选
+ * 提取侧（StockInfoPredictionService.extractCandidatePairs）若口径不一致，带前后缀的
+ * symbol 会「写库归一化成功、入环侧严格匹配失败」→ 静默漏入环且不告警。
+ */
+export function normalizeStockSymbol(raw: unknown): string {
+    const text = String(raw ?? '').trim().replace(/\s+/g, ' ').toUpperCase();
+    const match = text.match(/\d{6}/);
+    return match ? match[0] : '';
+}
+
 export function getStockIdentity(symbol: string): StockIdentity {
     if (symbol.startsWith('600') || symbol.startsWith('601') || symbol.startsWith('603')) {
         return { market: 'sh', board: '沪市主板', eastmoneyId: 1, tencentPrefix: 'sh' };

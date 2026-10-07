@@ -209,7 +209,7 @@ describe('GET /events 只读列表', () => {
         assert.equal(queryCalled, false, 'openid 缺失不应触库');
     });
 
-    it('正常返回列表：按 openid 过滤 user_stocks + 可选 symbol/limit', async () => {
+    it('正常返回列表：自选股归属 user_id 优先/openid 兜底 + 可选 symbol/limit', async () => {
         let sql = '';
         mock.method(pool, 'query', (async (text: string) => {
             sql = String(text);
@@ -230,7 +230,12 @@ describe('GET /events 只读列表', () => {
         const body = resState.body as { code: number; data: Array<{ event_id: string }> };
         assert.equal(body.code, 200);
         assert.equal(body.data.length, 1);
-        assert.match(sql, /JOIN user_stocks us ON us\.symbol = e\.symbol AND us\.openid/, '按 openid 过滤自选股');
+        assert.match(
+            sql,
+            /JOIN user_stocks us ON us\.symbol = e\.symbol[\s\S]*us\.user_id IN \(SELECT id FROM users WHERE openid = \$1\)/,
+            '自选股归属应 user_id 优先、openid 兜底（合并账户 openid 为 NULL 时不可漏）',
+        );
+        assert.match(sql, /us\.user_id IS NULL AND us\.openid = \$1/, 'openid 兜底老微信数据');
         assert.match(sql, /e\.symbol = \$2/, 'symbol 过滤入参');
     });
 });

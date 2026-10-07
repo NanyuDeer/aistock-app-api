@@ -104,9 +104,8 @@ import predictionPublicRouter from './modules/prediction/publicRouter';
 // calendar 日历模块（节奏大师：交割日规则 + 事件日历 + rhythm-master 三版本读取）
 import { calendarInternalRouter } from './modules/calendar/internalRouter';
 import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
-import { listEvents, DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
+import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
-import { materializeCalendarRows } from './modules/event-entities/CalendarEntityMaterializer';
 import { eventTimelinePublicRouter } from './modules/event-entities/EventTimelinePublicRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
@@ -311,6 +310,8 @@ app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightContro
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
+// 二级页「AI解读」首屏快评：按 symbol 取最新一条个股情报
+app.get('/api/cn/stock-info/latest', (req, res, next) => StockInfoJudgementController.getLatest(req, res, next));
 
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
@@ -856,29 +857,9 @@ cron.schedule('30 4 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-// 重大事件时间线：Calendar → Event Entity 物化（幂等 upsert）
-// 每天 3 次（盘前/盘中/盘后）：日历行由 agent-py L3 前瞻与 L4 种子写入，物化窗口取
-// [今天-1, 今天+180]，覆盖已发生与未来事件；幂等，重复执行不产生重复实体。
-cron.schedule('40 6,12,18 * * *', async () => {
-    try {
-        const today = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10)
-        // dateFrom = 今天-1 天，覆盖已发生事件；dateTo = 今天+180 天，覆盖近期未来事件
-        const baseMs = new Date(`${today}T00:00:00+08:00`).getTime()
-        const dateFrom = new Date(baseMs - 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
-        const dateTo = new Date(baseMs + 180 * 86400000 + 8 * 3600 * 1000).toISOString().slice(0, 10)
-
-        const rows = await listEvents(dateFrom, dateTo)
-        const r = await materializeCalendarRows(rows)
-        console.log(
-            `[CalendarEntityCron] 物化完成: materialized=${r.materialized}, skipped=${r.skipped}, failed=${r.failed}`,
-        )
-    } catch (err: unknown) {
-        console.error(
-            '[CalendarEntityCron] 物化失败:',
-            err instanceof Error ? err.message : String(err),
-        )
-    }
-}, { timezone: 'Asia/Shanghai' });
+// 重大事件时间线：Calendar 事件由 EventTimelinePublicRouter 读时直查
+// market_calendar_events（2026-10-01 物化方案废弃，见 EventTimelinePublicRouter 注释）。
+// 原 Calendar → Event Entity 物化 cron（06:40/12:40/18:40）已移除，不再依赖 event_entities 物化。
 
 // 个股资讯爬虫+实时推送：每天 8:00 和 15:00（包括节假日）
 // runCycle = 抓取 + AI研判 + 入库 + 触发自选股异动实时推送（飞书卡片+微信模板）
@@ -1285,11 +1266,31 @@ async function start() {
     }
 
     // password_hash 密码登录（2026-09-26 登录防刷 + 注册密码；NULL 表示未设置密码）
+    // 关键列：注册/登录强依赖。历史教训（2026-09-27）：应用以非 users 表 owner 的角色连库时，
+    // 该 ALTER 会抛 "must be owner of table users" 被静默吞掉，导致列缺失、注册/登录 500。
+    // 故此处失败升级为 error 级，并在下方做显式自检，避免再次静默带旧 schema 运行。
     try {
         await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT`);
         console.log('[DB] users.password_hash ready');
     } catch (err: unknown) {
-        console.warn('[DB] users.password_hash migration:', err instanceof Error ? err.message : String(err));
+        console.error(
+            '[DB] ⛔ users.password_hash 迁移失败（密码注册/登录将不可用）:',
+            err instanceof Error ? err.message : String(err),
+        );
+    }
+
+    // 关键 schema 自检：即使上面的 ALTER 因权限问题失败，也在此显式暴露，便于快速定位
+    try {
+        const col = await pool.query<{ exist: boolean }>(
+            `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'password_hash') AS exist`,
+        );
+        if (!col.rows[0]?.exist) {
+            console.error(
+                '[DB] ⛔ 自检失败：users.password_hash 列不存在。请以 users 表 owner 或超级用户执行：ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;',
+            );
+        }
+    } catch (err: unknown) {
+        console.error('[DB] users.password_hash 自检查询失败:', err instanceof Error ? err.message : String(err));
     }
 
     // users 统一账户模型（2026-08-25 短信登录 + 微信双向绑定；幂等 ALTER，与 is_vip 风格一致）
@@ -1303,7 +1304,7 @@ async function start() {
                 c.conname AS name,
                 ct.relname AS table_name,
                 c.confdeltype::text AS on_delete,
-                array_agg(att.attname ORDER BY ord.ordinality) AS columns
+                array_agg(att.attname ORDER BY ord.ordinality)::text[] AS columns
             FROM pg_constraint c
             JOIN pg_class ct ON ct.oid = c.conrelid
             JOIN pg_class rt ON rt.oid = c.confrelid

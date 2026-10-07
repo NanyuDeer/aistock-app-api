@@ -2,7 +2,8 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import pool from '../../core/db';
-import { getStockIdentity } from '../../shared/utils/stock';
+import { getStockIdentity, normalizeStockSymbol } from '../../shared/utils/stock';
+import { StockInfoPredictionService } from './services/StockInfoPredictionService';
 
 export type StockInfoTargetSource = 'all' | 'favorites' | 'leaders';
 export type StockInfoType = 'news' | 'announcement';
@@ -70,6 +71,16 @@ export interface StockInfoJudgementRow {
     created_at: Date;
 }
 
+export interface StockInfoJudgementBrief {
+    symbol: string;
+    stock_name: string;
+    ai_impact: string;
+    ai_horizon: string;
+    ai_summary: string;
+    published_at: string | null;
+    url: string | null;
+}
+
 export interface StockInfoQueryParams {
     symbol?: string;
     info_type?: StockInfoType;
@@ -102,12 +113,6 @@ function cleanText(value: unknown): string {
     return String(value ?? '').trim().replace(/\s+/g, ' ');
 }
 
-function normalizeSymbol(raw: unknown): string {
-    const text = cleanText(raw).toUpperCase();
-    const match = text.match(/\d{6}/);
-    return match ? match[0] : '';
-}
-
 function normalizeMarket(rawMarket: unknown, symbol: string): string {
     const raw = cleanText(rawMarket).toUpperCase();
     if (raw === 'SH' || raw === 'SZ' || raw === 'BJ') return raw;
@@ -122,7 +127,7 @@ function addTarget(targets: Map<string, StockInfoTarget>, item: {
     favorite_user_count?: number;
     leader_reason?: unknown;
 }): void {
-    const symbol = normalizeSymbol(item.symbol);
+    const symbol = normalizeStockSymbol(item.symbol);
     if (!/^\d{6}$/.test(symbol)) return;
 
     const existing = targets.get(symbol);
@@ -241,7 +246,7 @@ export function buildStockInfoExistingKeys(rawItems: StockInfoExistingInput[]): 
 }
 
 export function normalizeStockInfoJudgementInput(raw: Record<string, any>): NormalizedStockInfoJudgementInput {
-    const symbol = normalizeSymbol(raw.symbol);
+    const symbol = normalizeStockSymbol(raw.symbol);
     if (!/^\d{6}$/.test(symbol)) throw new Error('symbol must be a 6-digit A-share code');
 
     const infoType = cleanText(raw.info_type) as StockInfoType;
@@ -434,6 +439,15 @@ export class StockInfoService {
             }
         }
 
+        // P2：个股情报入验证环——落库成功后按「当日该 symbol 最强口径」转发 agent-py 生成可验证预判。
+        // fail-safe：任何失败只告警，绝不阻断研判落库（对齐 aistock-workflow 的"永不 500"）。
+        try {
+            await StockInfoPredictionService.ingest(rawItems);
+        } catch (err: unknown) {
+            console.warn('[StockInfoPrediction] ingest failed (non-blocking):',
+                err instanceof Error ? err.message : String(err));
+        }
+
         return { summary, results };
     }
 
@@ -461,7 +475,7 @@ export class StockInfoService {
         const values: any[] = [];
 
         if (params.symbol) {
-            const symbol = normalizeSymbol(params.symbol);
+            const symbol = normalizeStockSymbol(params.symbol);
             if (symbol) {
                 values.push(symbol);
                 conditions.push(`symbol = $${values.length}`);
@@ -506,6 +520,19 @@ export class StockInfoService {
                 ai_keywords: Array.isArray(row.ai_keywords) ? row.ai_keywords : [],
             })),
         };
+    }
+
+    /** 取某只股票最新一条个股情报（供二级页首屏「快评」）。无数据返回 null。 */
+    static async getLatestBySymbol(symbol: string): Promise<StockInfoJudgementBrief | null> {
+        const { rows } = await pool.query(
+            `SELECT symbol, stock_name, ai_impact, ai_horizon, ai_summary, published_at, url
+               FROM stock_info_judgements
+              WHERE symbol = $1
+              ORDER BY published_at DESC NULLS LAST, created_at DESC
+              LIMIT 1`,
+            [symbol],
+        );
+        return (rows[0] as StockInfoJudgementBrief | undefined) ?? null;
     }
 
     static async getPushCandidates(window: StockInfoPushWindow): Promise<StockInfoJudgementRow[]> {

@@ -216,9 +216,9 @@ test('toPredictionSummary: horizons/conditions/验证聚合/dueLabel/方向置�
   assert.equal(s.confidence, 'medium');
   assert.equal(s.attribution_summary, '半导体板块量能放大资金回流，短线有望延续修复，谨防高位分歧回落。'); // 一句话研判透传
   assert.deepEqual(s.horizons, [
-    { horizon: 'short', remaining: '1-5 交易日', direction: 'bullish', confidence: 'medium', label: '缩量修复走强' },
-    { horizon: 'long', remaining: '1-6 月', direction: 'neutral', confidence: 'low', label: '震荡磨底' },
-  ]); // short→long 有序，mid 无档位；label 随档透传
+    { horizon: 'short', remaining: '1-5 交易日', direction: 'bullish', confidence: 'medium', label: '缩量修复走强', metric_projection: '+3%' },
+    { horizon: 'long', remaining: '1-6 月', direction: 'neutral', confidence: 'low', label: '震荡磨底', metric_projection: '+8%' },
+  ]); // short→long 有序，mid 无档位；label/metric_projection 随档透传
   assert.deepEqual(s.conditions, [
     { horizon: 'short', direction: 'bullish', condition: '成交额放量至 500 亿', scenario: '板块继续上攻，涨幅上看 +3%', label: '放量反包 · 修复上行', keywords: ['放量反包', '资金回流'], scenario_keywords: ['续攻+3%'], met: true },
     { horizon: 'mid', direction: 'bearish', condition: '跌破 30 日均线', scenario: '转入震荡调整', met: null },
@@ -241,6 +241,42 @@ test('toPredictionSummary: 无验证/全 insufficient/无 target 旧记录防御
   );
   assert.equal(skipped.status, 'skipped');
   assert.equal(skipped.dueLabel, undefined); // 无 due_dates → 省略
+});
+
+// ==================== horizon 口径说明透传（2026-10-06 Task 10） ====================
+//
+// `metric_projection` 由 LLM 生成（prompt/schema 早已要求，落在 horizons[] 内），此前后端投影
+// 只透传 remaining/direction/confidence/label，把它漏掉了。方案 B 字段驱动：缺失/空白即不下发，
+// 前端不兜底、不拼装口径文案；板块侧不补 target/phase（板块自身即标的）。
+
+test('toPredictionSummary: horizon 投影透传 metric_projection（trim 后下发）', () => {
+  const record = makeRec({
+    prediction: {
+      schema_version: '3.0',
+      prediction_status: 'hypothesis',
+      horizons: [
+        { horizon: 'short', direction: 'bearish', remaining_estimate: '1-5 交易日', metric_projection: '  到期窗口累计同向即命中  ' },
+      ],
+    },
+  });
+  const s = toPredictionSummary(record);
+  assert.equal(s.horizons?.[0]?.metric_projection, '到期窗口累计同向即命中'); // 去首尾空白
+});
+
+test('toPredictionSummary: metric_projection 缺失/空白 → 省略该键（不兜底）', () => {
+  const record = makeRec({
+    prediction: {
+      schema_version: '3.0',
+      prediction_status: 'hypothesis',
+      horizons: [
+        { horizon: 'short', direction: 'bullish', remaining_estimate: '1-5 交易日' },
+        { horizon: 'mid', direction: 'bullish', remaining_estimate: '1-4 周', metric_projection: '   ' },
+      ],
+    },
+  });
+  const s = toPredictionSummary(record);
+  assert.equal('metric_projection' in (s.horizons?.[0] ?? {}), false); // 字段缺失
+  assert.equal('metric_projection' in (s.horizons?.[1] ?? {}), false); // 空白字符串
 });
 
 test('buildCandidatesMap: 异名同 ts 合并 both、主因权威名覆盖、wind-only trace null', () => {

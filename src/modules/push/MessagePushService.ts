@@ -541,10 +541,15 @@ export class MessagePushService {
                 rows = result.rows;
             } else {
                 // 正常模式：推送给持有该股票且订阅了自选股推送的用户
+                // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据
+                // （合并账户会把 user_stocks.openid 置 NULL，仅按 openid 关联会漏推送）
                 const result = await pool.query(
                     `SELECT DISTINCT us.feishu_open_id
                      FROM user_subscriptions us
-                     INNER JOIN user_stocks ust ON us.user_openid = ust.openid
+                     INNER JOIN user_stocks ust ON (
+                         ust.openid = us.user_openid
+                         OR ust.user_id IN (SELECT u.id FROM users u WHERE u.openid = us.user_openid)
+                     )
                      INNER JOIN user_settings ust2 ON us.user_openid = ust2.openid
                      WHERE ust.symbol = $1
                        AND us.status = 'subscribed'

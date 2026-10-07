@@ -177,8 +177,13 @@ export class NotificationService {
     private static async insertForWatchers(input: NotificationInput): Promise<number> {
         await this.ensureSchema();
         if (!input.symbol) return 0;
+        // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据。
+        // 合并账户（accountMerge）会把 openid 置 NULL，仅按 openid 取收件人会漏发（2026-10-06 修复）。
         const recipients = await pool.query<{ openid: string }>(
-            'SELECT DISTINCT openid FROM user_stocks WHERE symbol = $1',
+            `SELECT DISTINCT u.openid
+             FROM user_stocks us
+             JOIN users u ON (u.id = us.user_id OR (us.user_id IS NULL AND u.openid = us.openid))
+             WHERE us.symbol = $1 AND u.openid IS NOT NULL AND u.openid != ''`,
             [input.symbol],
         );
         if (recipients.rows.length === 0) return 0;

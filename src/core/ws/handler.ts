@@ -103,11 +103,12 @@ export function pushNotificationToUser(userId: string, notification: any): void 
 }
 
 /**
- * 生产环境校验正式 JWT；user_<openid> 仅保留给本地开发联调。
+ * 仅 test 环境放行 user_<openid> 本地联调 token；其余环境一律校验正式 JWT。
  */
 function parseUserFromToken(token: string): { openid: string; exp?: number } | undefined {
-  // user_<openid> 仅供本地开发使用；生产环境使用已签名的 JWT。
-  if (process.env.NODE_ENV !== 'production' && token.startsWith('user_')) {
+  // Important C：user_<openid> 测试后门收紧为仅 NODE_ENV=test 生效
+  // （此前 !== 'production' 时，staging 或容器漏配 NODE_ENV 的环境也会放行 user_ 前缀，属真实风险）
+  if (process.env.NODE_ENV === 'test' && token.startsWith('user_')) {
     return { openid: token.slice(5) }
   }
   if (!process.env.JWT_SECRET) return undefined

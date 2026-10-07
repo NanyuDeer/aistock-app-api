@@ -26,7 +26,8 @@ const PHONE = '13800000000';
 
 before(() => {
     process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
-    process.env.NODE_ENV = process.env.NODE_ENV || 'test';
+    // Important C 后收紧后，测试码仅 NODE_ENV=test 放行；此处强制覆盖，避免 ambient NODE_ENV 泄漏导致既有正向用例失败
+    process.env.NODE_ENV = 'test';
     // 屏蔽真实 Redis 依赖：isTokenRevoked 读黑名单 fail-open；验证码/限流走内存兜底
     (CacheService as unknown as { get: unknown }).get = async () => null;
 });
@@ -137,6 +138,26 @@ test('smsLogin 错误验证码 → 400', async () => {
     const app = buildApp();
     const r = await call(app, 'POST', '/api/auth/sms/login', { phone: PHONE, code: '000000' });
     assert.strictEqual(r.status, 400);
+});
+
+test('短信登录验证码后门仅在 NODE_ENV=test 生效', async () => {
+    // 收紧前：isDev=NODE_ENV!=='production'，development/staging 下万能码 123456 可直接登录取 token（高危）；
+    // 收紧后：仅 NODE_ENV=test 放行，development 下 123456 不再生效
+    const prev = process.env.NODE_ENV;
+    ;(pool as unknown as { query: typeof pool.query }).query = async (sql: unknown) => {
+        if (String(sql).includes('INSERT INTO users')) {
+            return { rows: [{ id: 'u1', openid: null, phone: '13700000007', nickname: null, avatar_url: null }] } as never;
+        }
+        return { rows: [] } as never;
+    };
+    try {
+        process.env.NODE_ENV = 'development';
+        const r = await call(buildApp(), 'POST', '/api/auth/sms/login', { phone: '13700000007', code: '123456' });
+        assert.strictEqual(r.status, 400);
+        assert.strictEqual(r.json?.message, '验证码错误或已过期');
+    } finally {
+        process.env.NODE_ENV = prev;
+    }
 });
 
 test('bindPhone Bearer 登录 + 测试码 → 200 + phoneBound=true', async () => {

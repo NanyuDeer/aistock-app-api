@@ -1,6 +1,10 @@
 /**
  * Task 4: /internal/predictions 路由测试（适配 Node 原生 test runner）
  *
+ * 迁移说明：由 `src/modules/prediction/internalRouter.test.ts` 迁入 `__tests__/` 并改用
+ * `.spec.ts` 命名——原文件两个 glob 都不匹配（`src/**\/__tests__/**\/*.spec.ts` /
+ * `tests/**\/*.test.ts`）→ 从不被 `npm test` 执行。迁入后即被收集（对齐仓库既有布局）。
+ *
  * 测试策略（对齐 src/core/routes/internal.index-quotes.test.ts 组装方式）：
  * 1. 启动 Express HTTP 服务器（随机端口），挂载 predictionInternalRouter 于 /internal/predictions
  * 2. 直接验证路由层输入校验与 403 鉴权（Service 层 DB 逻辑由人工 + 服务器部署验证兜底）
@@ -18,10 +22,10 @@ import type { AddressInfo } from 'node:net'
 import test, { after, afterEach, before, mock } from 'node:test'
 import express from 'express'
 
-import predictionInternalRouter, { __internalPredictionDependencies } from './internalRouter'
-import { PredictionRecordService, type PredictionRecordRow, type PredictionVerificationEntry } from './PredictionRecordService'
-import redis from '../../core/redis'
-import pool from '../../core/db'
+import predictionInternalRouter, { __internalPredictionDependencies } from '../internalRouter'
+import { PredictionRecordService, type PredictionRecordRow, type PredictionVerificationEntry } from '../PredictionRecordService'
+import redis from '../../../core/redis'
+import pool from '../../../core/db'
 
 // 与 internalRouter.ts 使用相同的 token 读取逻辑（模块加载期常量）
 const INTERNAL_TOKEN =

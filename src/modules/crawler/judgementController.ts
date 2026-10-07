@@ -92,6 +92,21 @@ export class StockInfoJudgementController {
         }
     }
 
+    static async getLatest(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        try {
+            const symbol = String(req.query.symbol ?? '').trim();
+            if (!symbol) {
+                createResponse(res, 400, 'symbol required');
+                return;
+            }
+
+            const data = await StockInfoService.getLatestBySymbol(symbol);
+            createResponse(res, 200, 'success', data);
+        } catch (err: unknown) {
+            createResponse(res, 500, err instanceof Error ? err.message : String(err));
+        }
+    }
+
     static async push(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
             if (!validateInternalToken(req)) {
