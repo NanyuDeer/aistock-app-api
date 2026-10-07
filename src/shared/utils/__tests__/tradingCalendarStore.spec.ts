@@ -69,6 +69,22 @@ test('inCoverage 与 getPretradeDate', async () => {
     assert.equal(tradingCalendarStore.getPretradeDate('2027-01-04'), null);
 });
 
+test('pg 返回 Date 实例（本地午夜）时日期不错位', async () => {
+    // pg(postgres-date) 把裸 DATE 按本地时间解析为本地午夜 Date；
+    // 若用 toISOString()，UTC+8 下会整体前移一天 → 键错位、判定全部 miss。
+    const dateRows = [
+        { cal_date: new Date(2026, 8, 30), is_open: true,  pretrade_date: new Date(2026, 8, 29) }, // 2026-09-30 本地
+        { cal_date: new Date(2026, 9, 1),  is_open: false, pretrade_date: new Date(2026, 8, 30) }, // 2026-10-01 本地（周四·国庆）
+    ];
+    const m = mock.method(__tradingCalendarStoreDependencies, 'query', async () => ({ rows: dateRows }));
+    const refreshMock = mockRefreshNoop();
+    await tradingCalendarStore.load(new Date('2026-10-06T02:00:00.000Z'));
+    refreshMock.mock.restore();
+    m.mock.restore();
+    assert.equal(tradingCalendarStore.isTradingDay('2026-10-01'), false); // 若错位会 miss 并退化为 true
+    assert.equal(tradingCalendarStore.isTradingDay('2026-09-30'), true);
+});
+
 test('load 查表失败 → 保持未加载 + degraded，且不抛错', async () => {
     const m = mock.method(__tradingCalendarStoreDependencies, 'query', async () => { throw new Error('db down'); });
     const refreshMock = mockRefreshNoop();

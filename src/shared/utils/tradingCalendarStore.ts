@@ -57,9 +57,17 @@ export function isWeekday(isoDate: string): boolean {
     return weekday !== 0 && weekday !== 6;
 }
 
-/** pg 返回的 DATE 可能是 Date 或 'YYYY-MM-DD' 字符串，统一归一 */
+/** pg 返回的 DATE 可能是 Date 或 'YYYY-MM-DD' 字符串，统一归一为 ISO 日期 */
 function toIso(value: unknown): string {
-    return value instanceof Date ? value.toISOString().slice(0, 10) : String(value).slice(0, 10);
+    if (value instanceof Date) {
+        // pg(postgres-date) 把裸 DATE 按本地时间解析为**本地午夜**；
+        // 用 toISOString() 会在 UTC+8 下整体前移一天，故必须用本地字段拼装。
+        const y = value.getFullYear();
+        const m = String(value.getMonth() + 1).padStart(2, '0');
+        const d = String(value.getDate()).padStart(2, '0');
+        return `${y}-${m}-${d}`;
+    }
+    return String(value).slice(0, 10);
 }
 
 export const tradingCalendarStore = {
