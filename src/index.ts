@@ -68,6 +68,7 @@ import { StockMonitorController } from './modules/monitor/controller';
 import { WindLeaderController } from './modules/monitor/windLeaderController';
 import { NewsController } from './modules/monitor/newsController';
 import { ProfitForecastController } from './modules/monitor/profitForecastController';
+import { DisclosureScheduleController } from './modules/monitor/disclosureScheduleController';
 import { TrendScoreController } from './modules/monitor/trendScoreController';
 import { AiGraphController } from './modules/monitor/aiGraphController';
 import { AiGraphService } from './modules/monitor/AiGraphService';
@@ -511,6 +512,8 @@ app.get('/api/cn/stocks/profit-forecast', (req, res, next) => ProfitForecastCont
 app.get('/api/cn/stocks/profit-forecast/search', (req, res, next) => ProfitForecastController.searchForecastList(req, res, next));
 app.post('/api/cn/stocks/profit-forecast/batch', requireLogin, (req, res, next) => ProfitForecastController.batchRefresh(req, res, next));
 app.get('/api/cn/stocks/profit-forecast/batch/status', (req, res, next) => ProfitForecastController.getBatchStatus(req, res, next));
+// 自选股财报披露计划（事件时间线「预计披露财报」行数据源）
+app.get('/api/cn/stocks/disclosure-schedule', (req, res, next) => DisclosureScheduleController.getDisclosureSchedule(req, res, next));
 app.post('/api/cn/stocks/ocr', requireLogin, (req, res, next) => StockOcrController.batchOcr(req, res, next));
 
 // 业绩报告
