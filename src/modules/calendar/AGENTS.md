@@ -39,7 +39,7 @@
 
 - `typeFromSource`：L1→delivery；L2/L3 标题命中 `/(发布日程|CPI|PPI|PMI|社融|FOMC|议息)/` →macro，否则 earnings；L4→seed
 
-- **US 隔夜事件**（`market='US_OVERNIGHT'` 且 `event_time>=15:00`）：对外 `date` 顺延次一交易日（`TradingCalendarService.getNextTradingDay`，§4.5）；交易日历未覆盖年份 fail-close 保留原始日期（不抛 502）
+- **US 隔夜事件**（`market='US_OVERNIGHT'` 且 `event_time>=15:00`）：对外 `date` 顺延次一交易日（`TradingCalendarService.getNextTradingDay`，§4.5）；日期推算类函数 fail-closed（`trading_calendar` 表内无该日期数据时抛错）→ 调用方保留原始日期（不抛 502）。**错误来源已由「本地硬编码节假日表无该年份」改为「`trading_calendar` 表无该日期数据」**（本地表已删除，唯一事实源见根 `AGENTS.md` §6.5）
 
 - **对外契约生成** **`toContractEvent(row)`**：服务层（MarketCalendarEventService）导出，internalRouter 与 publicRouter 共用；US 隔夜顺延/fail-close 逻辑见上一条
 

@@ -50,6 +50,7 @@
 - 入环记录 `source_type='stock_info'`、`source_id=stock_info:{symbol}:{published_date}`（`published_date` = `published_at` 的上海自然日）。
 - **入环门槛唯一判定点在 agent-py**（`meets_entry_threshold`）；app-api 只做候选聚合与转发，**不得实现门槛**（候选 SQL 的 `CASE ... ORDER BY` 只是"当日最强口径"排序，非门槛）。
 - `due_dates` 只由 agent-py `_compute_due_dates` 产出，app-api 侧**不得引入第二套交易日历**。
+- app-api 侧交易日判定以 `trading_calendar` 表为准（Tushare `trade_cal` / `exchange=SSE` 刷新，见根 `AGENTS.md` §6.5）；与 agent-py 的 `chinese_calendar` **尚未统一**（另立 spec）。两套口径并存期间，跨服务交易日结论以各自事实源为准，勿互相假定一致。
 - **不得恢复 `stock_info_judgements.forecast` 列或前端预判区**（迁移 022 已删该列；P2 入环统一走 `prediction_records`）。
 
 ### 2026-09-03 更新：资讯 forecast 回写端点——已于 2026-09-13 移除

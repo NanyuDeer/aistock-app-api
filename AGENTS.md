@@ -50,7 +50,9 @@ src/
 │   │   └── cache.ts        # 缓存键、TTL 配置、类型
 │   └── utils/              # 工具函数 + 共享服务
 │       ├── CacheService.ts          # Redis 缓存（Map 本地降级）
-│       ├── TradingCalendarService.ts # 交易日历
+│       ├── TradingCalendarService.ts # 交易日历（读 trading_calendar 唯一事实源）
+│       ├── tradingCalendarStore.ts   # 交易日历内存缓存（三级降级链，同步判定）
+│       ├── cronGuards.ts             # cron 交易日守卫 runIfTradingDay（非交易日跳过 + 审计日志）
 │       ├── jwt.ts                   # JWT 签发/验证
 │       ├── response.ts              # 统一响应格式
 │       ├── validator.ts             # A 股代码校验
@@ -131,6 +133,7 @@ src/
 | 约束 | 说明 |
 |------|------|
 | 行情数据源 | 行情用腾讯 API，龙头用同花顺，**禁止东方财富** |
+| 交易日判定唯一事实源 | **`trading_calendar` 表**（`exchange='SSE'`，由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新，窗口「去年~明年」）。**禁止新增第二套节假日表；禁止把任何第三方节假日接口用于判定**。判断类函数（`isTradingDay*`）数据缺失时降级「周一~周五」+ `warn`/`error` 告警；日期推算类函数（`getPreviousTradingDay` 等）保持 fail-closed 抛错（见 §6.5） |
 | cron 时区 | 所有 `cron.schedule()` 必须显式指定 `{ timezone: 'Asia/Shanghai' }` |
 | LLM 失败处理 | LLM 调用失败时跳过，返回纯数据，不重试 |
 | 微信 API | 微信 API 用原生 `fetch`，不用 `sessionFetch` |
@@ -169,10 +172,13 @@ src/
 - SSE 流式透传中断时返回流错误
 - 详见 `modules/agent/agent.proxy.ts`
 
-### 6.5 节假日降级
+### 6.5 交易日判断与降级
 
-- 节假日 API 失败时 `isChinaHoliday()` 返回 `false`（不跳过交易相关定时任务）
-- 详见 `shared/utils/TradingCalendarService.ts`
+- **唯一事实源 = `trading_calendar` 表**（`exchange='SSE'`）：由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新（窗口「去年~明年」，每日 00:30 + 启动预热），`tradingCalendarStore` 提供同步读。**禁止新增第二套节假日表，禁止用任何第三方节假日接口做判定。**
+- **判断类**（`tradingCalendarStore.isTradingDay` / `tradingTime.isAShareTradingDay*`）：数据缺失（未加载 或 超出覆盖范围）降级为「周一~周五」并 `warn`/`error` 告警——**降级绝不静默**，`getHealth().degraded` 置真。取向：宁可假期多跑几次幂等任务，也不因缺数据让受守卫任务停摆一整年。
+- **日期推算类**（`TradingCalendarService.getPreviousTradingDay` / `getNextTradingDay` / `getRecentTradingDays` 等）：store 已加载但表内无该日期 → **fail-closed 抛错**（`modules/calendar/MarketCalendarEventService` 依赖此契约，未覆盖时保留原始日期，不抛 502）；store 未加载时不抛错（避免冷启期崩）。
+- **2027+ 年份无需人工补表**：每日 00:30 刷新窗口自动前移覆盖。
+- 详见 `shared/utils/tradingCalendarStore.ts`、`shared/utils/TradingCalendarService.ts`。
 
 ## 7. 跨服务协作（与 Python Agent）
 
@@ -308,8 +314,10 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | 启动时 | trend_scores 自动迁移 | CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT EXISTS ma60_excluded（堵住 deploy.sh 漏执行 SQL 的缺口） |
 | 启动时 | users 账户模型自动迁移 | `password_hash` / `is_vip` 列 + 统一账户模型（`id` 主键切换、`openid` 去 NOT NULL、引用 `users(openid)` 的外键摘除后重建、`user_stocks.user_id`）。**要求应用连接角色（`aistock`）拥有 `users` 及被引用表（`user_settings`/`user_stocks`/`user_notifications`/`user_subscriptions`）的 owner 权限**，否则 `ALTER TABLE` 抛 `must be owner of table ...` |
+| 启动时 | 交易日历预热 | 异步 `TradingCalendarRefreshService.refresh()` + `tradingCalendarStore.load()`（不阻塞启动，Tushare 慢不应致起不来） |
 | 00:00 | 业绩预测自动更新 | 同花顺数据 |
 | 00:05 | 数据同步 | — |
+| 00:30 | 交易日历刷新 | `TradingCalendarRefreshService.refresh()` + `tradingCalendarStore.load()`（Tushare `trade_cal`/SSE，窗口 去年~明年） |
 | 02:00 | 趋势股批量评分 | TrendBatchService（含60日均线剔除），每天执行不检查交易日 |
 | 03:00 | 报告清理 | 删除过期 Agent 分析报告（`expires_at < NOW()`） |
 | 03:00 | 知识图谱/其他 | — |
