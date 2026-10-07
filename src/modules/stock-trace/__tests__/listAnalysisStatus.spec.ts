@@ -18,8 +18,8 @@ afterEach(() => {
     mock.restoreAll();
 });
 
-/** 构造主查询行（与 listUserEvents SELECT 列一致） */
-function row(analysisStatus?: string): Record<string, unknown> {
+/** 构造主查询行（与 listUserEvents SELECT 列一致）；jobStatus 表示 LEFT JOIN LATERAL 的 j.status */
+function row(analysisStatus?: string, jobStatus?: string | null): Record<string, unknown> {
     return {
         event_id: 'mv:601318:2026-08-19:1:up',
         current_trigger_revision: 1,
@@ -36,6 +36,7 @@ function row(analysisStatus?: string): Record<string, unknown> {
         change_pct: '8.5',
         threshold_value: '7',
         rule_version: 'price-v1',
+        status: jobStatus === undefined ? null : jobStatus,
         ...(analysisStatus === undefined ? {} : { analysis_status: analysisStatus }),
     };
 }
@@ -66,6 +67,23 @@ describe('StockTraceService.listUserEvents analysis_status', () => {
         mockMainQuery([row('processing')]);
         const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
         assert.equal(page.items[0]?.analysis_status, 'processing');
+    });
+
+    it('最新 job 为 dead_letter 时派生 failed（fixture 含 job 行）', async () => {
+        mockMainQuery([row('failed', 'dead_letter')]);
+        const page = await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
+        assert.equal(page.items[0]?.analysis_status, 'failed');
+    });
+
+    it('listUserEvents SQL 含 dead_letter→failed 分支与 job LATERAL JOIN', async () => {
+        let sql = '';
+        mock.method(pool, 'query', (async (text: string) => {
+            if (String(text).includes('JOIN user_stocks')) sql = String(text);
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+        await StockTraceService.listUserEvents('user-id-1', 'openid-1', 5);
+        assert.match(sql, /WHEN j\.status = 'dead_letter' THEN 'failed'/, 'unavailable 分支之后、ELSE processing 之前应插入 dead_letter→failed');
+        assert.match(sql, /LEFT JOIN LATERAL/, '应 LEFT JOIN LATERAL 取最新 job 状态');
     });
 
     it('analysis_status 缺失时回退 processing', async () => {
@@ -115,5 +133,22 @@ describe('StockTraceService.listRecentEvents analysis_status', () => {
         mockMainQuery([row('processing')]);
         const page = await StockTraceService.listRecentEvents(5);
         assert.equal(page.items[0]?.analysis_status, 'processing');
+    });
+
+    it('最新 job 为 dead_letter 时派生 failed', async () => {
+        mockMainQuery([row('failed', 'dead_letter')]);
+        const page = await StockTraceService.listRecentEvents(5);
+        assert.equal(page.items[0]?.analysis_status, 'failed');
+    });
+
+    it('listRecentEvents SQL 含 dead_letter→failed 分支与 job LATERAL JOIN', async () => {
+        let sql = '';
+        mock.method(pool, 'query', (async (text: string) => {
+            if (String(text).includes('FROM stock_trace_events e')) sql = String(text);
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+        await StockTraceService.listRecentEvents(5);
+        assert.match(sql, /WHEN j\.status = 'dead_letter' THEN 'failed'/, 'unavailable 分支之后、ELSE processing 之前应插入 dead_letter→failed');
+        assert.match(sql, /LEFT JOIN LATERAL/, '应 LEFT JOIN LATERAL 取最新 job 状态');
     });
 });

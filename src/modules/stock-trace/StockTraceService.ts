@@ -618,6 +618,7 @@ export class StockTraceService {
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     WHEN j.status = 'dead_letter' THEN 'failed'
                      ELSE 'processing'
                    END AS analysis_status,
                    (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
@@ -650,6 +651,11 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT j.status FROM stock_trace_jobs j
+                WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
+                ORDER BY j.created_at DESC LIMIT 1
+            ) j ON TRUE
             WHERE true ${windowClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $3
@@ -702,6 +708,7 @@ export class StockTraceService {
                    CASE
                      WHEN a.event_id IS NOT NULL THEN 'completed'
                      WHEN rr.result_id IS NOT NULL AND (rr.validation_status = 'rejected' OR rr.processing_status = 'failed') THEN 'unavailable'
+                     WHEN j.status = 'dead_letter' THEN 'failed'
                      ELSE 'processing'
                    END AS analysis_status,
                    (SELECT r3.primary_phrase FROM stock_trace_results r3 WHERE r3.result_id = a.result_id LIMIT 1) AS primary_cause,
@@ -726,6 +733,11 @@ export class StockTraceService {
                 ORDER BY r2.created_at DESC
                 LIMIT 1
             ) rr ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT j.status FROM stock_trace_jobs j
+                WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
+                ORDER BY j.created_at DESC LIMIT 1
+            ) j ON TRUE
             WHERE e.event_status = 'active' ${cursorClause}
             ORDER BY e.first_triggered_at DESC
             LIMIT $1

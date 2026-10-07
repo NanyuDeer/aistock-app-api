@@ -46,3 +46,27 @@ test('pending result remains processing and has no Movement View or unavailable 
     const response = presentStockTraceAnalysis(event, null, null);
     assert.deepEqual(response, { processingStatus: 'processing', artifact: null });
 });
+
+test('dead_letter job status maps to failed (no artifact/result)', () => {
+    const response = presentStockTraceAnalysis(event, null, null, 'dead_letter');
+    assert.equal(response.processingStatus, 'failed');
+});
+
+test('artifact still wins (completed) even with dead_letter job status', () => {
+    const artifact = {
+        artifactId: 'artifact-1', eventId: event.event_id, snapshotId: 'snapshot-1', resultId: 'result-1',
+        artifactVersion: 1, analysisVersion: 'llm-stock-trace-v1', artifactJson: {},
+        movementView: { schemaVersion: 'movement-view-v2', eventId: event.event_id, artifactId: 'artifact-1', artifactVersion: 1, status: 'confirmed', alternatives: [], unresolvedQuestions: [], suggestedActions: [], evidenceCount: 0, generatedAt: event.triggered_at },
+        validationReport: { status: 'passed', errors: [] }, isEffective: true,
+        createdAt: event.triggered_at, expiresAt: '2027-01-26T02:15:00.000Z',
+    } as StockTraceArtifact;
+
+    const response = presentStockTraceAnalysis(event, artifact, null, 'dead_letter');
+    assert.equal(response.processingStatus, 'completed');
+});
+
+test('unavailable takes priority over failed (rejected result + dead_letter job)', () => {
+    const response = presentStockTraceAnalysis(event, null, rejectedResult, 'dead_letter');
+    assert.equal(response.processingStatus, 'unavailable');
+    assert.equal(response.unavailable?.message, TRACE_REASON_UNAVAILABLE);
+});

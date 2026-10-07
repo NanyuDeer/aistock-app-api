@@ -5,6 +5,7 @@ import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
 import { StockTraceResultService } from './StockTraceResultService';
+import { StockTraceJobService } from './StockTraceJobService';
 import { InsightReportService } from './InsightReportService';
 import { PriceTriggerDetector } from './PriceTriggerDetector';
 
@@ -53,13 +54,18 @@ async function presentEventAnalysis(eventId: string, event: Record<string, unkno
     const latestResult = revision > 0
         ? await StockTraceResultService.getLatestForEventRevision(eventId, revision)
         : null;
+    // 当前版本最新 job 状态（dead_letter → failed）；无 job 为 null，不透传 failed。
+    // 优先级（unavailable > failed）由 presentStockTraceAnalysis 内部保证，与列表 SQL 一致。
+    const jobStatus = revision > 0
+        ? await StockTraceJobService.getLatestJobStatusForEventRevision(eventId, revision)
+        : null;
     // 当前版本归因失败（无 artifact 且最新 result 被拒/失败）时，回退到该事件最近的有效归因，
     // 避免"有异动却看不到归因"（如重新归因失败会覆盖原本有效的旧版本归因）。
     if (!artifact && latestResult && (latestResult.validationStatus === 'rejected' || latestResult.processingStatus === 'failed')) {
         const fallback = await StockTraceArtifactService.getEffectiveArtifact(eventId);
-        if (fallback) return presentStockTraceAnalysis(event, fallback, latestResult);
+        if (fallback) return presentStockTraceAnalysis(event, fallback, latestResult, jobStatus);
     }
-    return presentStockTraceAnalysis(event, artifact, latestResult);
+    return presentStockTraceAnalysis(event, artifact, latestResult, jobStatus);
 }
 
 export class StockTraceController {

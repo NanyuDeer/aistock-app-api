@@ -64,13 +64,17 @@ router.get('/events', async (req: Request, res: Response) => {
 
 router.patch('/jobs/:jobId', async (req: Request, res: Response) => {
     const jobId = Array.isArray(req.params.jobId) ? req.params.jobId[0] : req.params.jobId;
-    const body = req.body as { status?: 'queued' | 'published' | 'processing' | 'completed' | 'failed' | 'dead_letter'; last_error_code?: string; increment_attempt?: boolean };
+    const body = req.body as { status?: 'queued' | 'published' | 'processing' | 'completed' | 'failed' | 'dead_letter'; last_error_code?: string; last_error_detail?: string; increment_attempt?: boolean };
     if (!jobId || !body.status) {
         res.status(400).json({ code: 400, message: 'job id and status are required' });
         return;
     }
     const result = await StockTraceJobService.reportStatus(jobId, body.status, {
         lastErrorCode: body.last_error_code,
+        // 失败明细：服务端强制截断 500 字符后透传（异常类名+消息落库，可观测性 A）
+        lastErrorDetail: typeof body.last_error_detail === 'string' && body.last_error_detail.length > 0
+            ? body.last_error_detail.slice(0, 500)
+            : undefined,
         incrementAttempt: body.increment_attempt,
     });
     if (!result) {
