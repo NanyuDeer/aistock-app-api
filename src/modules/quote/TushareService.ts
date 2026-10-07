@@ -1291,3 +1291,47 @@ export async function getCompleteDailyByDate(
         page_count: maxPages,
     };
 }
+
+export interface TradeCalRow {
+    exchange: string;
+    cal_date: string;      // ISO YYYY-MM-DD
+    is_open: boolean;
+    pretrade_date: string | null;
+}
+
+/** 把 Tushare 的 YYYYMMDD 转成 ISO YYYY-MM-DD；非法原样返回（宽松降级） */
+function toIsoDate(raw: unknown): string | null {
+    const text = String(raw ?? '').trim();
+    if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+    return null;
+}
+
+/** trade_cal 响应 → 结构化行；字段缺失/非法时宽松降级，不抛错 */
+export function mapTradeCalRows(rows: Record<string, unknown>[]): TradeCalRow[] {
+    const out: TradeCalRow[] = [];
+    for (const row of rows) {
+        const calDate = toIsoDate(row.cal_date);
+        if (!calDate) continue;                       // 无日期则丢弃该行
+        out.push({
+            exchange: String(row.exchange ?? 'SSE').trim() || 'SSE',
+            cal_date: calDate,
+            is_open: String(row.is_open ?? '0') === '1', // 缺失/异常一律视为休市
+            pretrade_date: toIsoDate(row.pretrade_date),
+        });
+    }
+    return out;
+}
+
+/**
+ * 拉取交易日历。失败语义（复用 tushareRequest）：
+ * HTTP 非 2xx / 业务码非 0 → **抛错**；窗口内无数据 → 返回 `[]`（非错误）。
+ */
+export async function getTradeCal(startDate: string, endDate: string, exchange: string = 'SSE'): Promise<TradeCalRow[]> {
+    const rows = await tushareRequest(
+        'trade_cal',
+        { exchange, start_date: startDate, end_date: endDate },
+        'exchange,cal_date,is_open,pretrade_date',
+    );
+    return mapTradeCalRows(rows);
+}
