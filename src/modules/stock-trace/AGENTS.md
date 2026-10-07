@@ -2,6 +2,19 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-10-07 更新：movements 列表 `visible_only` 过滤前置（opt-in）+ cursor 复合键 tiebreaker
+
+- **动机**：`GET /api/cn/favorites/movements` 是「**先 LIMIT、前端再过滤**」——前端用 `isUnattributableMovement` 隐藏 `unavailable` 与低置信 `low`、再对同日同股去重，因此**被隐藏的行白占了窗口**，较早的有效异动可能因窗口被占满而取不到（实测 mxfff：50 条里 27 条是 `low`）。
+- **`visible_only`（加性、opt-in）**：`listUserEvents(id, openid, limit, cursor?, options?: { visibleOnly?: boolean })` 与 `listRecentEvents(limit, cursor?, options?)`，仅 `options.visibleOnly === true` 时在 WHERE 追加 `VISIBLE_ONLY_PREDICATES`（两处共用同一常量，零新增占位符 → 不打乱 `params`/cursor 序号）。controller 解析 `?visible_only=1|true`（其它值一律不开启）。
+  - 谓词①（排除"不可归因"）**必须带 `a.event_id IS NULL` 守卫**：`CASE` 中 `WHEN a.event_id IS NOT NULL THEN 'completed'` **优先于** unavailable，故"有有效 artifact（重新归因场景）但当前修订最新 result 被拒/失败"的行**前端会显示**；漏掉守卫会静默丢卡（计划审查抓出的缺陷）。
+  - 谓词②用 `IS DISTINCT FROM 'low'` 而非 `<> 'low'`：后者对 NULL 求值为 NULL，会把"无归因结果的进行中事件"误隐藏。
+  - 谓词①只针对 *result* 的 rejected/failed，**不碰 job 状态** → `analysis_status='failed'`（job `dead_letter`）的行刻意保持可见（2026-10-06 口径）。
+  - **`internalRouter` 不改**：agent-py 读层走同一个 `listUserEvents`，不传 `options` → WHERE 不追加谓词。
+- **cursor 复合键 + tiebreaker**：`ORDER BY e.first_triggered_at DESC, e.event_id DESC`；`nextCursor` 改为 `"<first_triggered_at ISO>|<event_id>"`；下页条件改行值比较 `(e.first_triggered_at, e.event_id) < ($ts::timestamptz, $eid)`。原因：单字段 cursor 在**同一毫秒**的多条事件上会漏行，而翻页是本次新引入的能力（此前 `nextCursor` **无任何消费方**，故该不透明字符串格式由本次定义）。
+  - ⚠️ **tiebreaker 是无条件加的**：所以"不传 `visible_only` 时 SQL 逐字不变"只对 WHERE 成立；`ORDER BY` 变了 → 在 `first_triggered_at` **完全并列**的边界行上入选行可能与改动前不同（agent-py 读层同样受此影响，仅并列边界，且使排序确定化）。
+- **测试**：`__tests__/visibleOnly.spec.ts`（不传 options 时 SQL 不含谓词 / `a.event_id IS NULL` 守卫断言 / `IS DISTINCT FROM` / cursor + visibleOnly 联合时占位符序号 / 未超页 `nextCursor === null`）；`internalRouter-events.spec.ts` 补断言（该路径 `options` 为 `undefined`）。
+- **前端配套**：见 aistock-app-frontend `modules/favorites/AGENTS.md`（两页 cursor 翻页 + `@scrolltolower` + `upsertEventById`）。
+
 ### 2026-10-06 更新：归因失败可观测（`last_error_detail`）+ `analysis_status` 第 4 值 `failed`
 
 - **动机**：2026-09-30 海正生材 688203 事故——某股当日 3 条异动，**最新一条**归因 job 三次尝试后进入终态 `dead_letter`，因无 result 被派生为 `processing`，卡片永久显示「归因中」，并在"同日同股取最新"的展示口径下**遮盖了当日已有的有效归因**。排查时又发现：`last_error_code` 只存 worker 的通用兜底码 `LLM_OR_DEPENDENCY_UNAVAILABLE`，真实异常（类名+消息）既没落库、日志也没留存 → 事后完全无法定位根因。
