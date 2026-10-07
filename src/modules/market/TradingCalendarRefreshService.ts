@@ -32,7 +32,18 @@ const UPSERT_SQL = `
         updated_at = CURRENT_TIMESTAMP
 `;
 
-/** 查询表内当前覆盖范围（边界），供审计/健康核对用。 */
+/**
+ * 覆盖范围健康检查（供 Task 2 `tradingCalendarStore` 的 `inCoverage`/健康核对消费）：
+ * 查询表内当前 `MIN/MAX(cal_date)` 边界，确认本次刷新发生前表内已存在可用覆盖，
+ * 避免 store 唯凭「本次拉取窗口」误判『未加载』。
+ *
+ * 有意的契约边界：
+ * - 本查询为**健康检查**，供 store 后续核对；`refresh` 自身不依赖其结果——`minDate/maxDate`
+ *   一律以**本次拉取窗口**（`rows`）为准，不用 COVERAGE 结果计算。
+ * - 因 SELECT 在 INSERT 之前执行，反映的是**刷新前旧表覆盖**（首次刷新为空表 → null）。
+ *   这是 brief/测试契约（`calls.length===2`、首条 SQL 含 `FROM trading_calendar`）明示保留的，
+ *   故结果在此仅作旁路探针，`await ...;` 丢弃即符合契约。
+ */
 const COVERAGE_SQL = `
     SELECT MIN(cal_date) AS min, MAX(cal_date) AS max
     FROM trading_calendar
