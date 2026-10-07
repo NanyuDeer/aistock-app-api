@@ -2,6 +2,16 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-10-06 更新：归因失败可观测（`last_error_detail`）+ `analysis_status` 第 4 值 `failed`
+
+- **动机**：2026-09-30 海正生材 688203 事故——某股当日 3 条异动，**最新一条**归因 job 三次尝试后进入终态 `dead_letter`，因无 result 被派生为 `processing`，卡片永久显示「归因中」，并在"同日同股取最新"的展示口径下**遮盖了当日已有的有效归因**。排查时又发现：`last_error_code` 只存 worker 的通用兜底码 `LLM_OR_DEPENDENCY_UNAVAILABLE`，真实异常（类名+消息）既没落库、日志也没留存 → 事后完全无法定位根因。
+- **可观测性**：`stock_trace_jobs` 新增 `last_error_detail TEXT` —— migration `024_stock_trace_job_error_detail.sql` + `StockTraceJobService.ensureSchema()` 幂等 `ADD COLUMN IF NOT EXISTS`（存量库启动即自动补列）+ `015_stock_trace_jobs.sql` 回写冷部署表定义。`PATCH /internal/stock-trace/jobs/:jobId` 请求体新增可选 `last_error_detail`（**服务端强制截断 500 字符**）；`reportStatus` 用 `SET last_error_detail = COALESCE($5, last_error_detail)`，**仅在本次带明细时覆盖**，避免后续 `completed` 报告把已存明细清空。上报侧见 agent-py `StockTraceWorkerOutcome.error_detail`。
+- **状态区分**：`analysis_status` 新增第 4 个值 **`failed`**（终态失败）。`listUserEvents` / `listRecentEvents` 两处 SQL 各新增 `LEFT JOIN LATERAL (SELECT j.status FROM stock_trace_jobs j WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision ORDER BY j.created_at DESC LIMIT 1) j ON TRUE` 与 `CASE` 分支 `WHEN j.status = 'dead_letter' THEN 'failed'`；详情链路新增 `StockTraceJobService.getLatestJobStatusForEventRevision(eventId, triggerRevision)` 并透传给 `presentStockTraceAnalysis`（其 `processingStatus` 联合类型加 `'failed'`）。
+- **优先级口径（重要）**：`unavailable` **优先于** `failed` —— 存在被拒/失败 result 时不算"归因失败"（确有产出可回退展示），只有 job `dead_letter` **且无 result** 才落 `failed`。两处派生点（列表 SQL 与详情 presentation）**必须保持一致**。
+- **不改**：WS/推送的 `toPublicEvent` 仍返回 `'processing'`（仅在事件创建/修订时调用，此时必然尚无结果）；`stock_trace_results`/快照/worker 错误码语义与 `REPLAYABLE_ERROR_CODES` 均未动。
+- **前端配套**（详见 aistock-app-frontend `modules/favorites/AGENTS.md`）：`failed` 显示「归因失败」（5 处文案映射）；`dedupeDailyMovements` 挑最新时跳过 `failed`（当日有有效归因则回退显示它，全 failed 才保留最新）；`failed` **不被** `isUnattributableMovement` 隐藏。
+- 测试：`listAnalysisStatus.spec.ts`（两处 SQL 的 job LATERAL 与 `unavailable > failed` 分支**位置**断言）、`presentation.spec.ts`（dead_letter→failed / artifact 优先 / unavailable 优先）、`presentEventAnalysis.spec.ts`（controller 详情链路透传）→ `npx tsc --noEmit` exit 0。
+
 ### 2026-09-30 更新：列表接口透出 `confidence_level`（低置信不展示卡片口径）
 
 - **动机**：产品口径——**低置信（`low`）的归因不展示异动卡片**（`medium`/`high` 照常展示）。判定在前端做，因此列表接口须把归因置信度透出（此前只透出 `primary_cause`）。
@@ -63,6 +73,7 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 ### 2026-08-19 更新：列表接口归因状态派生
 
 - `listUserEvents` / `listRecentEvents` 的 `analysis_status` 改为 SQL 派生（LEFT JOIN LATERAL artifact + 最新 result），与详情接口 `presentStockTraceAnalysis` 一致：有 effective artifact → `completed`；最新 result rejected/failed → `unavailable`；其余 → `processing`。不再硬编码 `pending`。
+- ⚠️ **已被 2026-10-06 扩展**：新增第 4 值 `failed`（job `dead_letter`），且该分支位于 `unavailable` **之后**（即 `unavailable` 优先）。当前完整口径见本文件顶部 2026-10-06 条目。
 
 ### 2026-08-19 更新：主因短语 primary_phrase / primary_cause
 
