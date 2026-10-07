@@ -123,6 +123,11 @@ import { isValidAShareSymbol } from './shared/utils/validator';
 import { closeAllAgents } from './shared/utils/httpAgent';
 import { requireLogin } from './shared/utils/requireLogin';
 
+// 交易日历（spec §5/§7）：cron 交易日守卫 + 日历预热/每日刷新
+import { runIfTradingDay } from './shared/utils/cronGuards';
+import { tradingCalendarStore } from './shared/utils/tradingCalendarStore';
+import { TradingCalendarRefreshService } from './modules/market/TradingCalendarRefreshService';
+
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { initWebSocket } from './core/ws/handler';
@@ -680,6 +685,21 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 if (BACKGROUND_JOBS_ENABLED) {
+// ==================== 交易日守卫说明 ====================
+// 下列维护/同步类 cron 故意**不加**交易日守卫（runIfTradingDay），原因：
+// - 趋势评分 '0 2 * * *'：凌晨全量重算，非交易日执行幂等无害；
+// - 个股-板块映射 '30 4'、业绩预测/业绩报告 '0 0'、股票基础数据 '5 0'：数据同步类，与是否交易日无关；
+// - Agent 报告清理 '0 3'：运维清理，全天候；
+// - 每分钟 outbox 冲刷 / 飞书消息分析、通知补投 '*/5'、心跳 '*/10'：需全天候运行，不能因节假日停摆；
+// - 资讯爬虫 '0 8'/'0 15'：注释已注明"包括节假日"，本就应每日运行。
+// ========================================================
+
+// 交易日历刷新：每日 00:30（与维护类 cron 同簇）
+cron.schedule('30 0 * * *', async () => {
+    await TradingCalendarRefreshService.refresh();
+    await tradingCalendarStore.load();
+}, { timezone: 'Asia/Shanghai' });
+
 // 趋势股批量评分 — 每天凌晨2点（刷新板块轮动缓存后执行）
 cron.schedule('0 2 * * *', async () => {
     console.log('[TrendCron] 开始批量趋势股评分');
@@ -691,15 +711,9 @@ cron.schedule('0 2 * * *', async () => {
     }
 }, { timezone: 'Asia/Shanghai' });
 
-cron.schedule('5 19 * * 1-5', async () => {
+cron.schedule('5 19 * * 1-5', () => runIfTradingDay('capital-flow-prefetch', async () => {
     console.log('[CapitalFlowCron] 收盘后批量预取资金流向');
     try {
-        const { isAShareTradingTime } = await import('./shared/utils/tradingTime');
-        const isTrading = await isAShareTradingTime();
-        if (isTrading) {
-            console.log('[CapitalFlowCron] 仍在交易时间，跳过');
-            return;
-        }
         const poolModule = await import('./core/db');
         const dbPool = poolModule.default;
         const result = await dbPool.query('SELECT symbol FROM stocks');
@@ -727,7 +741,7 @@ cron.schedule('5 19 * * 1-5', async () => {
     } catch (err: unknown) {
         console.error('[CapitalFlowCron] 批量预取失败:', err instanceof Error ? err.message : String(err));
     }
-}, { timezone: 'Asia/Shanghai' });
+}), { timezone: 'Asia/Shanghai' });
 
 // 风口龙头定时分析：每天凌晨3点执行（跳过节假日）
 cron.schedule('0 3 * * *', async () => {
@@ -756,12 +770,12 @@ const runInstitutionResearchDetect = async (label: string) => {
         console.error(`[InstResearchCron] ${label} 检测失败:`, err instanceof Error ? err.message : String(err));
     }
 };
-cron.schedule('30 9 * * 1-5', () => runInstitutionResearchDetect('开盘'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 10 * * 1-5', () => runInstitutionResearchDetect('上午'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 11 * * 1-5', () => runInstitutionResearchDetect('午前'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 13 * * 1-5', () => runInstitutionResearchDetect('午盘'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 14 * * 1-5', () => runInstitutionResearchDetect('尾盘'), { timezone: 'Asia/Shanghai' });
-cron.schedule('5 15 * * 1-5', () => runInstitutionResearchDetect('收盘'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 9 * * 1-5', () => runIfTradingDay('inst-research-开盘', () => runInstitutionResearchDetect('开盘')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 10 * * 1-5', () => runIfTradingDay('inst-research-上午', () => runInstitutionResearchDetect('上午')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runIfTradingDay('inst-research-午前', () => runInstitutionResearchDetect('午前')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 13 * * 1-5', () => runIfTradingDay('inst-research-午盘', () => runInstitutionResearchDetect('午盘')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 14 * * 1-5', () => runIfTradingDay('inst-research-尾盘', () => runInstitutionResearchDetect('尾盘')), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runIfTradingDay('inst-research-收盘', () => runInstitutionResearchDetect('收盘')), { timezone: 'Asia/Shanghai' });
 
 // 自选股洞察午盘/尾盘价格打点：11:30 午盘、15:05 尾盘（与六时段定时任务对齐）
 const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
@@ -787,13 +801,13 @@ const runPriceMoveDetect = async (snapshotType: 'midday' | 'close') => {
         }
     }
 };
-cron.schedule('30 11 * * 1-5', () => runPriceMoveDetect('midday'), { timezone: 'Asia/Shanghai' });
-cron.schedule('5 15 * * 1-5', () => runPriceMoveDetect('close'), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runIfTradingDay('price-move-midday', () => runPriceMoveDetect('midday')), { timezone: 'Asia/Shanghai' });
+cron.schedule('5 15 * * 1-5', () => runIfTradingDay('price-move-close', () => runPriceMoveDetect('close')), { timezone: 'Asia/Shanghai' });
 
 // 异动监控收盘落定兜底（15:10）：强制落定当日仍 active 的事件并触发一次最终归因。
 // 盘中不再即时归因（降 token / 数据更全）。15:05 的落定已并入 close 打点以保证时序，
 // 本 cron 后移 5 分钟作兜底，覆盖打点路径异常、或 15:05 之后才新建事件的漏落定。
-cron.schedule('10 15 * * 1-5', async () => {
+cron.schedule('10 15 * * 1-5', () => runIfTradingDay('stock-trace-settle', async () => {
     try {
         const { StockTraceService } = await import('./modules/stock-trace/StockTraceService');
         const settled = await StockTraceService.settleActiveEvents();
@@ -801,7 +815,7 @@ cron.schedule('10 15 * * 1-5', async () => {
     } catch (err: unknown) {
         console.error('[StockTraceCron] 收盘落定失败:', err instanceof Error ? err.message : String(err));
     }
-}, { timezone: 'Asia/Shanghai' });
+}), { timezone: 'Asia/Shanghai' });
 
 // stock-trace outbox 冲刷兜底（每分钟）：发布失败（如 Redis 连接中断）会让 outbox 停在 pending，
 // 而 publishPending 只在 enqueue / scheduleEnriched 完成等事件路径被顺带调用 → 失败行可能永久滞留
@@ -893,43 +907,33 @@ cron.schedule('30 15 * * *', async () => {
 }, { timezone: 'Asia/Shanghai' });
 
 // 板块轮动榜增量：交易日 15:35 收盘后同步当日轮动榜（幂等，回填缺口）
-cron.schedule('35 15 * * *', async () => {
+// 交易日判定统一由守卫负责（原内部 isAShareTradingDay 判断块已移除，避免双重判断）
+cron.schedule('35 15 * * *', () => runIfTradingDay('rotation-board-sync', async () => {
     console.log('[RotationBoardCron] 开始同步板块轮动榜');
     try {
-        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
-        const isTradingDay = await isAShareTradingDay();
-        if (!isTradingDay) {
-            console.log('[RotationBoardCron] 今天是非交易日（周末/节假日），跳过轮动榜同步');
-            return;
-        }
         const count = await RotationBoardStore.syncRotationHistory();
         console.log(`[RotationBoardCron] 同步完成: ${count} 条`);
     } catch (err: unknown) {
         console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
     }
-}, { timezone: 'Asia/Shanghai' });
+}), { timezone: 'Asia/Shanghai' });
 
 // 恐贪指数：盘前 09:15 / 正午 11:30 / 盘后 15:30（周一至周五，跳过节假日）
 // 盘前用前日收盘数据预计算，正午更新盘中实时，盘后用最终收盘数据定版
 // 各时段落库到 fear_greed_snapshot.time_slot，供前端绘制 intraday 短热度线
+// 交易日判定统一由守卫负责（原内部 isAShareTradingDay 判断块已移除，避免双重判断）
 const runFearGreedRefresh = async (label: string, timeSlot: 'pre' | 'noon' | 'post') => {
     console.log(`[FearGreedCron] ${label}刷新恐贪指数 (time_slot=${timeSlot})`);
     try {
-        const { isAShareTradingDay } = await import('./shared/utils/tradingTime');
-        const isTradingDay = await isAShareTradingDay();
-        if (!isTradingDay) {
-            console.log(`[FearGreedCron] 非交易日，跳过${label}刷新`);
-            return;
-        }
         await refreshJq(timeSlot);
         console.log(`[FearGreedCron] ${label}刷新完成`);
     } catch (err: unknown) {
         console.error(`[FearGreedCron] ${label}刷新失败:`, err instanceof Error ? err.message : String(err));
     }
 };
-cron.schedule('15 9 * * 1-5', () => runFearGreedRefresh('盘前', 'pre'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 11 * * 1-5', () => runFearGreedRefresh('正午', 'noon'), { timezone: 'Asia/Shanghai' });
-cron.schedule('30 15 * * 1-5', () => runFearGreedRefresh('盘后', 'post'), { timezone: 'Asia/Shanghai' });
+cron.schedule('15 9 * * 1-5', () => runIfTradingDay('fear-greed-pre', () => runFearGreedRefresh('盘前', 'pre')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 11 * * 1-5', () => runIfTradingDay('fear-greed-noon', () => runFearGreedRefresh('正午', 'noon')), { timezone: 'Asia/Shanghai' });
+cron.schedule('30 15 * * 1-5', () => runIfTradingDay('fear-greed-post', () => runFearGreedRefresh('盘后', 'post')), { timezone: 'Asia/Shanghai' });
 
 // App 通知补投：每 5 分钟消费一次 notification_outbox（写失败的通知不至于永久丢失）
 cron.schedule('*/5 * * * *', async () => {
@@ -1020,17 +1024,17 @@ cron.schedule('*/10 * * * *', () => {
 }, { timezone: 'Asia/Shanghai' });
 
 // 自选股洞察：交易时段（周一至周五 9:00-15:59）每 10 分钟轮询采集
-cron.schedule('*/10 9-15 * * 1-5', async () => {
+cron.schedule('*/10 9-15 * * 1-5', () => runIfTradingDay('insight-collect', async () => {
     try {
         const { collected, events } = await runInsightCycle();
         console.log(`[insight] 采集完成 collected=${collected} events=${events}`);
     } catch (err: unknown) {
         console.error('[insight] 采集失败:', err instanceof Error ? err.message : String(err));
     }
-}, { timezone: 'Asia/Shanghai' });
+}), { timezone: 'Asia/Shanghai' });
 
 // 恐贪指数：每日 16:30 收盘后自动刷新（幂等，覆盖当日快照）
-cron.schedule('30 16 * * *', async () => {
+cron.schedule('30 16 * * *', () => runIfTradingDay('fear-greed-daily', async () => {
     console.log('[FearGreedCron] 开始刷新恐贪指数');
     try {
         await refreshJq();
@@ -1038,7 +1042,7 @@ cron.schedule('30 16 * * *', async () => {
     } catch (err: unknown) {
         console.error('[FearGreedCron] 刷新失败:', err instanceof Error ? err.message : String(err));
     }
-}, { timezone: 'Asia/Shanghai' });
+}), { timezone: 'Asia/Shanghai' });
 }
 
 async function start() {
@@ -1048,6 +1052,17 @@ async function start() {
     } catch (err: unknown) {
         console.error('[PG] Connection failed:', err instanceof Error ? err.message : String(err));
     }
+
+    // 交易日历预热：异步执行，不阻塞服务启动（Tushare 慢不应导致起不来）
+    void (async () => {
+        try {
+            await TradingCalendarRefreshService.refresh();
+            await tradingCalendarStore.load();
+            console.log('[TradingCalendar] 预热完成', tradingCalendarStore.getHealth());
+        } catch (err: unknown) {
+            console.error('[TradingCalendar] 预热失败（降级链生效）:', err instanceof Error ? err.message : String(err));
+        }
+    })();
 
     try {
         await NotificationService.ensureSchemaAtStartup();
