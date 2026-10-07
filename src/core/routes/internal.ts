@@ -1069,12 +1069,19 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const minResonance = rawMinResonance === undefined
             ? undefined
             : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 4)
+        const rawTradingDays = queryStr(req, 'trading_days')
+        const parsedTradingDays = rawTradingDays === undefined ? undefined : parseInt(rawTradingDays, 10)
+        const tradingDays = parsedTradingDays !== undefined && Number.isInteger(parsedTradingDays)
+            && parsedTradingDays >= 1 && parsedTradingDays <= 60
+            ? parsedTradingDays
+            : undefined
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
             minResonanceOnly: queryStr(req, 'min_resonance_only') !== 'false',
             days: queryInt(req, 'days', 30),
             minResonance,
+            tradingDays,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {

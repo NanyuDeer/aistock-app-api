@@ -21,6 +21,27 @@ import { findResearchReportMessagesForStock } from '../crawler/FeishuResearchRep
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 
+/**
+ * 「近 N 个交易日」→ 查询起点 ISO 字符串（最近 N 个交易日中最早那天的上海 00:00）。
+ * 非法入参（缺失 / 非正整数 / >60）或日历不可用 → 返回 null（回落自然日 `days` 语义，保证零回归）。
+ */
+export function resolveTradingDaysStart(tradingDays: number | undefined, now: Date): string | null {
+    if (typeof tradingDays !== 'number' || !Number.isInteger(tradingDays) || tradingDays < 1 || tradingDays > 60) {
+        return null;
+    }
+    try {
+        const list = TradingCalendarService.getRecentTradingDays(now, tradingDays);
+        if (list.length === 0) return null;
+        // getRecentTradingDays 返回的 Date 已归一化为上海 08:00 → 取日期部分再拼当日 00:00
+        const earliest = list[list.length - 1].toISOString().slice(0, 10);
+        return `${earliest}T00:00:00+08:00`;
+    } catch (err: unknown) {
+        // 日期推算类函数 fail-closed 时会抛错；此处降级为自然日语义，不让接口 500
+        console.warn('[HotBurst] trading_days 起点计算失败，回落自然日 days:', err instanceof Error ? err.message : String(err));
+        return null;
+    }
+}
+
 // ==================== 类型定义 ====================
 
 export interface FeishuMessageRow {
@@ -703,18 +724,20 @@ export class HotBurstService {
         minResonanceOnly: boolean = true,
         days: number = 30,
         minResonance?: number,
+        tradingDays?: number,
     ): Promise<{ total: number; records: any[] }> {
         let total: number;
         let records: any[];
         const safeDays = Math.min(Math.max(days, 1), 365);
+        const isoStart = resolveTradingDaysStart(tradingDays, new Date());
 
         if (minResonance !== undefined) {
             const safeMinResonance = Math.min(Math.max(minResonance, 2), 3);
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= $1
-                   AND detected_at >= NOW() - ($2::text || ' days')::interval`,
-                [safeMinResonance, safeDays]
+                   AND ${isoStart ? 'detected_at >= $2::timestamptz' : "detected_at >= NOW() - ($2::text || ' days')::interval"}`,
+                isoStart ? [safeMinResonance, isoStart] : [safeMinResonance, safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
@@ -723,10 +746,10 @@ export class HotBurstService {
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= $3
-                   AND detected_at >= NOW() - ($4::text || ' days')::interval
+                   AND ${isoStart ? 'detected_at >= $4::timestamptz' : "detected_at >= NOW() - ($4::text || ' days')::interval"}
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
-                [limit, offset, safeMinResonance, safeDays]
+                isoStart ? [limit, offset, safeMinResonance, isoStart] : [limit, offset, safeMinResonance, safeDays]
             );
             records = result.rows;
         } else
@@ -735,8 +758,8 @@ export class HotBurstService {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= 2
-                   AND detected_at >= NOW() - ($1::text || ' days')::interval`,
-                [safeDays]
+                   AND ${isoStart ? 'detected_at >= $1::timestamptz' : "detected_at >= NOW() - ($1::text || ' days')::interval"}`,
+                isoStart ? [isoStart] : [safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
@@ -745,17 +768,17 @@ export class HotBurstService {
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= 2
-                   AND detected_at >= NOW() - ($3::text || ' days')::interval
+                   AND ${isoStart ? 'detected_at >= $3::timestamptz' : "detected_at >= NOW() - ($3::text || ' days')::interval"}
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
-                [limit, offset, safeDays]
+                isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
             records = result.rows;
         } else {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE detected_at >= NOW() - ($1::text || ' days')::interval`,
-                [safeDays]
+                 WHERE ${isoStart ? 'detected_at >= $1::timestamptz' : "detected_at >= NOW() - ($1::text || ' days')::interval"}`,
+                isoStart ? [isoStart] : [safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
@@ -763,10 +786,10 @@ export class HotBurstService {
                 `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE detected_at >= NOW() - ($3::text || ' days')::interval
+                 WHERE ${isoStart ? 'detected_at >= $3::timestamptz' : "detected_at >= NOW() - ($3::text || ' days')::interval"}
                  ORDER BY detected_at DESC, resonance_score DESC
                  LIMIT $1 OFFSET $2`,
-                [limit, offset, safeDays]
+                isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
             records = result.rows;
         }
@@ -1031,6 +1054,7 @@ export class HotBurstService {
         minResonanceOnly?: boolean;
         days?: number;
         minResonance?: number;
+        tradingDays?: number;
     }): Promise<{ total: number; records: unknown[] }> {
         return this.getHistory(
             query.limit ?? 50,
@@ -1038,6 +1062,7 @@ export class HotBurstService {
             query.minResonanceOnly ?? true,
             query.days ?? 30,
             query.minResonance,
+            query.tradingDays,
         );
     }
 }
