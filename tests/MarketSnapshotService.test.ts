@@ -31,6 +31,7 @@ import {
 } from '../src/modules/quote/MarketSnapshotService'
 
 import { TradingCalendarService } from '../src/shared/utils/TradingCalendarService'
+import { tradingCalendarStore } from '../src/shared/utils/tradingCalendarStore'
 
 test('rejects malformed and non-existent calendar dates', () => {
     assert.equal(TradingCalendarService.isTradingDayYyyymmdd('20260230'), false)
@@ -48,18 +49,34 @@ test('isTradingDay rejects an invalid Date', () => {
     assert.equal(TradingCalendarService.isTradingDay(new Date('invalid')), false)
 })
 
+// Task 3 起 TradingCalendarService 改读 tradingCalendarStore（唯一事实源）：日期推算类的
+// fail-closed 语义为「store 已加载且该日期不在覆盖范围 → 抛 Trading calendar has no data for <iso>」。
+// 下面两条用例显式注入"已加载但覆盖不到被测日期"的日历，使入参落在覆盖边界之外，
+// 保留原「覆盖前 / 覆盖后都必须失败关闭」的意图。
 test('getRecentTradingDay fails closed after calendar coverage in Asia/Shanghai', () => {
-    assert.throws(
-        () => TradingCalendarService.getRecentTradingDay(new Date('2026-12-31T16:30:00.000Z')),
-        /Trading calendar is not available for 2027/,
-    )
+    // 覆盖上限 2026-12-31；入参 2026-12-31T16:30Z = 上海 2027-01-01（晚于覆盖 → 越界）
+    tradingCalendarStore.__setForTest({ '2026-12-31': true }, '2026-12-31', '2026-12-31')
+    try {
+        assert.throws(
+            () => TradingCalendarService.getRecentTradingDay(new Date('2026-12-31T16:30:00.000Z')),
+            /Trading calendar has no data for 2027/,
+        )
+    } finally {
+        tradingCalendarStore.__resetForTest()
+    }
 })
 
 test('getRecentTradingDay fails closed before calendar coverage', () => {
-    assert.throws(
-        () => TradingCalendarService.getRecentTradingDay(new Date(2023, 0, 2, 16)),
-        /Trading calendar is not available for 2023/,
-    )
+    // 覆盖下限 2026-12-31；入参 2023-01-02（早于覆盖 → 越界）
+    tradingCalendarStore.__setForTest({ '2026-12-31': true }, '2026-12-31', '2026-12-31')
+    try {
+        assert.throws(
+            () => TradingCalendarService.getRecentTradingDay(new Date(2023, 0, 2, 16)),
+            /Trading calendar has no data for 2023/,
+        )
+    } finally {
+        tradingCalendarStore.__resetForTest()
+    }
 })
 
 // ============================================================================
@@ -522,6 +539,9 @@ test('throws market_not_closed on weekend (requestDate not a trade day)', async 
 
 test('throws market_not_closed on holiday with complete data', async () => {
     // 20261001 是国庆节。即使完整同日数据被错误提供，也必须在行情调用前拒绝。
+    // Task 3 起日历改读 tradingCalendarStore：显式注入该休市日（is_open=false）并纳入覆盖，
+    // 才能让 isTradingDayYyyymmdd 判非交易日（store 未加载时会降级为「周一~周五」而放行）。
+    tradingCalendarStore.__setForTest({ '2026-10-01': false, '2026-09-30': true }, '2026-09-30', '2026-10-01')
     applyCloseMocks(makeCompleteDataOverrides('20261001', '20260930'))
     try {
         await assert.rejects(
@@ -537,10 +557,13 @@ test('throws market_not_closed on holiday with complete data', async () => {
     } finally {
         restoreDeps?.()
         restoreDeps = null
+        tradingCalendarStore.__resetForTest()
     }
 })
 
 test('throws market_not_closed on 2026 Labour Day holiday with complete data', async () => {
+    // 20260504 是劳动节休市日。注入 store（is_open=false）后在任何行情调用前拒绝。
+    tradingCalendarStore.__setForTest({ '2026-05-04': false, '2026-04-30': true }, '2026-04-30', '2026-05-04')
     applyCloseMocks(makeCompleteDataOverrides('20260504', '20260430'))
     try {
         await assert.rejects(
@@ -556,10 +579,15 @@ test('throws market_not_closed on 2026 Labour Day holiday with complete data', a
     } finally {
         restoreDeps?.()
         restoreDeps = null
+        tradingCalendarStore.__resetForTest()
     }
 })
 
 test('throws market_not_closed on an uncovered New Year holiday with complete data', async () => {
+    // 「uncovered」源自旧硬编码年表未覆盖 2027；新语义下需在 store 中显式标注
+    // 2027-01-01（元旦）为休市日（is_open=false）并纳入覆盖，才能复现
+    // 「节假日即使被错误提供完整数据也必须拒绝」的原意图。
+    tradingCalendarStore.__setForTest({ '2027-01-01': false, '2026-12-31': true }, '2026-12-31', '2027-01-01')
     applyCloseMocks(makeCompleteDataOverrides('20270101', '20261231'))
     try {
         await assert.rejects(
@@ -575,6 +603,7 @@ test('throws market_not_closed on an uncovered New Year holiday with complete da
     } finally {
         restoreDeps?.()
         restoreDeps = null
+        tradingCalendarStore.__resetForTest()
     }
 })
 
