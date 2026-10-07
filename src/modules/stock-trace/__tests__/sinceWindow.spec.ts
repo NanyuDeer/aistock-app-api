@@ -157,3 +157,19 @@ describe('非法 since 被忽略', () => {
         });
     }
 });
+
+describe('空页（SQL 返回 0 行）→ nextCursor === null', () => {
+    it('listUserEvents：since 为未来日期命中 0 行时，结果 nextCursor 必须为 null', async () => {
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        const result = await StockTraceService.listUserEvents('u1', 'o1', 5, undefined, { since: '2999-01-01' });
+        assert.equal(result.nextCursor, null, '空页应返回 nextCursor === null，否则前端会误判"还有更多"继续翻页');
+        assert.deepEqual(result.items, [], '空页应返回空 items');
+    });
+
+    it('listRecentEvents：SQL 返回 0 行时，结果 nextCursor 必须为 null', async () => {
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        const result = await StockTraceService.listRecentEvents(5, undefined, { since: '2999-01-01' });
+        assert.equal(result.nextCursor, null, '空页应返回 nextCursor === null，否则前端会误判"还有更多"继续翻页');
+        assert.deepEqual(result.items, [], '空页应返回空 items');
+    });
+});
