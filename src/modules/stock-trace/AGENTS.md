@@ -13,7 +13,13 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - **cursor 复合键 + tiebreaker**：`ORDER BY e.first_triggered_at DESC, e.event_id DESC`；`nextCursor` 改为 `"<first_triggered_at ISO>|<event_id>"`；下页条件改行值比较 `(e.first_triggered_at, e.event_id) < ($ts::timestamptz, $eid)`。原因：单字段 cursor 在**同一毫秒**的多条事件上会漏行，而翻页是本次新引入的能力（此前 `nextCursor` **无任何消费方**，故该不透明字符串格式由本次定义）。
   - ⚠️ **tiebreaker 是无条件加的**：所以"不传 `visible_only` 时 SQL 逐字不变"只对 WHERE 成立；`ORDER BY` 变了 → 在 `first_triggered_at` **完全并列**的边界行上入选行可能与改动前不同（agent-py 读层同样受此影响，仅并列边界，且使排序确定化）。
 - **测试**：`__tests__/visibleOnly.spec.ts`（不传 options 时 SQL 不含谓词 / `a.event_id IS NULL` 守卫断言 / `IS DISTINCT FROM` / cursor + visibleOnly 联合时占位符序号 / 未超页 `nextCursor === null`）；`internalRouter-events.spec.ts` 补断言（该路径 `options` 为 `undefined`）。
-- **前端配套**：见 aistock-app-frontend `modules/favorites/AGENTS.md`（两页 cursor 翻页 + `@scrolltolower` + `upsertEventById`）。
+- **`since` 时间下界（同轮追加，opt-in）**：`options.since`（`YYYY-MM-DD`）存在且**合法**时，两处查询各追加 `AND e.trading_date >= $N::date`（`trading_date` 是真正的 `date` 列 → 纯日期比较，无时区换算）。
+  - **校验必须两层**：`/^\d{4}-\d{2}-\d{2}$/` **加上** `Date.UTC` 回读三成分比对——纯格式正则会放过 `2026-13-45` 这类"格式合法但日期非法"的值，进而让 `$N::date` 抛错 → 500。非法一律**忽略该参数**（加性参数不返回 400）。
+  - **口径归属**：`since` 由**调用方**计算（前端算"最近 14 个自然日" = `今天-13`）；后端只做日期比较，不承担"两周"这个业务口径。
+  - 参数序号：`since` 与 cursor 均为动态追加，SQL 子句顺序与 `params.push` 顺序严格一致（`listUserEvents`：LIMIT `$3` → cursor `$4/$5` → since `$6`；`listRecentEvents`：LIMIT `$1` → cursor `$2/$3` → since `$4`）。
+  - 测试：`__tests__/sinceWindow.spec.ts`（不传即无谓词 / 三者同传时序号正确 / 非法值枚举含 `2026-13-45` / 空页 `nextCursor === null`）。
+  - **前端配套**：两页首屏与触底都传 `since: shanghaiDateKeyDaysAgo(TWO_WEEK_WINDOW_DAYS = 13)`；实测两页卡片由 ~60 张收敛到 **8 张**（日期范围 09-24 → 09-30，无早于 09-24 的卡片）。
+- **前端配套**（2026-10-07）：见 aistock-app-frontend `modules/favorites/AGENTS.md`（两页 cursor 翻页 + `@scrolltolower` + `upsertEventById`）。
 
 ### 2026-10-06 更新：归因失败可观测（`last_error_detail`）+ `analysis_status` 第 4 值 `failed`
 
