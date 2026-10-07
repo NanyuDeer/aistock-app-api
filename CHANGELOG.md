@@ -2,6 +2,49 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-10-07 — 归因失败可观测与状态区分（A/B/C）+ movements 列表过滤前置 / cursor 翻页 / 两周窗口
+
+**开发者**: NanyuDeer
+
+### 新增
+
+- `stock_trace_jobs.last_error_detail TEXT`：承载 Python Agent 上报的归因失败**真实异常**（`"{异常类名}: {消息}"`，两端统一截断 500 字符）。迁移 `src/db/migrations/024_stock_trace_job_error_detail.sql` + `StockTraceJobService.ensureSchema()` 幂等 `ADD COLUMN IF NOT EXISTS` + `015_stock_trace_jobs.sql` 冷部署表定义回写。
+- `analysis_status` 新增第 4 个枚举值 **`failed`**（该事件当前 `trigger_revision` 的最新 job 为 `dead_letter` 时派生）：列表侧新增 `stock_trace_jobs` 的 `LEFT JOIN LATERAL` 与 `CASE` 分支；详情侧新增 `StockTraceJobService.getLatestJobStatusForEventRevision` 并透传 `presentStockTraceAnalysis`。**优先级 `unavailable` > `failed`**（有 rejected/failed result 时不算"归因失败"，两处派生点一致）。
+- `GET /api/cn/favorites/movements` 新增两个 **opt-in** 查询参数：`visible_only`（把"会被前端隐藏的行"挡在 `LIMIT` 之前）、`since=YYYY-MM-DD`（时间下界，按 `trading_date`）。
+- 新增 `StockTraceJobService.getLatestJobStatusForEventRevision(eventId, triggerRevision)`。
+- 测试：`__tests__/visibleOnly.spec.ts`（13 例）、`__tests__/sinceWindow.spec.ts`（14 例）、`__tests__/presentEventAnalysis.spec.ts`（2 例）。
+
+### 变更
+
+- `StockTraceService.listUserEvents` / `listRecentEvents` 签名增**末尾可选** `options?: { visibleOnly?: boolean; since?: string }`；`internalRouter`（agent-py 读层）**不传** → WHERE 不追加谓词、行为不受影响。
+- `visible_only` 两谓词（共用常量 `VISIBLE_ONLY_PREDICATES`，零新增占位符）：
+  - `NOT (a.event_id IS NULL AND rr.result_id IS NOT NULL AND (rr.validation_status='rejected' OR rr.processing_status='failed'))` —— **必须带 `a.event_id IS NULL` 守卫**：`CASE` 中"有 artifact → `completed`"优先于 `unavailable`，漏守卫会把"有有效 artifact（重新归因场景）但最新 result 被拒"的卡**静默丢掉**。
+  - `(SELECT ... confidence_level ...) IS DISTINCT FROM 'low'` —— 必须放行 NULL（`<> 'low'` 对 NULL 求值为 NULL 会误隐藏"进行中"事件）。
+  - 两者都**不碰 job 状态** → `analysis_status='failed'` 的行保持可见。
+- `since` 谓词 `e.trading_date >= $N::date`（两处查询）；校验为「格式正则 **+** `Date.UTC` 回读三成分」，**非法值忽略**（加性参数不返回 400）。
+- **cursor 契约变更**：`nextCursor` 由单值改为**复合键** `"<first_triggered_at ISO>|<event_id>"`；`ORDER BY` 增 `e.event_id DESC` tiebreaker；下页条件改行值比较 `(e.first_triggered_at, e.event_id) < ($ts, $eid)` —— 修"同一毫秒多条事件跨页漏行"（翻页是本次新引入的能力；此前 `nextCursor` 无任何消费方，故该不透明格式可自由定义）。
+- `reportStatus` 增 `lastErrorDetail`，`SET last_error_detail = COALESCE($5, last_error_detail)`（**仅本次带明细时覆盖**，避免后续 `completed` 报告清空明细）；`PATCH /internal/stock-trace/jobs/:jobId` 接收 `last_error_detail` 并服务端强制截断 500。
+- 列表接口透出 `confidence_level`（低置信不展示卡片的判定依据；**与 `primary_cause` 同源**，取 effective artifact 对应 result）。
+
+### 修复
+
+- **归因失败此前与"进行中"在接口层完全同形**（无 result → 一律派生 `processing`）→ 卡片永久显示「归因中」，且在"同日同股取最新"的展示口径下**遮住当日已有的有效归因**（表现为"总是最新一次异动卡住"）。现由 `failed` 在接口层区分，并可回退显示有效归因。
+- **同毫秒事件跨页漏行**：单字段 cursor + `first_triggered_at < cursor` 会跳过并列行；已由复合键 + 行值比较修复。
+
+### 测试
+
+- `npx tsc --noEmit` **exit 0**；stock-trace 相关 spec 全绿（含 `listAnalysisStatus.spec.ts` 的 job LATERAL 与**分支位置**断言、`presentation.spec.ts` 的 failed/artifact 优先/unavailable 优先）。
+- ⚠️ 注意：本仓**部分 spec 在 DB/Redis 可达时进程不退出**（真实 PG/Redis 连接池持有句柄），表现为命令挂住看不到汇总 —— **断言其实全部通过**，加 `--test-force-exit` 即可拿到 `ℹ tests/pass/fail`。
+
+### 文档
+
+- `src/modules/stock-trace/AGENTS.md`：新增 2026-10-06 与 2026-10-07 三批更新块（含 `a.event_id IS NULL` 守卫、`IS DISTINCT FROM` 放行 NULL、cursor tiebreaker、日期参数两层校验、时间窗口口径归属等易错点）。
+
+### 实测
+
+- `visible_only`（同账号 `limit=50`）：不带时 50 条含 **27 条 `low`**；带上后 `low` 为 0，被剔除的 27 条**全部**是 `low`，`failed` 行保留。
+- `since=2026-09-24`：返回 **13 条**，无早于该日期的行；`since=2026-13-45`（非法）被忽略并等价于不传（**未 500**）。
+
 ## [junliang] 2026-09-26 — 洞察报告 PDF 改 SSE 流式 + 章节结构化 blocks + stock-trace 事件载荷补齐
 
 **开发者**: 李俊良
