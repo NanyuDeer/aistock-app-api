@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import pool from '../src/db';
-import { StockMonitorService } from '../src/services/StockMonitorService';
+// 源文件已迁至 src/core/ 与 src/modules/（原 src/db、src/services/ 路径已不存在）
+import pool from '../src/core/db';
+import { StockMonitorService } from '../src/modules/monitor/service';
 
 function runTest(name: string, fn: () => void): void {
     try {

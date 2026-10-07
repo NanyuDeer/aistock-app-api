@@ -42,7 +42,9 @@ test('buildAiPrompt: 双链结构 + 新证据输入，且不含规则基线/驱�
 test('buildAiPrompt: chain=long 不含短线数据与短线字段', () => {
     const prompt = buildAiPrompt('半导体', baseConcept as any, transmission as any, 'strong', 60, 'long');
     assert.ok(prompt.includes('MA60位置'));
-    assert.ok(!prompt.includes('涨停家数'));
+    // 长线链不含短线「数据项」（短线段以 `- 涨停家数：` 形式给出）；
+    // 共享的「数据异常注意」句自 2026-08-06 起统一提及「涨停家数/连板/换手率」，属通用提示、非短线数据，故此处断言到数据项形状
+    assert.ok(!prompt.includes('涨停家数：'));
     assert.ok(!prompt.includes('short_term_days'));
 });
 

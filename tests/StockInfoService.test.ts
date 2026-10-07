@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import pool from '../src/db';
+// 源文件已迁至 src/core/ 与 src/modules/（原 src/db、src/services/ 路径已不存在）
+import pool from '../src/core/db';
 import {
     buildStockInfoTargets,
     buildStockInfoExistingKeys,
@@ -7,7 +8,7 @@ import {
     shouldPushStockInfoJudgement,
     StockInfoService,
     type StockInfoJudgementRow,
-} from '../src/services/StockInfoService';
+} from '../src/modules/crawler/StockInfoService';
 
 function runTest(name: string, fn: () => void): void {
     try {

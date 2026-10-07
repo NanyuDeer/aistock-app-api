@@ -18,8 +18,8 @@ test('mergeRhythmCalendarDays：行缺失日期补 level=null（灰格），有�
     ]
     const items = mergeRhythmCalendarDays(dates, rows)
     assert.equal(items.length, 3)
-    // 行缺失 → 灰格（level=null）
-    assert.deepEqual(items[0], { date: '2026-08-28', refresh_slot: 'after_close', level: null, score: null, basis_date: null })
+    // 行缺失 → 灰格（level=null）；position_band 为 2026-09 新增的逐日建议仓位列，缺失同样为 null
+    assert.deepEqual(items[0], { date: '2026-08-28', refresh_slot: 'after_close', level: null, score: null, basis_date: null, position_band: null })
     // 有行 → 透传 level/score（score 字符串转 number）
     assert.equal(items[1].level, 'active')
     assert.equal(items[1].score, 59.9)

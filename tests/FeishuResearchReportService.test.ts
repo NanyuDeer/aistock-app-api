@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import pool from '../src/db';
-import { isResearchReportMessage, extractReportRecommendedStocks, findResearchReportMessagesForStock } from '../src/services/FeishuResearchReportService';
+// 源文件已迁至 src/core/ 与 src/modules/（原 src/db、src/services/ 路径已不存在）
+import pool from '../src/core/db';
+import { isResearchReportMessage, extractReportRecommendedStocks, findResearchReportMessagesForStock } from '../src/modules/crawler/FeishuResearchReportService';
 
 function runTest(name: string, fn: () => void): void {
     try {
@@ -38,9 +39,11 @@ async function main(): Promise<void> {
 
     await runAsyncTest('finds research report messages for a stock', async () => {
         const originalQuery = pool.query.bind(pool);
+        // 两条查询语义不同：查询1 按 `$1 = ANY(stock_codes)` 命中，查询2 只取 `array_length(stock_codes,1) IS NULL`（此处无命中）。
+        // 原 mock 对两条 SQL 返回同一批行，制造出现实中不存在的重复命中，导致断言 2 !== 1；按 SQL 形状分别返回以贴合真实语义。
         (pool as any).query = async (...args: any[]) => {
             const sql = String(args[0]);
-            if (sql.includes('feishu_messages')) {
+            if (sql.includes('ANY(stock_codes)')) {
                 return {
                     rows: [
                         {

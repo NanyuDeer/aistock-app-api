@@ -12,12 +12,32 @@ import assert from 'node:assert/strict'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import express from 'express'
-import internalRouter, { publicRouter } from '../src/core/routes/internal'
+
+// 路由模块改为「先预置假 exports，再运行时 require」加载：tsx/esbuild 下 TS 模块导出属性是只读 getter
+//（且 `import * as` 还会得到 __toESM 副本），无法就地改写 loadStockNameMap / resolveStockName，
+// monkey-patch 会静默失效（/stock/resolve 的 200 用例即因此恒返回 404）。用 require.cache 换成一份可变
+// 的假 exports 后，路由的具名导入会绑定到它，后续赋值才能真正生效。
+const HKModule = (() => {
+    const hotPath = require.resolve('../src/modules/monitor/HotKeywordDetectorService')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const real = require(hotPath) as Record<string, unknown>
+    const stub = {
+        ...real,
+        loadStockNameMap: async () => {},
+        resolveStockName: () => null as { name: string; symbol: string } | null,
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    require.cache[hotPath] = { id: hotPath, filename: hotPath, loaded: true, exports: stub, children: [], paths: [] } as any
+    return stub
+})()
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const internalModule = require('../src/core/routes/internal') as any
+const internalRouter = internalModule.default
+const publicRouter = internalModule.publicRouter
 
 // 导入 Service 类用于 mock
 import { WindLeaderService } from '../src/modules/monitor/WindLeaderService'
 import { StockMonitorService } from '../src/modules/monitor/service'
-import * as HKModule from '../src/modules/monitor/HotKeywordDetectorService'
 import { IndustryKGService, type KGFullGraph } from '../src/modules/monitor/IndustryKGService'
 import { HotBurstService } from '../src/modules/monitor/HotBurstService'
 import { TencentQuoteService } from '../src/modules/quote/TencentQuoteService'
@@ -211,7 +231,7 @@ function setupMocks(): void {
 
     // /internal/stock/resolve：loadStockNameMap 不做真实 Tushare 调用，
     // resolveStockName 由具体用例按需覆盖（默认未命中）。
-    // 路由侧通过具名导入访问模块导出对象，直接改导出属性即可拦截（CJS 属性访问）。
+    // HKModule 是文件顶部经 require.cache 预置的可变假 exports，路由侧具名导入绑定到同一对象，赋值即生效。
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(HKModule as any).loadStockNameMap = async () => {}
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { buildStockConceptPairs } from '../src/services/StockConceptMappingService';
+// 源文件已迁至 src/modules/（原 src/services/ 路径已不存在）
+import { buildStockConceptPairs } from '../src/modules/monitor/StockConceptMappingService';
 
 function runTest(name: string, fn: () => void): void {
     try {
