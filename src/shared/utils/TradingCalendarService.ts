@@ -1,52 +1,30 @@
 /**
  * 交易日历服务
  *
- * 提供A股交易日判断，基于周末规则 + 按年度维护的休市日历。
- * 收盘快照只信任已覆盖年度；新年度日历未更新时必须失败关闭。
+ * **唯一事实源**：`trading_calendar` 表（由 TradingCalendarRefreshService 以 Tushare trade_cal 刷新），
+ * 经 `tradingCalendarStore` 提供同步读。本文件**不再维护任何硬编码节假日表**，
+ * 也**不再依赖任何第三方节假日接口**。
+ *
+ * 两类函数、两种降级策略（spec §5，**有意不同，勿改**）：
+ * - **判断类** `isTradingDay` / `isTradingDayYyyymmdd`：数据缺失时降级为「周一~周五」+ 告警。
+ *   取向：宁可假期多跑几次幂等任务，也不因缺数据让受守卫任务停摆。
+ * - **日期推算类** `getRecentTradingDay` / `getPreviousTradingDay` / `getNextTradingDay` /
+ *   `getRecentTradingDays`：**store 已加载但表内无该日期时抛错**（fail-closed）。
+ *   取向：`modules/calendar/MarketCalendarEventService` 依赖该契约（未覆盖时保留原始日期，不抛 502）。
+ *   store **未加载**时不抛错（避免冷启期调用直接崩），按降级链结果继续回溯。
  */
 
 import { shanghaiDateTimeParts, type ShanghaiDateTimeParts } from './shanghaiTime';
+import { tradingCalendarStore } from './tradingCalendarStore';
 
-/** A 股休市日历，按年度随官方休市安排更新。 */
-const A_SHARE_HOLIDAYS_BY_YEAR: Readonly<Partial<Record<number, ReadonlySet<string>>>> = {
-    2024: new Set([
-        '2024-01-01', // 元旦
-        '2024-02-09', '2024-02-12', '2024-02-13', '2024-02-14', '2024-02-15', '2024-02-16', // 春节
-        '2024-04-04', '2024-04-05', // 清明
-        '2024-05-01', '2024-05-02', '2024-05-03', // 劳动节
-        '2024-06-10', // 端午
-        '2024-09-16', '2024-09-17', // 中秋
-        '2024-10-01', '2024-10-02', '2024-10-03', '2024-10-04', '2024-10-07', // 国庆
-    ]),
-    2025: new Set([
-        '2025-01-01', // 元旦
-        '2025-01-28', '2025-01-29', '2025-01-30', '2025-01-31', '2025-02-03', '2025-02-04', // 春节
-        '2025-04-04', // 清明
-        '2025-05-01', '2025-05-02', // 劳动节
-        '2025-05-31', '2025-06-02', // 端午（5/31 周六覆盖，6/2 周一休市）
-        '2025-10-01', '2025-10-02', '2025-10-03', '2025-10-06', '2025-10-07', '2025-10-08', // 国庆+中秋
-    ]),
-    2026: new Set([
-        '2026-01-01', '2026-01-02', '2026-01-03', // 元旦
-        '2026-02-15', '2026-02-16', '2026-02-17', '2026-02-18', '2026-02-19', '2026-02-20', '2026-02-21', '2026-02-22', '2026-02-23', // 春节
-        '2026-04-04', '2026-04-05', '2026-04-06', // 清明
-        '2026-05-01', '2026-05-02', '2026-05-03', '2026-05-04', '2026-05-05', // 劳动节
-        '2026-06-19', '2026-06-20', '2026-06-21', // 端午
-        '2026-09-25', '2026-09-26', '2026-09-27', // 中秋
-        '2026-10-01', '2026-10-02', '2026-10-03', '2026-10-04', '2026-10-05', '2026-10-06', '2026-10-07', // 国庆
-    ]),
-};
-
-/** 上海时区时间分量（类型复用 shanghaiTime 通用定义，避免重复声明） */
 type ShanghaiCalendarDate = ShanghaiDateTimeParts;
 
-/** 上海时区时间分量，统一走 shared/utils/shanghaiTime 通用函数 */
 function getShanghaiCalendarDate(date: Date): ShanghaiCalendarDate | null {
     return shanghaiDateTimeParts(date);
 }
 
-function toYyyymmdd(date: ShanghaiCalendarDate): string {
-    return `${date.year}${String(date.month).padStart(2, '0')}${String(date.day).padStart(2, '0')}`;
+function toIso(date: ShanghaiCalendarDate): string {
+    return `${date.year}-${String(date.month).padStart(2, '0')}-${String(date.day).padStart(2, '0')}`;
 }
 
 function previousShanghaiCalendarDate(date: ShanghaiCalendarDate): ShanghaiCalendarDate {
@@ -81,126 +59,82 @@ function toDate(date: ShanghaiCalendarDate): Date {
     ));
 }
 
+/**
+ * 日期推算类函数的 fail-closed 守卫：
+ * - store **已加载** 且该日期**不在**表覆盖范围 → 抛错（保留既有契约）
+ * - store **未加载** → 不抛错（由降级链给出「周一~周五」结果，避免冷启期崩）
+ */
+function assertCoveredOrDegrade(date: ShanghaiCalendarDate): void {
+    const iso = toIso(date);
+    if (tradingCalendarStore.getHealth().loadedAt && !tradingCalendarStore.inCoverage(iso)) {
+        throw new Error(`Trading calendar has no data for ${iso}`);
+    }
+}
+
 export class TradingCalendarService {
-    /**
-     * 判断 YYYYMMDD 指定的 A 股交易日。
-     * 日期已由调用方在目标时区归一化，因此使用 UTC 星期避免服务器本地时区影响。
-     */
+    /** 判断 YYYYMMDD 是否为 A 股交易日（判断类 → 降级为「周一~周五」+ 告警） */
     static isTradingDayYyyymmdd(yyyymmdd: string): boolean {
         if (!/^\d{8}$/.test(yyyymmdd)) return false;
-
-        const year = Number(yyyymmdd.slice(0, 4));
-        const month = Number(yyyymmdd.slice(4, 6));
-        const day = Number(yyyymmdd.slice(6, 8));
-        const holidays = A_SHARE_HOLIDAYS_BY_YEAR[year];
-        if (!holidays) return false;
-
-        const date = new Date(Date.UTC(year, month - 1, day));
-        if (
-            date.getUTCFullYear() !== year
-            || date.getUTCMonth() !== month - 1
-            || date.getUTCDate() !== day
-        ) return false;
-
-        const weekday = date.getUTCDay();
-
-        if (weekday === 0 || weekday === 6) return false;
-
-        const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-        return !holidays.has(dateStr);
+        const iso = `${yyyymmdd.slice(0, 4)}-${yyyymmdd.slice(4, 6)}-${yyyymmdd.slice(6, 8)}`;
+        return tradingCalendarStore.isTradingDay(iso);
     }
 
-    /**
-     * 判断指定日期是否为A股交易日
-     */
+    /** 判断指定日期是否为 A 股交易日 */
     static isTradingDay(date: Date = new Date()): boolean {
-        // 周六、周日不交易
         const calendarDate = getShanghaiCalendarDate(date);
-        return calendarDate ? this.isTradingDayYyyymmdd(toYyyymmdd(calendarDate)) : false;
+        return calendarDate ? tradingCalendarStore.isTradingDay(toIso(calendarDate)) : false;
     }
 
-    /**
-     * 获取最近的一个交易日（向前回溯）
-     * 如果今天是交易日且在收盘后（15:00之后），返回今天
-     * 如果今天不是交易日或在盘中，返回上一个交易日
-     */
     static getRecentTradingDay(date: Date = new Date()): Date {
         let result = getShanghaiCalendarDate(date);
         if (!result) throw new Error('Invalid date');
-        this.assertCalendarCoverage(result.year);
-        // 如果在盘中（<15:00），回溯到上一个交易日
+        assertCoveredOrDegrade(result);
         if (result.hour < 15) {
             result = previousShanghaiCalendarDate(result);
         }
         while (true) {
-            this.assertCalendarCoverage(result.year);
-            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) return toDate(result);
+            assertCoveredOrDegrade(result);
+            if (tradingCalendarStore.isTradingDay(toIso(result))) return toDate(result);
             result = previousShanghaiCalendarDate(result);
         }
     }
 
-    /**
-     * 获取严格早于指定日期的最近一个交易日（与当前时刻无关）。
-     *
-     * 与 getRecentTradingDay 的区别：后者以 15:00 为界（≥15:00 返回当天），
-     * 本方法永远从"昨天"开始回溯，用于 last-close 快照的"最近已完成交易日"语义，
-     * 避免 15:00–15:30 空窗期把尚未发布的"今天"当作目标。
-     */
     static getPreviousTradingDay(date: Date = new Date()): Date {
         let result = getShanghaiCalendarDate(date);
         if (!result) throw new Error('Invalid date');
-        this.assertCalendarCoverage(result.year);
+        assertCoveredOrDegrade(result);
         result = previousShanghaiCalendarDate(result);
         while (true) {
-            this.assertCalendarCoverage(result.year);
-            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
-                // 归一化墙钟为 08:00 上海（=UTC 午夜）：避免保留输入时刻导致
-                // 上海 0-7 点时 hour-8 为负、UTC 日期回退一天（如 03:00 输入会
-                // 返回前一 UTC 日），保证返回 Date 的 UTC 日期 == 交易日上海日期。
+            assertCoveredOrDegrade(result);
+            if (tradingCalendarStore.isTradingDay(toIso(result))) {
                 return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
             }
             result = previousShanghaiCalendarDate(result);
         }
     }
 
-    /**
-     * 获取严格晚于指定日期（不含当日）的最近一个下一个交易日。
-     *
-     * 与 getPreviousTradingDay 对称：始终从"明天"开始向后回溯，
-     * 返回的 Date 同样归一化墙钟为 08:00 上海（=UTC 午夜）。
-     * 用于前端"后一天"导航跳档，自动跳过周末与法定节假日。
-     */
     static getNextTradingDay(date: Date = new Date()): Date {
         let result = getShanghaiCalendarDate(date);
         if (!result) throw new Error('Invalid date');
-        this.assertCalendarCoverage(result.year);
+        assertCoveredOrDegrade(result);
         result = nextShanghaiCalendarDate(result);
         while (true) {
-            this.assertCalendarCoverage(result.year);
-            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) {
+            assertCoveredOrDegrade(result);
+            if (tradingCalendarStore.isTradingDay(toIso(result))) {
                 return toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 });
             }
             result = nextShanghaiCalendarDate(result);
         }
     }
 
-    /**
-     * 获取截至指定日期（含当日）最近 count 个交易日的日期列表。
-     *
-     * 若指定日期本身非交易日，先从当日向前回溯到最近交易日作为起点；
-     * 再向上取前 count-1 个交易日。返回的 Date 均归一化墙钟为 08:00 上海。
-     * 用于首页"市场洞见"等需要展示"最近几个交易日"数据的场景，
-     * 避免把周末/法定节假日当日期标签展示。
-     */
     static getRecentTradingDays(date: Date = new Date(), count: number): Date[] {
         if (!Number.isInteger(count) || count < 1) count = 1;
         let result = getShanghaiCalendarDate(date);
         if (!result) throw new Error('Invalid date');
-        this.assertCalendarCoverage(result.year);
-        // 起点回溯到最近交易日（含当天）
+        assertCoveredOrDegrade(result);
         while (true) {
-            this.assertCalendarCoverage(result.year);
-            if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+            assertCoveredOrDegrade(result);
+            if (tradingCalendarStore.isTradingDay(toIso(result))) break;
             result = previousShanghaiCalendarDate(result);
         }
         const days: Date[] = [];
@@ -208,29 +142,15 @@ export class TradingCalendarService {
             days.push(toDate({ ...result, hour: 8, minute: 0, second: 0, millisecond: 0 }));
             result = previousShanghaiCalendarDate(result);
             while (true) {
-                this.assertCalendarCoverage(result.year);
-                if (this.isTradingDayYyyymmdd(toYyyymmdd(result))) break;
+                assertCoveredOrDegrade(result);
+                if (tradingCalendarStore.isTradingDay(toIso(result))) break;
                 result = previousShanghaiCalendarDate(result);
             }
         }
         return days;
     }
 
-    private static assertCalendarCoverage(year: number): void {
-        if (!A_SHARE_HOLIDAYS_BY_YEAR[year]) {
-            throw new Error(`Trading calendar is not available for ${year}`);
-        }
-    }
-
-    /**
-     * 根据当前时间动态计算快讯时间窗口（小时）
-     *
-     * 策略：
-     * - 交易日盘中（9:30-15:00）：2小时（保持灵敏度）
-     * - 交易日盘后（15:00-24:00）：6小时（覆盖盘后资讯）
-     * - 交易日盘前（0:00-9:30）：12小时（覆盖前一日夜间资讯）
-     * - 非交易日（周末/节假日）：72小时（3天，覆盖到上一个交易日）
-     */
+    /** 快讯时间窗口（**逻辑逐字保留，仅数据源换成新日历**） */
     static getDynamicWindowHours(): number {
         const now = new Date();
 
@@ -252,13 +172,7 @@ export class TradingCalendarService {
         }
     }
 
-    /**
-     * 获取飞书消息查询窗口（小时）
-     *
-     * 策略：
-     * - 交易日：24小时（覆盖前一日讨论）
-     * - 非交易日：72小时（3天滚动窗口）
-     */
+    /** 飞书消息查询窗口（**逻辑逐字保留**） */
     static getFeishuWindowHours(): number {
         return this.isTradingDay() ? 24 : 72;
     }
