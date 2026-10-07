@@ -80,7 +80,14 @@ export class StockTraceController {
             // 边界行上，入选行可能与改动前不同（tiebreaker 是计划明确要求，不是偏差）。
             const visibleRaw = Array.isArray(req.query.visible_only) ? req.query.visible_only[0] : req.query.visible_only;
             const visibleOnly = visibleRaw === '1' || visibleRaw === 'true';
-            const options = visibleOnly ? { visibleOnly: true } : undefined;
+            // since（opt-in，YYYY-MM-DD）：最近 14 个自然日窗口的时间下界，前端算出 since=今天-13 天传入；
+            // 后端只做纯日期比较。透传原始字符串，非法值由 service 严格校验后忽略（加性参数不返回 400）。
+            const sinceRaw = Array.isArray(req.query.since) ? req.query.since[0] : req.query.since;
+            const since = typeof sinceRaw === 'string' && sinceRaw.length > 0 ? sinceRaw : undefined;
+            const opts: { visibleOnly?: boolean; since?: string } = {};
+            if (visibleOnly) opts.visibleOnly = true;
+            if (since !== undefined) opts.since = since;
+            const options = opts.visibleOnly !== undefined || opts.since !== undefined ? opts : undefined;
             // 未登录降级：返回最近全局异动事件，符合"登录非必需"项目约束。
             // 登录用户按统一账户 id（user_id 优先）+ openid 兜底过滤，只看自己自选股的异动；
             // 可见性下界 = 持仓期（listUserEvents JOIN ON e.first_triggered_at >= us.created_at，2026-09-04）。

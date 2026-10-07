@@ -65,6 +65,15 @@ function splitCompositeCursor(cursor: string): { ts: string; eid: string } {
     return { ts: cursor.slice(0, sep), eid: cursor.slice(sep + 1) };
 }
 
+/** since（YYYY-MM-DD 时间下界）合法性：先过严格格式校验，再回读 UTC 成分拒绝非真实日期（2026-13-45 / 2026-02-31），
+ * 避免非法值传入 `$N::date` 抛出 SQL 错误。非法返回 false，调用方忽略该参数。 */
+function isValidSinceDate(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const dt = new Date(Date.UTC(year, month - 1, day));
+    return dt.getUTCFullYear() === year && dt.getUTCMonth() === month - 1 && dt.getUTCDate() === day;
+}
+
 let schemaPromise: Promise<void> | null = null;
 
 function toNumber(value: string | number): number {
@@ -626,12 +635,12 @@ export class StockTraceService {
         openid: string,
         limit: number,
         cursor?: string,
-        options?: { visibleOnly?: boolean },
+        options?: { visibleOnly?: boolean; since?: string },
     ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         // 自选股归属双通道：user_id 优先（统一账户主键），openid 兜底老微信数据（user_id 空的历史行）
         const scopeWhere = '(us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))';
-        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 拆分 ts+eid 两个可选尾部参数（序号动态追加）
+        // 参数顺序：$1=id, $2=openid, $3=LIMIT(=limit+1)；cursor 与 since 都是动态追加，SQL 子句顺序必须与 params.push 严格一致
         const params: unknown[] = [id, openid, limit + 1];
         let windowClause = '';
         if (cursor) {
@@ -639,6 +648,13 @@ export class StockTraceService {
             // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
             windowClause += ` AND (e.first_triggered_at, e.event_id) < ($${params.length + 1}::timestamptz, $${params.length + 2})`;
             params.push(ts, eid);
+        }
+        // since（opt-in）：最近 14 个自然日窗口的时间下界，后端只做纯日期比较；严格校验 YYYY-MM-DD，
+        // 非法则忽略该参数（加性参数不返回 400，避免破坏调用方）。谓词紧跟在 cursor 之后，序号随 params 追加。
+        let sinceClause = '';
+        if (options?.since && isValidSinceDate(options.since)) {
+            sinceClause += ` AND e.trading_date >= $${params.length + 1}::date`;
+            params.push(options.since);
         }
         // 2026-09-04 决策（修订）：movements 可见性 = 该股"当前持仓期内触发"（JOIN ON 下界 e.first_triggered_at >= us.created_at）：
         // 老自选（created_at 早）全历史 + 今日新触发照常；新加入股只显示加入时刻之后触发/仍活跃的异动，
@@ -691,7 +707,7 @@ export class StockTraceService {
                 WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
                 ORDER BY j.created_at DESC LIMIT 1
             ) j ON TRUE
-            WHERE true ${windowClause}${visibleClause}
+            WHERE true ${windowClause}${sinceClause}${visibleClause}
             ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $3
         `, params);
@@ -736,7 +752,7 @@ export class StockTraceService {
     static async listRecentEvents(
         limit: number,
         cursor?: string,
-        options?: { visibleOnly?: boolean },
+        options?: { visibleOnly?: boolean; since?: string },
     ): Promise<{ items: Record<string, unknown>[]; nextCursor: string | null }> {
         await this.ensureSchema();
         const params: unknown[] = [limit + 1];
@@ -746,6 +762,12 @@ export class StockTraceService {
             // cursor tiebreaker：复合键 + 行值比较，避免同毫秒多条事件跨页漏行
             cursorClause += ` AND (e.first_triggered_at, e.event_id) < ($2::timestamptz, $3)`;
             params.push(ts, eid);
+        }
+        // since（opt-in）：时间下界纯日期比较，严格校验 YYYY-MM-DD，非法忽略；谓词紧跟在 cursor 之后，序号随 params 追加。
+        let sinceClause = '';
+        if (options?.since && isValidSinceDate(options.since)) {
+            sinceClause += ` AND e.trading_date >= $${params.length + 1}::date`;
+            params.push(options.since);
         }
         const visibleClause = options?.visibleOnly === true ? VISIBLE_ONLY_PREDICATES : '';
         const result = await pool.query(`
@@ -785,7 +807,7 @@ export class StockTraceService {
                 WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision
                 ORDER BY j.created_at DESC LIMIT 1
             ) j ON TRUE
-            WHERE e.event_status = 'active' ${cursorClause}${visibleClause}
+            WHERE e.event_status = 'active' ${cursorClause}${sinceClause}${visibleClause}
             ORDER BY e.first_triggered_at DESC, e.event_id DESC
             LIMIT $1
         `, params);
