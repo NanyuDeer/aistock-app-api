@@ -5,7 +5,7 @@
  * 三级降级链（spec §5）：
  *   1. 已加载 且 命中覆盖范围 → 表内 is_open（权威）
  *   2. 已加载 但 超范围      → 「周一~周五」+ console.error（同一日期只告警一次）
- *   3. 未加载                → 「周一~周五」+ console.warn（每进程只告警一次）
+ *   3. 未加载（或已加载但表内无覆盖）→ 「周一~周五」+ console.warn（每进程只告警一次）
  * 降级**绝不静默**：必有 warn/error，且 getHealth().degraded 置真。
  *
  * 为什么降级退化为「周一~周五」而不是判非交易日：见 spec §5 —— 避免"年末忘补表导致
@@ -91,7 +91,12 @@ export const tradingCalendarStore = {
             const dates = Array.from(next.keys()).sort();
             minDate = dates.length ? dates[0] : null;
             maxDate = dates.length ? dates[dates.length - 1] : null;
-            console.log(`[TradingCalendar] 已加载 ${next.size} 天 range=${minDate}~${maxDate}`);
+            if (!minDate || !maxDate) {
+                // 表存在但为空（如迁移已执行但首次刷新失败）→ 无可用覆盖，降级链生效，绝不静默
+                console.error(`[TradingCalendar] 已加载 ${next.size} 天（表内无覆盖），降级链生效`);
+            } else {
+                console.log(`[TradingCalendar] 已加载 ${next.size} 天 range=${minDate}~${maxDate}`);
+            }
         } catch (err: unknown) {
             lastRefreshError = err instanceof Error ? err.message : String(err);
             console.error('[TradingCalendar] 加载失败（降级链生效）:', lastRefreshError);
@@ -143,7 +148,7 @@ export const tradingCalendarStore = {
             maxDate,
             lastRefreshAt,
             lastRefreshError,
-            degraded: !loadedAt || outOfRangeHit || Boolean(lastRefreshError),
+            degraded: !loadedAt || !minDate || !maxDate || outOfRangeHit || Boolean(lastRefreshError),
         };
     },
 

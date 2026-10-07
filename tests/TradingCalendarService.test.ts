@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import test, { mock } from 'node:test'
 
 import { TradingCalendarService } from '../src/shared/utils/TradingCalendarService'
-import { tradingCalendarStore } from '../src/shared/utils/tradingCalendarStore'
+import { tradingCalendarStore, __tradingCalendarStoreDependencies } from '../src/shared/utils/tradingCalendarStore'
+import { TradingCalendarRefreshService } from '../src/modules/market/TradingCalendarRefreshService'
 
 /** 生成"整段日历"fixture：周末与给定休市日 → false，其余 → true（模拟真实表里"每一天都有行"） */
 function buildFixture(startIso: string, endIso: string, closedIso: string[]): Record<string, boolean> {
@@ -81,4 +82,29 @@ test('isTradingDay 在 store 未加载时退化为周一~周五且有 warn（降
     assert.equal(TradingCalendarService.isTradingDay(new Date('2026-10-01T02:00:00.000Z')), true);
     warn.mock.restore();
     assert.equal(warn.mock.calls.length, 1);
+});
+
+test('store 已加载但覆盖为空时日期推算不抛错（回落降级链）', async () => {
+    // 真实复现：迁移已执行但 Tushare 首次刷新失败 → trading_calendar 表存在但为空 →
+    // load() 装载 0 行（loadedAt 有值、minDate/maxDate 为 null）。
+    const queryMock = mock.method(__tradingCalendarStoreDependencies, 'query', async () => ({ rows: [] }));
+    const refreshMock = mock.method(TradingCalendarRefreshService, 'refresh', async () => ({
+        fetched: 0, upserted: 0, minDate: null, maxDate: null,
+    }));
+    const errMock = mock.method(console, 'error', () => undefined);
+    await tradingCalendarStore.load(new Date('2026-07-20T02:00:00.000Z'));
+    queryMock.mock.restore();
+    refreshMock.mock.restore();
+    errMock.mock.restore();
+
+    const health = tradingCalendarStore.getHealth();
+    assert.ok(health.loadedAt, 'SELECT 成功即视为已加载');
+    assert.equal(health.minDate, null);
+    assert.equal(health.maxDate, null);
+    assert.equal(health.degraded, true);
+
+    // 覆盖为空 → 不 fail-closed，按降级链回落「周一~周五」（周一 2026-07-20 → 上周五 2026-07-17）
+    const prev = TradingCalendarService.getPreviousTradingDay(new Date('2026-07-20T07:10:00.000Z'));
+    assert.equal(prev.toISOString().slice(0, 10), '2026-07-17');
+    tradingCalendarStore.__resetForTest();
 });

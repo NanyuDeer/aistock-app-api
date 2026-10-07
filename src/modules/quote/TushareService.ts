@@ -1323,15 +1323,3 @@ export function mapTradeCalRows(rows: Record<string, unknown>[]): TradeCalRow[] 
     return out;
 }
 
-/**
- * 拉取交易日历。失败语义（复用 tushareRequest）：
- * HTTP 非 2xx / 业务码非 0 → **抛错**；窗口内无数据 → 返回 `[]`（非错误）。
- */
-export async function getTradeCal(startDate: string, endDate: string, exchange: string = 'SSE'): Promise<TradeCalRow[]> {
-    const rows = await tushareRequest(
-        'trade_cal',
-        { exchange, start_date: startDate, end_date: endDate },
-        'exchange,cal_date,is_open,pretrade_date',
-    );
-    return mapTradeCalRows(rows);
-}

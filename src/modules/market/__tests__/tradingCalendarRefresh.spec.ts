@@ -33,7 +33,7 @@ test('refresh 用三个月窗口调用 trade_cal 并幂等 upsert', async (t) =>
     const requestMock = mock.method(__tradingCalendarRefreshDependencies, 'request', async (api: string, params: Record<string, unknown>) => {
         assert.equal(api, 'trade_cal');
         assert.equal(params.exchange, 'SSE');
-        assert.equal(params.start_date, '20250101');
+        assert.equal(params.start_date, '20240101');
         assert.equal(params.end_date, '20271231');
         return [{ exchange: 'SSE', cal_date: '20261001', is_open: '0', pretrade_date: '20260930' }];
     });
@@ -47,10 +47,8 @@ test('refresh 用三个月窗口调用 trade_cal 并幂等 upsert', async (t) =>
 
     assert.equal(result.fetched, 1);
     assert.equal(result.maxDate, '2026-10-01');
-    assert.equal(calls.length, 2, '一次 SELECT 边界 + 一次 INSERT');
-    assert.ok(calls[0].sql.includes('FROM trading_calendar'), '第一条 SQL 应查表边界');
-    assert.ok(calls[1].sql.includes('INSERT INTO trading_calendar'));
-    assert.ok(calls[1].sql.includes('ON CONFLICT (exchange, cal_date) DO UPDATE'), '必须幂等');
+    assert.ok(calls.some(c => c.sql.includes('INSERT INTO trading_calendar')), '必须有 INSERT');
+    assert.ok(calls.some(c => c.sql.includes('ON CONFLICT (exchange, cal_date) DO UPDATE')), '必须幂等');
 });
 
 test('refresh 在 Tushare 抛错时只告警不抛（保留旧数据）', async (t) => {

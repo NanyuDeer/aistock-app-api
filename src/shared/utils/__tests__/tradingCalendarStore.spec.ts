@@ -94,3 +94,16 @@ test('load 查表失败 → 保持未加载 + degraded，且不抛错', async ()
     assert.equal(tradingCalendarStore.getHealth().loadedAt, null);
     assert.equal(tradingCalendarStore.getHealth().degraded, true);
 });
+
+test('load 装载 0 行（表存在但为空）→ 覆盖为空 → degraded=true 且打 console.error', async () => {
+    const errMock = mock.method(console, 'error', () => undefined);
+    await loadWith([]);
+    errMock.mock.restore();
+    const health = tradingCalendarStore.getHealth();
+    assert.notEqual(health.loadedAt, null, 'SELECT 成功即视为已加载');
+    assert.equal(health.minDate, null);
+    assert.equal(health.maxDate, null);
+    assert.equal(health.degraded, true, '无覆盖必须判为降级（否则假健康）');
+    assert.ok(errMock.mock.calls.length >= 1, '空覆盖降级绝不静默，必须有 console.error');
+});
+

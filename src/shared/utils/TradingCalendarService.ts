@@ -9,9 +9,9 @@
  * - **判断类** `isTradingDay` / `isTradingDayYyyymmdd`：数据缺失时降级为「周一~周五」+ 告警。
  *   取向：宁可假期多跑几次幂等任务，也不因缺数据让受守卫任务停摆。
  * - **日期推算类** `getRecentTradingDay` / `getPreviousTradingDay` / `getNextTradingDay` /
- *   `getRecentTradingDays`：**store 已加载但表内无该日期时抛错**（fail-closed）。
+ *   `getRecentTradingDays`：**store 有可用覆盖但表内无该日期时抛错**（fail-closed）。
  *   取向：`modules/calendar/MarketCalendarEventService` 依赖该契约（未覆盖时保留原始日期，不抛 502）。
- *   store **未加载**时不抛错（避免冷启期调用直接崩），按降级链结果继续回溯。
+ *   store **未加载**或**已加载但覆盖为空**时不抛错（避免冷启期/空表调用直接崩），按降级链结果继续回溯。
  */
 
 import { shanghaiDateTimeParts, type ShanghaiDateTimeParts } from './shanghaiTime';
@@ -61,12 +61,13 @@ function toDate(date: ShanghaiCalendarDate): Date {
 
 /**
  * 日期推算类函数的 fail-closed 守卫：
- * - store **已加载** 且该日期**不在**表覆盖范围 → 抛错（保留既有契约）
- * - store **未加载** → 不抛错（由降级链给出「周一~周五」结果，避免冷启期崩）
+ * - store **有可用覆盖**（minDate 与 maxDate 均存在）且该日期**不在**覆盖范围 → 抛错（保留既有契约）
+ * - store **未加载** 或 **已加载但覆盖为空** → 不抛错（由降级链给出「周一~周五」结果，避免冷启期/空表崩）
  */
 function assertCoveredOrDegrade(date: ShanghaiCalendarDate): void {
     const iso = toIso(date);
-    if (tradingCalendarStore.getHealth().loadedAt && !tradingCalendarStore.inCoverage(iso)) {
+    const { minDate, maxDate } = tradingCalendarStore.getHealth();
+    if (minDate && maxDate && !tradingCalendarStore.inCoverage(iso)) {
         throw new Error(`Trading calendar has no data for ${iso}`);
     }
 }
