@@ -75,7 +75,9 @@ export class StockTraceController {
             const cursor = Array.isArray(req.query.cursor) ? req.query.cursor[0] : req.query.cursor;
             const cursorStr = typeof cursor === 'string' ? cursor : undefined;
             // visible_only（opt-in）：前端显式传参把过滤前置到 SQL（unavailable + 低置信 low）。
-            // 仅当为 1/true 时透传 options.visibleOnly；internalRouter 不传该参 → 走原 SQL，语义逐字不变。
+            // 仅当为 1/true 时透传 options.visibleOnly。不传 visible_only 时 WHERE 不追加任何谓词、参数序号不变；
+            // 但 ORDER BY 新增了 e.event_id DESC tiebreaker 以使并列行排序确定——在 first_triggered_at 完全并列的
+            // 边界行上，入选行可能与改动前不同（tiebreaker 是计划明确要求，不是偏差）。
             const visibleRaw = Array.isArray(req.query.visible_only) ? req.query.visible_only[0] : req.query.visible_only;
             const visibleOnly = visibleRaw === '1' || visibleRaw === 'true';
             const options = visibleOnly ? { visibleOnly: true } : undefined;

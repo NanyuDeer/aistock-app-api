@@ -64,7 +64,6 @@ async function captureSql(
 }
 
 const VO_PRED_P1 = 'a.event_id IS NULL';
-const VO_PRED_P2 = "IS DISTINCT FROM 'low'";
 
 describe('listUserEvents visible_only SQL', () => {
     it('visibleOnly:true 时含两条谓词（含守卫 + IS DISTINCT FROM）', async () => {
@@ -173,6 +172,58 @@ describe('visibleOnly + cursor tiebreaker', () => {
         );
         assert.match(text, /AND \(e\.first_triggered_at, e\.event_id\) < \(\$2::timestamptz, \$3\)/, 'listRecentEvents 下页行值比较 ($2, $3)');
         assert.match(text, /ORDER BY e\.first_triggered_at DESC, e\.event_id DESC/, 'listRecentEvents ORDER BY 应含 e.event_id DESC');
+        assert.equal(params?.[1], '2026-08-19T07:26:22.789Z', '第 2 参应为 cursorTs');
+        assert.equal(params?.[2], 'mv:601318:2026-08-19:1:up', '第 3 参应为 cursorEid');
+    });
+
+    it('listUserEvents nextCursor 为 null（未超页 rows.length <= limit）—— 前端 hasMore 契约', async () => {
+        mock.method(pool, 'query', (async (text: string) => {
+            // 3 行，limit=5 → rows.length(3) <= 5 → 未超页，nextCursor 必须为 null
+            if (String(text).includes('JOIN user_stocks')) {
+                return { rows: [row(), row(), row()] };
+            }
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+        const page = await StockTraceService.listUserEvents('u1', 'o1', 5);
+        assert.equal(page.nextCursor, null, 'rows.length <= limit 时 nextCursor 必须为 null（hasMore=false）');
+    });
+
+    it('listRecentEvents nextCursor 为 null（未超页 rows.length <= limit）', async () => {
+        mock.method(pool, 'query', (async (text: string) => {
+            if (String(text).includes('FROM stock_trace_events e')) {
+                return { rows: [row(), row()] };
+            }
+            return { rows: [] };
+        }) as unknown as typeof pool.query);
+        const page = await StockTraceService.listRecentEvents(5);
+        assert.equal(page.nextCursor, null, 'rows.length <= limit 时 nextCursor 必须为 null');
+    });
+
+    it('cursor + visibleOnly 同时传（listUserEvents）：谓词零占位符、双谓词、序号仍 $4/$5', async () => {
+        const cursor = '2026-08-19T07:26:22.789Z|mv:601318:2026-08-19:1:up';
+        const { text, params } = await captureSql(
+            () => StockTraceService.listUserEvents('u1', 'o1', 5, cursor, { visibleOnly: true }),
+            'userEvents',
+        );
+        // 下页游标行值比较占位符仍紧随 LIMIT 之后（$4::timestamptz, $5）——可见性谓词零占位符、未打乱序号
+        assert.match(text, /AND \(e\.first_triggered_at, e\.event_id\) < \(\$4::timestamptz, \$5\)/, 'cursor 谓词序号仍为 $4/$5（谓词零占位符）');
+        // 可见性两条谓词同时存在
+        assert.match(text, /NOT \(\s*a\.event_id IS NULL/, '同时传 visibleOnly 时可见性谓词①必须存在');
+        assert.match(text, /IS DISTINCT FROM 'low'/, '同时传 visibleOnly 时可见性谓词②必须存在');
+        // params 尾部即 cursorTs/cursorEid，无谓词占位符插入导致错位
+        assert.equal(params?.[3], '2026-08-19T07:26:22.789Z', '第 4 参应为 cursorTs');
+        assert.equal(params?.[4], 'mv:601318:2026-08-19:1:up', '第 5 参应为 cursorEid');
+    });
+
+    it('cursor + visibleOnly 同时传（listRecentEvents）：谓词零占位符、双谓词、序号仍 $2/$3', async () => {
+        const cursor = '2026-08-19T07:26:22.789Z|mv:601318:2026-08-19:1:up';
+        const { text, params } = await captureSql(
+            () => StockTraceService.listRecentEvents(5, cursor, { visibleOnly: true }),
+            'recentEvents',
+        );
+        assert.match(text, /AND \(e\.first_triggered_at, e\.event_id\) < \(\$2::timestamptz, \$3\)/, 'cursor 谓词序号仍为 $2/$3（谓词零占位符）');
+        assert.match(text, /NOT \(\s*a\.event_id IS NULL/, '同时传 visibleOnly 时可见性谓词①必须存在');
+        assert.match(text, /IS DISTINCT FROM 'low'/, '同时传 visibleOnly 时可见性谓词②必须存在');
         assert.equal(params?.[1], '2026-08-19T07:26:22.789Z', '第 2 参应为 cursorTs');
         assert.equal(params?.[2], 'mv:601318:2026-08-19:1:up', '第 3 参应为 cursorEid');
     });
