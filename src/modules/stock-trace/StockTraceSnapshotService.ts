@@ -85,10 +85,27 @@ function excerpt(value: string): string {
     return value.replace(/\s+/g, ' ').trim().slice(0, EXCERPT_LIMIT);
 }
 
+/**
+ * 上游（事件库 `scrape_at`、财联社 `time`、公告 `published_at`）给的是**不带时区**的
+ * 北京时间串。直接 `new Date(text)` 会按**宿主机时区**解释 —— UTC 容器/runner 上整体
+ * 偏移 +8 小时，令当日证据落到 `capturedAt -72h ~ +30min` 窗口之外被误丢
+ * （2026-10-08 CI 实测 2 条红）。故先补固定偏移 `+08:00` 再解析，与宿主机时区无关
+ * （中国无夏令时，固定 +08:00 成立）。带时区（`Z` / `±HH:MM`）或仅日期的串不匹配、
+ * 原样交给 `new Date`（仅日期按规范解释为 UTC 零点，语义与改动前一致）。
+ */
+const NAIVE_BEIJING_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
+
+function asBeijingAwareText(text: string): string {
+    const matched = NAIVE_BEIJING_DATETIME.exec(text);
+    if (!matched) return text;
+    const [, datePart, hourMinute, second, millisecond] = matched;
+    return `${datePart}T${hourMinute}:${second ?? '00'}${millisecond ? `.${millisecond}` : ''}+08:00`;
+}
+
 function asDate(value: unknown, fallback: Date): Date {
     if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
     if (typeof value === 'string') {
-        const parsed = new Date(value);
+        const parsed = new Date(asBeijingAwareText(value.trim()));
         if (!Number.isNaN(parsed.getTime())) return parsed;
     }
     return fallback;

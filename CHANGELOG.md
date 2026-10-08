@@ -2,6 +2,20 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-08 — CI 门禁首跑红转绿：裸时间串按 Asia/Shanghai 解释（真实产品缺陷修复）
+
+**开发者**: Aria
+
+### 修复（产品代码 + 回归测试）
+
+- **现象**：新增 CI（`.github/workflows/ci.yml`）首跑时 `类型检查` 通过，`node:test` 有 4 例失败——全部集中在 `stock-trace/eventStoreEvidence` 的时区相关用例；本地（Asia/Shanghai）全绿，UTC runner 上才红。
+- **根因**：`StockTraceSnapshotService.asDate()` 用 `new Date(text)` 解析**不带时区**的北京时间串（如 `2026-08-12 09:00:00`）。无时区后缀时机被按**宿主机时区**解释：在 UTC 容器上比北京时间**少 8 小时**，导致「当日」采集的事件库/新闻证据落到 `capturedAt -72h ~ +30min` 窗口之外被误丢弃——**这是真实生产缺陷（K8s 容器多为 UTC），非仅有测试环境问题**。
+- **修法**：新增 `NAIVE_BEIJING_DATETIME` 正则与 `asBeijingAwareText()`，把 `YYYY-MM-DD HH:mm[:ss[.SSS]]` 这类裸时间串补 `+08:00` 后再交给 `Date` 解析；带时区/`Z` 后缀的 ISO 串原样透传，行为不变。
+- **回归测试**：`__tests__/eventStoreEvidence.spec.ts` 新增「时区契约」describe（2 例）：① 事件库 `scrape_at` 为北京 09:00 → 必须解析为 `01:00Z`（不随宿主机时区漂移）；② 公司域窗口：北京 10:00 的新闻相对北京 12:00 的采集必须保留。
+- **验证**：改前以 `TZ=UTC` 全量复现 `fail 4`；改后 `npx tsc --noEmit` exit 0、`TZ=UTC` 全量 `1011/1011 pass`、北京时间宿主机两侧均通过。最终判据取 CI 二次运行。
+
+---
+
 ## [junliang] 2026-10-07 — 归因失败可观测与状态区分（A/B/C）+ movements 列表过滤前置 / cursor 翻页 / 两周窗口
 
 **开发者**: NanyuDeer
