@@ -75,3 +75,29 @@ export function shanghaiDateTimeMsStr(timestamp: number = Date.now()): string {
     return `${parts.year}-${pad2(parts.month)}-${pad2(parts.day)} ` +
         `${pad2(parts.hour)}:${pad2(parts.minute)}:${pad2(parts.second)}.${pad3(parts.millisecond)}`;
 }
+
+/**
+ * 匹配**不带时区**的北京时间串：`YYYY-MM-DD HH:mm[:ss[.SSS]]`（日期与时间之间允许空格或 T）。
+ * 仅日期（`YYYY-MM-DD`）、带时区（`Z` / `±HH:MM`）的串不匹配，由调用方按各自语义处理。
+ */
+const NAIVE_BEIJING_DATETIME = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?$/;
+
+/**
+ * 将**裸北京墙钟串**补上固定偏移 `+08:00`，得到带时区的 ISO 串；不匹配则**原样返回**。
+ *
+ * 为什么：上游（事件库 `scrape_at`、财联社 `time`、公告 `published_at`）给的是不带时区的
+ * 北京时间串，直接 `new Date(text)` 会按**宿主机时区**解释 —— UTC 容器/runner 上整体偏移
+ * +8 小时（中国无夏令时，固定 +08:00 成立）。先补偏移再解析即可与宿主机时区无关。
+ *
+ * 边界：带时区（`Z` / `±HH:MM`）或仅日期的串不匹配 → 原样返回（交给 `new Date` 按规范解释，
+ * 语义与改动前一致）；本函数**不做 trim**，首尾空白由调用方负责（既有调用点均已 `.trim()`）。
+ *
+ * 例：`'2026-08-12 10:00:00' -> '2026-08-12T10:00:00+08:00'`；
+ *     `'2026-08-12T10:00:00Z' -> 原样`；`'2026-08-12' -> 原样`。
+ */
+export function asBeijingAwareText(text: string): string {
+    const matched = NAIVE_BEIJING_DATETIME.exec(text);
+    if (!matched) return text;
+    const [, datePart, hourMinute, second, millisecond] = matched;
+    return `${datePart}T${hourMinute}:${second ?? '00'}${millisecond ? `.${millisecond}` : ''}+08:00`;
+}

@@ -12,14 +12,11 @@
 import * as cheerio from 'cheerio';
 import type { EastmoneyAnnouncement, EastmoneyNews } from './types';
 import { sessionFetch } from '../../../shared/utils/httpAgent';
-import { shanghaiDateStr } from '../../../shared/utils/shanghaiTime';
+import { asBeijingAwareText, shanghaiDateStr } from '../../../shared/utils/shanghaiTime';
 import { isAShareTradingDay } from '../../../shared/utils/tradingTime';
 
 const EASTMONEY_NOTICE_API = 'https://np-anotice-stock.eastmoney.com/api/security/ann';
 const EASTMONEY_NEWS_API = 'https://search-api-web.eastmoney.com/search/jsonp';
-
-// 中国时区 UTC+8
-const CHINA_TZ_OFFSET = 8 * 60;
 
 // E-2（2026-08-14）：窗口起点缓存——同一轮抓取内所有股票 end 相同（now）、
 // days 相同（默认 30），只回溯一次即可共享。否则 200 只股票 × 30 天会触发
@@ -94,17 +91,23 @@ export function buildNewsApiUrl(symbol: string, pageSize = 10): string {
 }
 
 /** 将东方财富日期字符串转为中国时区 ISO 字符串 */
-function toChinaIso(value: string): string {
+export function toChinaIso(value: string): string {
     const cleaned = value.trim();
-    // 尝试 "YYYY-MM-DD HH:MM:SS" 和 "YYYY-MM-DD" 两种格式
-    const dt = new Date(cleaned.length >= 10 ? cleaned : cleaned);
+    // 仅日期（"YYYY-MM-DD"）：按北京当日 00:00 显式处理。
+    // 裸日期串若直接交给 new Date 会按规范解释为 UTC 零点，再叠加宿主时区偏移 →
+    // 结果随时区漂移（Asia/Shanghai→北京 00:00、UTC→北京 08:00）；这里写死 +08:00 稳定。
+    if (/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) {
+        return `${cleaned}T00:00:00+08:00`;
+    }
+    // 裸"北京墙钟"串（"YYYY-MM-DD HH:mm[:ss[.SSS]]"）→ 补固定 +08:00，保留墙上时间（A 格式：
+    // 该串的"时刻"即真值，拼进 LLM prompt 时读作"北京 10:00"）；已带时区（Z / ±HH:MM）的串
+    // 由 asBeijingAwareText 原样透传，语义不变。
+    const normalized = asBeijingAwareText(cleaned);
+    const dt = new Date(normalized);
     if (Number.isNaN(dt.getTime())) {
         throw new Error(`invalid eastmoney notice time: ${value}`);
     }
-    // 转为中国时区 ISO
-    const utc = dt.getTime() + dt.getTimezoneOffset() * 60_000;
-    const china = new Date(utc + CHINA_TZ_OFFSET * 60_000);
-    return china.toISOString().replace('Z', '+08:00');
+    return normalized;
 }
 
 /** HTML 转纯文本 */

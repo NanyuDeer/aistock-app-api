@@ -2,6 +2,45 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-08 — 修正 crawler 时间转换的时区双重偏移（任何时区都算错，生产偏早 8h）
+
+**开发者**: Aria
+
+### 修复
+
+- **`src/modules/crawler/services/EastmoneyCrawler.ts` 的 `toChinaIso()` 在任意时区都算错**（东财**公告**与东财**新闻**的 `published_at` 都经它）。原实现先按**宿主时区**解析裸时间串，再 `+ getTimezoneOffset()`（符号反了）、**又叠一次** `+8h`，构成双重调整。实测（输入 `"2026-08-12 10:00:00"`，真值应为 `2026-08-12T02:00:00Z`）：
+
+  | 宿主 TZ | 输出 | 实际时刻 | 误差 |
+  |---|---|---|---|
+  | Asia/Shanghai（生产） | `2026-08-12T02:00:00.000+08:00` | `2026-08-11T18:00:00.000Z` | **−8h** |
+  | UTC | `2026-08-12T18:00:00.000+08:00` | `2026-08-12T10:00:00.000Z` | **+8h** |
+  | America/New_York | `2026-08-13T02:00:00.000+08:00` | `2026-08-12T18:00:00.000Z` | **+16h** |
+
+  - **影响面**：该值写入 `stock_info_judgements.published_at`（`TIMESTAMPTZ NOT NULL`，DDL 见 `StockInfoService.ts:351`），被窗口比较（`StockInfoService` / `StockInfoPushService`）、按日分桶（`StockInfoPredictionService`）、LLM prompt 展示（`StockInfoJudgeService`）与跨服务消费（agent-py）—— 生产下 `source='eastmoney'` 的数据自 2026-07-03（`10e5f35`）起**整体偏早 8 小时**。
+  - **与上一条 `asDate` 修复的区别（重要）**：`asDate` 那处依赖的是**进程 TZ**，而生产由 `src/index.ts:8` 的 `process.env.TZ='Asia/Shanghai'` 与 pm2 `env.TZ` **双重兜住**，故属**潜在脆弱**（只在测试/CI 暴露）；**本条 `toChinaIso` 与进程 TZ 无关**（双重调整使任何 TZ 都错），是**当前就生效的缺陷**。
+  - **新行为**：裸串**保留墙上时间**并补固定偏移 → `"2026-08-12 10:00:00"` → `"2026-08-12T10:00:00+08:00"`（其时刻恰为真值 `02:00Z`，拼进 prompt 也读作「北京 10:00」）；**仅日期**串显式归一为 `T00:00:00+08:00`（原实现会随时区漂移）；**带 `Z` / `±HH:MM`** 的串原样透传；非法串行为不变（仍抛 `invalid eastmoney notice time`）。同时删除无效三元 `cleaned.length >= 10 ? cleaned : cleaned` 与不再需要的 `CHINA_TZ_OFFSET`。
+- **把「裸北京时间串 → 带时区串」的能力上提到统一工具** `src/shared/utils/shanghaiTime.ts`，新增并导出 `asBeijingAwareText()`。该文件此前**只有 Date → 串/分量**单向能力，缺反向解析，故本次是**补齐缺口而非重复造轮子**。
+  - `StockTraceSnapshotService`（提交 `15b5760` 中新增的私有同名函数）改为**引用公共实现**并删除私有副本，`asDate()` 语义不变；`EastmoneyCrawler` 共用同一实现。
+  - 可复用该函数的其它模块（本次未改）：`StockInfoPredictionService`、`ClsStockNewsService`、`EventEntityService`、`EvidencePackageService`。
+
+### 新增
+
+- `src/modules/crawler/__tests__/eastmoneyCrawlerTime.spec.ts`（9 例）+ `src/shared/utils/__tests__/shanghaiTime.spec.ts`（10 例）。
+  - 断言方式：**输出串精确相等** + `new Date(result).toISOString()` 锁死时刻 → 断言**与宿主时区无关**。
+  - **RED → GREEN 已验证**：旧实现（已导出）+ `TZ=UTC` → 8 failed / 1 passed；改后 19/19 passed。
+  - 此前无覆盖的原因：`toChinaIso` 是**未导出私有函数**，只经需网络的 `fetchAnnouncements` / `fetchNews` 触达；既有测试要么喂已规范的 `+08:00` 串、要么只断言 prompt 文案、要么打桩 `queryJudgements`。
+
+### 验证
+
+- `TZ=Asia/Shanghai` 与 `TZ=UTC` 两种环境：`pnpm test` → **1030 / 1030 / 0**（原 1011 条无改动）
+- `npx tsc --noEmit` → exit 0
+
+### 未处理（需人类决策）
+
+- **历史数据回填**：已入库 `published_at` 的错误**未回填**（属生产数据变更，需另议）。思路：`published_at = published_at + INTERVAL '8 hours' WHERE source='eastmoney'`；但**须先甄别**仅日期行（其归一方式不同）与实际部署 TZ，并评估对已发出的推送与 agent-py `published_date` 分桶的影响。
+
+---
+
 ## [master] 2026-10-08 — CI 门禁首跑红转绿：裸时间串按 Asia/Shanghai 解释（真实产品缺陷修复）
 
 **开发者**: Aria
