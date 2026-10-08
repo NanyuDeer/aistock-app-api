@@ -240,7 +240,10 @@ describe('upsertSources', () => {
             '["半导体靶材","央企","超跌反弹"]',
             '异动原因揭秘正文内容',
             '[{"symbol":"000962","name":"东方钽业"}]',
-            '2026-08-05 11:26:03',
+            // published_at 落库前由 asBeijingAwareText 补上 +08:00（爬虫产出仍是裸串）：
+            // 列为 TIMESTAMPTZ，裸串会被 PG 按**会话时区**解释，而 core/db.ts 未设
+            // options/timezone → 取决于 PG 服务器默认值；带显式偏移后与部署环境无关。
+            '2026-08-05T11:26:03+08:00',
             expectedHash,
             'mrnxgg-v1',
         ]);

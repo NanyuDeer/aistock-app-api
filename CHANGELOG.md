@@ -2,6 +2,37 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-08 — 又查实两处时区问题并修复：微信推送时间显示 UTC、insight 裸串写 TIMESTAMPTZ
+
+**开发者**: Aria
+
+### 修复
+
+- **微信推送的时间显示成 UTC（用户可见，比北京时间早 8 小时）**：`modules/push/WechatPushService.ts` 有两处先用 `new Date(...).toISOString()`（**UTC 墙钟**）再交给 `formatEventTime`，于是推送给用户的「时间」比实际早 8 小时：
+  - `:514` 个股情报推送的 `published_at`；
+  - `:1016` 首推场景的「当前时间」（`new Date().toISOString()`）。
+  - 改用 `shanghaiDateTimeStr(...)`（上海墙钟），与同模块 `MessagePushService.ts:325` 的既有口径一致。
+  - 注：这与 `published_at` 的值是否正确**无关** —— 即使库里时刻正确，这两处也会把显示压到 UTC。
+- **insight 来源文章的裸北京时间串直接写 `TIMESTAMPTZ`**：`modules/insight/InsightSourceService.ts` 把爬虫产出的裸串（`LimitUpRadarCrawler.ts:168` 正则提取，形如 `"2026-08-05 11:26:03"`）作为参数直接插入 `watchlist_insight_sources.published_at`（迁移 `016` 定义为 **`TIMESTAMPTZ NOT NULL`**）。裸串会被 PostgreSQL 按**会话时区**解释，而 `core/db.ts` 只传 `connectionString`（**未设** `options`/`timezone`）→ 取决于 PG 服务器默认值；若为 UTC 则整体**偏晚 8 小时**。
+  - 改用刚落位的统一能力 `asBeijingAwareText()` 补 `+08:00`，使结果**与 PG 会话时区无关**（带时区/仅日期的串原样透传）。
+  - 该修法在两种情形下都是改进：若 PG 本就是上海时区 → 落库**时刻不变**、只是形态带上偏移；若 PG 是 UTC → **修正 8 小时偏差**。
+  - 同步更新 `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts` 中「参数顺序」断言的期望值（`'2026-08-05 11:26:03'` → `'2026-08-05T11:26:03+08:00'`）。
+
+### 已查证但不改（澄清一次误判）
+
+- `iterate/case_scanner.py` 的 `_parse_time` 把裸时间按 UTC 解析 —— **实测无影响，不是缺陷**：其返回值只用于**同格式值之间**的比较/差值（`_within_window`、`_in_event_window`），统一偏移相互抵消；`event_time` 输出的是**原始字符串**（`str(cluster[-1].get("time"))`），排序也是**字符串排序**，均不经过该解析结果。此前把它列为高危属**高估**。
+
+### 验证
+
+- `TZ=UTC` / `TZ=Asia/Shanghai` / `TZ=America/New_York` 三种环境：`pnpm test` → **1030 / 1030 / 0**（新增一条时区无关性佐证）
+- `npx tsc --noEmit` → exit 0
+
+### 未处理（已由控制者决策，见下方说明）
+
+- **历史数据不回填**：见下条「回填决策」。
+
+---
+
 ## [master] 2026-10-08 — 修正 crawler 时间转换的时区双重偏移（任何时区都算错，生产偏早 8h）
 
 **开发者**: Aria
@@ -35,9 +66,16 @@
 - `TZ=Asia/Shanghai` 与 `TZ=UTC` 两种环境：`pnpm test` → **1030 / 1030 / 0**（原 1011 条无改动）
 - `npx tsc --noEmit` → exit 0
 
-### 未处理（需人类决策）
+### 回填决策：**不回填**（已决定，附依据）
 
-- **历史数据回填**：已入库 `published_at` 的错误**未回填**（属生产数据变更，需另议）。思路：`published_at = published_at + INTERVAL '8 hours' WHERE source='eastmoney'`；但**须先甄别**仅日期行（其归一方式不同）与实际部署 TZ，并评估对已发出的推送与 agent-py `published_date` 分桶的影响。
+已入库 `published_at` 的错误**不回填**。依据：
+
+1. **近期数据会自愈**：`StockInfoService.upsertJudgements` 的 `ON CONFLICT(dedupe_key) DO UPDATE SET ... published_at = EXCLUDED.published_at`（`StockInfoService.ts:409`）—— 同一公告/新闻被再次爬到时，即会用新代码覆盖为正确值。
+2. **已消费的下游无法追回**：已发出的微信/飞书推送不可撤回；已转发 agent-py 的 `published_date`（`source_id=stock_info:{symbol}:{published_date}`）已参与入环与分桶 —— 回头改会让库内时间与当时的实际产出**不一致**，还可能造成重复/错位入环。
+3. **改的代价与风险不对等**：偏移方向取决于 **PG 服务器的 `TimeZone`**（`core/db.ts` 未设 `options`/`timezone`，`DATABASE_URL` 示例亦未带），**无法仅从代码确定**；猜错会把 8 小时误差变成反向或翻倍。
+4. **受益面有限**：仅「历史列表里旧记录的时间显示/排序」。
+
+→ 若后续确需修正历史展示，应另立任务：**先只读诊断**（`SHOW TimeZone;` + 统计受影响行数与是否含仅日期行）→ 备份 → 再执行，并评估与 agent-py 已存记录的一致性。
 
 ---
 
