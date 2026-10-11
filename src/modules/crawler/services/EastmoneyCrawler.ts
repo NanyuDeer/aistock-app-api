@@ -18,6 +18,22 @@ import { isAShareTradingDay } from '../../../shared/utils/tradingTime';
 const EASTMONEY_NOTICE_API = 'https://np-anotice-stock.eastmoney.com/api/security/ann';
 const EASTMONEY_NEWS_API = 'https://search-api-web.eastmoney.com/search/jsonp';
 
+/**
+ * 依赖注入（便于单测替换；tsx 下 ESM named import 不可 monkey-patch，
+ * 与 ClsStockNewsService.__clsNewsDependencies 同一约定）。
+ */
+export interface EastmoneyCrawlerDeps {
+    sessionFetch: typeof sessionFetch;
+    errorLog: (message: string) => void;
+}
+
+export const __eastmoneyCrawlerDependencies: EastmoneyCrawlerDeps = {
+    sessionFetch,
+    errorLog: (message: string) => {
+        console.error(message);
+    },
+};
+
 // E-2（2026-08-14）：窗口起点缓存——同一轮抓取内所有股票 end 相同（now）、
 // days 相同（默认 30），只回溯一次即可共享。否则 200 只股票 × 30 天会触发
 // 数千次节假日 API 请求（实测被 429 限流，节假日检测失效）。
@@ -211,6 +227,26 @@ function parseNews(payload: any, symbol: string, stockName: string): EastmoneyNe
     return news;
 }
 
+/**
+ * 静默失效守护（2026-10-11）：东财边缘对特定 TLS 指纹的请求返回降级体
+ * （`result.passportWeb`，且 `hitsTotal>0`），`parseNews` 取不到 `result.cmsArticleWebOld`
+ * → 返回空数组、不抛异常 → 上层 catch 不触发 → 新闻静默归零（生产 9/26~10/11 实际发生）。
+ * 命中降级特征时显式告警，避免再次无声丢数据。
+ */
+function warnIfNewsDegraded(payload: any, symbol: string): void {
+    const hits = Number(payload?.hitsTotal ?? 0);
+    const rows = payload?.result?.cmsArticleWebOld;
+    if (hits > 0 && (!Array.isArray(rows) || rows.length === 0)) {
+        const keys = payload?.result && typeof payload.result === 'object'
+            ? Object.keys(payload.result).join(',')
+            : '';
+        __eastmoneyCrawlerDependencies.errorLog(
+            `[EastmoneyCrawler] 新闻接口疑似降级：symbol=${symbol} hitsTotal=${hits} 但无 cmsArticleWebOld` +
+            `（result keys=${keys || '空'}）——可能被东财边缘按 TLS 指纹拦截，请检查东财接口`,
+        );
+    }
+}
+
 /** 从新闻详情页 HTML 中提取正文 */
 function extractNewsBody(html: string): string {
     const $ = cheerio.load(html);
@@ -261,7 +297,7 @@ export class EastmoneyCrawler {
         pageSize = 10,
     ): Promise<EastmoneyNews[]> {
         const url = buildNewsApiUrl(symbol, pageSize);
-        const response = await sessionFetch(url, {
+        const response = await __eastmoneyCrawlerDependencies.sessionFetch(url, {
             headers: { 'User-Agent': 'Mozilla/5.0' },
         });
         if (!response.ok) {
@@ -269,6 +305,7 @@ export class EastmoneyCrawler {
         }
         const text = await response.text();
         const payload = extractJsonpPayload(text);
+        warnIfNewsDegraded(payload, symbol);
         return parseNews(payload, symbol, stockName);
     }
 

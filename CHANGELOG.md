@@ -2,6 +2,34 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-11 — 修复东财新闻抓取「静默失效」（TLS 指纹被边缘降级）
+
+**开发者**: Aria
+
+### 修复
+
+- **东财新闻接口被边缘按 TLS 指纹降级，导致个股新闻静默归零（9/26~10/11）**：生产 pm2 跑 **Node 20.20.2 / OpenSSL 3.0.19**，自 2026-09-26 起东财边缘按 **TLS ClientHello 指纹**区分客户端——Node 20 默认指纹（`ecdhCurve=auto`）被判非浏览器 → `search-api-web.eastmoney.com` 新闻 JSONP 返回**降级体**（`result.passportWeb`、`hitsTotal>0`、**无 `result.cmsArticleWebOld`**）→ `parseNews` 取空数组且**不抛异常** → `StockInfoCrawlService` 的 `catch` 不触发 → 新闻**静默归零**（公告走 `np-anotice-stock.eastmoney.com`，另一域名，不受影响）。
+  - **实测判据**：同一 URL 下 Node 20 基线 **0/56** 取到数据、显式 `ecdhCurve='X25519'` **56/56**、Node 24（OpenSSL 3.5）默认即正常；换浏览器 Header **无效**（问题在 TLS 层，不在 HTTP 层）。
+  - **修复 ①（TLS 加固）**：`shared/utils/httpAgent.ts` 东财域名 `https.Agent` 固定 `ecdhCurve='X25519'`（仅东财域名，其它域名不受影响；实测不影响公告/新闻正文接口）。
+  - **修复 ②（静默失效守护）**：`modules/crawler/services/EastmoneyCrawler.ts` 新增 `warnIfNewsDegraded`——`hitsTotal>0` 但无 `cmsArticleWebOld` 时 `errorLog` 显式告警，杜绝再次无声丢数据；同时引入 `__eastmoneyCrawlerDependencies` 注入点（`sessionFetch`/`errorLog`，沿用 `__clsNewsDependencies` 约定，便于单测）。
+
+### 测试
+
+- 新增 `src/modules/crawler/__tests__/eastmoneyCrawlerNews.spec.ts`（4 条）：降级响应必须告警且返回空 / 正常响应不误报 / `hitsTotal=0` 不告警 / 东财 agent 固定 `ecdhCurve` 且不影响其它域名。
+
+### 验证
+
+- `npx tsc --noEmit` → exit 0
+- 全量测试 → **1034 / 1034 / 0**
+- **生产环境实测**（服务器 Node 20 + 编译产物）：修复前 `fetchNews` 取到数据 **0/20**，修复后 **20/20**
+
+### 待跟进
+
+- **数据缺口**：约 2026-09-26~10-11（≈10 个交易日）的个股新闻未入库（公告不受影响），是否回补待评估。
+- **经验**：升级 Node 大版本会改 OpenSSL → 改 TLS 指纹，后续换运行时需回归抓取类接口。
+
+---
+
 ## [master] 2026-10-08 — 又查实两处时区问题并修复：微信推送时间显示 UTC、insight 裸串写 TIMESTAMPTZ
 
 **开发者**: Aria

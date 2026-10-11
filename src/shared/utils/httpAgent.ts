@@ -74,12 +74,23 @@ function getAgent(url: string): http.Agent | https.Agent {
     const config = isHighFreq ? HIGH_FREQ_CONFIG : DEFAULT_CONFIG;
 
     if (isHttps) {
-        agent = new https.Agent(config);
+        // 东财边缘 TLS 指纹加固（2026-10-11）：自 2026-09-26 起，东财边缘按 TLS ClientHello
+        // 指纹区分客户端——Node 20 / OpenSSL 3.0 的默认 ClientHello（ecdhCurve=auto）被判为
+        // 非浏览器指纹 → search-api-web 新闻接口返回降级体（result.passportWeb，无 cmsArticleWebOld），
+        // 导致新闻静默归零。固定 ecdhCurve='X25519' 可稳定取到真实数据（实测 56/56），
+        // 且不影响公告（np-anotice-stock）/ 正文（finance.eastmoney.com）等其它东财接口。
+        const tlsOverrides = domain === 'eastmoney' ? { ecdhCurve: 'X25519' } : {};
+        agent = new https.Agent({ ...config, ...tlsOverrides });
     } else {
         agent = new http.Agent(config);
     }
     agentCache.set(cacheKey, agent);
     return agent;
+}
+
+/** 仅供单测：读取（必要时创建）指定 URL 域名对应的 Agent，用于断言 TLS 配置。 */
+export function __getAgentForTest(url: string): http.Agent | https.Agent {
+    return getAgent(url);
 }
 
 /**
