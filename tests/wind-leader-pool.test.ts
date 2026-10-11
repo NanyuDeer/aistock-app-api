@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computePoolNames, LONG_POOL_MIN_FREQ } from '../src/modules/monitor/WindLeaderAnalyzerService';
+import { computePoolNames, rankTrack, LONG_POOL_MIN_FREQ } from '../src/modules/monitor/WindLeaderAnalyzerService';
 
 /**
  * 双池预筛口径（2026-10-11 调整）：
@@ -27,4 +27,24 @@ test('computePoolNames：长线池门槛为 8（LONG_WINDOW 内涨幅榜上榜 �
     ];
     const { longNames } = computePoolNames(cands);
     assert.deepEqual([...longNames].sort(), ['A', 'C'], 'freq≥8 入长线池，freq=7 不入');
+});
+
+test('rankTrack：短线轨道按 freq20 降序（不按 freq120 主导的评分）', () => {
+    const items = [
+        { name: 'LongHigh', frequency: 35, freq20: 0, score: 300 },
+        { name: 'ShortHot', frequency: 6, freq20: 3, score: 120 },
+        { name: 'ShortMid', frequency: 5, freq20: 2, score: 100 },
+    ];
+    // 短线：即便 LongHigh 评分最高，也应按 freq20 排在 ShortHot 之后
+    assert.deepEqual(rankTrack(items, 'short', 2).map((x) => x.name), ['ShortHot', 'ShortMid']);
+    // 长线：按评分
+    assert.deepEqual(rankTrack(items, 'long', 2).map((x) => x.name), ['LongHigh', 'ShortHot']);
+});
+
+test('rankTrack：短线 freq20 相同时按评分降序', () => {
+    const items = [
+        { name: 'X', frequency: 10, freq20: 2, score: 100 },
+        { name: 'Y', frequency: 10, freq20: 2, score: 200 },
+    ];
+    assert.deepEqual(rankTrack(items, 'short', 2).map((x) => x.name), ['Y', 'X']);
 });

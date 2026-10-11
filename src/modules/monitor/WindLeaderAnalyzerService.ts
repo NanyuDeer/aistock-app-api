@@ -1533,6 +1533,22 @@ export function computePoolNames<T extends { name: string; frequency: number; fr
     return { longNames, shortNames };
 }
 
+/**
+ * 双轨选板：从入池成员中取 topN。
+ * - long：按综合评分（freq120 主导）降序
+ * - short：按 freq20（近10日涨幅榜上榜次数）降序，相同再按评分
+ */
+export function rankTrack<T extends { frequency: number; freq20?: number; score: number }>(
+    items: T[],
+    track: 'long' | 'short',
+    topN: number,
+): T[] {
+    const cmp = track === 'long'
+        ? (a: T, b: T) => b.score - a.score
+        : (a: T, b: T) => (b.freq20 ?? 0) - (a.freq20 ?? 0) || b.score - a.score;
+    return [...items].sort(cmp).slice(0, topN);
+}
+
 async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW): Promise<HotConcept[]> {
     const cacheKey = `hot_concepts_${days}_${topN}`;
     const cached = await cacheGet<HotConcept[]>(cacheKey);
@@ -1582,15 +1598,14 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
         console.log('[HotSectorAnalyzer] 候选池为空（无可用板块数据）');
         return [];
     }
-    // 双轨选板：长线池与短线池各自按评分取 topN 再取并集（交集去重）。
-    // 原单池 topN 截断会把短线池成员挤出（评分公式 freqScore×4 权重偏向 freq120 长线），
-    // 导致短线档候选不足——实测短线池 35 个成员被截得只剩 3 个交集成员。
+    // 双轨选板：长线池按评分取 topN；短线池按 freq20（近10日涨幅榜上榜次数）取 topN；再取并集（交集去重）。
+    // 短线轨道**必须**按 freq20 排序：评分公式 freqScore×4 偏 freq120 长线，若短线也按评分选，
+    // 会选出与长线相同的板块（短线语义丢失，文化传媒/AI视频等短线活跃板块被挤出）。
     const marked = candidates
         .filter(c => longNames.has(c.name) || shortNames.has(c.name))
         .map(c => ({ ...c, in_long_pool: longNames.has(c.name), in_short_pool: shortNames.has(c.name) }));
-    const byScore = (a: HotConcept, b: HotConcept) => b.score - a.score;
-    const longTrack = marked.filter(c => c.in_long_pool).sort(byScore).slice(0, topN);
-    const shortTrack = marked.filter(c => c.in_short_pool).sort(byScore).slice(0, topN);
+    const longTrack = rankTrack(marked.filter(c => c.in_long_pool), 'long', topN);
+    const shortTrack = rankTrack(marked.filter(c => c.in_short_pool), 'short', topN);
     const merged = new Map<string, HotConcept>();
     for (const c of [...longTrack, ...shortTrack]) {
         merged.set(c.name, c);  // 交集板块两边都出现，flags 一致，后写覆盖
