@@ -39,9 +39,14 @@ describe('verifyJwt', () => {
     assert.strictEqual(verifyJwt(token, 'wrong-secret'), null);
   });
 
-  it('篡改签名（改最后一个字符）：返回 null', () => {
+  it('篡改签名（改签名段首字符）：返回 null', () => {
     const token = signJwt({ openid: 'o_p0_ok', iat: nowSec(), exp: nowSec() + 3600 }, JWT_SECRET);
-    const tampered = token.slice(0, -1) + (token.endsWith('A') ? 'B' : 'A');
+    // 改签名段**首个**字符：base64 每字符携带 6 位，首字符的 6 位**全部有效**。
+    // 不能改"末字符"——末字符含被解码器忽略的 padding 位，若原末字符是 A/B/C/D，
+    // 篡改后解码出的字节**完全相同**（签名依旧有效），会造成本用例概率性假失败。
+    const [head, body, sig] = token.split('.');
+    const tamperedSig = (sig[0] === 'A' ? 'B' : 'A') + sig.slice(1);
+    const tampered = `${head}.${body}.${tamperedSig}`;
     assert.notStrictEqual(tampered, token);
     assert.strictEqual(verifyJwt(tampered, JWT_SECRET), null);
   });

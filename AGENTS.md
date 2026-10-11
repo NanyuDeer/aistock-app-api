@@ -174,7 +174,7 @@ src/
 
 ### 6.5 交易日判断与降级
 
-- **唯一事实源 = `trading_calendar` 表**（`exchange='SSE'`）：由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新（窗口「去年~明年」，每日 00:30 + 启动预热），`tradingCalendarStore` 提供同步读。**禁止新增第二套节假日表，禁止用任何第三方节假日接口做判定。**
+- **唯一事实源 = `trading_calendar` 表**（`exchange='SSE'`）：由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新（窗口「去年~明年」，每日 00:30 + 启动预热），`tradingCalendarStore` 提供同步读。**禁止新增第二套节假日表，禁止用任何第三方节假日接口做判定。** 全仓**唯一允许**调 Tushare `trade_cal` 的地方就是 `TradingCalendarRefreshService`；任何模块需要「最近 N 个交易日」一律走 `TradingCalendarService.getRecentTradingDays`（`modules/fear-greed` 恐贪取数窗口已于 2026-10-11 由直连 `trade_cal` 改为走该统一来源）。
 - **判断类**（`tradingCalendarStore.isTradingDay` / `tradingTime.isAShareTradingDay*`）：数据缺失（未加载 或 超出覆盖范围）降级为「周一~周五」并 `warn`/`error` 告警——**降级绝不静默**，`getHealth().degraded` 置真。取向：宁可假期多跑几次幂等任务，也不因缺数据让受守卫任务停摆一整年。
 - **日期推算类**（`TradingCalendarService.getPreviousTradingDay` / `getNextTradingDay` / `getRecentTradingDays` 等）：store 已加载但表内无该日期 → **fail-closed 抛错**（`modules/calendar/MarketCalendarEventService` 依赖此契约，未覆盖时保留原始日期，不抛 502）；store 未加载时不抛错（避免冷启期崩）。
 - **2027+ 年份无需人工补表**：每日 00:30 刷新窗口自动前移覆盖。

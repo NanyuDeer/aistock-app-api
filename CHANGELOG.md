@@ -2,6 +2,35 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-11 — 恐贪指数交易日窗口统一到交易日历唯一事实源；修 jwt 用例概率性假失败
+
+**开发者**: Aria
+
+### 重构
+
+- **恐贪指数取数窗口不再直连 Tushare `trade_cal`**：`modules/fear-greed/calculator.ts` 此前有 8 处各自直连 `trade_cal`（`tradeDates()`）取「最近 N 个交易日」，是全仓除 `TradingCalendarRefreshService` 之外**第二处**接触 `trade_cal` 的地方，与「唯一事实源 = `trading_calendar` 表」口径冲突（且每个指标各发一次请求）。
+  - 改为经注入点 `__fearGreedDeps.recentTradingDays` 走 `TradingCalendarService.getRecentTradingDays`（`tradingCalendarStore` 同步读，输出 YYYYMMDD 升序）；删除 `tradeDates` / `daysAgoYyyymmdd` / `todayYyyymmdd`。行为等价（同取「≤ 当日的最近 N 个交易日、升序」）。
+  - 注入点沿用 `__clsNewsDependencies` 约定，便于单测确定性替换。
+  - `AGENTS.md` §6.5 补充硬约束：全仓**唯一允许**调 Tushare `trade_cal` 的地方 = `TradingCalendarRefreshService`。
+
+### 修复
+
+- **`jwt.spec.ts` 用例「篡改签名」概率性假失败**（修前实测 30 次挂 4 次，失败点 `jwt.spec.ts:46`）：该用例改**签名段末字符**，而 base64 解码**忽略末位 padding 位**——原末字符为 `A/B/C/D` 时篡改后解码字节**完全相同**，签名依旧有效、`verifyJwt` 正确地返回了 payload → 断言假失败（触发概率 ≈4/64）。改为改**签名段首字符**（6 位全部有效，必然改变解码字节）。生产 `shared/utils/jwt.ts` 行为正确，**未改动**。
+
+### 测试
+
+- `tests/fear-greed.calculator.test.ts`：移除 `trade_cal` mock（**故意不提供该 case**，落到 `default` 抛错，机制上锁死「不再直连」），改为注入 `__fearGreedDeps.recentTradingDays`。
+- `src/shared/utils/__tests__/jwt.spec.ts`：篡改目标由签名段末字符改为首字符。
+
+### 验证
+
+- `npx tsc --noEmit` → exit 0
+- 全量测试 → **1034 / 1034 / 0**
+- `jwt.spec` 连跑 50 次 → **0 失败**（修前 30 次挂 4 次）
+- TDD 先红后绿：RED 证据 `unexpected api: trade_cal`（`calculator.ts:82`）
+
+---
+
 ## [master] 2026-10-11 — 修复东财新闻抓取「静默失效」（TLS 指纹被边缘降级）
 
 **开发者**: Aria
