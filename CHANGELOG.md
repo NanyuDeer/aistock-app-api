@@ -2,6 +2,36 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-11 — 风口龙头「上榜次数」口径修正（只统计涨幅榜）+ 轮动榜按交易日覆盖写入
+
+**开发者**: Aria
+
+### 修复
+
+- **「上榜次数」把跌幅榜也算进去了**：`board_rotation_daily` 每日同时落库涨幅前10（`up_rank`）与跌幅前10（`down_rank`）供「板块轮动表」展示，但下游统计口径错误地把两者都算作「上榜」，使短线（`freq20`）/长线（`frequency`）/频次变化率（`freq_delta`）被放大，与同花顺网页口径不一致。
+  - `WindLeaderAnalyzerService.buildSectorStatsFromRotationRows`：组装 rawData 时过滤 `up_rank == null`（跌幅榜）行，只统计涨幅榜上榜。
+  - 缓存键 `block_rotation_${days}_v3` → `_v4`（旧缓存含跌幅榜，需失效重算）。
+  - 注：`board_rotation_daily` 仍保留涨/跌两榜供展示；复用的 `RotationBoardCache`（趋势股评分「上榜次数」）与 `TrendScoreView` 一并生效。legacy 降级源（`hot_block_list`）实测本就只含上涨板块，无需改动。
+- **轮动榜历史脏数据（同一交易日两套涨/跌榜）**：`syncRotationHistory` 用「当前板块池」全量重算历史后只 `upsert`，而 `(trading_date, board_code)` 主键下**旧池板块的行不会被覆盖** → 逐日残留，同一交易日出现新旧两套榜（实测 `2026-10-09` 共 **38 行**，本应 20 行；`up_rank` 1–10 各出现 2 次），进一步放大上榜次数。
+  - 改为 `replaceRotationRows`：单事务内**先按本次重算交易日删除旧行，再插入新行**，保证每日仅一套榜；下次同步即自动清理历史脏数据。
+
+### 测试
+
+- 新增 `tests/wind-leader-rotation-stats.test.ts`（2 例）：跌幅榜上榜不计入 `frequency`/`freq20`；全程只在跌幅榜出现的板块不进入统计。
+- 新增 `src/modules/monitor/__tests__/rotationBoardStore.spec.ts`（3 例）：事务内先按交易日删除（日期去重）再插入、插入失败回滚、空数据不触达 DB。
+
+### 文档
+
+- `modules/monitor/AGENTS.md`、`RotationBoardStore.ts` 头注释补充「上榜次数只取涨幅榜，跌幅榜仅用于展示」口径说明。
+
+### 验证
+
+- `tsc --noEmit` → exit 0
+- 全量测试 → **1039 / 1039 / 0**
+- TDD 先红后绿：RED 证据「甲板块 frequency=3，应为 2（跌幅榜那天不计入）」
+
+---
+
 ## [master] 2026-10-11 — 恐贪指数交易日窗口统一到交易日历唯一事实源；修 jwt 用例概率性假失败
 
 **开发者**: Aria

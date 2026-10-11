@@ -5,6 +5,8 @@
  * 口径：每日涨幅前10（up_rank）+ 每日跌幅前10（down_rank），与网页
  *       "近10日热门/板块轮动表"（apigate hotCirclePlate 的 mrpm）一致
  *       （已验证：用日线还原每日涨跌榜命中率 149/150 与 150/150）。
+ *       注意：落库同时含涨/跌两榜（供"板块轮动表"展示），但下游"上榜次数"
+ *       （frequency/freq20）统计**只取涨幅榜**（up_rank 非空），跌幅榜不计入。
  *
  * 持久化到 board_rotation_daily 表后，支持任意天数（10/20/30/60/120）
  * 的板块上榜次数统计，无需每次全量重算。
@@ -283,28 +285,49 @@ export function computeDailyBoards(klines: Map<string, Map<string, number>>, poo
     return rows;
 }
 
-/** 批量 upsert（ON CONFLICT 更新，幂等） */
-async function upsertRows(rows: DailyRotationRow[]): Promise<void> {
+/**
+ * 覆盖写入（幂等）：先删除本次重算涉及的交易日旧行，再插入新行。
+ *
+ * 为什么必须删旧行：板块池会随时间变化，而计算用「当前池」全量重算历史。
+ * 若只 upsert，`(trading_date, board_code)` 主键下旧池板块的行不会被覆盖 →
+ * 同一交易日会同时残留「新旧两套涨/跌榜」，导致下游「上榜次数」被放大
+ * （历史脏数据：实测某交易日出现 38 行，本应 20 行）。
+ * 单事务执行，避免删除与插入之间出现空窗。
+ */
+export async function replaceRotationRows(rows: DailyRotationRow[]): Promise<void> {
+    if (rows.length === 0) return;
+    const dates = [...new Set(rows.map((r) => r.trading_date))];
     const CHUNK = 500;
-    for (let i = 0; i < rows.length; i += CHUNK) {
-        const chunk = rows.slice(i, i + CHUNK);
-        const values: unknown[] = [];
-        const placeholders: string[] = [];
-        chunk.forEach((r, idx) => {
-            const base = idx * 6;
-            placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
-            values.push(r.trading_date, r.board_code, r.board_name, r.up_rank, r.down_rank, r.pct_change);
-        });
-        await pool.query(
-            `INSERT INTO board_rotation_daily (trading_date, board_code, board_name, up_rank, down_rank, pct_change)
-             VALUES ${placeholders.join(',')}
-             ON CONFLICT (trading_date, board_code) DO UPDATE SET
-               board_name = EXCLUDED.board_name,
-               up_rank = EXCLUDED.up_rank,
-               down_rank = EXCLUDED.down_rank,
-               pct_change = EXCLUDED.pct_change`,
-            values,
-        );
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        await client.query('DELETE FROM board_rotation_daily WHERE trading_date = ANY($1::date[])', [dates]);
+        for (let i = 0; i < rows.length; i += CHUNK) {
+            const chunk = rows.slice(i, i + CHUNK);
+            const values: unknown[] = [];
+            const placeholders: string[] = [];
+            chunk.forEach((r, idx) => {
+                const base = idx * 6;
+                placeholders.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`);
+                values.push(r.trading_date, r.board_code, r.board_name, r.up_rank, r.down_rank, r.pct_change);
+            });
+            await client.query(
+                `INSERT INTO board_rotation_daily (trading_date, board_code, board_name, up_rank, down_rank, pct_change)
+                 VALUES ${placeholders.join(',')}
+                 ON CONFLICT (trading_date, board_code) DO UPDATE SET
+                   board_name = EXCLUDED.board_name,
+                   up_rank = EXCLUDED.up_rank,
+                   down_rank = EXCLUDED.down_rank,
+                   pct_change = EXCLUDED.pct_change`,
+                values,
+            );
+        }
+        await client.query('COMMIT');
+    } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+    } finally {
+        client.release();
     }
 }
 
@@ -362,9 +385,9 @@ export async function syncRotationHistory(): Promise<number> {
         console.warn('[RotationBoardStore] 未计算出有效榜单');
         return 0;
     }
-    await upsertRows(rows);
+    await replaceRotationRows(rows);
     const dayCount = new Set(rows.map(r => r.trading_date)).size;
-    console.log(`[RotationBoardStore] 同步完成: ${rows.length} 条 / ${dayCount} 个交易日`);
+    console.log(`[RotationBoardStore] 同步完成: ${rows.length} 条 / ${dayCount} 个交易日（按交易日覆盖写入）`);
     return rows.length;
 }
 

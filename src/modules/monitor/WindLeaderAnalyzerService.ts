@@ -1169,7 +1169,13 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
     return { sectorStats, rawData };
 }
 
-/** 板块轮动榜 - 从 DB 行组装 rawData 并统计（网页同款口径：每日涨幅/跌幅前10，涨跌都算上榜） */
+/**
+ * 板块轮动榜 - 从 DB 行组装 rawData 并统计（上榜口径：**只统计涨幅榜**）
+ *
+ * board_rotation_daily 每日同时落库涨幅前10（up_rank）与跌幅前10（down_rank），用于展示
+ * 「板块轮动表」；但上榜次数（frequency/freq20）只应统计涨幅榜上榜，跌幅榜上榜不计入，
+ * 否则短线/长线上榜次数会被跌幅榜放大，与同花顺网页口径不一致。
+ */
 export function buildSectorStatsFromRotationRows(
     rows: RotationBoardStore.DailyRotationRow[],
     days: number,
@@ -1177,9 +1183,10 @@ export function buildSectorStatsFromRotationRows(
     sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 } {
-    // rows 已按交易日降序（queryRotationDaily），按日分组
+    // rows 已按交易日降序（queryRotationDaily），按日分组；只保留涨幅榜（up_rank 非空）行
     const byDate = new Map<string, RotationBoardStore.DailyRotationRow[]>();
     for (const r of rows) {
+        if (r.up_rank == null) continue; // 跌幅榜上榜不计入上榜次数
         const arr = byDate.get(r.trading_date) || [];
         arr.push(r);
         byDate.set(r.trading_date, arr);
@@ -1202,7 +1209,7 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
     sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 }> {
-    const cacheKey = `block_rotation_${days}_v3`;
+    const cacheKey = `block_rotation_${days}_v4`; // v4：上榜次数改为一律只统计涨幅榜（排除跌幅榜），旧 v3 缓存含跌幅榜需失效
     const cached = await cacheGet<{ rawData?: BlockRotationDay[] }>(cacheKey);
     if (cached && cached.rawData && cached.rawData.length > 0) {
         console.log('[HotSectorAnalyzer] 使用缓存的板块轮动数据');
