@@ -131,6 +131,7 @@ import { TradingCalendarRefreshService } from './modules/market/TradingCalendarR
 
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
+import { aiStockSelectionRouter, ensureAiStockSelectionSchema, triggerAiStockSelection } from './core/routes/aiStockSelectionRouter';
 import { initWebSocket } from './core/ws/handler';
 import { initChatBridge } from './core/ws/chat-bridge';
 import { shouldRunBackgroundJobs } from './core/qa_mode';
@@ -678,6 +679,9 @@ app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪�
 
 app.use('/api/fear-greed', fearGreedRouter); // 恐贪指数：公开查询（温度计 + 主面板）
 
+// AI帮我选：结果对用户只读；生成接口仅供内部定时任务/运维凭 token 调用。
+app.use('/api/ai-stock-selection', aiStockSelectionRouter);
+
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
 });
@@ -774,6 +778,15 @@ const runInstitutionResearchDetect = async (label: string) => {
     }
 };
 cron.schedule('30 9 * * 1-5', () => runIfTradingDay('inst-research-开盘', () => runInstitutionResearchDetect('开盘')), { timezone: 'Asia/Shanghai' });
+// 机构热门股 09:30 检测完成后再生成，确保综合选股使用同一交易日的最新共振数据。
+cron.schedule('40 9 * * 1-5', () => runIfTradingDay('ai-stock-selection', async () => {
+    try {
+        const result = await triggerAiStockSelection('schedule');
+        console.log(`[AiStockSelectionCron] task started: run=${result.runId}`);
+    } catch (err: unknown) {
+        console.error('[AiStockSelectionCron] task start failed:', err instanceof Error ? err.message : String(err));
+    }
+}), { timezone: 'Asia/Shanghai' });
 cron.schedule('30 10 * * 1-5', () => runIfTradingDay('inst-research-上午', () => runInstitutionResearchDetect('上午')), { timezone: 'Asia/Shanghai' });
 cron.schedule('30 11 * * 1-5', () => runIfTradingDay('inst-research-午前', () => runInstitutionResearchDetect('午前')), { timezone: 'Asia/Shanghai' });
 cron.schedule('30 13 * * 1-5', () => runIfTradingDay('inst-research-午盘', () => runInstitutionResearchDetect('午盘')), { timezone: 'Asia/Shanghai' });
@@ -1080,6 +1093,12 @@ async function start() {
             .catch(err => console.error('[NotificationRetry] 启动补投失败:', err instanceof Error ? err.message : String(err)));
     } catch (err: unknown) {
         console.error('[Notification] CRITICAL: user_notifications schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ensureAiStockSelectionSchema();
+    } catch (err: unknown) {
+        console.error('[AiStockSelection] schema unavailable:', err instanceof Error ? err.message : String(err));
     }
 
     try {

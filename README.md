@@ -144,6 +144,8 @@ src/
 | `/api/chat/usage/summary` | **用户累计 token 用量**（GET，JWT openid 鉴权） | — |
 | `/internal/*` | Python Agent 服务专用内部接口（需 X-Internal-Token） |
 | `/internal/health` | 轻量健康探针（无需 token，供 Python `/health/ready` 探测） |
+| `/api/ai-stock-selection/latest` | AI帮我选：读取最近一次已生成的 Top 10 及推荐理由 |
+| `/api/ai-stock-selection/generate` | AI帮我选：内部手动触发六榜聚合、AI 排序与结果持久化（POST，须 `X-Internal-Token`；普通用户不可调用） |
 
 ### Internal API 接口详情
 
