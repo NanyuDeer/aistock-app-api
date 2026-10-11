@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-11 — 风口龙头短线池门槛收紧：不设门槛 → freq20 ≥ 1
+
+**开发者**: Aria
+
+### 改进
+
+- **短线池门槛 = 1**（新增 `SHORT_POOL_MIN_FREQ`）：`computePoolNames` 中短线池由「全部候选入池」收紧为 **`freq20 ≥ 1`**（SHORT_WINDOW(20) 内涨幅榜上榜至少 1 次才入池），排除近 20 日从未上过涨幅榜的板块，使短线榜聚焦近期确有资金异动的方向；下游仍按 `rankTrack` 以 freq20 降序取 top8。长线池口径不变（`freq ≥ 8`）。
+
+### 测试
+
+- `tests/wind-leader-pool.test.ts` 首例改为：`SHORT_POOL_MIN_FREQ === 1`；freq20=0 不入池、freq20≥1 入池。
+- `tsc --noEmit` → exit 0；全量测试 → **1043 / 1043 / 0**；TDD 先红后绿（RED：`SHORT_POOL_MIN_FREQ` 未导出、freq20=0 的 A 仍在池中）。
+
+---
+
 ## [master] 2026-10-11 — 风口龙头短线轨道改按 freq20 选板（配套「短线不设门槛」）
 
 **开发者**: Aria

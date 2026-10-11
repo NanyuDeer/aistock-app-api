@@ -1523,13 +1523,13 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
 /**
  * 双池预筛：返回长线池 / 短线池的板块名集合。
  * - 长线池：LONG_WINDOW 内上榜次数 ≥ LONG_POOL_MIN_FREQ
- * - 短线池：**不设门槛**（全部候选入池，由下游按 freq20 排序取 top8）
+ * - 短线池：SHORT_WINDOW(20) 内上榜次数 ≥ SHORT_POOL_MIN_FREQ
  */
 export function computePoolNames<T extends { name: string; frequency: number; freq20?: number }>(
     candidates: T[],
 ): { longNames: Set<string>; shortNames: Set<string> } {
     const longNames = new Set(candidates.filter((c) => c.frequency >= LONG_POOL_MIN_FREQ).map((c) => c.name));
-    const shortNames = new Set(candidates.map((c) => c.name));
+    const shortNames = new Set(candidates.filter((c) => (c.freq20 ?? 0) >= SHORT_POOL_MIN_FREQ).map((c) => c.name));
     return { longNames, shortNames };
 }
 
@@ -2488,6 +2488,13 @@ export const LONG_WINDOW = 120;
  * 门槛由 16 等比下调为 8 以维持原强度。
  */
 export const LONG_POOL_MIN_FREQ = 8;
+
+/**
+ * 短线池门槛：SHORT_WINDOW(20) 内**涨幅榜**上榜 ≥1 次。
+ * 2026-10-11：由「不设门槛」收紧为 1 —— 排除近 20 日从未上过涨幅榜的板块，
+ * 使短线榜聚焦近期确有资金异动的方向；下游仍按 freq20 降序取 top8。
+ */
+export const SHORT_POOL_MIN_FREQ = 1;
 
 export function deriveCycle(a: {
     long_term_days?: number;
@@ -3471,7 +3478,7 @@ export class WindLeaderAnalyzerService {
         // 清除缓存，确保获取最新数据
         await clearAllCache();
 
-        // 1. 识别风口候选池（120天长线统计 + freq20；预筛：长线池 freq120≥LONG_POOL_MIN_FREQ ∪ 短线池不设门槛）
+        // 1. 识别风口候选池（120天长线统计 + freq20；预筛：长线池 freq120≥LONG_POOL_MIN_FREQ ∪ 短线池 freq20≥SHORT_POOL_MIN_FREQ）
         const hotConcepts = await identifyHotConcepts(16, LONG_WINDOW);
         // 候选池为空 → 空榜（不再降低条件重试）
         if (hotConcepts.length === 0) {
