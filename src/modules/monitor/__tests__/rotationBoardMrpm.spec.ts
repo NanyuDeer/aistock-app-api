@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildRowsFromMrpm, mergeRotationRows, type MrpmPayload, type DailyRotationRow } from '../RotationBoardStore';
+import { buildRowsFromMrpm, mergeRotationRows, normalizeTradingDate, type MrpmPayload, type DailyRotationRow } from '../RotationBoardStore';
 
 function day(datetime: string, codes: [string, string][]): MrpmPayload['up'][number] {
     return { datetime, stocks: codes.map(([stockcode, stockname]) => ({ stockcode, stockname })) };
@@ -69,5 +69,23 @@ describe('mergeRotationRows：mrpm 覆盖的日期以 mrpm 为准', () => {
         assert.ok(merged.some((r) => r.trading_date === '2026-10-12' && r.board_code === '881274'), '应保留 mrpm 的 10-12 行');
         assert.ok(!merged.some((r) => r.trading_date === '2026-10-12' && r.board_code === '885792'), '历史残缺的 10-12 行应被剔除');
         assert.ok(merged.some((r) => r.trading_date === '2026-10-08'), '未覆盖的 10-08 历史行保留');
+    });
+
+    // 回归：last.js 推导的日期是 YYYYMMDD、mrpm 是 YYYY-MM-DD，格式不同也不能漏覆盖，
+    // 否则同一天会同时存在两套行 → 批量 INSERT 触发
+    // "ON CONFLICT DO UPDATE command cannot affect row a second time"
+    it('历史行 YYYYMMDD 与 mrpm YYYY-MM-DD 混用也能正确覆盖，同一天只留一套', () => {
+        const histRaw: DailyRotationRow[] = [
+            { trading_date: '20261012', board_code: '885792', board_name: '赛马概念', up_rank: 1, down_rank: null, pct_change: 1.27 },
+            { trading_date: '20261008', board_code: '881107', board_name: '油气开采及服务', up_rank: 1, down_rank: null, pct_change: 3.1 },
+        ];
+        const mrpmIso: DailyRotationRow[] = [
+            { trading_date: '2026-10-12', board_code: '881274', board_name: '影视院线', up_rank: 1, down_rank: null, pct_change: 0 },
+        ];
+        const merged = mergeRotationRows(histRaw, mrpmIso);
+        const day1012 = merged.filter((r) => normalizeTradingDate(r.trading_date) === '2026-10-12');
+        assert.equal(day1012.length, 1, '同一天只能有一套行');
+        assert.equal(day1012[0].board_code, '881274', '10-12 应以 mrpm 为准');
+        assert.equal(normalizeTradingDate(merged.find((r) => r.board_code === '881107')!.trading_date), '2026-10-08', '未覆盖日保留');
     });
 });

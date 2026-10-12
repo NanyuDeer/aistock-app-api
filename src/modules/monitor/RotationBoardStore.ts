@@ -261,6 +261,17 @@ export function parseKlineFull(jsonpText: string): Map<string, BoardKlinePoint> 
     return byDate;
 }
 
+/**
+ * 归一化交易日为 `YYYY-MM-DD`。
+ * last.js 日线的日期键是 `YYYYMMDD`、hotCirclePlate mrpm 是 `YYYY-MM-DD`，
+ * 两者混用会让「按交易日覆盖」判断失效（同一天出现两套行 → 批量 INSERT 报
+ * "ON CONFLICT DO UPDATE command cannot affect row a second time"）。
+ */
+export function normalizeTradingDate(d: string): string {
+    const s = String(d).trim();
+    return /^\d{8}$/.test(s) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : s;
+}
+
 /** 由板块日线 K 线计算每个板块 date→当日涨跌幅(%) */
 export function computePctMap(klines: Map<string, Map<string, number>>): Map<string, Map<string, number>> {
     const pctMap = new Map<string, Map<string, number>>();
@@ -301,7 +312,7 @@ export function computeDailyBoards(klines: Map<string, Map<string, number>>, poo
         const up = entries.slice(0, 10);
         const down = entries.slice(-10);
         up.forEach((e, i) => rows.push({
-            trading_date: date,
+            trading_date: normalizeTradingDate(date),
             board_code: e.code,
             board_name: e.name,
             up_rank: i + 1,
@@ -309,7 +320,7 @@ export function computeDailyBoards(klines: Map<string, Map<string, number>>, poo
             pct_change: round2(e.pct),
         }));
         down.forEach((e, i) => rows.push({
-            trading_date: date,
+            trading_date: normalizeTradingDate(date),
             board_code: e.code,
             board_name: e.name,
             up_rank: null,
@@ -347,11 +358,13 @@ export function buildRowsFromMrpm(
         byKey.set(key, row);
     };
     for (const d of mrpm.up) {
-        d.stocks.slice(0, 10).forEach((s, j) => put(d.datetime, s.stockcode, s.stockname, { up_rank: j + 1 }));
+        const date = normalizeTradingDate(d.datetime);
+        d.stocks.slice(0, 10).forEach((s, j) => put(date, s.stockcode, s.stockname, { up_rank: j + 1 }));
     }
     for (const d of mrpm.down) {
+        const date = normalizeTradingDate(d.datetime);
         const n = Math.min(d.stocks.length, 10);
-        d.stocks.slice(0, 10).forEach((s, j) => put(d.datetime, s.stockcode, s.stockname, { down_rank: n - j }));
+        d.stocks.slice(0, 10).forEach((s, j) => put(date, s.stockcode, s.stockname, { down_rank: n - j }));
     }
     return [...byKey.values()];
 }
@@ -364,8 +377,8 @@ export function buildRowsFromMrpm(
  */
 export function mergeRotationRows(histRows: DailyRotationRow[], mrpmRows: DailyRotationRow[]): DailyRotationRow[] {
     if (mrpmRows.length === 0) return histRows;
-    const covered = new Set(mrpmRows.map((r) => r.trading_date));
-    return [...histRows.filter((r) => !covered.has(r.trading_date)), ...mrpmRows];
+    const covered = new Set(mrpmRows.map((r) => normalizeTradingDate(r.trading_date)));
+    return [...histRows.filter((r) => !covered.has(normalizeTradingDate(r.trading_date))), ...mrpmRows];
 }
 
 /**
