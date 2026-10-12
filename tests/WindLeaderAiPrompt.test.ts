@@ -4,7 +4,7 @@ import { buildAiPrompt } from '../src/modules/monitor/WindLeaderAnalyzerService'
 
 const baseConcept = {
     code: 'BK0001', name: '半导体', type: 'concept',
-    frequency: 12, freq20: 5, avg_change: 3.2, today_change: 2.1,
+    freq120: 12, freq10: 5, avg_change: 3.2, today_change: 2.1,
     net_inflow: 800, ma60_status: '站上(+5.2%)', vol_trend: '放量', turnover: 12.5,
     leading_stock: '中芯国际', leading_change: 8.5,
     up_count: 30, down_count: 8, score: 88,

@@ -145,8 +145,8 @@ interface HotSectorAnalysis {
     cycle: 'short' | 'long' | 'both' | 'none';  // 短线风口 / 长线风口 / 长短线同时成立 / 均不成立
     name: string;
     type: string;
-    frequency: number;
-    freq20?: number;
+    freq120: number;
+    freq10?: number;
     freq_delta?: number;
     avg_change: number;
     today_change: number;
@@ -1099,8 +1099,8 @@ interface HotConcept {
     code: string;
     name: string;
     type: string;
-    frequency: number;
-    freq20?: number;        // 近10日上榜次数（短线活跃度，字段名保留freq20兼容前端）
+    freq120: number;
+    freq10?: number;        // 最近 10 个交易日的涨幅榜上榜次数（短线活跃度）
     freq_delta?: number;    // 频次变化率 Δ：近5日上榜天数 ÷ 前5日上榜天数（>1.5 陡升）
     avg_change: number;     // 120日上榜日均涨幅（内部评分用，不进 AI prompt）
     today_change: number;
@@ -1112,7 +1112,7 @@ interface HotConcept {
     limit_up_count?: number; // 板块内涨停家数（limit_list_ths，短线情绪）
     max_boards?: number;     // 板块内最高连板数（limit_list_ths，短线高度）
     in_long_pool?: boolean;  // 是否进入长线池（近120日上榜≥16次）
-    in_short_pool?: boolean; // 是否进入短线池（freq20≥3）
+    in_short_pool?: boolean; // 是否进入短线池（freq10≥3）
     leading_stock: string;
     leading_change: number;
     up_count: number;
@@ -1120,12 +1120,12 @@ interface HotConcept {
     score: number;
 }
 
-/** 从 rawData（每日榜，交易日降序）组装 sectorStats（frequency/freq20/freq_delta/avgZf5/latestZf5） */
+/** 从 rawData（每日榜，交易日降序）组装 sectorStats（freq120/freq10/freq_delta/avgZf5/latestZf5） */
 export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: number): {
-    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    sectorStats: Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 } {
-    const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
+    const sectorStats = new Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
     for (let i = 0; i < rawData.length; i++) {
         for (const block of rawData[i].block_list || []) {
             const key = block.name;
@@ -1134,17 +1134,17 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
                 sectorStats.set(key, {
                     name: block.name,
                     code: block.code,
-                    frequency: 1,
-                    freq20: i < 10 ? 1 : 0,
+                    freq120: 1,
+                    freq10: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf,
                     latestZf5: zf, // first（i 最小=最近一次上榜日）的涨幅
                 });
             } else {
                 const stat = sectorStats.get(key)!;
-                stat.frequency += 1;
-                if (i < 10) stat.freq20 += 1;
-                stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf) / stat.frequency;
+                stat.freq120 += 1;
+                if (i < 10) stat.freq10 += 1;
+                stat.avgZf5 = (stat.avgZf5 * (stat.freq120 - 1) + zf) / stat.freq120;
                 // latestZf5 保持 first 的涨幅（最近一次上榜日）
             }
         }
@@ -1173,14 +1173,14 @@ export function buildSectorStatsFromRawData(rawData: BlockRotationDay[], days: n
  * 板块轮动榜 - 从 DB 行组装 rawData 并统计（上榜口径：**只统计涨幅榜**）
  *
  * board_rotation_daily 每日同时落库涨幅前10（up_rank）与跌幅前10（down_rank），用于展示
- * 「板块轮动表」；但上榜次数（frequency/freq20）只应统计涨幅榜上榜，跌幅榜上榜不计入，
+ * 「板块轮动表」；但上榜次数（freq120/freq10）只应统计涨幅榜上榜，跌幅榜上榜不计入，
  * 否则短线/长线上榜次数会被跌幅榜放大，与同花顺网页口径不一致。
  */
 export function buildSectorStatsFromRotationRows(
     rows: RotationBoardStore.DailyRotationRow[],
     days: number,
 ): {
-    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    sectorStats: Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 } {
     // rows 已按交易日降序（queryRotationDaily），按日分组；只保留涨幅榜（up_rank 非空）行
@@ -1206,7 +1206,7 @@ export function buildSectorStatsFromRotationRows(
 
 /** 从同花顺板块轮动表获取板块轮动数据（网页同款口径，支持任意天数；DB 空时降级 hot_block_list） */
 export async function fetchBlockRotationData(days: number = 20): Promise<{
-    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    sectorStats: Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 }> {
     const cacheKey = `block_rotation_${days}_v4`; // v4：上榜次数改为一律只统计涨幅榜（排除跌幅榜），旧 v3 缓存含跌幅榜需失效
@@ -1236,7 +1236,7 @@ export async function fetchBlockRotationData(days: number = 20): Promise<{
 
 /** 旧数据源实现（hot_block_list，5日涨幅榜），保留为降级路径 */
 async function fetchBlockRotationDataLegacy(days: number): Promise<{
-    sectorStats: Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
+    sectorStats: Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>;
     rawData: BlockRotationDay[];
 }> {
     const cacheKey = `block_rotation_${days}_v2`;
@@ -1306,10 +1306,10 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
     console.log(`[HotSectorAnalyzer] 板块轮动API返回 ${allDataLists.length} 天数据，截取前 ${dataLists.length} 天`);
 
     // 统计每个板块的上榜次数和涨幅
-    const sectorStats = new Map<string, { name: string; code: string; frequency: number; freq20: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
+    const sectorStats = new Map<string, { name: string; code: string; freq120: number; freq10: number; freq_delta: number; avgZf5: number; latestZf5: number }>();
 
     // dataLists 契约：降序（最新在前，首日=最新交易日；已由数据探查验证：首日 2026-08-05 / 末日 2026-05-13）。
-    // freq20 统计数组前 10 位（最新 10 天，短线活跃度口径）。
+    // freq10 统计数组前 10 位（最新 10 天，短线活跃度口径）。
     for (let i = 0; i < dataLists.length; i++) {
         const blockList = dataLists[i].block_list || [];
         for (const block of blockList) {
@@ -1320,17 +1320,17 @@ async function fetchBlockRotationDataLegacy(days: number): Promise<{
                 sectorStats.set(key, {
                     name: block.name,
                     code: block.code,
-                    frequency: 1,
-                    freq20: i < 10 ? 1 : 0,
+                    freq120: 1,
+                    freq10: i < 10 ? 1 : 0,
                     freq_delta: 0,
                     avgZf5: zf5,
                     latestZf5: zf5,
                 });
             } else {
                 const stat = sectorStats.get(key)!;
-                stat.frequency += 1;
-                if (i < 10) stat.freq20 += 1;
-                stat.avgZf5 = (stat.avgZf5 * (stat.frequency - 1) + zf5) / stat.frequency;
+                stat.freq120 += 1;
+                if (i < 10) stat.freq10 += 1;
+                stat.avgZf5 = (stat.avgZf5 * (stat.freq120 - 1) + zf5) / stat.freq120;
                 stat.latestZf5 = zf5; // 保留最新一天的涨幅
             }
         }
@@ -1523,29 +1523,29 @@ async function fetchConceptConstituentsFromPage(boardCode: string): Promise<{ co
 /**
  * 双池预筛：返回长线池 / 短线池的板块名集合。
  * - 长线池：LONG_WINDOW 内上榜次数 ≥ LONG_POOL_MIN_FREQ
- * - 短线池：SHORT_WINDOW(20) 内上榜次数 ≥ SHORT_POOL_MIN_FREQ
+ * - 短线池：最近 10 个交易日的上榜次数 ≥ SHORT_POOL_MIN_FREQ
  */
-export function computePoolNames<T extends { name: string; frequency: number; freq20?: number }>(
+export function computePoolNames<T extends { name: string; freq120: number; freq10?: number }>(
     candidates: T[],
 ): { longNames: Set<string>; shortNames: Set<string> } {
-    const longNames = new Set(candidates.filter((c) => c.frequency >= LONG_POOL_MIN_FREQ).map((c) => c.name));
-    const shortNames = new Set(candidates.filter((c) => (c.freq20 ?? 0) >= SHORT_POOL_MIN_FREQ).map((c) => c.name));
+    const longNames = new Set(candidates.filter((c) => c.freq120 >= LONG_POOL_MIN_FREQ).map((c) => c.name));
+    const shortNames = new Set(candidates.filter((c) => (c.freq10 ?? 0) >= SHORT_POOL_MIN_FREQ).map((c) => c.name));
     return { longNames, shortNames };
 }
 
 /**
  * 双轨选板：从入池成员中取 topN。
  * - long：按综合评分（freq120 主导）降序
- * - short：按 freq20（近10日涨幅榜上榜次数）降序，相同再按评分
+ * - short：按 freq10（近10日涨幅榜上榜次数）降序，相同再按评分
  */
-export function rankTrack<T extends { frequency: number; freq20?: number; score: number }>(
+export function rankTrack<T extends { freq120: number; freq10?: number; score: number }>(
     items: T[],
     track: 'long' | 'short',
     topN: number,
 ): T[] {
     const cmp = track === 'long'
         ? (a: T, b: T) => b.score - a.score
-        : (a: T, b: T) => (b.freq20 ?? 0) - (a.freq20 ?? 0) || b.score - a.score;
+        : (a: T, b: T) => (b.freq10 ?? 0) - (a.freq10 ?? 0) || b.score - a.score;
     return [...items].sort(cmp).slice(0, topN);
 }
 
@@ -1566,11 +1566,11 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
     console.log(`[HotSectorAnalyzer] 全行业板块: ${allSectors.length} 个`);
 
     // 按上榜频次排序，频次相同按平均涨幅排序
-    allSectors.sort((a, b) => b.frequency - a.frequency || b.avgZf5 - a.avgZf5);
+    allSectors.sort((a, b) => b.freq120 - a.freq120 || b.avgZf5 - a.avgZf5);
 
-    // 构建HotConcept列表（含 freq20/freq_delta；driver 占位与 amount_trend 已移除）
+    // 构建HotConcept列表（含 freq10/freq_delta；driver 占位与 amount_trend 已移除）
     const candidates: HotConcept[] = allSectors.map(sector => {
-        const freqScore = Math.min(10, sector.frequency * 1.2);
+        const freqScore = Math.min(10, sector.freq120 * 1.2);
         const avgChangeScore = Math.min(10, Math.abs(sector.avgZf5) * 1.5);
         const latestChangeScore = Math.min(10, Math.abs(sector.latestZf5) * 1.0);
         const score = Math.round((freqScore * 4.0 + avgChangeScore * 2.0 + latestChangeScore * 1.0) * 100) / 100;
@@ -1579,8 +1579,8 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
             code: sector.code,
             name: sector.name,
             type: 'concept',
-            frequency: sector.frequency,
-            freq20: sector.freq20,
+            freq120: sector.freq120,
+            freq10: sector.freq10,
             freq_delta: sector.freq_delta,
             avg_change: Math.round(sector.avgZf5 * 100) / 100,
             today_change: Math.round(sector.latestZf5 * 100) / 100,
@@ -1598,8 +1598,8 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
         console.log('[HotSectorAnalyzer] 候选池为空（无可用板块数据）');
         return [];
     }
-    // 双轨选板：长线池按评分取 topN；短线池按 freq20（近10日涨幅榜上榜次数）取 topN；再取并集（交集去重）。
-    // 短线轨道**必须**按 freq20 排序：评分公式 freqScore×4 偏 freq120 长线，若短线也按评分选，
+    // 双轨选板：长线池按评分取 topN；短线池按 freq10（近10日涨幅榜上榜次数）取 topN；再取并集（交集去重）。
+    // 短线轨道**必须**按 freq10 排序：评分公式 freqScore×4 偏 freq120 长线，若短线也按评分选，
     // 会选出与长线相同的板块（短线语义丢失，文化传媒/AI视频等短线活跃板块被挤出）。
     const marked = candidates
         .filter(c => longNames.has(c.name) || shortNames.has(c.name))
@@ -1614,7 +1614,7 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
 
     console.log(`[HotSectorAnalyzer] 长线池: ${longNames.size} 个（选 top${topN}）/ 短线池: ${shortNames.size} 个（选 top${topN}），并集 ${result.length} 个做 AI 研判`);
     for (const c of result) {
-        console.log(`  ${c.name}: freq${LONG_WINDOW}=${c.frequency} freq20=${c.freq20} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
+        console.log(`  ${c.name}: freq${LONG_WINDOW}=${c.freq120} freq10=${c.freq10} Δ=${c.freq_delta} 评分=${c.score} 池=[${c.in_long_pool ? 'L' : ''}${c.in_short_pool ? 'S' : ''}]`);
     }
 
     // 从同花顺概念板块页面并发爬取龙头股
@@ -1719,7 +1719,7 @@ async function identifyHotConcepts(topN: number = 16, days: number = LONG_WINDOW
 
         // 资金评分（净流入下线后不再含资金因子）：评分 = 频次(60%) + 平均涨幅(25%) + 最新涨幅(15%)
         for (const concept of result) {
-            const freqScore = Math.min(10, concept.frequency * 1.2);
+            const freqScore = Math.min(10, concept.freq120 * 1.2);
             const avgChangeScore = Math.min(10, Math.abs(concept.avg_change) * 1.5);
             const latestChangeScore = Math.min(10, Math.abs(concept.today_change) * 1.0);
             concept.score = Math.round((freqScore * 6.0 + avgChangeScore * 2.5 + latestChangeScore * 1.5) * 100) / 100;
@@ -2282,7 +2282,7 @@ interface AiAnalysis {
 /** AI API是否可用的标记（首次失败后直接跳过，避免重复超时） */
 let aiApiAvailable: boolean | null = null;
 
-/** 构建 AI 研判 prompt（chain 分流：仅含当前池的数据与输出字段；修复原"近20日上榜频次"硬编码，frequency 现为 ${days} 日口径） */
+/** 构建 AI 研判 prompt（chain 分流：仅含当前池的数据与输出字段；修复原"近20日上榜频次"硬编码，freq120 现为 ${days} 日口径） */
 export function buildAiPrompt(
     sectorName: string,
     sectorData: HotConcept,
@@ -2327,7 +2327,7 @@ export function buildAiPrompt(
         : '';
     const shortGuide = chain !== 'long'
         ? `【短线链】（侧重爆发力+热度维持）：
-1. 热度捕捉：freq20 与频次变化率是否陡升/连续霸榜（上榜频次高即热度基础，默认给出≥1天短线研判）
+1. 热度捕捉：freq10 与频次变化率是否陡升/连续霸榜（上榜频次高即热度基础，默认给出≥1天短线研判）
 2. 催化剂定性：从板块名/领涨股推断事件类型（突发→短炒1~5天；技术突破→1~2波5~15天）
 3. 资金博弈：涨停家数/连板高度（游资情绪近似），连板高度决定持续时间
 4. 位置风险：换手率是否过热（>12% 高潮期，1-3天见顶）；首次放量且换手温和→启动期（5-10天）
@@ -2340,8 +2340,8 @@ export function buildAiPrompt(
 ## 概念板块数据
 - 概念名称：${sectorName}
 - 板块评分：${sectorData.score}分
-- ${days}日上榜频次：${sectorData.frequency}次（长线持续性核心）
-- 近10日上榜次数：${sectorData.freq20 ?? 0}次（短线活跃度）
+- ${days}日上榜频次：${sectorData.freq120}次（长线持续性核心）
+- 近10日上榜次数：${sectorData.freq10 ?? 0}次（短线活跃度）
 - 今日涨幅：${sectorData.today_change}%
 - 领涨股：${sectorData.leading_stock}（涨幅${sectorData.leading_change}%）
 - 上涨/下跌家数：${sectorData.up_count}/${sectorData.down_count}（行业维度）
@@ -2490,9 +2490,9 @@ export const LONG_WINDOW = 120;
 export const LONG_POOL_MIN_FREQ = 8;
 
 /**
- * 短线池门槛：SHORT_WINDOW(20) 内**涨幅榜**上榜 ≥1 次。
- * 2026-10-11：由「不设门槛」收紧为 1 —— 排除近 20 日从未上过涨幅榜的板块，
- * 使短线榜聚焦近期确有资金异动的方向；下游仍按 freq20 降序取 top8。
+ * 短线池门槛：最近 10 个交易日的**涨幅榜**上榜 ≥1 次。
+ * 2026-10-11：由「不设门槛」收紧为 1 —— 排除最近 10 个交易日从未上过涨幅榜的板块，
+ * 使短线榜聚焦近期确有资金异动的方向；下游仍按 freq10 降序取 top8。
  */
 export const SHORT_POOL_MIN_FREQ = 1;
 
@@ -2510,15 +2510,15 @@ export function deriveCycle(a: {
     return 'none';  // 长短线均不成立（不再无条件归 short）
 }
 
-/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 frequency 降序）+ 短线榜 top8（short+both，按上榜次数 freq20 降序，相同按热度 short_heat 降序），按 name 去重；
+/** 双榜合并：长线榜 top8（long+both，按 long_term_days 降序，相同按 freq120 降序）+ 短线榜 top8（short+both，按上榜次数 freq10 降序，相同按热度 short_heat 降序），按 name 去重；
  * 'none'（长短线均不成立）板块保留在末尾，供前端取全量后按天数过滤展示 */
 export function applyDualRankings<T extends {
     name: string;
     cycle: 'short' | 'long' | 'both' | 'none';
     long_term_days?: number;
     short_term_days?: number;
-    frequency?: number;
-    freq20?: number;
+    freq120?: number;
+    freq10?: number;
     ai_analysis?: AiAnalysis | string | null;
 }>(sectors: T[]): T[] {
     const longBoard = sectors
@@ -2526,14 +2526,14 @@ export function applyDualRankings<T extends {
         .sort((a, b) => {
             const daysDiff = (b.long_term_days ?? 0) - (a.long_term_days ?? 0);
             if (daysDiff !== 0) return daysDiff;
-            return (b.frequency ?? 0) - (a.frequency ?? 0);
+            return (b.freq120 ?? 0) - (a.freq120 ?? 0);
         })
         .slice(0, 8);
     const shortBoard = sectors
         .filter(s => s.cycle === 'short' || s.cycle === 'both')
         .sort((a, b) => {
-            // 短线榜按上榜次数（近10日 freq20）降序，相同按短线热度（short_heat，存于 ai_analysis）降序
-            const freqDiff = (b.freq20 ?? 0) - (a.freq20 ?? 0);
+            // 短线榜按上榜次数（近10日 freq10）降序，相同按短线热度（short_heat，存于 ai_analysis）降序
+            const freqDiff = (b.freq10 ?? 0) - (a.freq10 ?? 0);
             if (freqDiff !== 0) return freqDiff;
             const heatOf = (s: { ai_analysis?: AiAnalysis | string | null }) =>
                 typeof s.ai_analysis === 'object' && s.ai_analysis ? (s.ai_analysis.short_heat ?? 0) : 0;
@@ -2563,7 +2563,7 @@ function inferRuleLogicType(sectorName: string, fallback: string): string {
 }
 
 function ruleBasedAnalysis(sectorName: string, sectorData: HotConcept, transmission: TransmissionResult): AiAnalysis {
-    const freq = sectorData.frequency;
+    const freq = sectorData.freq120;
     const avgChange = sectorData.avg_change;
 
     // 规则引擎降级八字段（仅降级，不写入 prompt）
@@ -3478,7 +3478,7 @@ export class WindLeaderAnalyzerService {
         // 清除缓存，确保获取最新数据
         await clearAllCache();
 
-        // 1. 识别风口候选池（120天长线统计 + freq20；预筛：长线池 freq120≥LONG_POOL_MIN_FREQ ∪ 短线池 freq20≥SHORT_POOL_MIN_FREQ）
+        // 1. 识别风口候选池（120天长线统计 + freq10；预筛：长线池 freq120≥LONG_POOL_MIN_FREQ ∪ 短线池 freq10≥SHORT_POOL_MIN_FREQ）
         const hotConcepts = await identifyHotConcepts(16, LONG_WINDOW);
         // 候选池为空 → 空榜（不再降低条件重试）
         if (hotConcepts.length === 0) {
@@ -3956,7 +3956,7 @@ export class WindLeaderAnalyzerService {
 
             // 板块综合评分（用于泡泡图大小）：频次*5 + 均涨幅*3 + 最新涨幅*2
             const sectorScore = Math.round(
-                (concept.frequency || 0) * 5 +
+                (concept.freq120 || 0) * 5 +
                 (concept.avg_change || 0) * 3 +
                 (concept.today_change || 0) * 2
             );
@@ -3966,8 +3966,8 @@ export class WindLeaderAnalyzerService {
                 cycle,                       // 'short' | 'long' | 'both'
                 name: concept.name,
                 type: concept.type,
-                frequency: concept.frequency,
-                freq20: concept.freq20,
+                freq120: concept.freq120,
+                freq10: concept.freq10,
                 freq_delta: concept.freq_delta,
                 avg_change: concept.avg_change,
                 today_change: concept.today_change,

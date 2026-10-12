@@ -32,8 +32,8 @@ interface WindLeaderSector {
     cycle?: 'short' | 'long' | 'both' | 'none';
     name?: string;
     type?: string;
-    frequency?: number;
-    freq20?: number;
+    freq120?: number;
+    freq10?: number;
     freq_delta?: number;
     avg_change?: number;
     today_change?: number;
@@ -540,8 +540,8 @@ export class WindLeaderService {
             cycle: sector.cycle ?? 'short',
             name: sector.name,
             type: sector.type,
-            frequency: sector.frequency,
-            freq20: sector.freq20,
+            freq120: sector.freq120,
+            freq10: sector.freq10,
             freq_delta: sector.freq_delta,
             avg_change: sector.avg_change,
             today_change: sector.today_change,

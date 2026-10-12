@@ -523,34 +523,34 @@ async function calcTrackDim(
         // 回退：如果 bestBoard 为空，用旧的 sectorStats 匹配
         try {
             const { sectorStats, rawData } = await fetchBlockRotationData(60);
-            const getSectorStat = (name: string): { frequency: number; matchedName?: string } | undefined => {
+            const getSectorStat = (name: string): { freq120: number; matchedName?: string } | undefined => {
                 if (!name) return undefined;
                 if (sectorStats instanceof Map) {
                     const exact = sectorStats.get(name);
-                    if (exact) return { frequency: exact.frequency, matchedName: name };
+                    if (exact) return { freq120: exact.freq120, matchedName: name };
                 } else {
                     const obj = (sectorStats as any)[name];
-                    if (obj) return { frequency: obj.frequency || 0, matchedName: name };
+                    if (obj) return { freq120: obj.freq120 || 0, matchedName: name };
                 }
                 const allEntries: [string, any][] = sectorStats instanceof Map
                     ? [...sectorStats.entries()]
                     : Object.entries(sectorStats as any);
                 for (const [statName, stat] of allEntries) {
                     if (statName.length >= 2 && (name.includes(statName) || statName.includes(name))) {
-                        return { frequency: stat.frequency || 0, matchedName: statName };
+                        return { freq120: stat.freq120 || 0, matchedName: statName };
                     }
                 }
                 return undefined;
             };
             if (data.industry?.industry_name) {
                 const stat = getSectorStat(data.industry.industry_name);
-                if (stat && stat.frequency > 0) { sectorListCount60d = stat.frequency; if (stat.matchedName) sectorName = stat.matchedName; }
+                if (stat && stat.freq120 > 0) { sectorListCount60d = stat.freq120; if (stat.matchedName) sectorName = stat.matchedName; }
             }
             if (sectorListCount60d === 0 && data.kplConceptCons.length > 0) {
                 for (const con of data.kplConceptCons) {
                     const stat = getSectorStat(con.con_name);
-                    if (stat && stat.frequency > 0) {
-                        sectorListCount60d = stat.frequency;
+                    if (stat && stat.freq120 > 0) {
+                        sectorListCount60d = stat.freq120;
                         sectorName = stat.matchedName || con.con_name;
                         break;
                     }

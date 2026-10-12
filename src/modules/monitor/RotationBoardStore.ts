@@ -1,12 +1,15 @@
 /**
  * 板块轮动榜持久化（网页同款口径）
  *
- * 数据源：同花顺板块指数日线 d.10jqka.com.cn/v6/line/bk_<code>/01/last.js
- * 口径：每日涨幅前10（up_rank）+ 每日跌幅前10（down_rank），与网页
- *       "近10日热门/板块轮动表"（apigate hotCirclePlate 的 mrpm）一致
+ * 数据源：
+ *  1. 同花顺板块指数日线 d.10jqka.com.cn/v6/line/bk_<code>/01/last.js —— 历史长周期榜（约 140 个交易日）
+ *  2. 同花顺 hotCirclePlate（apigate）的 mrpm —— 近 30 日**每日完整**涨/跌前 10（官网"近10日热门/板块轮动表"同款）
+ *     last.js 对「当日」那根 bar 更新不全（881xxx 行业板块常整列缺失）→ 近 30 日一律以 mrpm 为准，
+ *     否则当日榜残缺会把下游「上榜次数」算错（实测 10-12 只算出 885/886 概念、无一个行业板块）。
+ * 口径：每日涨幅前10（up_rank）+ 每日跌幅前10（down_rank），与网页"近10日热门/板块轮动表"一致
  *       （已验证：用日线还原每日涨跌榜命中率 149/150 与 150/150）。
  *       注意：落库同时含涨/跌两榜（供"板块轮动表"展示），但下游"上榜次数"
- *       （frequency/freq20）统计**只取涨幅榜**（up_rank 非空），跌幅榜不计入。
+ *       （freq120/freq10）统计**只取涨幅榜**（up_rank 非空），跌幅榜不计入。
  *
  * 持久化到 board_rotation_daily 表后，支持任意天数（10/20/30/60/120）
  * 的板块上榜次数统计，无需每次全量重算。
@@ -70,7 +73,7 @@ let poolCacheAt = 0;
 export async function getBoardPool(): Promise<BoardPoolItem[]> {
     if (poolCache && Date.now() - poolCacheAt < POOL_CACHE_TTL) return poolCache;
     // 主路径：hotCirclePlate 网页同款板块池
-    const hotItems = await fetchPoolFromHotCirclePlate();
+    const { pool: hotItems } = await fetchHotCirclePlate();
     if (hotItems.length >= 50) {
         poolCache = hotItems;
         poolCacheAt = Date.now();
@@ -110,8 +113,33 @@ export async function getBoardPool(): Promise<BoardPoolItem[]> {
     return [];
 }
 
-/** 网页同款板块池：从 hotCirclePlate 近 30 日 mrpm 收集上榜板块（与同花顺网页"板块轮动表"口径一致） */
-async function fetchPoolFromHotCirclePlate(): Promise<BoardPoolItem[]> {
+/**
+ * hotCirclePlate mrpm 单日榜。
+ * 契约（已用官网数据核对）：`up` 的 stocks 为「第1名→第10名」；`down` 的 stocks 为「第10名→第1名」。
+ * day0 = 最新交易日，每日各 10 条。
+ */
+export interface MrpmDay {
+    datetime: string;
+    stocks: { stockcode: string; stockname: string }[];
+}
+
+export interface MrpmPayload {
+    up: MrpmDay[];
+    down: MrpmDay[];
+}
+
+/** hotCirclePlate 拉取结果：网页同款板块池 + 近 30 日每日涨/跌前 10 */
+export interface HotCirclePlateData {
+    pool: BoardPoolItem[];
+    mrpm: MrpmPayload;
+}
+
+/**
+ * 拉取 hotCirclePlate（官网同款）：近 30 日板块池 + 每日涨/跌榜（mrpm）。
+ * 失败返回空 pool/mrpm，由调用方降级（不抛错）。
+ */
+async function fetchHotCirclePlate(): Promise<HotCirclePlateData> {
+    const empty: HotCirclePlateData = { pool: [], mrpm: { up: [], down: [] } };
     try {
         const url = 'https://apigate.10jqka.com.cn/d/charge/smallcharge/l2/v2/hotCirclePlate?days=30&filter=';
         const resp = await sessionFetch(url, {
@@ -120,10 +148,10 @@ async function fetchPoolFromHotCirclePlate(): Promise<BoardPoolItem[]> {
                 'Referer': 'http://l2.10jqka.com.cn/hottrack/public/dist/index.html',
             },
         });
-        if (!resp.ok) return [];
-        const json = await resp.json() as { result?: { mrpm?: { up?: { stocks: { stockcode: string; stockname: string }[] }[]; down?: { stocks: { stockcode: string; stockname: string }[] }[] } } };
+        if (!resp.ok) return empty;
+        const json = await resp.json() as { result?: { mrpm?: { up?: MrpmDay[]; down?: MrpmDay[] } } };
         const mrpm = json.result?.mrpm;
-        if (!mrpm) return [];
+        if (!mrpm?.up?.length) return empty;
         const items: BoardPoolItem[] = [];
         const seen = new Set<string>();
         const add = (code: string, name: string) => {
@@ -132,13 +160,14 @@ async function fetchPoolFromHotCirclePlate(): Promise<BoardPoolItem[]> {
             const category = code.startsWith('881') ? 'industry' : 'concept';
             items.push({ code, name, category });
         };
-        for (const day of mrpm.up ?? []) for (const s of day.stocks) add(s.stockcode, s.stockname);
+        for (const day of mrpm.up) for (const s of day.stocks) add(s.stockcode, s.stockname);
         for (const day of mrpm.down ?? []) for (const s of day.stocks) add(s.stockcode, s.stockname);
-        console.log(`[RotationBoardStore] 板块池（hotCirclePlate 兜底）: ${items.length} 个`);
-        return items;
+        const down = mrpm.down ?? [];
+        console.log(`[RotationBoardStore] hotCirclePlate: 池 ${items.length} 个 / 涨榜 ${mrpm.up.length} 日 / 跌榜 ${down.length} 日`);
+        return { pool: items, mrpm: { up: mrpm.up, down } };
     } catch (err) {
-        console.warn('[RotationBoardStore] hotCirclePlate 兜底池失败:', (err as Error).message);
-        return [];
+        console.warn('[RotationBoardStore] hotCirclePlate 拉取失败:', (err as Error).message);
+        return empty;
     }
 }
 
@@ -232,9 +261,8 @@ export function parseKlineFull(jsonpText: string): Map<string, BoardKlinePoint> 
     return byDate;
 }
 
-/** 计算全部可交易日期的每日涨跌榜（含 pct_change），供回填/增量入库 */
-export function computeDailyBoards(klines: Map<string, Map<string, number>>, poolItems: BoardPoolItem[]): DailyRotationRow[] {
-    // 每个板块: date -> 当日涨跌幅(%)
+/** 由板块日线 K 线计算每个板块 date→当日涨跌幅(%) */
+export function computePctMap(klines: Map<string, Map<string, number>>): Map<string, Map<string, number>> {
     const pctMap = new Map<string, Map<string, number>>();
     for (const [code, byDate] of klines) {
         const sorted = [...byDate.keys()].sort();
@@ -246,6 +274,13 @@ export function computeDailyBoards(klines: Map<string, Map<string, number>>, poo
         }
         pctMap.set(code, m);
     }
+    return pctMap;
+}
+
+/** 计算全部可交易日期的每日涨跌榜（含 pct_change），供回填/增量入库 */
+export function computeDailyBoards(klines: Map<string, Map<string, number>>, poolItems: BoardPoolItem[]): DailyRotationRow[] {
+    // 每个板块: date -> 当日涨跌幅(%)
+    const pctMap = computePctMap(klines);
 
     // 全部交易日（跨板块并集，升序）
     const allDates = new Set<string>();
@@ -283,6 +318,54 @@ export function computeDailyBoards(klines: Map<string, Map<string, number>>, poo
         }));
     }
     return rows;
+}
+
+/**
+ * mrpm（hotCirclePlate 官网同款每日涨/跌榜）→ 每日轮动榜行。
+ * - 涨幅榜：stocks[j] → up_rank = j + 1
+ * - 跌幅榜：stocks[j] → down_rank = 条数 - j（该数组为「第10名→第1名」）
+ * - pct 由 pctLookup 提供（通常取 last.js 日线），缺失记 0
+ */
+export function buildRowsFromMrpm(
+    mrpm: MrpmPayload,
+    pctLookup: (code: string, date: string) => number | undefined,
+): DailyRotationRow[] {
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const byKey = new Map<string, DailyRotationRow>();
+    const put = (date: string, code: string, name: string, patch: { up_rank?: number; down_rank?: number }) => {
+        const key = `${date}|${code}`;
+        const row = byKey.get(key) ?? {
+            trading_date: date,
+            board_code: code,
+            board_name: name,
+            up_rank: null,
+            down_rank: null,
+            pct_change: round2(pctLookup(code, date) ?? 0),
+        };
+        if (patch.up_rank !== undefined) row.up_rank = patch.up_rank;
+        if (patch.down_rank !== undefined) row.down_rank = patch.down_rank;
+        byKey.set(key, row);
+    };
+    for (const d of mrpm.up) {
+        d.stocks.slice(0, 10).forEach((s, j) => put(d.datetime, s.stockcode, s.stockname, { up_rank: j + 1 }));
+    }
+    for (const d of mrpm.down) {
+        const n = Math.min(d.stocks.length, 10);
+        d.stocks.slice(0, 10).forEach((s, j) => put(d.datetime, s.stockcode, s.stockname, { down_rank: n - j }));
+    }
+    return [...byKey.values()];
+}
+
+/**
+ * 合并历史行与 mrpm 行：mrpm 覆盖的交易日以 mrpm 为准（丢弃该日的历史行）。
+ *
+ * 为什么：last.js 对「当日」那根 bar 更新不全（881xxx 行业板块常整列缺失），
+ * 用日线推导的当日榜会残缺、把「上榜次数」算错；mrpm 是官网同款完整榜单。
+ */
+export function mergeRotationRows(histRows: DailyRotationRow[], mrpmRows: DailyRotationRow[]): DailyRotationRow[] {
+    if (mrpmRows.length === 0) return histRows;
+    const covered = new Set(mrpmRows.map((r) => r.trading_date));
+    return [...histRows.filter((r) => !covered.has(r.trading_date)), ...mrpmRows];
 }
 
 /**
@@ -357,7 +440,16 @@ export async function ensureRotationSchema(): Promise<void> {
  * @returns 写入行数
  */
 export async function syncRotationHistory(): Promise<number> {
-    const poolItems = await getBoardPool();
+    // 1) hotCirclePlate：网页同款板块池 + 近 30 日每日完整涨/跌榜（mrpm）
+    const hp = await fetchHotCirclePlate();
+    let poolItems = hp.pool;
+    if (poolItems.length >= 50) {
+        poolCache = poolItems;
+        poolCacheAt = Date.now();
+    } else {
+        console.warn('[RotationBoardStore] hotCirclePlate 不可用，回退板块池缓存/Tushare');
+        poolItems = await getBoardPool();
+    }
     if (poolItems.length === 0) {
         console.warn('[RotationBoardStore] 板块池为空，跳过同步');
         return 0;
@@ -380,14 +472,20 @@ export async function syncRotationHistory(): Promise<number> {
     });
     console.log(`[RotationBoardStore] 日线拉取完成: ${fetched}/${poolItems.length} 个板块`);
 
-    const rows = computeDailyBoards(klines, poolItems);
+    const pctMap = computePctMap(klines);
+    const histRows = computeDailyBoards(klines, poolItems);
+    // 2) 近 30 日以 mrpm 为准：last.js 当日 bar 更新不全（881xxx 行业板块常整列缺失），
+    //    用日线推导的当日榜会残缺 → 用官网同款 mrpm 覆盖这些日期。
+    const mrpmRows = buildRowsFromMrpm(hp.mrpm, (code, date) => pctMap.get(code)?.get(date));
+    const rows = mergeRotationRows(histRows, mrpmRows);
     if (rows.length === 0) {
         console.warn('[RotationBoardStore] 未计算出有效榜单');
         return 0;
     }
     await replaceRotationRows(rows);
     const dayCount = new Set(rows.map(r => r.trading_date)).size;
-    console.log(`[RotationBoardStore] 同步完成: ${rows.length} 条 / ${dayCount} 个交易日（按交易日覆盖写入）`);
+    const mrpmDays = new Set(mrpmRows.map(r => r.trading_date)).size;
+    console.log(`[RotationBoardStore] 同步完成: ${rows.length} 条 / ${dayCount} 个交易日（其中 ${mrpmDays} 日以 mrpm 为准，按交易日覆盖写入）`);
     return rows.length;
 }
 

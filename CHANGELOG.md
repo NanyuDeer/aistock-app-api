@@ -2,6 +2,30 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-10-12 — 风口龙头当日榜改用官网 mrpm（修「上榜次数」算错）+ 字段改名 freq10/freq120
+
+**开发者**: Aria
+
+### 修复
+
+- **当日榜残缺（「上榜次数」算错的根因）**：每日榜原由同花顺 `last.js` 日线推导，但 `last.js` 对**「当日」那根 bar 更新不全**（881xxx 行业板块常整列缺失、部分概念也缺）→ 当日榜只剩一部分板块（实测 10-12 只算出 885/886 概念、无一个 881 行业板块，第 1 名被算成「赛马概念 +1.27%」，而官网是「影视院线」）。
+  - 改为：`syncRotationHistory` 额外拉 `hotCirclePlate`（官网同款）的 `mrpm`（近 30 日**每日完整**涨/跌前 10），**近 30 日一律以 mrpm 为准**（`mergeRotationRows` 丢弃这些日期的历史残缺行），更早日期仍由 `last.js` 推导；pct 取 `last.js`（缺失记 0）。
+  - 新增纯函数 `buildRowsFromMrpm` / `mergeRotationRows` / `computePctMap`；mrpm 契约（已用官网数据核对）：`up` 为「第1名→第10名」、`down` 为「第10名→第1名」，day0 = 最新交易日。
+  - 修正后近 10 个交易日涨幅榜上榜次数与同花顺网页「近10日热门」**完全一致**：文化传媒 4 / AI视频 4 / 风电设备 3 / 短剧游戏 3 / 知识产权保护 3 / 电池 2 / 影视院线 2 / 重组蛋白 2 / 细胞免疫治疗 2 / 快手概念 2。
+
+### 变更（字段改名，纠正历史误命名）
+
+- 短线 `freq20` → **`freq10`**（真实口径一直是「最近 **10** 个交易日」，名字为历史遗留误命名：原设计 20 日、实现改 10 日时未同步改名）。
+- 长线 `frequency` → **`freq120`**（近 120 个交易日），命名对称自明。
+- 同步范围：`WindLeaderAnalyzerService` / `WindLeaderService` / `TrendScoreService`（含 API 输出 `hot-sectors.json` 的字段名）；app 前端 `leaders.vue` / `MorningContent.vue` / `sector-detail.vue` / `shared/api/modules/stock.ts`（web 前端无引用）。
+
+### 测试
+
+- 新增 `src/modules/monitor/__tests__/rotationBoardMrpm.spec.ts`（3 例）：mrpm 名次映射、pct 取值（缺失记 0）、mrpm 覆盖历史残缺行。
+- 全量测试 → **1046 / 1046 / 0**；`tsc --noEmit` exit 0；TDD 先红后绿。
+
+---
+
 ## [master] 2026-10-11 — 风口龙头短线池门槛收紧：不设门槛 → freq20 ≥ 1
 
 **开发者**: Aria
