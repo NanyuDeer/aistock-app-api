@@ -180,6 +180,8 @@ src/
 | `POST /internal/calendar/events` | **事件日历写入**（market_calendar_events 幂等 upsert） | 事件记录 JSON，需 X-Internal-Token |
 | `GET /internal/calendar/earnings-density` | **业绩披露密度**（earnings-density，rhythm-master 择时用） | date: YYYY-MM-DD，需 X-Internal-Token |
 | `GET /internal/fear-greed` | **恐惧贪婪指数**（rhythm-master 情绪维度） | date: YYYY-MM-DD，需 X-Internal-Token |
+| `GET /internal/event-vitality/:eventId` | **事件影响存活度**（Impact Vitality，只读：baseline + 最新一行 + 近 N 天历史） | eventId, historyDays?(默认14上限60)，需 X-Internal-Token |
+| `POST /internal/event-vitality/run` | **手动触发存活度计算 / 历史回补**（强制 enabled=true，不受灰度开关限制） | body/query: statDate?(YYYY-MM-DD，缺省=今天)，需 X-Internal-Token |
 
 > 新增接口（2026-07-08）：`/internal/wind-leaders`、`/internal/institution-research`、`/internal/monitor/:symbol` 供Python Agent和团队成员调用
 >
@@ -196,6 +198,8 @@ src/
 > 新增（2026-08-05）：ChatAgent P9 会话管理 + P10 线 2 计费 — 新表 `chat_sessions`（会话元数据：id VARCHAR(64) PK、user_id=JWT openid、title 默认'新会话'、last_message_at、created_at）与 `chat_token_usage`（用户维度 token 计费：prompt/completion/total_tokens、question、created_at），均启动时自动建表（`src/index.ts`）；新增公开接口 `/api/chat/sessions`（POST 幂等 upsert / GET 最近50个 / DELETE，JWT openid 鉴权）与 `/api/chat/usage/summary`，内部接口 `/internal/usage/records` 与 `/internal/usage/summary`（供 Python ws.py 计费回调）
 >
 > 新增（2026-08-30）：节奏大师（rhythm_master）三仓功能 — 新模块 `modules/calendar`（L1 交割日规则 + `market_calendar_events` 事件日历，启动时自动建表，见 `src/index.ts`）；新增内部接口 `GET/POST /internal/calendar/events`、`GET /internal/calendar/earnings-density`、`GET /internal/fear-greed`；新增公开接口 `GET /api/agent/rhythm-master/:date`（三时点 refresh_slot 版本读取，publicRouter 须在 createAgentProxy 之前挂载）
+>
+> 新增（2026-10-15）：事件影响存活度（Impact Vitality）全栈闭环 — 新模块 `modules/monitor/EventImpactVitalityService`（新表 `event_impact_vitality_baseline` / `event_impact_vitality_daily`，启动时 `ensureVitalitySchema()` 幂等建表 + 迁移脚本 `src/db/migrations/025_event_impact_vitality.sql`）；新增内部接口 `GET /internal/event-vitality/:eventId`（只读）与 `POST /internal/event-vitality/run`（手动触发/回补，强制 enabled）；`POST /internal/analysis-reports` 在写入 `event_conduction` 报告时**落库即冻结 chain 快照**（`ON CONFLICT DO NOTHING` 一次定稿），根治报告 7 天 TTL 被 `ReportCleanupCron` 物理删除后 chain 永久丢失；公开接口 `GET /api/agent/event/list`（每项）与 `GET /api/agent/event/:eventId`（顶层）新增 `impactVitality: { score, status, statDate } | null` **annotation-only**（只标注，不排序、不过滤）；前端 APP / Web 事件列表卡片与详情 Hero 卡按存活度渲染小标（alive/fading/expired；no_observation 或无数据不渲染）。总开关 `VITALITY_ENABLED` 默认 true（生产启用，显式设为 false 可关闭 15:50 计算）
 
 ## Vibecoding 工作流
 

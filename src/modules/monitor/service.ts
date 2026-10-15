@@ -1,5 +1,6 @@
 import { StockInfoService, type StockInfoImpact, type StockInfoJudgementRow } from '../crawler/StockInfoService';
 import pool from '../../core/db';
+import { resolveIndustryAliases } from '../../shared/utils/industryAlias';
 
 const INFO_TYPE_LABELS: Record<string, string> = {
     announcement: '公告研判',
@@ -262,6 +263,36 @@ export class StockMonitorService {
             total: cycle ? events.length : Number(countResult.rows[0]?.total || 0),
             events,
         };
+    }
+
+    /**
+     * 自选股行业别名：读用户自选股 → `stocks.industry` → 同族行业名集合（申万一级归组+旧名归一）。
+     * 自选股归属双通道与 getEventsByUserFavorites 一致（user_id 优先，openid 兜底老微信数据）。
+     * 缺 industry 的自选股 → aliases 返回 []（前端跳过该只，不参与匹配）。
+     */
+    static async getFavoriteIndustryAliases(
+        userId: string,
+        openid: string,
+    ): Promise<Record<string, { name: string; industry: string; aliases: string[] }>> {
+        const result = await pool.query(
+            `SELECT us.symbol, s.name, s.industry
+             FROM user_stocks us
+             LEFT JOIN stocks s ON us.symbol = s.symbol
+             WHERE (us.user_id = $1 OR (us.user_id IS NULL AND us.openid = $2))
+             ORDER BY us.sort_order ASC, us.created_at DESC`,
+            [userId, openid],
+        );
+
+        const out: Record<string, { name: string; industry: string; aliases: string[] }> = {};
+        for (const row of result.rows as Array<{ symbol: string; name: string | null; industry: string | null }>) {
+            const industry = (row.industry ?? '').trim();
+            out[row.symbol] = {
+                name: row.name ?? '',
+                industry,
+                aliases: industry ? resolveIndustryAliases(industry) : [],
+            };
+        }
+        return out;
     }
 
     static async getStats(): Promise<StockMonitorStats> {

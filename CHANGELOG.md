@@ -2,6 +2,33 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-10-15 — 事件影响存活度全栈闭环 + 自选股相关事件卡片后端
+
+**开发者**: xusiyun
+
+### 新增
+
+- 新增 `src/modules/monitor/EventImpactVitalityService.ts`：事件影响存活度（chain Top3 行业 ≈ 同花顺行业板块，`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`，分档 alive/fading/expired/no_observation）。
+- 新增迁移 `src/db/migrations/025_event_impact_vitality.sql`（`event_impact_vitality_baseline` chain 快照 + `event_impact_vitality_daily` 每日算分，均 `IF NOT EXISTS` 幂等），并在启动时 `ensureVitalitySchema()` 兜底建表。
+- 新增 `src/shared/utils/industryAlias.ts`：`SW_INDUSTRY_MAP` 作为行业口径单一数据源 + `LEGACY_INDUSTRY_ALIAS` 旧申万名归一 + 申万一级同族展开。
+- 新增接口 `GET /internal/event-vitality/:eventId`（只读）、`POST /internal/event-vitality/run`（手动触发/回补，强制 enabled）、`GET /api/cn/favorites/industry-aliases`（自选股行业别名，需登录）。
+
+### 改进
+
+- `POST /internal/analysis-reports` 在写入 `event_conduction` 报告时 best-effort 冻结 chain 快照（`ON CONFLICT (event_id) DO NOTHING` 一次定稿，try/catch 只告警不阻断），根治报告 7 天 TTL 被 `ReportCleanupCron` 物理删除后 chain 永久丢失。
+- `/api/agent/event/list`（每项）与 `/api/agent/event/:eventId`（顶层）加性输出 `impactVitality: { score, status, statDate } | null`，annotation-only（只标注，不排序、不过滤）。
+- 15:50 交易日 cron（`runIfTradingDay`）+ `VITALITY_ENABLED` 总开关默认改为 true（生产启用，显式设 false 可关闭）。
+
+### 重构
+
+- `src/modules/quote/TushareService.ts` 的 `SW_INDUSTRY_MAP` 搬入 `shared/utils/industryAlias.ts`（内容逐字零改动，仅新增 import），`getStockIndustry` 返回值不变。
+
+### 验证
+
+- `npx tsc --noEmit` exit 0；存活度单测 40/40、industryAlias 5/5、event_conduction 契约 23/23、chat_analysis 2/2 全绿。
+
+---
+
 ## [master] 2026-10-12 — 风口龙头当日榜改用官网 mrpm（修「上榜次数」算错）+ 字段改名 freq10/freq120
 
 **开发者**: Aria

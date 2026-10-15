@@ -11,6 +11,7 @@
 - `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
+- `GET /api/cn/favorites/industry-aliases` — 自选股行业别名（读 `user_stocks` join `stocks.industry`，经 `shared/utils/industryAlias` 做旧申万名归一 + 申万一级同族展开，返回 `{[symbol]: {name, industry, aliases: string[]}}`；供事件传导「自选股相关事件」卡片与事件 `chain_summary` 行业求交）
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
 - `GET /api/cn/stocks/trend-score/*` — 趋势股评分
 - `GET /api/aigraph/*` — AI 知识图谱
@@ -27,6 +28,7 @@
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
 - `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线 + hotCirclePlate mrpm，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取；**下游"上榜次数"统计只取涨幅榜 up_rank，跌幅榜仅用于展示不计入**；近30日以 mrpm 为准，更早由日线推导）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
+- `EventImpactVitalityService.ts` — 事件影响存活度（判断已推送重大消息的影响是否仍在传递）。chain Top3 行业 ≈ 同花顺行业板块（`getThsIndex('I','A')` 建名→码索引 24h 缓存 + `INDUSTRY_ALIAS_BRIDGE` 4 条别名桥接），`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`，分档 alive/fading/expired/no_observation。**chain 必须自持久化到 `event_impact_vitality_baseline`**（event_conduction 报告 TTL=7 天，03:00 ReportCleanupCron 会物理删除 chain）：`snapshotBaselineForEvent` 由 `POST /internal/analysis-reports`（`report_type='event_conduction'`）**落库即冻结**（`ON CONFLICT (event_id) DO NOTHING` 一次定稿），不依赖 15:50 cron 事后补；结果落 `event_impact_vitality_daily`。**读接口**：`getLatestVitality`（单事件）/ `getLatestVitalityByEventIds`（批量，`IN ($1,$2,...)` 标量占位符防 42P18），供 `/api/agent/event/list`、`/api/agent/event/:eventId` 输出 `impactVitality: {score, status, statDate} | null`（**只标注、不排序、不过滤**）。**手动触发**：`POST /internal/event-vitality/run`（强制 `enabled: true`）。交易日 15:50 cron（`VITALITY_ENABLED` 默认 true 生产启用，显式 false 关闭）
 - 对应 Service 文件
 
 ## 依赖的 shared 类型
