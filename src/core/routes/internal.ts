@@ -21,6 +21,16 @@ import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
+import {
+    getEventVitality,
+    getLatestVitality,
+    getLatestVitalityByEventIds,
+    loadVitalityConfig,
+    runVitalityDaily,
+    snapshotBaselineForEvent,
+    type ChainNode,
+    type VitalityDisplay,
+} from '../../modules/monitor/EventImpactVitalityService'
 import { isValidAShareSymbol } from '../../shared/utils/validator'
 import { isValidTagCode } from '../../shared/utils/validator'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
@@ -784,6 +794,56 @@ router.get('/wind-leaders', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/event-vitality/:eventId
+ * 事件影响存活度（Impact Vitality，一期「只算不干扰」）：
+ * 判断已推送重大消息的影响是否仍在传递（如 10/1 摩根新闻影响至今仍在）。
+ * 只读，不接前端、不 gate 推送。
+ *
+ * 200: { code: 200, data: { event_id, baseline, direction, latest, history } }
+ * 400: eventId 缺失
+ * 502: 服务异常
+ */
+router.get('/event-vitality/:eventId', async (req: Request, res: Response) => {
+    const eventId = param(req, 'eventId')
+    if (!eventId) {
+        return res.status(400).json({ code: 400, message: 'eventId is required' })
+    }
+    const historyDays = Math.min(Math.max(1, queryInt(req, 'historyDays', 14)), 60)
+    try {
+        const data = await getEventVitality(eventId, historyDays)
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error(`[Internal] event-vitality/${eventId} error:`, errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/event-vitality/run
+ * 手动触发存活度计算 / 历史回补（需 X-Internal-Token）。
+ * body 或 query: statDate?（YYYY-MM-DD，缺省=今天）。
+ * 手动触发强制 enabled=true，不受调度侧 VITALITY_ENABLED 灰度开关限制。
+ *
+ * 200: { code: 200, data: { stat_date, snapshotted, computed, no_observation } }
+ * 400: statDate 格式非法
+ * 502: 服务异常
+ */
+router.post('/event-vitality/run', async (req: Request, res: Response) => {
+    const raw = req.body?.statDate ?? queryStr(req, 'statDate') ?? ''
+    const statDate = String(raw).trim()
+    if (statDate && !/^\d{4}-\d{2}-\d{2}$/.test(statDate)) {
+        return res.status(400).json({ code: 400, message: 'Invalid statDate format: YYYY-MM-DD' })
+    }
+    try {
+        const data = await runVitalityDaily(statDate || undefined, { ...loadVitalityConfig(), enabled: true })
+        res.json({ code: 200, data })
+    } catch (err: unknown) {
+        console.error('[Internal] event-vitality/run error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/monitor/alerts
  * 全局告警历史（研判资讯事件，分页查询）
  *
@@ -1069,12 +1129,19 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
         const minResonance = rawMinResonance === undefined
             ? undefined
             : Math.min(Math.max(queryInt(req, 'min_resonance', 2), 2), 4)
+        const rawTradingDays = queryStr(req, 'trading_days')
+        const parsedTradingDays = rawTradingDays === undefined ? undefined : parseInt(rawTradingDays, 10)
+        const tradingDays = parsedTradingDays !== undefined && Number.isInteger(parsedTradingDays)
+            && parsedTradingDays >= 1 && parsedTradingDays <= 60
+            ? parsedTradingDays
+            : undefined
         const data = await HotBurstService.getHotBurstHistory({
             limit: queryInt(req, 'limit', 50),
             offset: queryInt(req, 'offset', 0),
             minResonanceOnly: queryStr(req, 'min_resonance_only') !== 'false',
             days: queryInt(req, 'days', 30),
             minResonance,
+            tradingDays,
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
@@ -1344,6 +1411,24 @@ router.post('/analysis-reports', async (req: Request, res: Response) => {
             [report_type, report_date, user_id, JSON.stringify(content),
              data_source, status, generation_time_ms, model_version, error_message, ttlDays]
         )
+
+        // 事件传导报告落库即冻结 chain 快照（根治 7 天 TTL 后 chain 随报告被物理删除而永久丢失）。
+        // best-effort：失败只告警，不影响报告写入与响应。
+        if (report_type === 'event_conduction') {
+            try {
+                const c = (content as Record<string, unknown>) || {}
+                const ar = (c['analysis_reports'] as Record<string, unknown>) || {}
+                const et = (ar['event_transmission'] as Record<string, unknown>) || {}
+                await snapshotBaselineForEvent({
+                    eventId: String(user_id || ''),
+                    eventType: (c['event_type'] as string) ?? null,
+                    chain: (Array.isArray(et['chain']) ? et['chain'] : []) as ChainNode[],
+                    fallbackDate: report_date,
+                })
+            } catch (snapErr: unknown) {
+                console.warn('[Internal] event_conduction baseline snapshot failed:', errMsg(snapErr))
+            }
+        }
 
         res.status(201).json({
             code: 201,
@@ -2592,6 +2677,20 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
             ),
         ])
 
+        // 存活度标注（annotation-only）：批量取每条事件最新一行 daily。
+        // 表不存在 / 未开启灰度 / 无数据 → 静默空 Map，不影响列表语义与排序。
+        const listEventIds = dataResult.rows
+            .map((r: Record<string, unknown>) => String(r['user_id'] ?? ''))
+            .filter((id: string) => id !== '')
+        let vitalityMap: Map<string, VitalityDisplay> = new Map()
+        if (listEventIds.length > 0) {
+            try {
+                vitalityMap = await getLatestVitalityByEventIds(listEventIds)
+            } catch (err: unknown) {
+                console.warn('[Public] agent/event/list vitality skipped:', errMsg(err))
+            }
+        }
+
         // 构建 event_id → rank / direction / level 的映射
         // 读取优先级（历史兼容三级回退）：
         //   ① top_bullish_event / top_bearish_event（新 Schema）
@@ -2668,6 +2767,8 @@ publicRouter.get('/event/list', async (req: Request, res: Response) => {
                 globalImportanceLevel: giLevelMap.get(eventId) || null,
                 // 前端展示专用：行业影响摘要（降序 Top5，旧数据无 chain 返回 []）
                 chain_summary: extractChainSummary(content),
+                // 存活度标注（annotation-only）：{ score, status, statDate }；无数据 → null
+                impactVitality: vitalityMap.get(eventId) || null,
             }
         })
 
@@ -2722,12 +2823,22 @@ publicRouter.get('/event/:eventId', async (req: Request, res: Response) => {
         const row = result.rows[0] as Record<string, unknown>
         const content = (row['content'] as Record<string, unknown>) || {}
 
+        // 存活度标注（annotation-only）：最新一行；表不存在 / 无数据 → null
+        let impactVitality: VitalityDisplay | null = null
+        try {
+            impactVitality = await getLatestVitality(eventId)
+        } catch (err: unknown) {
+            console.warn('[Public] agent/event/:eventId vitality skipped:', errMsg(err))
+        }
+
         res.json({
             code: 0,
             data: {
                 ...row,
                 // 顶层补充前端展示专用行业摘要（旧数据无 chain 返回 []，禁止 undefined）
                 chain_summary: extractChainSummary(content),
+                // 存活度标注（annotation-only）
+                impactVitality,
             },
         })
     } catch (err: unknown) {

@@ -15,6 +15,7 @@ import { StockTraceController } from '../controller';
 import { StockTraceService } from '../StockTraceService';
 import { StockTraceArtifactService } from '../StockTraceArtifactService';
 import { StockTraceResultService } from '../StockTraceResultService';
+import { StockTraceJobService } from '../StockTraceJobService';
 import { InsightReportService } from '../InsightReportService';
 import pool from '../../../core/db';
 
@@ -174,6 +175,8 @@ describe('GET /movements/:eventId/report/stream（流式报告）', () => {
         mock.method(StockTraceArtifactService, 'getEffectiveArtifactForRevision', async () => null);
         mock.method(StockTraceArtifactService, 'getEffectiveArtifact', async () => null);
         mock.method(StockTraceResultService, 'getLatestForEventRevision', async () => ({ validationStatus: 'rejected', processingStatus: 'partial' }));
+        // presentEventAnalysis 现额外查询当前版本最新 job 状态（2026-10-06 归因失败可观测），须一并 mock，否则触达真实 DB → 502
+        mock.method(StockTraceJobService, 'getLatestJobStatusForEventRevision', async () => null);
         const res = fakeSseRes();
         const req = { headers: { authorization: `Bearer ${makeToken()}` }, params: { eventId: 'mv:1' } };
         await StockTraceController.reportStream(req as never, res as never);
@@ -193,6 +196,8 @@ describe('GET /movements/:eventId/report/stream（流式报告）', () => {
         mock.method(StockTraceService, 'getUserEvent', async () => ({ event_id: 'mv:1', symbol: '003018', trigger_revision: 1, trading_date: '2026-09-13', triggered_at: '2026-09-13T01:34:07.932Z' }) as Record<string, unknown>);
         mock.method(StockTraceArtifactService, 'getEffectiveArtifactForRevision', async () => artifact);
         mock.method(StockTraceResultService, 'getLatestForEventRevision', async () => ({ primaryPhrase: '液冷服务器概念板块联动', validationStatus: 'passed', processingStatus: 'completed' }));
+        // 同 409 用例：job 状态查询也须 mock（触达真实 DB 会抛错 → 502）
+        mock.method(StockTraceJobService, 'getLatestJobStatusForEventRevision', async () => null);
         mock.method(InsightReportService, 'fetchSections', async () => ({
             header: '金富科技（003018） · 2026-09-13',
             sections: [

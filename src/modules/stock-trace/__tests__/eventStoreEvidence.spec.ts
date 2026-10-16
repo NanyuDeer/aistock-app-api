@@ -7,6 +7,9 @@
  * 3. 读失败（fetch 抛错 / HTTP 500 / 未配置）→ []，绝不抛异常（降级）
  * 4. `collectCompanySources` 事件库命中 → 直接用事件库，不调用原采集
  * 5. `collectCompanySources` 缺库 → 完整回到原采集（ClsStockNews + StockInfo）
+ * 6. 时区契约：裸北京时间串（事件库 `scrape_at` / 财联社 `time` / 公告 `published_at`）
+ *    一律按 Asia/Shanghai 解释，不随宿主机时区漂移 —— 否则 UTC runner 上会整体 +8h，
+ *    当日证据落到「T-72h ~ T+30min」窗口之外被误丢（2026-10-08 CI 实测 2 条红）。
  *
  * Mock 策略：沿 stockTraceTrigger.spec.ts 先例，mock globalThis.fetch。
  * `collectCompanySources` 是 TS private，测试经 any 访问（target=ES2022，
@@ -257,6 +260,51 @@ describe('collectCompanySources（事件库优先、缺库降级到原采集）'
             assert.ok(records.some((r: { sourceId: string }) => r.sourceId.startsWith('announcement:')), '缺库时应含原公告采集记录');
             assert.strictEqual(newsMock.mock.calls.length, 1, '缺库时必须调用 ClsStockNewsService');
             assert.strictEqual(judgementMock.mock.calls.length, 1, '缺库时必须调用 StockInfoService');
+        } finally {
+            newsMock.mock.restore();
+            judgementMock.mock.restore();
+        }
+    });
+});
+
+describe('时区契约（裸时间串按 Asia/Shanghai 解释）', () => {
+    it('事件库 scrape_at 为北京 09:00 → 必须解析为 01:00Z（不随宿主机时区漂移）', async () => {
+        process.env.PYTHON_AGENT_URL = 'http://python-agent:8000';
+        process.env.INTERNAL_API_TOKEN = 'test-token-abc';
+        mockFetch(async () => ({ status: 200, body: JSON.stringify({ events: [EVENT_A] }) }));
+
+        const capturedAt = new Date('2026-08-12T04:00:00.000Z'); // 北京 12:00
+        const records = await loadEventStoreEvidence('600519', capturedAt);
+
+        assert.strictEqual(records.length, 1);
+        const first = records[0];
+        assert.ok(first, '应命中 1 条事件库记录');
+        assert.ok(first.occurredAt, '命中记录必须带 occurredAt');
+        assert.strictEqual(
+            first.occurredAt.toISOString(),
+            '2026-08-12T01:00:00.000Z',
+            '北京 09:00 必须是 01:00Z；若得 09:00Z，说明按宿主机时区解析（UTC runner 上证据会被窗口丢弃）',
+        );
+    });
+
+    it('公司域窗口：北京 10:00 的新闻相对北京 12:00 的采集必须保留', async () => {
+        process.env.PYTHON_AGENT_URL = 'http://python-agent:8000';
+        process.env.INTERNAL_API_TOKEN = 'test-token-abc';
+        mockFetch(async () => ({ status: 200, body: JSON.stringify({ events: [] }) }));
+
+        const newsMock = mock.method(ClsStockNewsService, 'getStockNews', async () => ({
+            items: [{ id: 'n-tz', title: '时区契约用例', content: '内容', time: '2026-08-12 10:00:00', link: 'https://www.cls.cn/detail/n-tz' }],
+        }));
+        const judgementMock = mock.method(StockInfoService, 'queryJudgements', async () => ({ total: 0, items: [] }));
+        try {
+            const records = await (StockTraceSnapshotService as any).collectCompanySources(
+                makeTriggerEvent(),
+                new Date('2026-08-12T04:00:00.000Z'), // 北京 12:00 —— 窗口上限 12:30
+            );
+            assert.ok(
+                records.some((r: { sourceId: string }) => r.sourceId === 'cls:n-tz'),
+                '北京 10:00 的新闻落在窗口内，不得因宿主机时区（UTC）被判为“未来 8 小时”而丢弃',
+            );
         } finally {
             newsMock.mock.restore();
             judgementMock.mock.restore();

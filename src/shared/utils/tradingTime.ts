@@ -1,5 +1,3 @@
-const TIMOR_HOLIDAY_API_BASE = 'https://timor.tech/api/holiday/info/';
-const HOLIDAY_REQUEST_TIMEOUT_MS = 3500;
 const INDEX_QUOTE_TRADING_TTL_BASE_SECONDS = 60;
 const INDEX_QUOTE_TRADING_TTL_JITTER_SECONDS = 5;
 const TRADING_OPEN_HOUR = 9;
@@ -9,17 +7,18 @@ const NEXT_TRADING_SEARCH_MAX_DAYS = 30;
 const MAX_NON_TRADING_TTL_SECONDS = 4 * 60 * 60; // 4 小时
 
 import { shanghaiDateTimeParts } from './shanghaiTime';
-
-interface HolidayApiResponse {
-    code: number;
-    holiday: { holiday: boolean; name?: string; wage?: number; after?: boolean; target?: string; } | null;
-}
+import { tradingCalendarStore } from './tradingCalendarStore';
 
 interface ChinaDateTimeParts { year: number; month: number; day: number; hour: number; minute: number; second: number; }
 
-export interface AShareTradingTimeOptions { now?: Date | number; fetcher?: typeof fetch; afterCloseUpdateTime?: { hour: number; minute: number }; }
-
-const holidayCache = new Map<string, boolean>();
+export interface AShareTradingTimeOptions {
+    now?: Date | number;
+    /** @deprecated 不再用于节假日判定；保留字段仅为兼容既有调用方类型 */
+    fetcher?: typeof fetch;
+    afterCloseUpdateTime?: { hour: number; minute: number };
+    /** 可选：覆盖交易日判定来源（测试注入用）；默认读 tradingCalendarStore（唯一事实源） */
+    calendar?: { isTradingDay(isoDate: string): boolean };
+}
 
 /** 上海时区时间分量，统一走 shared/utils/shanghaiTime 通用函数 */
 function parseChinaDateTimeParts(date: Date): ChinaDateTimeParts {
@@ -64,24 +63,7 @@ function chinaDateTimeToTimestampMs(parts: Pick<ChinaDateTimeParts, 'year' | 'mo
     return Date.UTC(parts.year, parts.month - 1, parts.day, hour - 8, minute, second);
 }
 
-async function isChinaHoliday(dateKey: string, fetcher: typeof fetch): Promise<boolean> {
-    const cached = holidayCache.get(dateKey);
-    if (cached !== undefined) return cached;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), HOLIDAY_REQUEST_TIMEOUT_MS);
-    try {
-        const response = await fetcher(`${TIMOR_HOLIDAY_API_BASE}${dateKey}`, { method: 'GET', headers: { 'Accept': 'application/json' }, signal: controller.signal });
-        if (!response.ok) { console.error(`[TradingTime] Holiday API failed: ${response.status}, treating as non-holiday`); return false; }
-        const data = await response.json() as HolidayApiResponse;
-        if (data.code !== 0) { console.error(`[TradingTime] Holiday API returned code: ${data.code}, treating as non-holiday`); return false; }
-        const isHoliday = Boolean(data.holiday && data.holiday.holiday === true);
-        holidayCache.set(dateKey, isHoliday);
-        return isHoliday;
-    } catch (err) { console.error('[TradingTime] Holiday API request error, treating as non-holiday:', err); return false; }
-    finally { clearTimeout(timer); }
-}
-
-async function getSecondsUntilNextTradingOpen(date: Date, fetcher: typeof fetch): Promise<number> {
+async function getSecondsUntilNextTradingOpen(date: Date, calendar: { isTradingDay(isoDate: string): boolean }): Promise<number> {
     const nowMs = date.getTime();
     const chinaParts = parseChinaDateTimeParts(date);
     const today = { year: chinaParts.year, month: chinaParts.month, day: chinaParts.day };
@@ -89,8 +71,7 @@ async function getSecondsUntilNextTradingOpen(date: Date, fetcher: typeof fetch)
         const candidate = addCalendarDays(today, offset);
         if (isWeekendInChina(candidate)) continue;
         const candidateDateKey = formatDateKey(candidate);
-        const holiday = await isChinaHoliday(candidateDateKey, fetcher);
-        if (holiday) continue;
+        if (!calendar.isTradingDay(candidateDateKey)) continue;
         const openMs = chinaDateTimeToTimestampMs(candidate, TRADING_OPEN_HOUR, TRADING_OPEN_MINUTE, 0);
         if (openMs <= nowMs) continue;
         return Math.max(60, Math.ceil((openMs - nowMs) / 1000));
@@ -102,44 +83,39 @@ async function getSecondsUntilNextTradingOpen(date: Date, fetcher: typeof fetch)
 export async function isAShareTradingTime(options: AShareTradingTimeOptions = {}): Promise<boolean> {
     const nowInput = options.now ?? Date.now();
     const nowDate = nowInput instanceof Date ? nowInput : new Date(nowInput);
-    const fetcher = options.fetcher ?? fetch;
     if (Number.isNaN(nowDate.getTime())) throw new Error('Invalid date input');
     const chinaParts = parseChinaDateTimeParts(nowDate);
     if (isWeekendInChina(chinaParts)) return false;
     if (!isWithinTradingWindows(chinaParts)) return false;
     const dateKey = formatDateKey(chinaParts);
-    const holiday = await isChinaHoliday(dateKey, fetcher);
-    return !holiday;
+    return (options.calendar ?? tradingCalendarStore).isTradingDay(dateKey);
 }
 
 /**
  * 判断指定日期是否为A股交易日（不考虑具体时间，只判断日期）
  * @param options.now - 可选，指定日期（Date 或 timestamp），默认当前时间
- * @param options.fetcher - 可选，自定义 fetch 函数
+ * @param options.fetcher - 已废弃，不再用于节假日判定
  * @returns true 表示是交易日（非周末、非节假日），false 表示非交易日
  */
 export async function isAShareTradingDay(options: AShareTradingTimeOptions = {}): Promise<boolean> {
     const nowInput = options.now ?? Date.now();
     const nowDate = nowInput instanceof Date ? nowInput : new Date(nowInput);
-    const fetcher = options.fetcher ?? fetch;
     if (Number.isNaN(nowDate.getTime())) throw new Error('Invalid date input');
     const chinaParts = parseChinaDateTimeParts(nowDate);
     if (isWeekendInChina(chinaParts)) return false;
     const dateKey = formatDateKey(chinaParts);
-    const holiday = await isChinaHoliday(dateKey, fetcher);
-    return !holiday;
+    return (options.calendar ?? tradingCalendarStore).isTradingDay(dateKey);
 }
 
 export async function getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds: number, options: AShareTradingTimeOptions = {}): Promise<number> {
     const resolvedTradingTtlSeconds = normalizePositiveTtlSeconds(tradingTtlSeconds);
     const nowInput = options.now ?? Date.now();
     const nowDate = nowInput instanceof Date ? nowInput : new Date(nowInput);
-    const fetcher = options.fetcher ?? fetch;
     if (Number.isNaN(nowDate.getTime())) throw new Error('Invalid date input');
     const chinaParts = parseChinaDateTimeParts(nowDate);
     const dateKey = formatDateKey(chinaParts);
     const weekend = isWeekendInChina(chinaParts);
-    const holiday = weekend ? true : await isChinaHoliday(dateKey, fetcher);
+    const holiday = weekend || !(options.calendar ?? tradingCalendarStore).isTradingDay(dateKey);
     const inTradingWindows = isWithinTradingWindows(chinaParts);
     if (!weekend && !holiday && inTradingWindows && !isClosingRefreshMoment(chinaParts)) return resolvedTradingTtlSeconds;
 
@@ -181,7 +157,7 @@ export async function getAShareAdaptiveCacheTtlSeconds(tradingTtlSeconds: number
 
     // 非交易日（周末/节假日）或盘后无 afterCloseUpdateTime：缓存到下一交易日开盘
     // 但设置 TTL 上限，防止跨天/跨周末缓存过长导致交易日开盘后仍返回旧数据
-    const nextOpenTtl = await getSecondsUntilNextTradingOpen(nowDate, fetcher);
+    const nextOpenTtl = await getSecondsUntilNextTradingOpen(nowDate, options.calendar ?? tradingCalendarStore);
     return Math.min(nextOpenTtl, MAX_NON_TRADING_TTL_SECONDS);
 }
 

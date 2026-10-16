@@ -12,22 +12,31 @@ import { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { describe, it, afterEach } from 'node:test';
 import { buildNewsApiUrl, tradingDayWindowStart } from '../services/EastmoneyCrawler';
+import { tradingCalendarStore } from '../../../shared/utils/tradingCalendarStore';
 
-/** mock 节假日 API：一律非节假日 → 非交易日只由周末决定；返回 mock 实例供计数 */
-function mockHolidayApiNonHoliday(): ReturnType<typeof mock.method> {
-    return mock.method(global, 'fetch', async () => ({
-        ok: true,
-        json: async () => ({ code: 0, holiday: { holiday: false } }),
-    } as unknown as Response));
+/**
+ * 注入交易日历（唯一事实源）：2026 全年按「周一~周五」开盘，再叠加指定节假日休市。
+ * 语义与旧版 mock 节假日 API「一律非节假日」完全一致，但不再依赖任何外部请求。
+ */
+function seedTradingCalendar(holidayDates: Set<string> = new Set()): void {
+    const map: Record<string, boolean> = {};
+    for (let cursor = Date.UTC(2026, 0, 1); cursor <= Date.UTC(2026, 11, 31); cursor += 86_400_000) {
+        const date = new Date(cursor);
+        const iso = date.toISOString().slice(0, 10);
+        const weekday = date.getUTCDay();
+        map[iso] = weekday !== 0 && weekday !== 6 && !holidayDates.has(iso);
+    }
+    tradingCalendarStore.__setForTest(map, '2026-01-01', '2026-12-31');
 }
 
 describe('EastmoneyCrawler 东财窗口 (E-2)', () => {
     afterEach(() => {
         mock.restoreAll();
+        tradingCalendarStore.__resetForTest();
     });
 
     it('tradingDayWindowStart 回溯 N 个交易日（跳过周末）', async () => {
-        mockHolidayApiNonHoliday();
+        seedTradingCalendar();
         // 2026-08-14 上海时区是周五（交易日），end 取当日下午
         const end = new Date('2026-08-14T10:00:00Z');
         const start = await tradingDayWindowStart(end, 30);
@@ -50,17 +59,9 @@ describe('EastmoneyCrawler 东财窗口 (E-2)', () => {
     });
 
     it('回溯窗口遇节假日跳过（长假后窗口不缩水）', async () => {
-        // 模拟 2026-10-01 至 10-07 为国庆节假日：mock fetch 对该区间返回 holiday=true
+        // 注入日历：2026-10-01 至 10-07 为国庆休市
         const holidayRanges = new Set(['2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07']);
-        mock.method(global, 'fetch', async (input: string | URL | Request) => {
-            const url = String(input);
-            const dateKey = url.split('/').pop() || '';
-            const isHoliday = holidayRanges.has(dateKey);
-            return {
-                ok: true,
-                json: async () => ({ code: 0, holiday: { holiday: isHoliday } }),
-            } as unknown as Response;
-        });
+        seedTradingCalendar(holidayRanges);
 
         // 2026-10-09（周五）为节后首个交易日，回溯 5 个交易日应跨过国庆长假
         const end = new Date('2026-10-09T04:00:00Z'); // 上海 10-09 12:00 周五
@@ -84,16 +85,18 @@ describe('EastmoneyCrawler 东财窗口 (E-2)', () => {
         assert.ok(!decoded.includes('"sort":"default"'), '不得回退相关性排序');
     });
 
-    it('窗口起点缓存：同参数二次调用不重复请求节假日 API', async () => {
-        const fetchMock = mockHolidayApiNonHoliday();
+    it('窗口起点缓存：同参数二次调用不重复查日历', async () => {
+        seedTradingCalendar();
+        const original = tradingCalendarStore.isTradingDay.bind(tradingCalendarStore);
+        const spy = mock.method(tradingCalendarStore, 'isTradingDay', original);
         // 用独立日期避免与前面用例共享窗口缓存
         const end = new Date('2026-07-03T04:00:00Z'); // 上海 7-03 周五
         await tradingDayWindowStart(end, 30);
-        const callsAfterFirst = fetchMock.mock.calls.length;
+        const callsAfterFirst = spy.mock.calls.length;
 
-        // 二次调用（同 end 同 days）：应命中缓存，不新增节假日 API 请求
+        // 二次调用（同 end 同 days）：应命中缓存，不新增日历查询
         await tradingDayWindowStart(end, 30);
-        const callsAfterSecond = fetchMock.mock.calls.length;
-        assert.equal(callsAfterSecond, callsAfterFirst, '缓存命中后不应重复请求节假日 API');
+        const callsAfterSecond = spy.mock.calls.length;
+        assert.equal(callsAfterSecond, callsAfterFirst, '缓存命中后不应重复查日历');
     });
 });

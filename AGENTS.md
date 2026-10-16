@@ -50,7 +50,9 @@ src/
 │   │   └── cache.ts        # 缓存键、TTL 配置、类型
 │   └── utils/              # 工具函数 + 共享服务
 │       ├── CacheService.ts          # Redis 缓存（Map 本地降级）
-│       ├── TradingCalendarService.ts # 交易日历
+│       ├── TradingCalendarService.ts # 交易日历（读 trading_calendar 唯一事实源）
+│       ├── tradingCalendarStore.ts   # 交易日历内存缓存（三级降级链，同步判定）
+│       ├── cronGuards.ts             # cron 交易日守卫 runIfTradingDay（非交易日跳过 + 审计日志）
 │       ├── jwt.ts                   # JWT 签发/验证
 │       ├── response.ts              # 统一响应格式
 │       ├── validator.ts             # A 股代码校验
@@ -131,6 +133,7 @@ src/
 | 约束 | 说明 |
 |------|------|
 | 行情数据源 | 行情用腾讯 API，龙头用同花顺，**禁止东方财富** |
+| 交易日判定唯一事实源 | **`trading_calendar` 表**（`exchange='SSE'`，由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新，窗口「去年~明年」）。**禁止新增第二套节假日表；禁止把任何第三方节假日接口用于判定**。判断类函数（`isTradingDay*`）数据缺失时降级「周一~周五」+ `warn`/`error` 告警；日期推算类函数（`getPreviousTradingDay` 等）保持 fail-closed 抛错（见 §6.5） |
 | cron 时区 | 所有 `cron.schedule()` 必须显式指定 `{ timezone: 'Asia/Shanghai' }` |
 | LLM 失败处理 | LLM 调用失败时跳过，返回纯数据，不重试 |
 | 微信 API | 微信 API 用原生 `fetch`，不用 `sessionFetch` |
@@ -169,10 +172,13 @@ src/
 - SSE 流式透传中断时返回流错误
 - 详见 `modules/agent/agent.proxy.ts`
 
-### 6.5 节假日降级
+### 6.5 交易日判断与降级
 
-- 节假日 API 失败时 `isChinaHoliday()` 返回 `false`（不跳过交易相关定时任务）
-- 详见 `shared/utils/TradingCalendarService.ts`
+- **唯一事实源 = `trading_calendar` 表**（`exchange='SSE'`）：由 `TradingCalendarRefreshService` 以 Tushare `trade_cal` 刷新（窗口「去年~明年」，每日 00:30 + 启动预热），`tradingCalendarStore` 提供同步读。**禁止新增第二套节假日表，禁止用任何第三方节假日接口做判定。** 全仓**唯一允许**调 Tushare `trade_cal` 的地方就是 `TradingCalendarRefreshService`；任何模块需要「最近 N 个交易日」一律走 `TradingCalendarService.getRecentTradingDays`（`modules/fear-greed` 恐贪取数窗口已于 2026-10-11 由直连 `trade_cal` 改为走该统一来源）。
+- **判断类**（`tradingCalendarStore.isTradingDay` / `tradingTime.isAShareTradingDay*`）：数据缺失（未加载 或 超出覆盖范围）降级为「周一~周五」并 `warn`/`error` 告警——**降级绝不静默**，`getHealth().degraded` 置真。取向：宁可假期多跑几次幂等任务，也不因缺数据让受守卫任务停摆一整年。
+- **日期推算类**（`TradingCalendarService.getPreviousTradingDay` / `getNextTradingDay` / `getRecentTradingDays` 等）：store 已加载但表内无该日期 → **fail-closed 抛错**（`modules/calendar/MarketCalendarEventService` 依赖此契约，未覆盖时保留原始日期，不抛 502）；store 未加载时不抛错（避免冷启期崩）。
+- **2027+ 年份无需人工补表**：每日 00:30 刷新窗口自动前移覆盖。
+- 详见 `shared/utils/tradingCalendarStore.ts`、`shared/utils/TradingCalendarService.ts`。
 
 ## 7. 跨服务协作（与 Python Agent）
 
@@ -196,6 +202,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/monitor/:symbol` | 异动引擎 | 个股监控事件 |
 | `GET /internal/trend/score/:symbol` | 趋势股评分 | 评分详情（S/A/B/C/D 评级） |
 | `GET /internal/trend/top` | 趋势股评分 | 排行列表（含60日均线剔除过滤） |
+| `GET /internal/event-vitality/:eventId` | 事件存活度（行业板块+上证指数） | 事件影响存活度只读查询：返回 `{baseline(chain 快照), direction, latest, history}`，`historyDays` 默认 14 上限 60；用户侧事件列表/详情按存活度 annotation（`impactVitality` 字段），**只标注、不排序、不过滤** |
+| `POST /internal/event-vitality/run` | 事件存活度 | 手动触发单日存活度计算（回补/调试入口）：body `{statDate?: 'YYYY-MM-DD'}`（缺省=上海今天，格式非法 400），强制 `enabled: true` 忽略 `VITALITY_ENABLED` 灰度开关；返回 `{statDate, processed, ...}` |
 | `GET /internal/graph/concepts` | 知识图谱 | 产业链概念列表 |
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
@@ -252,8 +260,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
-| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
-| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
+| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
+| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
 | `/api/agent/event/timeline` | GET | **重大事件时间线**（公开，Phase 1）：按事件发生时间组织，未来事件提前可见。query 全部可选 `dateFrom`（缺省=上海今天）/ `dateTo`（缺省=今天+90天）/ `status`（scheduled\|upcoming\|ongoing\|occurred）/ `order`（asc\|desc，缺省 asc）/ `page`（缺省 1）/ `pageSize`（缺省 20，上限 100）；响应 `{code:0, data:{items,total,page,pageSize,hasMore}}`，item camelCase 含 `date`（后端算好的上海时区 `YYYY-MM-DD` 分组键）与 `impactSectors: string[]`（传导 chain Top3 优先、空回退 `event_entities.impact_sectors` 列、再空 `[]`）；event_status 用读时重算值；**不读 `agent_analysis_reports`**（GI 旁路；2026-09-24 展示层例外：① `source_type='news'` 事件 title 读取 `event_conduction` 最新报告 `content.title` 做标题对齐覆盖，无报告回退原始 title；② 所有事件 impactSectors 按最新传导报告 chain `impact_strength` 降序 Top3 覆盖展示；③ **occurred 事件须存在 event_conduction 报告行，否则排除**（无报告点击详情 404 → 前端「服务异常」），未来事件无报告保留——均不改准入/状态/排序）；须在 createAgentProxy 之前挂载 |
 | `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
@@ -308,8 +316,10 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | 启动时 | trend_scores 自动迁移 | CREATE TABLE IF NOT EXISTS + ALTER TABLE ADD COLUMN IF NOT EXISTS ma60_excluded（堵住 deploy.sh 漏执行 SQL 的缺口） |
 | 启动时 | users 账户模型自动迁移 | `password_hash` / `is_vip` 列 + 统一账户模型（`id` 主键切换、`openid` 去 NOT NULL、引用 `users(openid)` 的外键摘除后重建、`user_stocks.user_id`）。**要求应用连接角色（`aistock`）拥有 `users` 及被引用表（`user_settings`/`user_stocks`/`user_notifications`/`user_subscriptions`）的 owner 权限**，否则 `ALTER TABLE` 抛 `must be owner of table ...` |
+| 启动时 | 交易日历预热 | 异步 `TradingCalendarRefreshService.refresh()` + `tradingCalendarStore.load()`（不阻塞启动，Tushare 慢不应致起不来） |
 | 00:00 | 业绩预测自动更新 | 同花顺数据 |
 | 00:05 | 数据同步 | — |
+| 00:30 | 交易日历刷新 | `TradingCalendarRefreshService.refresh()` + `tradingCalendarStore.load()`（Tushare `trade_cal`/SSE，窗口 去年~明年） |
 | 02:00 | 趋势股批量评分 | TrendBatchService（含60日均线剔除），每天执行不检查交易日 |
 | 03:00 | 报告清理 | 删除过期 Agent 分析报告（`expires_at < NOW()`） |
 | 03:00 | 知识图谱/其他 | — |
@@ -321,11 +331,14 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件，触发改接 stocktrace 事件层 |
 | 15:00 | 数据归档 | — |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
+| 15:50 | 事件影响存活度 | EventImpactVitalityService.runVitalityDaily（交易日守卫；`VITALITY_ENABLED` 默认 true 生产启用，显式设 false 可关闭计算） |
 | 19:05 | 收盘后任务 | — |
 
 > 所有 cron 任务必须指定 `{ timezone: 'Asia/Shanghai' }`。
 >
 > **2026-10-02 起**：原 `06:40 / 12:40 / 18:40` 的「Calendar → Event Entity 物化」cron（`CalendarEntityCron`）**已移除**——物化方案废弃，时间线改为 `EventTimelinePublicRouter` 请求时直查 `market_calendar_events`（确定性准入 `qualifyCalendarEvent`），不依赖任何 cron，calendar 表更新即刻反映到时间线。
+>
+> **事件影响存活度（2026-10-15，全栈闭环）**：判断已推送重大消息的影响是否仍在传递（如 10/1 摩根新闻影响至今仍在）。观测口径 = chain Top3 行业 ≈ 同花顺行业板块（`getThsIndex('I','A')`，实测行业名覆盖 98% vs hotCirclePlate 57%；另配 4 条别名桥接），`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`；分档 `alive/fading/expired/no_observation`（行业映射不到板块一律 no_observation，禁判 expired）。**chain 必须自持久化到 `event_impact_vitality_baseline`**：event_conduction 报告 TTL=7 天且 03:00 ReportCleanupCron 会物理删除，chain 随报告消失——故新增「**落库即冻结**」：`POST /internal/analysis-reports` 在 `report_type='event_conduction'` 落库成功后 best-effort `snapshotBaselineForEvent`（`INSERT ... ON CONFLICT (event_id) DO NOTHING`，一次定稿；try/catch 只告警不阻断报告写入），从此不再依赖 15:50 cron 事后补。结果落 `event_impact_vitality_daily`（兼作长期事件池）。**接出**：`/api/agent/event/list` 与 `/api/agent/event/:eventId` 每项/顶层附 `impactVitality: {score, status, statDate} | null`（列表批量查 `getLatestVitalityByEventIds`，`IN ($1,$2,...)` 标量占位符防 42P18；**只标注、不排序、不过滤**），APP/Web 两端 `VitalityBadge` 于标题下方单独一行渲染三档文案（alive=影响持续中 / fading=影响减弱 / expired=影响消退，no_observation/无数据不渲染）；另提供 `POST /internal/event-vitality/run` 手动回补入口。开关：`VITALITY_ENABLED`（默认 true 生产启用，显式 false 关闭）/ `VITALITY_WINDOW_MAX_DAYS=45` / `VITALITY_ALIVE_MIN=0.6` / `VITALITY_EXPIRED_MAX=0.3` / `VITALITY_EXCESS_MIN_PCT=0.5` / `VITALITY_RECENT_ALIGNED_DAYS=3` / `VITALITY_HALF_LIFE_DAYS`（policy:14,macro:10,geopolitical:7,industry:5,company:3）。
 
 ## 9. 常用命令
 

@@ -11,6 +11,7 @@
 - `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
+- `GET /api/cn/favorites/industry-aliases` — 自选股行业别名（读 `user_stocks` join `stocks.industry`，经 `shared/utils/industryAlias` 做旧申万名归一 + 申万一级同族展开，返回 `{[symbol]: {name, industry, aliases: string[]}}`；供事件传导「自选股相关事件」卡片与事件 `chain_summary` 行业求交）
 - `GET /api/cn/stocks/profit-forecast` — 业绩预测
 - `GET /api/cn/stocks/trend-score/*` — 趋势股评分
 - `GET /api/aigraph/*` — AI 知识图谱
@@ -26,7 +27,8 @@
 - `FeishuMessageAiService.ts` — 领取待处理飞书消息、调用千问并生成按股票关联的关键词
 - `TenxScoreService.ts` — 评分基础设施（共享计算函数，被 TrendScoreService 依赖；十倍股独立模块已下线）
 - `aiGraphController.ts` / `industryKGController.ts` — 知识图谱
-- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线法，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
+- `RotationBoardStore.ts` — 板块轮动榜持久化（同花顺板块指数日线 + hotCirclePlate mrpm，网页"板块轮动表"同款口径；每日涨/跌前10 落库 `board_rotation_daily`，供风口龙头与趋势股评分读取；**下游"上榜次数"统计只取涨幅榜 up_rank，跌幅榜仅用于展示不计入**；近30日以 mrpm 为准，更早由日线推导）；`fetchBoardKline` 按需拉取单板块日 K 线（OHLC，1h 缓存）
+- `EventImpactVitalityService.ts` — 事件影响存活度（判断已推送重大消息的影响是否仍在传递）。chain Top3 行业 ≈ 同花顺行业板块（`getThsIndex('I','A')` 建名→码索引 24h 缓存 + `INDUSTRY_ALIAS_BRIDGE` 4 条别名桥接），`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`，分档 alive/fading/expired/no_observation。**chain 必须自持久化到 `event_impact_vitality_baseline`**（event_conduction 报告 TTL=7 天，03:00 ReportCleanupCron 会物理删除 chain）：`snapshotBaselineForEvent` 由 `POST /internal/analysis-reports`（`report_type='event_conduction'`）**落库即冻结**（`ON CONFLICT (event_id) DO NOTHING` 一次定稿），不依赖 15:50 cron 事后补；结果落 `event_impact_vitality_daily`。**读接口**：`getLatestVitality`（单事件）/ `getLatestVitalityByEventIds`（批量，`IN ($1,$2,...)` 标量占位符防 42P18），供 `/api/agent/event/list`、`/api/agent/event/:eventId` 输出 `impactVitality: {score, status, statDate} | null`（**只标注、不排序、不过滤**）。**手动触发**：`POST /internal/event-vitality/run`（强制 `enabled: true`）。交易日 15:50 cron（`VITALITY_ENABLED` 默认 true 生产启用，显式 false 关闭）
 - 对应 Service 文件
 
 ## 依赖的 shared 类型
@@ -49,7 +51,7 @@
   - 行业上下游边由 AI 批量生成（`buildAIEdges`，每批 20 行业）+ **专家人工修正表**（`EXPERT_INDUSTRY_RELATIONS`，按行业名精确匹配，约 90 个热门行业权威上下游）双重保障；`applyExpertEdges` 幂等覆盖 AI 边，缓存命中与重新生成统一生效
   - 缓存 TTL 修复：full_graph.json 的过期判断用缓存内部 `updateTime` 而非文件 mtime（mtime 会被龙头股后台加载重写刷新，导致永不更新）；`rebuild(force)` 支持强制跳过 ai_edges 缓存
   - AI prompt 明确：881xxx 为二级行业、884xxx 为三级细分，严禁把并列/细分-父级/服务外包当上下游
-- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10，网页同款口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填
+- 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10 落库供"板块轮动表"展示；**上榜次数 freq120（近120交易日）/freq10（近10交易日）只统计涨幅榜**，跌幅榜不计入，对齐同花顺网页口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填；**近30日以 hotCirclePlate 的 mrpm 为准**（官网同款完整榜，修复 last.js 当日 bar 缺失导致的当日榜残缺）
 - 风口榜单会出现行业板块（881xxx）：行业板块不走"概念→行业"映射（`mapConceptToIndustries`），改走 `mapIndustryToChain` 直接从知识图谱取行业上下游（`getUpstreamDownstreamByName`，失败返回空不阻塞）；前端 WindLeaderPanel 流向图支持无 related 节点的行业板块布局
 - 龙头股爬取必须经 `isValidStockCode`/`isValidStockName`/`extractStockCodeFromHref` 校验：同花顺概念页新闻链接（`news.10jqka.com.cn/20260805/...`）URL 中日期 `202608` 会被旧正则 `/(\d{6})/` 误当股票代码、新闻标题被当股票名（曾污染 leading_stock 如"概念细分|玻璃基板…"）；`extractLeadingStock` 爬取失败时回退 main_stocks 评分最高者补全 code/价格（行业板块 881xxx 无概念页龙头结构）
 - 长线风口榜龙头展示用 `long_leader` 字段（趋势龙头，非爬虫龙头）：`queryTopTrendScore` 查 `trend_scores` 最新评分日中成分股集合内 score 最高、非 D 评级且未被 60 日线剔除的股票；行业板块（881xxx）用 `getBoardTopStocks(20,'industry')` 成分股代码、概念板块用概念成分股代码；无命中回退 main_stocks 评分最高者

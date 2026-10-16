@@ -44,10 +44,10 @@ test('applyDualRankings: both 同时进两榜但合并去重', () => {
     assert.ok(ranked.findIndex(s => s.name === 'A') < ranked.findIndex(s => s.name === 'B')); // A 在长线榜位置
 });
 
-test('applyDualRankings: 短线上限 8 且按上榜次数(freq20)→热度(short_heat) 降序', () => {
+test('applyDualRankings: 短线上限 8 且按上榜次数(freq10)→热度(short_heat) 降序', () => {
     const items = Array.from({ length: 10 }, (_, i) => ({
         name: `s${i}`, cycle: 'short' as const, long_term_days: 0, short_term_days: i,
-        freq20: i % 3,
+        freq10: i % 3,
         ai_analysis: { short_heat: 0.1 * (i + 1) },
     }));
     const ranked = applyDualRankings(items);
@@ -56,8 +56,8 @@ test('applyDualRankings: 短线上限 8 且按上榜次数(freq20)→热度(shor
     for (let i = 1; i < shortBoard.length; i++) {
         const prev = shortBoard[i - 1];
         const cur = shortBoard[i];
-        const prevFreq = prev.freq20 ?? 0;
-        const curFreq = cur.freq20 ?? 0;
+        const prevFreq = prev.freq10 ?? 0;
+        const curFreq = cur.freq10 ?? 0;
         assert.ok(prevFreq >= curFreq, `上榜次数应降序: ${prev.name}(${prevFreq}) -> ${cur.name}(${curFreq})`);
         if (prevFreq === curFreq) {
             const prevHeat = prev.ai_analysis?.short_heat ?? 0;

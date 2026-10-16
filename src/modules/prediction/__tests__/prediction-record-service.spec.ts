@@ -95,7 +95,8 @@ test('appendVerification issues atomic jsonb merge UPDATE with horizon+entry par
     assert.ok(update, '应执行 UPDATE');
     assert.ok(update!.sql.includes('jsonb_build_object'), 'SQL 用 jsonb_build_object 原子合并');
     assert.ok(update!.sql.includes('||'), 'SQL 用 || 合并运算符');
-    assert.ok(update!.sql.includes('COALESCE(verification->$1'), '同档位已有值 COALESCE 合并');
+    // 2026-09-03 回归修复（D1）起改用 `->>`（取 text 再 ::jsonb cast）消除 $1 类型歧义
+    assert.ok(update!.sql.includes('COALESCE(verification->>$1'), '同档位已有值 COALESCE 合并');
     assert.equal(update!.params[0], 'short');
     const entry = JSON.parse(String(update!.params[1]));
     assert.equal(entry.result, 'hit');

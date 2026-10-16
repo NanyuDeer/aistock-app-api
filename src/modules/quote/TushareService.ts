@@ -2,6 +2,7 @@ import { getStockIdentity } from '../../shared/utils/stock';
 import { createThrottler } from '../../shared/utils/throttle';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
+import { SW_INDUSTRY_MAP } from '../../shared/utils/industryAlias';
 
 const TUSHARE_MIN_INTERVAL_MS = 320;
 const tushareThrottler = createThrottler(TUSHARE_MIN_INTERVAL_MS);
@@ -259,40 +260,6 @@ export async function getIndexDaily(indexCode: string, startDate: string): Promi
 export interface StockIndustryRow {
     ts_code: string; industry_name: string; industry_code: string;
 }
-
-const SW_INDUSTRY_MAP: Record<string, string> = {
-    '农林牧渔': '801010.SI', '种植业': '801010.SI', '渔业': '801010.SI', '饲料': '801010.SI', '农产品加工': '801010.SI',
-    '基础化工': '801030.SI', '化学制品': '801030.SI', '化学原料': '801030.SI', '塑料': '801030.SI', '橡胶': '801030.SI', '农药': '801030.SI',
-    '钢铁': '801040.SI', '普钢': '801040.SI', '特钢': '801040.SI',
-    '有色金属': '801050.SI', '工业金属': '801050.SI', '贵金属': '801050.SI', '能源金属': '801050.SI',
-    '电子': '801080.SI', '半导体': '801080.SI', '元件': '801080.SI', '光学光电子': '801080.SI', '消费电子': '801080.SI', '电子化学品': '801080.SI', '其他电子': '801080.SI',
-    '家用电器': '801110.SI', '白色家电': '801110.SI', '黑色家电': '801110.SI', '小家电': '801110.SI', '照明设备': '801110.SI',
-    '食品饮料': '801120.SI', '白酒': '801120.SI', '非白酒': '801120.SI', '饮料乳品': '801120.SI', '休闲食品': '801120.SI', '调味发酵品': '801120.SI',
-    '纺织服饰': '801130.SI', '服装家纺': '801130.SI', '纺织制造': '801130.SI', '饰品': '801130.SI',
-    '轻工制造': '801140.SI', '造纸': '801140.SI', '包装印刷': '801140.SI', '家居用品': '801140.SI', '文娱用品': '801140.SI',
-    '医药生物': '801150.SI', '化学制药': '801150.SI', '中药': '801150.SI', '生物制品': '801150.SI', '医药商业': '801150.SI', '医疗器械': '801150.SI', '医疗服务': '801150.SI',
-    '公用事业': '801160.SI', '电力': '801160.SI', '燃气': '801160.SI', '水务': '801160.SI',
-    '交通运输': '801170.SI', '物流': '801170.SI', '港口': '801170.SI', '高速公路': '801170.SI', '机场': '801170.SI', '航空机场': '801170.SI', '铁路公路': '801170.SI',
-    '房地产': '801180.SI', '房地产开发': '801180.SI', '房地产服务': '801180.SI',
-    '商贸零售': '801200.SI', '一般零售': '801200.SI', '专业零售': '801200.SI', '贸易': '801200.SI', '互联网电商': '801200.SI',
-    '社会服务': '801210.SI', '酒店餐饮': '801210.SI', '旅游及景区': '801210.SI', '教育': '801210.SI', '专业服务': '801210.SI',
-    '银行': '801780.SI',
-    '非银金融': '801790.SI', '证券': '801790.SI', '保险': '801790.SI', '多元金融': '801790.SI',
-    '建筑材料': '801710.SI', '水泥': '801710.SI', '玻璃玻纤': '801710.SI', '装修建材': '801710.SI',
-    '建筑装饰': '801720.SI', '房屋建设': '801720.SI', '装修装饰': '801720.SI', '基础建设': '801720.SI', '专业工程': '801720.SI', '园林工程': '801720.SI',
-    '电力设备': '801730.SI', '电池': '801730.SI', '光伏设备': '801730.SI', '风电设备': '801730.SI', '电机': '801730.SI', '电网设备': '801730.SI',
-    '机械设备': '801890.SI', '通用设备': '801890.SI', '专用设备': '801890.SI', '仪器仪表': '801890.SI', '自动化设备': '801890.SI',
-    '国防军工': '801740.SI', '航空装备': '801740.SI', '航天装备': '801740.SI', '军工电子': '801740.SI', '地面兵装': '801740.SI', '航海装备': '801740.SI',
-    '计算机': '801750.SI', '软件开发': '801750.SI', '计算机设备': '801750.SI', 'IT服务': '801750.SI',
-    '传媒': '801760.SI', '游戏': '801760.SI', '广告营销': '801760.SI', '影视院线': '801760.SI', '数字媒体': '801760.SI', '出版': '801760.SI', '电视广播': '801760.SI',
-    '通信': '801770.SI', '通信设备': '801770.SI', '通信服务': '801770.SI',
-    '煤炭': '801950.SI', '焦炭': '801950.SI', '煤炭开采加工': '801950.SI',
-    '石油石化': '801960.SI', '油气开采': '801960.SI', '炼化及贸易': '801960.SI', '油服工程': '801960.SI',
-    '环保': '801970.SI',
-    '美容护理': '801980.SI', '个护用品': '801980.SI', '化妆品': '801980.SI', '医疗美容': '801980.SI',
-    '综合': '801230.SI',
-    '汽车': '801880.SI', '乘用车': '801880.SI', '商用车': '801880.SI', '汽车零部件': '801880.SI', '摩托车': '801880.SI', '汽车服务': '801880.SI',
-};
 
 export async function getStockIndustry(symbol: string): Promise<StockIndustryRow | null> {
     const tsCode = toTsCode(symbol);
@@ -1291,3 +1258,35 @@ export async function getCompleteDailyByDate(
         page_count: maxPages,
     };
 }
+
+export interface TradeCalRow {
+    exchange: string;
+    cal_date: string;      // ISO YYYY-MM-DD
+    is_open: boolean;
+    pretrade_date: string | null;
+}
+
+/** 把 Tushare 的 YYYYMMDD 转成 ISO YYYY-MM-DD；非法原样返回（宽松降级） */
+function toIsoDate(raw: unknown): string | null {
+    const text = String(raw ?? '').trim();
+    if (/^\d{8}$/.test(text)) return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+    return null;
+}
+
+/** trade_cal 响应 → 结构化行；字段缺失/非法时宽松降级，不抛错 */
+export function mapTradeCalRows(rows: Record<string, unknown>[]): TradeCalRow[] {
+    const out: TradeCalRow[] = [];
+    for (const row of rows) {
+        const calDate = toIsoDate(row.cal_date);
+        if (!calDate) continue;                       // 无日期则丢弃该行
+        out.push({
+            exchange: String(row.exchange ?? 'SSE').trim() || 'SSE',
+            cal_date: calDate,
+            is_open: String(row.is_open ?? '0') === '1', // 缺失/异常一律视为休市
+            pretrade_date: toIsoDate(row.pretrade_date),
+        });
+    }
+    return out;
+}
+

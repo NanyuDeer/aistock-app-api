@@ -3,6 +3,7 @@
 import { createHash } from 'crypto';
 import pool from '../../core/db';
 import redis from '../../core/redis';
+import { asBeijingAwareText } from '../../shared/utils/shanghaiTime';
 import type { MentionedSymbol } from './types';
 
 const HIGHWATER_KEY = 'watchlist_insight:highwater';
@@ -46,7 +47,13 @@ export async function upsertSources(articles: SourceArticle[]): Promise<number> 
                parser_version = EXCLUDED.parser_version
              RETURNING xmax = 0 AS was_inserted`,
             [a.articleId, a.detailUrl, a.articleId, a.tradeDate, a.title, JSON.stringify(a.keywords),
-             a.content, JSON.stringify(a.mentionedSymbols), a.publishedAt, hash, PARSER_VERSION],
+             a.content, JSON.stringify(a.mentionedSymbols),
+             // published_at 列为 TIMESTAMPTZ，而上游爬虫给的是**不带时区**的北京时间串
+             // （如 "2026-08-05 11:26:03"）。裸串会被 PG 按**会话 TimeZone** 解释，
+             // 而 core/db.ts 只传 connectionString（未设 options/timezone）→ 取决于 PG
+             // 服务器默认值；若为 UTC 则整体偏晚 8 小时。故此处显式补 +08:00，
+             // 使其与 PG 会话时区无关（带时区/仅日期的串原样透传）。
+             asBeijingAwareText(a.publishedAt), hash, PARSER_VERSION],
         );
         if (res.rows[0]?.was_inserted) inserted++;
     }

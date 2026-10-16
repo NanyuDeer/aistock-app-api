@@ -11,6 +11,7 @@ import {
     compositeOfRawAvgs,
     sparkline,
 } from './indicators';
+import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 
 /** tushare 客户端抽象（生产用 TushareService.tushareRequest） */
 export interface TushareClient {
@@ -47,14 +48,22 @@ const HIST = 500;   // 历史回看窗口（交易日，支持近两年百分位
 const SPARK = 500;  // 折线图历史窗口（交易日）
 const NEUTRAL = { score: 50, raw: 0, label: '中性', history: { dates: [], scores: [] } };
 
-/** YYYYMMDD（上海时区，服务端已设 TZ=Asia/Shanghai） */
-function todayYyyymmdd(): string {
-    const d = new Date();
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}${m}${day}`;
-}
+/**
+ * 依赖注入（便于单测替换交易日来源；tsx 下 ESM named import 不可 monkey-patch，
+ * 与 ClsStockNewsService.__clsNewsDependencies 同一约定）。
+ *
+ * 交易日历**统一来源** = `tradingCalendarStore`（`trading_calendar` 表，由
+ * TradingCalendarRefreshService 以 Tushare trade_cal 刷新）——本模块**不再直连** Tushare `trade_cal`。
+ */
+export const __fearGreedDeps = {
+    /** 最近 n 个交易日（YYYYMMDD，升序） */
+    recentTradingDays: (n: number): string[] => {
+        const days = TradingCalendarService.getRecentTradingDays(new Date(), n); // 降序（最近在前）
+        return days
+            .map((d) => `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`)
+            .reverse();
+    },
+};
 
 /**
  * 双层百分位排名聚合：
@@ -66,28 +75,9 @@ function todayYyyymmdd(): string {
  * 历史最恐惧日 → composite≈0，历史最贪婪日 → composite≈100，无需手工调参数。
  */
 
-function daysAgoYyyymmdd(days: number): string {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${y}${m}${day}`;
-}
-
-/** 最近 n 个交易日（YYYYMMDD，升序） */
-async function tradeDates(client: TushareClient, n: number): Promise<string[]> {
-    const end = todayYyyymmdd();
-    const start = daysAgoYyyymmdd(n * 2 + 30);
-    const rows = await client.request('trade_cal', { start_date: start, end_date: end }, 'cal_date,is_open');
-    const dates = rows.filter((r) => r.is_open === 1).map((r) => String(r.cal_date));
-    dates.sort();
-    return dates.slice(-n);
-}
-
 /** 指数/基金日线（升序，近 days 个交易日） */
 async function indexDaily(client: TushareClient, tsCode: string, days: number): Promise<Record<string, unknown>[]> {
-    const dates = await tradeDates(client, days);
+    const dates = __fearGreedDeps.recentTradingDays(days);
     const rows = await client.request(
         'index_daily',
         { ts_code: tsCode, start_date: dates[0], end_date: dates[dates.length - 1] },
@@ -99,7 +89,7 @@ async function indexDaily(client: TushareClient, tsCode: string, days: number): 
 
 /** 波动率：50ETF 近 20 日年化波动率；波动越低越贪婪（方向反转） */
 async function volatility(client: TushareClient): Promise<JqIndicator> {
-    const dates = await tradeDates(client, HIST + 20);
+    const dates = __fearGreedDeps.recentTradingDays(HIST + 20);
     const rows = await client.request(
         'fund_daily',
         { ts_code: '510050.SH', start_date: dates[0], end_date: dates[dates.length - 1] },
@@ -134,7 +124,7 @@ async function volatility(client: TushareClient): Promise<JqIndicator> {
 
 /** 北向资金：净流入相对 20 日均线偏离度；流入多 → 贪婪 */
 async function northFlow(client: TushareClient): Promise<JqIndicator> {
-    const dates = await tradeDates(client, HIST + 20);
+    const dates = __fearGreedDeps.recentTradingDays(HIST + 20);
     const rows = await client.request(
         'moneyflow_hsgt',
         { start_date: dates[0], end_date: dates[dates.length - 1] },
@@ -172,7 +162,7 @@ async function hs300Members(client: TushareClient): Promise<string[]> {
 
 /** 市场宽度：沪深300 成分股上涨家数占比（增量缓存到 breadth_daily 表） */
 async function breadth(client: TushareClient, cache: BreadthCache): Promise<JqIndicator> {
-    const dates = await tradeDates(client, SPARK); // 升序
+    const dates = __fearGreedDeps.recentTradingDays(SPARK); // 升序
     const start = dates[0];
     const end = dates[dates.length - 1];
 
@@ -245,7 +235,7 @@ async function breadth(client: TushareClient, cache: BreadthCache): Promise<JqIn
 
 /** 沪深300 股指期货升贴水率；升水 → 看多（贪婪） */
 async function futuresBasis(client: TushareClient): Promise<JqIndicator> {
-    const dates = await tradeDates(client, HIST);
+    const dates = __fearGreedDeps.recentTradingDays(HIST);
     const fut = await client.request(
         'fut_daily',
         { ts_code: 'IF.CFX', start_date: dates[0], end_date: dates[dates.length - 1] },
@@ -464,7 +454,7 @@ function streakIndicator(daily: DailyLimit[]): JqIndicator {
 
 /** 融资买入额 250 日百分位（杠杆水平代理，不计入综合指数） */
 async function margin(client: TushareClient): Promise<JqIndicator> {
-    const dates = await tradeDates(client, HIST);
+    const dates = __fearGreedDeps.recentTradingDays(HIST);
     const rows = await client.request(
         'margin',
         { start_date: dates[0], end_date: dates[dates.length - 1] },
@@ -506,7 +496,7 @@ export async function computeJq(client: TushareClient, breadthCache: BreadthCach
     // 涨跌停微观指标（daily 推导 + 增量缓存；数据源不可用时降级为中性）
     const micro = await (async () => {
         try {
-            const limitDates = await tradeDates(client, HIST);
+            const limitDates = __fearGreedDeps.recentTradingDays(HIST);
             const daily = await fetchLimitData(client, limitDates, limitCache);
             return {
                 seal_rate: sealRateIndicator(daily),

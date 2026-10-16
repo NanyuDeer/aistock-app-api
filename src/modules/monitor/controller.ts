@@ -151,4 +151,28 @@ export class StockMonitorController {
             createResponse(res, 500, errMsg);
         }
     }
+
+    /**
+     * GET /api/cn/favorites/industry-aliases
+     * 自选股行业别名（需登录）：读用户自选股 → 行业同族展开集合，供前端做事件相关性匹配。
+     *
+     * 返回：{ [symbol]: { name, industry, aliases[] } }
+     */
+    static async getFavoriteIndustryAliases(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        try {
+            const auth = await StockMonitorController.requireAuth(req);
+            if (!auth.ok) {
+                createResponse(res, auth.code, auth.message);
+                return;
+            }
+            const { id, openid } = auth;
+
+            const data = await StockMonitorService.getFavoriteIndustryAliases(id, openid);
+            createResponse(res, 200, 'success', data);
+        } catch (err: any) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error('[StockMonitorController] getFavoriteIndustryAliases error:', errMsg);
+            createResponse(res, 500, errMsg);
+        }
+    }
 }

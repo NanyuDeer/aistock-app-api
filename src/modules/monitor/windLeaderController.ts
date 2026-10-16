@@ -248,12 +248,19 @@ export class WindLeaderController {
             const minResonance = rawMinResonance === undefined
                 ? undefined
                 : Math.min(Math.max(parseInt(String(rawMinResonance), 10) || 2, 2), 4);
+            const rawTradingDays = req.query.trading_days;
+            const parsedTradingDays = rawTradingDays === undefined ? undefined : parseInt(String(rawTradingDays), 10);
+            const tradingDays = parsedTradingDays !== undefined && Number.isInteger(parsedTradingDays)
+                && parsedTradingDays >= 1 && parsedTradingDays <= 60
+                ? parsedTradingDays
+                : undefined;
             const result = await HotBurstService.getHistory(
                 limit,
                 offset,
                 minResonanceOnly,
                 days,
                 minResonance,
+                tradingDays,
             );
             createResponse(res, 200, 'success', result);
         } catch (err: any) {

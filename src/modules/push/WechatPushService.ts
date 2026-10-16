@@ -1,6 +1,6 @@
 import pool from '../../core/db';
 import { ScanLoginController } from '../auth/scanLoginController';
-import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
+import { shanghaiDateStr, shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 // 注意：微信 API 调用必须使用原生 fetch，不能用 sessionFetch（自定义 https.Agent keepAlive），
 // 否则微信服务器会返回 HTTP 412 Precondition Failed。详见 project_memory.md。
 
@@ -511,7 +511,9 @@ export class WechatPushService {
                         event_type: { value: `${event.info_type === 'announcement' ? '公告' : '新闻'}研判` },
                         level: { value: `${event.ai_impact}/${event.ai_horizon}` },
                         summary: { value: event.ai_summary || title },
-                        time: { value: WechatPushService.formatEventTime(new Date(event.published_at).toISOString()) },
+                        // 用上海墙钟展示（勿用 `new Date(x).toISOString()`：那是 **UTC** 墙钟，
+                        // 会比北京时间早 8 小时）。与同模块 MessagePushService:325 口径一致。
+                        time: { value: WechatPushService.formatEventTime(shanghaiDateTimeStr(new Date(event.published_at).getTime())) },
                     },
                 }),
             },
@@ -1013,7 +1015,8 @@ export class WechatPushService {
                         event_type: { value: 'AI 归因' },
                         level: { value: '首次生成' },
                         summary: { value: content },
-                        time: { value: WechatPushService.formatEventTime(new Date().toISOString()) },
+                        // 同上：取当前时刻的**上海墙钟**，不用 toISOString()（UTC，早 8 小时）。
+                        time: { value: WechatPushService.formatEventTime(shanghaiDateTimeStr()) },
                     },
                 }),
             },

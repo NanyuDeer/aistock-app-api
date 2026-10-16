@@ -1,6 +1,6 @@
-import { test } from 'node:test';
+import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { computeJq, type BreadthCache, type DailyLimit, type LimitCache, type TushareClient } from '../src/modules/fear-greed/calculator';
+import { computeJq, __fearGreedDeps, type BreadthCache, type DailyLimit, type LimitCache, type TushareClient } from '../src/modules/fear-greed/calculator';
 
 /** 生成连续 YYYYMMDD 日期（跳过周末简化） */
 function genDates(n: number): string[] {
@@ -21,13 +21,25 @@ function genDates(n: number): string[] {
 
 const DATES = genDates(50);
 
+/**
+ * 交易日历**统一来源**（tradingCalendarStore）在单测中注入为固定窗口 DATES，
+ * 等价于改造前 `client.request('trade_cal')` 的返回值（50 天）。
+ */
+const originalRecentTradingDays = __fearGreedDeps.recentTradingDays;
+beforeEach(() => {
+    __fearGreedDeps.recentTradingDays = (n: number) => DATES.slice(-n);
+});
+afterEach(() => {
+    __fearGreedDeps.recentTradingDays = originalRecentTradingDays;
+});
+
 /** 构造可控 mock tushare 客户端 */
 function makeClient(): TushareClient {
     return {
         async request(apiName: string, params: Record<string, unknown>, fields = '') {
             switch (apiName) {
-                case 'trade_cal':
-                    return DATES.map((cal_date) => ({ cal_date, is_open: 1 }));
+                // 交易日历必须走统一事实源（tradingCalendarStore），不得直连 Tushare trade_cal
+                // → 故意不提供该 case，落到 default 抛错，锁死回归。
                 case 'fund_daily':
                     // 50ETF：构造递减（波动升高）的收盘价
                     return DATES.map((trade_date, i) => ({ trade_date, close: 100 - i * 0.3 }));

@@ -30,6 +30,281 @@
 - `src/modules/stock-trace/AGENTS.md`：新增 2026-10-15 段落（背景根因 / 方法语义边界 / `JOB_KIND` 导出 / 响应契约变更 / 已知未处理项）。
 - ⚠️ **已知未处理**（沿用 `detect` 既有语义，用户确认「先不处理」）：非交易时段点击时，若当日事件已落定（closed），`processPriceFact` 会为同一 (symbol, direction) **新建一条当日事件** → 多一次归因 + 一条通知（展示层由 `dedupeDailyMovements` 聚合为一张卡）。
 
+## [xusiyun] 2026-10-15 — 事件影响存活度全栈闭环 + 自选股相关事件卡片后端
+
+**开发者**: xusiyun
+
+### 新增
+
+- 新增 `src/modules/monitor/EventImpactVitalityService.ts`：事件影响存活度（chain Top3 行业 ≈ 同花顺行业板块，`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`，分档 alive/fading/expired/no_observation）。
+- 新增迁移 `src/db/migrations/025_event_impact_vitality.sql`（`event_impact_vitality_baseline` chain 快照 + `event_impact_vitality_daily` 每日算分，均 `IF NOT EXISTS` 幂等），并在启动时 `ensureVitalitySchema()` 兜底建表。
+- 新增 `src/shared/utils/industryAlias.ts`：`SW_INDUSTRY_MAP` 作为行业口径单一数据源 + `LEGACY_INDUSTRY_ALIAS` 旧申万名归一 + 申万一级同族展开。
+- 新增接口 `GET /internal/event-vitality/:eventId`（只读）、`POST /internal/event-vitality/run`（手动触发/回补，强制 enabled）、`GET /api/cn/favorites/industry-aliases`（自选股行业别名，需登录）。
+
+### 改进
+
+- `POST /internal/analysis-reports` 在写入 `event_conduction` 报告时 best-effort 冻结 chain 快照（`ON CONFLICT (event_id) DO NOTHING` 一次定稿，try/catch 只告警不阻断），根治报告 7 天 TTL 被 `ReportCleanupCron` 物理删除后 chain 永久丢失。
+- `/api/agent/event/list`（每项）与 `/api/agent/event/:eventId`（顶层）加性输出 `impactVitality: { score, status, statDate } | null`，annotation-only（只标注，不排序、不过滤）。
+- 15:50 交易日 cron（`runIfTradingDay`）+ `VITALITY_ENABLED` 总开关默认改为 true（生产启用，显式设 false 可关闭）。
+
+### 重构
+
+- `src/modules/quote/TushareService.ts` 的 `SW_INDUSTRY_MAP` 搬入 `shared/utils/industryAlias.ts`（内容逐字零改动，仅新增 import），`getStockIndustry` 返回值不变。
+
+### 验证
+
+- `npx tsc --noEmit` exit 0；存活度单测 40/40、industryAlias 5/5、event_conduction 契约 23/23、chat_analysis 2/2 全绿。
+
+---
+
+## [master] 2026-10-12 — 风口龙头当日榜改用官网 mrpm（修「上榜次数」算错）+ 字段改名 freq10/freq120
+
+**开发者**: Aria
+
+### 修复
+
+- **当日榜残缺（「上榜次数」算错的根因）**：每日榜原由同花顺 `last.js` 日线推导，但 `last.js` 对**「当日」那根 bar 更新不全**（881xxx 行业板块常整列缺失、部分概念也缺）→ 当日榜只剩一部分板块（实测 10-12 只算出 885/886 概念、无一个 881 行业板块，第 1 名被算成「赛马概念 +1.27%」，而官网是「影视院线」）。
+  - 改为：`syncRotationHistory` 额外拉 `hotCirclePlate`（官网同款）的 `mrpm`（近 30 日**每日完整**涨/跌前 10），**近 30 日一律以 mrpm 为准**（`mergeRotationRows` 丢弃这些日期的历史残缺行），更早日期仍由 `last.js` 推导；pct 取 `last.js`（缺失记 0）。
+  - 新增纯函数 `buildRowsFromMrpm` / `mergeRotationRows` / `computePctMap`；mrpm 契约（已用官网数据核对）：`up` 为「第1名→第10名」、`down` 为「第10名→第1名」，day0 = 最新交易日。
+  - 修正后近 10 个交易日涨幅榜上榜次数与同花顺网页「近10日热门」**完全一致**：文化传媒 4 / AI视频 4 / 风电设备 3 / 短剧游戏 3 / 知识产权保护 3 / 电池 2 / 影视院线 2 / 重组蛋白 2 / 细胞免疫治疗 2 / 快手概念 2。
+
+### 变更（字段改名，纠正历史误命名）
+
+- 短线 `freq20` → **`freq10`**（真实口径一直是「最近 **10** 个交易日」，名字为历史遗留误命名：原设计 20 日、实现改 10 日时未同步改名）。
+- 长线 `frequency` → **`freq120`**（近 120 个交易日），命名对称自明。
+- 同步范围：`WindLeaderAnalyzerService` / `WindLeaderService` / `TrendScoreService`（含 API 输出 `hot-sectors.json` 的字段名）；app 前端 `leaders.vue` / `MorningContent.vue` / `sector-detail.vue` / `shared/api/modules/stock.ts`（web 前端无引用）。
+
+### 测试
+
+- 新增 `src/modules/monitor/__tests__/rotationBoardMrpm.spec.ts`（3 例）：mrpm 名次映射、pct 取值（缺失记 0）、mrpm 覆盖历史残缺行。
+- 全量测试 → **1046 / 1046 / 0**；`tsc --noEmit` exit 0；TDD 先红后绿。
+
+---
+
+## [master] 2026-10-11 — 风口龙头短线池门槛收紧：不设门槛 → freq20 ≥ 1
+
+**开发者**: Aria
+
+### 改进
+
+- **短线池门槛 = 1**（新增 `SHORT_POOL_MIN_FREQ`）：`computePoolNames` 中短线池由「全部候选入池」收紧为 **`freq20 ≥ 1`**（SHORT_WINDOW(20) 内涨幅榜上榜至少 1 次才入池），排除近 20 日从未上过涨幅榜的板块，使短线榜聚焦近期确有资金异动的方向；下游仍按 `rankTrack` 以 freq20 降序取 top8。长线池口径不变（`freq ≥ 8`）。
+
+### 测试
+
+- `tests/wind-leader-pool.test.ts` 首例改为：`SHORT_POOL_MIN_FREQ === 1`；freq20=0 不入池、freq20≥1 入池。
+- `tsc --noEmit` → exit 0；全量测试 → **1043 / 1043 / 0**；TDD 先红后绿（RED：`SHORT_POOL_MIN_FREQ` 未导出、freq20=0 的 A 仍在池中）。
+
+---
+
+## [master] 2026-10-11 — 风口龙头短线轨道改按 freq20 选板（配套「短线不设门槛」）
+
+**开发者**: Aria
+
+### 修复
+
+- **短线轨道误按评分排序（「短线不设门槛」的必要配套）**：`identifyHotConcepts` 中长/短两条轨道原都用综合评分排序（`freqScore×4` 偏 freq120 长线）。上一条把短线池门槛去掉后，短线轨道 = 全部候选按评分取 top16 → **与长线轨道选出的板块几乎相同**，短线语义丢失（实测榜单 13 个板块**全部**被标 `both`，且**文化传媒/AI视频（`freq20=3`，短线最活跃）被挤出候选**）。
+  - 抽出 `rankTrack(items, track, topN)`：长线按评分降序、**短线按 freq20 降序**（相同再按评分）。
+
+### 测试
+
+- `tests/wind-leader-pool.test.ts` 新增 2 例：短线轨道按 freq20 降序（不按评分）；freq20 相同时按评分。
+- `tsc --noEmit` → exit 0；全量测试 → **1043 / 1043 / 0**；TDD 先红后绿（RED：短线轨道返回 `['LongHigh','ShortHot']`，应为 `['ShortHot','ShortMid']`）。
+
+---
+
+## [master] 2026-10-11 — 风口龙头池门槛下调：长线 16→8、短线不设门槛
+
+**开发者**: Aria
+
+### 改进
+
+- **长线池门槛下调 16 → 8**（`LONG_POOL_MIN_FREQ`）：上榜次数改「只算涨幅榜」后数值约减半（元件 `freq 66→35`、`freq20 6→2`），原门槛按旧口径校准 → 过筛板块骤减。等比下调以维持原强度、对齐新口径。
+- **短线池不设门槛**：`computePoolNames` 中短线池由 `freq20 ≥ 3` 改为**全部候选入池**（不再设下限），由下游按 freq20 排序取 top8；避免口径变化后短线榜只剩 2 个板块。长线池仍按 `freq ≥ LONG_POOL_MIN_FREQ` 预筛。
+- 抽出纯函数 `computePoolNames(candidates)` 承载双池预筛，便于单测锁定口径。
+
+### 测试
+
+- 新增 `tests/wind-leader-pool.test.ts`（2 例）：短线池全部候选入池（含 `freq20=0`）；长线池门槛 = 8。
+- `tsc --noEmit` → exit 0；全量测试 → **1041 / 1041 / 0**；TDD 先红后绿（RED：`16 !== 8`、短线池缺项）。
+
+---
+
+## [master] 2026-10-11 — 风口龙头「上榜次数」口径修正（只统计涨幅榜）+ 轮动榜按交易日覆盖写入
+
+**开发者**: Aria
+
+### 修复
+
+- **「上榜次数」把跌幅榜也算进去了**：`board_rotation_daily` 每日同时落库涨幅前10（`up_rank`）与跌幅前10（`down_rank`）供「板块轮动表」展示，但下游统计口径错误地把两者都算作「上榜」，使短线（`freq20`）/长线（`frequency`）/频次变化率（`freq_delta`）被放大，与同花顺网页口径不一致。
+  - `WindLeaderAnalyzerService.buildSectorStatsFromRotationRows`：组装 rawData 时过滤 `up_rank == null`（跌幅榜）行，只统计涨幅榜上榜。
+  - 缓存键 `block_rotation_${days}_v3` → `_v4`（旧缓存含跌幅榜，需失效重算）。
+  - 注：`board_rotation_daily` 仍保留涨/跌两榜供展示；复用的 `RotationBoardCache`（趋势股评分「上榜次数」）与 `TrendScoreView` 一并生效。legacy 降级源（`hot_block_list`）实测本就只含上涨板块，无需改动。
+- **轮动榜历史脏数据（同一交易日两套涨/跌榜）**：`syncRotationHistory` 用「当前板块池」全量重算历史后只 `upsert`，而 `(trading_date, board_code)` 主键下**旧池板块的行不会被覆盖** → 逐日残留，同一交易日出现新旧两套榜（实测 `2026-10-09` 共 **38 行**，本应 20 行；`up_rank` 1–10 各出现 2 次），进一步放大上榜次数。
+  - 改为 `replaceRotationRows`：单事务内**先按本次重算交易日删除旧行，再插入新行**，保证每日仅一套榜；下次同步即自动清理历史脏数据。
+
+### 测试
+
+- 新增 `tests/wind-leader-rotation-stats.test.ts`（2 例）：跌幅榜上榜不计入 `frequency`/`freq20`；全程只在跌幅榜出现的板块不进入统计。
+- 新增 `src/modules/monitor/__tests__/rotationBoardStore.spec.ts`（3 例）：事务内先按交易日删除（日期去重）再插入、插入失败回滚、空数据不触达 DB。
+
+### 文档
+
+- `modules/monitor/AGENTS.md`、`RotationBoardStore.ts` 头注释补充「上榜次数只取涨幅榜，跌幅榜仅用于展示」口径说明。
+
+### 验证
+
+- `tsc --noEmit` → exit 0
+- 全量测试 → **1039 / 1039 / 0**
+- TDD 先红后绿：RED 证据「甲板块 frequency=3，应为 2（跌幅榜那天不计入）」
+
+---
+
+## [master] 2026-10-11 — 恐贪指数交易日窗口统一到交易日历唯一事实源；修 jwt 用例概率性假失败
+
+**开发者**: Aria
+
+### 重构
+
+- **恐贪指数取数窗口不再直连 Tushare `trade_cal`**：`modules/fear-greed/calculator.ts` 此前有 8 处各自直连 `trade_cal`（`tradeDates()`）取「最近 N 个交易日」，是全仓除 `TradingCalendarRefreshService` 之外**第二处**接触 `trade_cal` 的地方，与「唯一事实源 = `trading_calendar` 表」口径冲突（且每个指标各发一次请求）。
+  - 改为经注入点 `__fearGreedDeps.recentTradingDays` 走 `TradingCalendarService.getRecentTradingDays`（`tradingCalendarStore` 同步读，输出 YYYYMMDD 升序）；删除 `tradeDates` / `daysAgoYyyymmdd` / `todayYyyymmdd`。行为等价（同取「≤ 当日的最近 N 个交易日、升序」）。
+  - 注入点沿用 `__clsNewsDependencies` 约定，便于单测确定性替换。
+  - `AGENTS.md` §6.5 补充硬约束：全仓**唯一允许**调 Tushare `trade_cal` 的地方 = `TradingCalendarRefreshService`。
+
+### 修复
+
+- **`jwt.spec.ts` 用例「篡改签名」概率性假失败**（修前实测 30 次挂 4 次，失败点 `jwt.spec.ts:46`）：该用例改**签名段末字符**，而 base64 解码**忽略末位 padding 位**——原末字符为 `A/B/C/D` 时篡改后解码字节**完全相同**，签名依旧有效、`verifyJwt` 正确地返回了 payload → 断言假失败（触发概率 ≈4/64）。改为改**签名段首字符**（6 位全部有效，必然改变解码字节）。生产 `shared/utils/jwt.ts` 行为正确，**未改动**。
+
+### 测试
+
+- `tests/fear-greed.calculator.test.ts`：移除 `trade_cal` mock（**故意不提供该 case**，落到 `default` 抛错，机制上锁死「不再直连」），改为注入 `__fearGreedDeps.recentTradingDays`。
+- `src/shared/utils/__tests__/jwt.spec.ts`：篡改目标由签名段末字符改为首字符。
+
+### 验证
+
+- `npx tsc --noEmit` → exit 0
+- 全量测试 → **1034 / 1034 / 0**
+- `jwt.spec` 连跑 50 次 → **0 失败**（修前 30 次挂 4 次）
+- TDD 先红后绿：RED 证据 `unexpected api: trade_cal`（`calculator.ts:82`）
+
+---
+
+## [master] 2026-10-11 — 修复东财新闻抓取「静默失效」（TLS 指纹被边缘降级）
+
+**开发者**: Aria
+
+### 修复
+
+- **东财新闻接口被边缘按 TLS 指纹降级，导致个股新闻静默归零（9/26~10/11）**：生产 pm2 跑 **Node 20.20.2 / OpenSSL 3.0.19**，自 2026-09-26 起东财边缘按 **TLS ClientHello 指纹**区分客户端——Node 20 默认指纹（`ecdhCurve=auto`）被判非浏览器 → `search-api-web.eastmoney.com` 新闻 JSONP 返回**降级体**（`result.passportWeb`、`hitsTotal>0`、**无 `result.cmsArticleWebOld`**）→ `parseNews` 取空数组且**不抛异常** → `StockInfoCrawlService` 的 `catch` 不触发 → 新闻**静默归零**（公告走 `np-anotice-stock.eastmoney.com`，另一域名，不受影响）。
+  - **实测判据**：同一 URL 下 Node 20 基线 **0/56** 取到数据、显式 `ecdhCurve='X25519'` **56/56**、Node 24（OpenSSL 3.5）默认即正常；换浏览器 Header **无效**（问题在 TLS 层，不在 HTTP 层）。
+  - **修复 ①（TLS 加固）**：`shared/utils/httpAgent.ts` 东财域名 `https.Agent` 固定 `ecdhCurve='X25519'`（仅东财域名，其它域名不受影响；实测不影响公告/新闻正文接口）。
+  - **修复 ②（静默失效守护）**：`modules/crawler/services/EastmoneyCrawler.ts` 新增 `warnIfNewsDegraded`——`hitsTotal>0` 但无 `cmsArticleWebOld` 时 `errorLog` 显式告警，杜绝再次无声丢数据；同时引入 `__eastmoneyCrawlerDependencies` 注入点（`sessionFetch`/`errorLog`，沿用 `__clsNewsDependencies` 约定，便于单测）。
+
+### 测试
+
+- 新增 `src/modules/crawler/__tests__/eastmoneyCrawlerNews.spec.ts`（4 条）：降级响应必须告警且返回空 / 正常响应不误报 / `hitsTotal=0` 不告警 / 东财 agent 固定 `ecdhCurve` 且不影响其它域名。
+
+### 验证
+
+- `npx tsc --noEmit` → exit 0
+- 全量测试 → **1034 / 1034 / 0**
+- **生产环境实测**（服务器 Node 20 + 编译产物）：修复前 `fetchNews` 取到数据 **0/20**，修复后 **20/20**
+
+### 待跟进
+
+- **数据缺口**：约 2026-09-26~10-11（≈10 个交易日）的个股新闻未入库（公告不受影响），是否回补待评估。
+- **经验**：升级 Node 大版本会改 OpenSSL → 改 TLS 指纹，后续换运行时需回归抓取类接口。
+
+---
+
+## [master] 2026-10-08 — 又查实两处时区问题并修复：微信推送时间显示 UTC、insight 裸串写 TIMESTAMPTZ
+
+**开发者**: Aria
+
+### 修复
+
+- **微信推送的时间显示成 UTC（用户可见，比北京时间早 8 小时）**：`modules/push/WechatPushService.ts` 有两处先用 `new Date(...).toISOString()`（**UTC 墙钟**）再交给 `formatEventTime`，于是推送给用户的「时间」比实际早 8 小时：
+  - `:514` 个股情报推送的 `published_at`；
+  - `:1016` 首推场景的「当前时间」（`new Date().toISOString()`）。
+  - 改用 `shanghaiDateTimeStr(...)`（上海墙钟），与同模块 `MessagePushService.ts:325` 的既有口径一致。
+  - 注：这与 `published_at` 的值是否正确**无关** —— 即使库里时刻正确，这两处也会把显示压到 UTC。
+- **insight 来源文章的裸北京时间串直接写 `TIMESTAMPTZ`**：`modules/insight/InsightSourceService.ts` 把爬虫产出的裸串（`LimitUpRadarCrawler.ts:168` 正则提取，形如 `"2026-08-05 11:26:03"`）作为参数直接插入 `watchlist_insight_sources.published_at`（迁移 `016` 定义为 **`TIMESTAMPTZ NOT NULL`**）。裸串会被 PostgreSQL 按**会话时区**解释，而 `core/db.ts` 只传 `connectionString`（**未设** `options`/`timezone`）→ 取决于 PG 服务器默认值；若为 UTC 则整体**偏晚 8 小时**。
+  - 改用刚落位的统一能力 `asBeijingAwareText()` 补 `+08:00`，使结果**与 PG 会话时区无关**（带时区/仅日期的串原样透传）。
+  - 该修法在两种情形下都是改进：若 PG 本就是上海时区 → 落库**时刻不变**、只是形态带上偏移；若 PG 是 UTC → **修正 8 小时偏差**。
+  - 同步更新 `src/modules/insight/__tests__/limitUpRadarCrawler.spec.ts` 中「参数顺序」断言的期望值（`'2026-08-05 11:26:03'` → `'2026-08-05T11:26:03+08:00'`）。
+
+### 已查证但不改（澄清一次误判）
+
+- `iterate/case_scanner.py` 的 `_parse_time` 把裸时间按 UTC 解析 —— **实测无影响，不是缺陷**：其返回值只用于**同格式值之间**的比较/差值（`_within_window`、`_in_event_window`），统一偏移相互抵消；`event_time` 输出的是**原始字符串**（`str(cluster[-1].get("time"))`），排序也是**字符串排序**，均不经过该解析结果。此前把它列为高危属**高估**。
+
+### 验证
+
+- `TZ=UTC` / `TZ=Asia/Shanghai` / `TZ=America/New_York` 三种环境：`pnpm test` → **1030 / 1030 / 0**（新增一条时区无关性佐证）
+- `npx tsc --noEmit` → exit 0
+
+### 未处理（已由控制者决策，见下方说明）
+
+- **历史数据不回填**：见下条「回填决策」。
+
+---
+
+## [master] 2026-10-08 — 修正 crawler 时间转换的时区双重偏移（任何时区都算错，生产偏早 8h）
+
+**开发者**: Aria
+
+### 修复
+
+- **`src/modules/crawler/services/EastmoneyCrawler.ts` 的 `toChinaIso()` 在任意时区都算错**（东财**公告**与东财**新闻**的 `published_at` 都经它）。原实现先按**宿主时区**解析裸时间串，再 `+ getTimezoneOffset()`（符号反了）、**又叠一次** `+8h`，构成双重调整。实测（输入 `"2026-08-12 10:00:00"`，真值应为 `2026-08-12T02:00:00Z`）：
+
+  | 宿主 TZ | 输出 | 实际时刻 | 误差 |
+  |---|---|---|---|
+  | Asia/Shanghai（生产） | `2026-08-12T02:00:00.000+08:00` | `2026-08-11T18:00:00.000Z` | **−8h** |
+  | UTC | `2026-08-12T18:00:00.000+08:00` | `2026-08-12T10:00:00.000Z` | **+8h** |
+  | America/New_York | `2026-08-13T02:00:00.000+08:00` | `2026-08-12T18:00:00.000Z` | **+16h** |
+
+  - **影响面**：该值写入 `stock_info_judgements.published_at`（`TIMESTAMPTZ NOT NULL`，DDL 见 `StockInfoService.ts:351`），被窗口比较（`StockInfoService` / `StockInfoPushService`）、按日分桶（`StockInfoPredictionService`）、LLM prompt 展示（`StockInfoJudgeService`）与跨服务消费（agent-py）—— 生产下 `source='eastmoney'` 的数据自 2026-07-03（`10e5f35`）起**整体偏早 8 小时**。
+  - **与上一条 `asDate` 修复的区别（重要）**：`asDate` 那处依赖的是**进程 TZ**，而生产由 `src/index.ts:8` 的 `process.env.TZ='Asia/Shanghai'` 与 pm2 `env.TZ` **双重兜住**，故属**潜在脆弱**（只在测试/CI 暴露）；**本条 `toChinaIso` 与进程 TZ 无关**（双重调整使任何 TZ 都错），是**当前就生效的缺陷**。
+  - **新行为**：裸串**保留墙上时间**并补固定偏移 → `"2026-08-12 10:00:00"` → `"2026-08-12T10:00:00+08:00"`（其时刻恰为真值 `02:00Z`，拼进 prompt 也读作「北京 10:00」）；**仅日期**串显式归一为 `T00:00:00+08:00`（原实现会随时区漂移）；**带 `Z` / `±HH:MM`** 的串原样透传；非法串行为不变（仍抛 `invalid eastmoney notice time`）。同时删除无效三元 `cleaned.length >= 10 ? cleaned : cleaned` 与不再需要的 `CHINA_TZ_OFFSET`。
+- **把「裸北京时间串 → 带时区串」的能力上提到统一工具** `src/shared/utils/shanghaiTime.ts`，新增并导出 `asBeijingAwareText()`。该文件此前**只有 Date → 串/分量**单向能力，缺反向解析，故本次是**补齐缺口而非重复造轮子**。
+  - `StockTraceSnapshotService`（提交 `15b5760` 中新增的私有同名函数）改为**引用公共实现**并删除私有副本，`asDate()` 语义不变；`EastmoneyCrawler` 共用同一实现。
+  - 可复用该函数的其它模块（本次未改）：`StockInfoPredictionService`、`ClsStockNewsService`、`EventEntityService`、`EvidencePackageService`。
+
+### 新增
+
+- `src/modules/crawler/__tests__/eastmoneyCrawlerTime.spec.ts`（9 例）+ `src/shared/utils/__tests__/shanghaiTime.spec.ts`（10 例）。
+  - 断言方式：**输出串精确相等** + `new Date(result).toISOString()` 锁死时刻 → 断言**与宿主时区无关**。
+  - **RED → GREEN 已验证**：旧实现（已导出）+ `TZ=UTC` → 8 failed / 1 passed；改后 19/19 passed。
+  - 此前无覆盖的原因：`toChinaIso` 是**未导出私有函数**，只经需网络的 `fetchAnnouncements` / `fetchNews` 触达；既有测试要么喂已规范的 `+08:00` 串、要么只断言 prompt 文案、要么打桩 `queryJudgements`。
+
+### 验证
+
+- `TZ=Asia/Shanghai` 与 `TZ=UTC` 两种环境：`pnpm test` → **1030 / 1030 / 0**（原 1011 条无改动）
+- `npx tsc --noEmit` → exit 0
+
+### 回填决策：**不回填**（已决定，附依据）
+
+已入库 `published_at` 的错误**不回填**。依据：
+
+1. **近期数据会自愈**：`StockInfoService.upsertJudgements` 的 `ON CONFLICT(dedupe_key) DO UPDATE SET ... published_at = EXCLUDED.published_at`（`StockInfoService.ts:409`）—— 同一公告/新闻被再次爬到时，即会用新代码覆盖为正确值。
+2. **已消费的下游无法追回**：已发出的微信/飞书推送不可撤回；已转发 agent-py 的 `published_date`（`source_id=stock_info:{symbol}:{published_date}`）已参与入环与分桶 —— 回头改会让库内时间与当时的实际产出**不一致**，还可能造成重复/错位入环。
+3. **改的代价与风险不对等**：偏移方向取决于 **PG 服务器的 `TimeZone`**（`core/db.ts` 未设 `options`/`timezone`，`DATABASE_URL` 示例亦未带），**无法仅从代码确定**；猜错会把 8 小时误差变成反向或翻倍。
+4. **受益面有限**：仅「历史列表里旧记录的时间显示/排序」。
+
+→ 若后续确需修正历史展示，应另立任务：**先只读诊断**（`SHOW TimeZone;` + 统计受影响行数与是否含仅日期行）→ 备份 → 再执行，并评估与 agent-py 已存记录的一致性。
+
+---
+
+## [master] 2026-10-08 — CI 门禁首跑红转绿：裸时间串按 Asia/Shanghai 解释（真实产品缺陷修复）
+
+**开发者**: Aria
+
+### 修复（产品代码 + 回归测试）
+
+- **现象**：新增 CI（`.github/workflows/ci.yml`）首跑时 `类型检查` 通过，`node:test` 有 4 例失败——全部集中在 `stock-trace/eventStoreEvidence` 的时区相关用例；本地（Asia/Shanghai）全绿，UTC runner 上才红。
+- **根因**：`StockTraceSnapshotService.asDate()` 用 `new Date(text)` 解析**不带时区**的北京时间串（如 `2026-08-12 09:00:00`）。无时区后缀时机被按**宿主机时区**解释：在 UTC 容器上比北京时间**少 8 小时**，导致「当日」采集的事件库/新闻证据落到 `capturedAt -72h ~ +30min` 窗口之外被误丢弃——**这是真实生产缺陷（K8s 容器多为 UTC），非仅有测试环境问题**。
+- **修法**：新增 `NAIVE_BEIJING_DATETIME` 正则与 `asBeijingAwareText()`，把 `YYYY-MM-DD HH:mm[:ss[.SSS]]` 这类裸时间串补 `+08:00` 后再交给 `Date` 解析；带时区/`Z` 后缀的 ISO 串原样透传，行为不变。
+- **回归测试**：`__tests__/eventStoreEvidence.spec.ts` 新增「时区契约」describe（2 例）：① 事件库 `scrape_at` 为北京 09:00 → 必须解析为 `01:00Z`（不随宿主机时区漂移）；② 公司域窗口：北京 10:00 的新闻相对北京 12:00 的采集必须保留。
+- **验证**：改前以 `TZ=UTC` 全量复现 `fail 4`；改后 `npx tsc --noEmit` exit 0、`TZ=UTC` 全量 `1011/1011 pass`、北京时间宿主机两侧均通过。最终判据取 CI 二次运行。
+
 ---
 
 ## [junliang] 2026-10-07 — 归因失败可观测与状态区分（A/B/C）+ movements 列表过滤前置 / cursor 翻页 / 两周窗口
