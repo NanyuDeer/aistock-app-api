@@ -2,6 +2,18 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-10-15 修复：「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
+
+- **背景（用户可见缺陷）**：`POST /api/cn/favorites/movements/detect`（前端「立即检测」按钮）此前只做 `PriceTriggerDetector.runOnceForce()`——检测后建/修事件，**不入队归因**。归因入队此前只发生在"事件落定"路径（15:05 打点后串行落定 / 15:10 兜底 / 反向落定），而 `settleActiveEvents` 只扫 `trading_date = 当日` 的 active 事件且收盘后不再运行 → **非交易时段（或当日 15:10 之后）点出的检测会产生"永远停在 active、无 job"的孤儿事件**，前端卡片恒显「归因中」且不会被任何后续路径修复。
+- **修复**：新增 `StockTraceService.enqueueAttributionForTodayActiveEvents(symbols: string[]): Promise<number>` —— 把「当日 active 且当前修订尚无归因 job」的事件补齐入队。
+  - SQL 用 `NOT EXISTS (SELECT 1 FROM stock_trace_jobs j WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision AND j.job_kind = $3 AND j.analysis_version = $4)` 只挑**缺 job** 的事件（幂等：已有 job 的事件不会被重复入队）；按 `e.symbol = ANY($1::text[])` + `e.trading_date = $2::date` 收窄范围。
+  - 事务内逐条 `StockTraceJobService.enqueue`，之后 `publishPending()`（失败仅告警；快照未 enriched 时由 `publishPending` 的 gate hold + 每分钟 outbox cron 兜底）。
+  - **语义边界**：只补 job，**不落定、不改事件状态** —— 因此盘中调用不会打断事件窗口（收盘时仍会正常落定并产生 revision）。空 `symbols` 直接短路返回 0（不触达 DB）。
+- **`StockTraceJobService` 导出 `JOB_KIND`**：原为模块私有 `const JOB_KIND = 'analyze'`，改为 `export const` 供 `StockTraceService` 复用，避免字面量在两处漂移。
+- **契约变更**：`StockTraceController.detect` 在 `runOnceForce()` 后取 `getFavoriteSecurities()` 的 symbol 列表调用补齐方法，**响应体由 `{ triggered: true }` 变为 `{ triggered: true, enqueued: number }`**（加性扩展；前端 `stockTraceApi.detect()` 返回类型同步扩展）。
+- 测试：`__tests__/detectEnqueueAttribution.spec.ts`（4 例：逐条入队 + 发布一次 outbox + SQL 的 `active`/当日/`NOT EXISTS` 守卫与 symbol 参数断言；无缺失事件不入队不发布；空列表短路不触达 DB；controller 响应含 `enqueued`）→ `npx tsc --noEmit` exit 0。
+- ⚠️ **已知未处理（沿用 `detect` 既有语义）**：非交易时段点击该按钮时，若当日事件已在 15:05/15:10 落定（closed），`processPriceFact` 会为同一 (symbol, direction) **新建一条当日事件**（`event_id` 含时间戳，故与已落定事件不同）→ 会多一次归因与一条通知，展示层由 `dedupeDailyMovements` 聚合为一张卡。若需彻底避免，应把 detect 限制在交易时段，或在"当日事件已落定"时跳过重建。
+
 ### 2026-10-07 更新：movements 列表 `visible_only` 过滤前置（opt-in）+ cursor 复合键 tiebreaker
 
 - **动机**：`GET /api/cn/favorites/movements` 是「**先 LIMIT、前端再过滤**」——前端用 `isUnattributableMovement` 隐藏 `unavailable` 与低置信 `low`、再对同日同股去重，因此**被隐藏的行白占了窗口**，较早的有效异动可能因窗口被占满而取不到（实测 mxfff：50 条里 27 条是 `low`）。

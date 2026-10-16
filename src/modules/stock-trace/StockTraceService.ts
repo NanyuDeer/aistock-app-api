@@ -4,7 +4,7 @@ import pool from '../../core/db';
 import { pushAlertToUser } from '../../core/ws/channels/alert-channel';
 import { NotificationService } from '../../core/notification/NotificationService';
 import { StockTraceSnapshotService } from './StockTraceSnapshotService';
-import { StockTraceJobService } from './StockTraceJobService';
+import { JOB_KIND, STOCK_TRACE_ANALYSIS_VERSION, StockTraceJobService } from './StockTraceJobService';
 import {
     createEventId,
     formatChinaTradingDate,
@@ -603,6 +603,63 @@ export class StockTraceService {
             await this.triggerFinalAttribution(settled.rows);
         }
         return settled.rows.length;
+    }
+
+    /**
+     * 用户主动「立即检测」后的归因补齐（2026-10-15 修复）。
+     *
+     * 背景：`PriceTriggerDetector.runOnceForce`（用户侧 detect 端点）只做检测+建/修事件，
+     * 不入队归因；而归因入队此前只发生在"事件落定"路径（15:05 打点后串行落定、15:10 兜底、
+     * 反向落定），且落定只扫 `trading_date = 当日` 的 active 事件。于是**非交易时段**
+     * （或当日 15:10 之后）点「立即检测」建出的事件会永远停在 active、没有 job →
+     * 前端卡片恒显「归因中」且不会再被任何路径修复。
+     *
+     * 本方法只补齐"当日 active 且当前修订尚无归因 job"的事件（幂等：SQL 已用 NOT EXISTS
+     * 过滤掉已有 job 的事件），**不落定、不改事件状态**，因此盘中调用也不会打断事件窗口
+     * （落定后仍可正常产生 revision 并在收盘时统一再归因）。
+     */
+    static async enqueueAttributionForTodayActiveEvents(symbols: string[]): Promise<number> {
+        if (symbols.length === 0) return 0;
+        await this.ensureSchema();
+        const tradingDate = formatChinaTradingDate(new Date());
+        const pending = await pool.query<{ event_id: string; current_trigger_revision: number }>(`
+            SELECT e.event_id, e.current_trigger_revision
+            FROM stock_trace_events e
+            WHERE e.event_status = 'active'
+              AND e.symbol = ANY($1::text[])
+              AND e.trading_date = $2::date
+              AND NOT EXISTS (
+                  SELECT 1 FROM stock_trace_jobs j
+                  WHERE j.event_id = e.event_id
+                    AND j.trigger_revision = e.current_trigger_revision
+                    AND j.job_kind = $3
+                    AND j.analysis_version = $4
+              )
+        `, [symbols, tradingDate, JOB_KIND, STOCK_TRACE_ANALYSIS_VERSION]);
+        if (pending.rows.length === 0) return 0;
+
+        const conn = await pool.connect();
+        try {
+            await conn.query('BEGIN');
+            for (const row of pending.rows) {
+                await StockTraceJobService.enqueue(conn, {
+                    eventId: row.event_id,
+                    triggerRevision: Number(row.current_trigger_revision),
+                });
+            }
+            await conn.query('COMMIT');
+        } catch (error) {
+            await conn.query('ROLLBACK');
+            throw error;
+        } finally {
+            conn.release();
+        }
+        // 快照可能尚未 enriched：publishPending 有 gate 会 hold 到就绪（硬超时 60s），
+        // 另有每分钟 outbox cron 兜底重试，故此处失败仅告警、不影响检测结果返回。
+        await StockTraceJobService.publishPending().catch((error: unknown) => {
+            console.error('[StockTrace] 立即检测补齐归因后发布失败:', error instanceof Error ? error.message : String(error));
+        });
+        return pending.rows.length;
     }
 
     static toPublicEvent(event: TriggerEvent): Record<string, unknown> {

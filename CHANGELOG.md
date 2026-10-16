@@ -2,6 +2,36 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-10-15 — 「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
+
+**开发者**: NanyuDeer
+
+### 新增
+
+- `StockTraceService.enqueueAttributionForTodayActiveEvents(symbols: string[]): Promise<number>`：为「当日 active 且当前修订尚无归因 job」的事件补齐归因入队。SQL 用 `NOT EXISTS (SELECT 1 FROM stock_trace_jobs j WHERE j.event_id = e.event_id AND j.trigger_revision = e.current_trigger_revision AND j.job_kind = $3 AND j.analysis_version = $4)` 只挑**缺 job** 的事件（幂等，已有 job 不重投），并按 `e.symbol = ANY($1::text[])` + `e.trading_date = $2::date` 收窄范围；事务内逐条 `StockTraceJobService.enqueue` 后 `publishPending()`（失败仅告警，快照未 enriched 时由 publish gate + 每分钟 outbox cron 兜底）。**只补 job，不落定、不改事件状态**——因此盘中调用也不会打断事件窗口；空 `symbols` 直接短路返回 0（不触达 DB）。
+- 测试 `src/modules/stock-trace/__tests__/detectEnqueueAttribution.spec.ts`（4 例）。
+
+### 变更
+
+- `StockTraceJobService`：`JOB_KIND` 由模块私有 `const` 改为 `export`（供 `StockTraceService` 复用，避免字面量在两处漂移）。
+- `POST /api/cn/favorites/movements/detect`：`StockTraceController.detect` 在 `PriceTriggerDetector.runOnceForce()` 之后取 `getFavoriteSecurities()` 的 symbol 列表调用上述补齐方法；**响应体由 `{ triggered: true }` 扩展为 `{ triggered: true, enqueued: number }`**（加性扩展，前端 `stockTraceApi.detect()` 返回类型已同步）。
+
+### 修复
+
+- **非交易时段的孤儿 active 事件**：该端点此前只做检测 + 建/修事件、**不入队归因**；而归因入队此前只发生在"事件落定"路径（15:05 打点后串行落定 / 15:10 兜底 / 反向落定），且 `settleActiveEvents` 只扫 `trading_date = 当日` 的 active 事件、收盘后不再运行 → **非交易时段（或当日 15:10 之后）点「立即检测」产生的事件会永远停在 active、无 job**，前端卡片恒显「归因中」且没有任何路径能修复它。现由检测端点自补入队消除（判别特征：`stock_trace_events` 有 active 行、`stock_trace_jobs` 无对应 `(event_id, current_trigger_revision)`、`stock_trace_outbox` 无行）。
+
+### 测试
+
+- `node --import tsx --test --test-force-exit src/modules/stock-trace/__tests__/detectEnqueueAttribution.spec.ts` → **4 pass / 0 fail**：逐条入队 + 发布一次 outbox + SQL 的 `active`/当日/`NOT EXISTS` 守卫与 symbol 参数断言；无缺失事件不入队不发布；空列表短路不触达 DB；controller 响应含 `enqueued`。
+- `npx tsc --noEmit` **exit 0**。
+
+### 文档
+
+- `src/modules/stock-trace/AGENTS.md`：新增 2026-10-15 段落（背景根因 / 方法语义边界 / `JOB_KIND` 导出 / 响应契约变更 / 已知未处理项）。
+- ⚠️ **已知未处理**（沿用 `detect` 既有语义，用户确认「先不处理」）：非交易时段点击时，若当日事件已落定（closed），`processPriceFact` 会为同一 (symbol, direction) **新建一条当日事件** → 多一次归因 + 一条通知（展示层由 `dedupeDailyMovements` 聚合为一张卡）。
+
+---
+
 ## [junliang] 2026-10-07 — 归因失败可观测与状态区分（A/B/C）+ movements 列表过滤前置 / cursor 翻页 / 两周窗口
 
 **开发者**: NanyuDeer
