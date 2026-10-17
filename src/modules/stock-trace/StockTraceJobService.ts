@@ -5,7 +5,7 @@ import redis from '../../core/redis';
 
 export const STOCK_TRACE_JOB_STREAM = 'stock-trace.jobs';
 export const STOCK_TRACE_ANALYSIS_VERSION = 'llm-stock-trace-v1';
-const JOB_KIND = 'analyze';
+export const JOB_KIND = 'analyze';
 
 const MAX_HOLD_SECONDS = 60;             // 硬超时：超过后不再 hold，直接发布交由 consumer 兜底
 

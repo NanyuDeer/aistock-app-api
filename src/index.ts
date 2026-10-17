@@ -78,6 +78,7 @@ import { TrendBatchService } from './modules/monitor/TrendBatchService';
 import { WindLeaderAnalyzerService } from './modules/monitor/WindLeaderAnalyzerService';
 import { WindLeaderService } from './modules/monitor/WindLeaderService';
 import * as RotationBoardStore from './modules/monitor/RotationBoardStore';
+import { runVitalityDaily, ensureVitalitySchema } from './modules/monitor/EventImpactVitalityService';
 import { HotBurstService } from './modules/monitor/HotBurstService';
 import { FeishuMessageAiService } from './modules/monitor/FeishuMessageAiService';
 import { syncStockConceptMapping } from './modules/monitor/StockConceptMappingService';
@@ -316,6 +317,7 @@ app.get('/api/cn/favorites/insights', (req, res, next) => InsightController.list
 app.get('/api/cn/favorites/insights/:eventId', (req, res, next) => InsightController.get(req, res, next));
 app.get('/api/cn/stock-monitors/stats', (req, res, next) => StockMonitorController.getStats(req, res, next));
 app.get('/api/cn/favorites/news', (req, res, next) => StockMonitorController.getFavoritesNews(req, res, next));
+app.get('/api/cn/favorites/industry-aliases', (req, res, next) => StockMonitorController.getFavoriteIndustryAliases(req, res, next));
 app.get('/api/cn/stock-info/judgements', (req, res, next) => StockInfoJudgementController.queryJudgements(req, res, next));
 // 二级页「AI解读」首屏快评：按 symbol 取最新一条个股情报
 app.get('/api/cn/stock-info/latest', (req, res, next) => StockInfoJudgementController.getLatest(req, res, next));
@@ -934,6 +936,18 @@ cron.schedule('35 15 * * *', () => runIfTradingDay('rotation-board-sync', async 
     }
 }), { timezone: 'Asia/Shanghai' });
 
+// 事件影响存活度：交易日 15:50 收盘后计算（判断已推送重大消息的影响是否仍在传递，如 10/1 摩根新闻）
+// 落表 event_impact_vitality_daily + 内部只读接口（GET /internal/event-vitality/:eventId）+ 经 /api/agent/event(list/:eventId) 标注给前端；
+// VITALITY_ENABLED 总开关默认 true（生产启用），显式设 VITALITY_ENABLED=false 可关闭计算。
+cron.schedule('50 15 * * 1-5', () => runIfTradingDay('event-impact-vitality', async () => {
+    try {
+        const r = await runVitalityDaily();
+        console.log(`[EventImpactVitalityCron] ${r.stat_date} 快照=${r.snapshotted} 计算=${r.computed} no_observation=${r.no_observation}`);
+    } catch (err: unknown) {
+        console.error('[EventImpactVitalityCron] 失败:', err instanceof Error ? err.message : String(err));
+    }
+}), { timezone: 'Asia/Shanghai' });
+
 // 恐贪指数：盘前 09:15 / 正午 11:30 / 盘后 15:30（周一至周五，跳过节假日）
 // 盘前用前日收盘数据预计算，正午更新盘中实时，盘后用最终收盘数据定版
 // 各时段落库到 fear_greed_snapshot.time_slot，供前端绘制 intraday 短热度线
@@ -1164,6 +1178,14 @@ async function start() {
         console.log('[DB] board_rotation_daily table ready');
     } catch (err: unknown) {
         console.warn('[DB] board_rotation_daily schema check:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        // 事件影响存活度表（一期只算不干扰：baseline chain 快照 + 每日存活度）
+        await ensureVitalitySchema();
+        console.log('[DB] event_impact_vitality_* tables ready');
+    } catch (err: unknown) {
+        console.warn('[DB] event_impact_vitality schema check:', err instanceof Error ? err.message : String(err));
     }
 
     try {

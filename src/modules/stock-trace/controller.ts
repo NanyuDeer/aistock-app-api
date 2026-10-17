@@ -282,7 +282,13 @@ export class StockTraceController {
     static async detect(_req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
             await PriceTriggerDetector.runOnceForce();
-            res.json({ code: 200, data: { triggered: true } });
+            // 2026-10-15：检测只建/修事件、不入队归因，而非交易时段（或当日 15:10 之后）产生的
+            // active 事件不会被任何落定路径扫到 → 卡片恒显「归因中」。此处补齐当日缺 job 的归因入队。
+            const securities = await StockTraceService.getFavoriteSecurities();
+            const enqueued = await StockTraceService.enqueueAttributionForTodayActiveEvents(
+                securities.map((security) => security.symbol),
+            );
+            res.json({ code: 200, data: { triggered: true, enqueued } });
         } catch (error) {
             next(error);
         }

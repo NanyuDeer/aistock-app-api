@@ -202,6 +202,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `GET /internal/monitor/:symbol` | 异动引擎 | 个股监控事件 |
 | `GET /internal/trend/score/:symbol` | 趋势股评分 | 评分详情（S/A/B/C/D 评级） |
 | `GET /internal/trend/top` | 趋势股评分 | 排行列表（含60日均线剔除过滤） |
+| `GET /internal/event-vitality/:eventId` | 事件存活度（行业板块+上证指数） | 事件影响存活度只读查询：返回 `{baseline(chain 快照), direction, latest, history}`，`historyDays` 默认 14 上限 60；用户侧事件列表/详情按存活度 annotation（`impactVitality` 字段），**只标注、不排序、不过滤** |
+| `POST /internal/event-vitality/run` | 事件存活度 | 手动触发单日存活度计算（回补/调试入口）：body `{statDate?: 'YYYY-MM-DD'}`（缺省=上海今天，格式非法 400），强制 `enabled: true` 忽略 `VITALITY_ENABLED` 灰度开关；返回 `{statDate, processed, ...}` |
 | `GET /internal/graph/concepts` | 知识图谱 | 产业链概念列表 |
 | `GET /internal/graph/:concept` | 知识图谱 | 产业链图谱数据 |
 | `GET /internal/health` | — | 轻量健康探针（无需 token） |
@@ -258,8 +260,8 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 |------|------|------|
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
-| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段） |
-| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段） |
+| `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
+| `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
 | `/api/agent/rhythm-master/:date` | GET | 节奏大师报告读取（公开，三时点 refresh_slot 版本；publicRouter 须在 createAgentProxy 之前挂载） |
 | `/api/agent/event/timeline` | GET | **重大事件时间线**（公开，Phase 1）：按事件发生时间组织，未来事件提前可见。query 全部可选 `dateFrom`（缺省=上海今天）/ `dateTo`（缺省=今天+90天）/ `status`（scheduled\|upcoming\|ongoing\|occurred）/ `order`（asc\|desc，缺省 asc）/ `page`（缺省 1）/ `pageSize`（缺省 20，上限 100）；响应 `{code:0, data:{items,total,page,pageSize,hasMore}}`，item camelCase 含 `date`（后端算好的上海时区 `YYYY-MM-DD` 分组键）与 `impactSectors: string[]`（传导 chain Top3 优先、空回退 `event_entities.impact_sectors` 列、再空 `[]`）；event_status 用读时重算值；**不读 `agent_analysis_reports`**（GI 旁路；2026-09-24 展示层例外：① `source_type='news'` 事件 title 读取 `event_conduction` 最新报告 `content.title` 做标题对齐覆盖，无报告回退原始 title；② 所有事件 impactSectors 按最新传导报告 chain `impact_strength` 降序 Top3 覆盖展示；③ **occurred 事件须存在 event_conduction 报告行，否则排除**（无报告点击详情 404 → 前端「服务异常」），未来事件无报告保留——均不改准入/状态/排序）；须在 createAgentProxy 之前挂载 |
 | `/api/agent/attribution-feedback/:date` | GET | **溯源弱反馈审计读取**（Task 7.1，2026-09-17，公开只读）：`{date, signals: [...]}`（camelCase，hit_rate 已归一为 number）；查无 → 200 + `signals: []` 降级；须在 createAgentProxy 之前挂载 |
@@ -329,11 +331,14 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 15:05 | 尾盘价格打点 | PriceMoveService.run('close')，同方向升级/反方向独立事件，触发改接 stocktrace 事件层 |
 | 15:00 | 数据归档 | — |
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
+| 15:50 | 事件影响存活度 | EventImpactVitalityService.runVitalityDaily（交易日守卫；`VITALITY_ENABLED` 默认 true 生产启用，显式设 false 可关闭计算） |
 | 19:05 | 收盘后任务 | — |
 
 > 所有 cron 任务必须指定 `{ timezone: 'Asia/Shanghai' }`。
 >
 > **2026-10-02 起**：原 `06:40 / 12:40 / 18:40` 的「Calendar → Event Entity 物化」cron（`CalendarEntityCron`）**已移除**——物化方案废弃，时间线改为 `EventTimelinePublicRouter` 请求时直查 `market_calendar_events`（确定性准入 `qualifyCalendarEvent`），不依赖任何 cron，calendar 表更新即刻反映到时间线。
+>
+> **事件影响存活度（2026-10-15，全栈闭环）**：判断已推送重大消息的影响是否仍在传递（如 10/1 摩根新闻影响至今仍在）。观测口径 = chain Top3 行业 ≈ 同花顺行业板块（`getThsIndex('I','A')`，实测行业名覆盖 98% vs hotCirclePlate 57%；另配 4 条别名桥接），`daily_excess = 板块涨跌幅 − 上证指数涨跌幅`，`vitality = (0.35·aligned_ratio + 0.30·recency + 0.20·cum_excess + 0.15·reinforce) × 0.5^(age/half_life)`；分档 `alive/fading/expired/no_observation`（行业映射不到板块一律 no_observation，禁判 expired）。**chain 必须自持久化到 `event_impact_vitality_baseline`**：event_conduction 报告 TTL=7 天且 03:00 ReportCleanupCron 会物理删除，chain 随报告消失——故新增「**落库即冻结**」：`POST /internal/analysis-reports` 在 `report_type='event_conduction'` 落库成功后 best-effort `snapshotBaselineForEvent`（`INSERT ... ON CONFLICT (event_id) DO NOTHING`，一次定稿；try/catch 只告警不阻断报告写入），从此不再依赖 15:50 cron 事后补。结果落 `event_impact_vitality_daily`（兼作长期事件池）。**接出**：`/api/agent/event/list` 与 `/api/agent/event/:eventId` 每项/顶层附 `impactVitality: {score, status, statDate} | null`（列表批量查 `getLatestVitalityByEventIds`，`IN ($1,$2,...)` 标量占位符防 42P18；**只标注、不排序、不过滤**），APP/Web 两端 `VitalityBadge` 于标题下方单独一行渲染三档文案（alive=影响持续中 / fading=影响减弱 / expired=影响消退，no_observation/无数据不渲染）；另提供 `POST /internal/event-vitality/run` 手动回补入口。开关：`VITALITY_ENABLED`（默认 true 生产启用，显式 false 关闭）/ `VITALITY_WINDOW_MAX_DAYS=45` / `VITALITY_ALIVE_MIN=0.6` / `VITALITY_EXPIRED_MAX=0.3` / `VITALITY_EXCESS_MIN_PCT=0.5` / `VITALITY_RECENT_ALIGNED_DAYS=3` / `VITALITY_HALF_LIFE_DAYS`（policy:14,macro:10,geopolitical:7,industry:5,company:3）。
 
 ## 9. 常用命令
 
