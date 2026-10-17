@@ -292,20 +292,45 @@ function parseModelJson(raw: string): Record<string, unknown> | null {
 async function selectWithAi(candidates: Candidate[]): Promise<{ output: SelectionOutput; model: string | null }> {
     const baseUrl = (process.env.QWEN_BASE_URL || '').replace(/\/+$/, '');
     const apiKey = process.env.QWEN_API_KEY || ''; const model = process.env.QWEN_MODEL || '';
-    if (!baseUrl || !apiKey || !model) return { output: fallback(candidates), model: null };
+    if (!baseUrl || !apiKey || !model) {
+        console.warn('[AiStockSelection] 模型配置缺失，使用规则降级');
+        return { output: fallback(candidates), model: null };
+    }
+    const startedAt = Date.now();
+    // 收盘价序列仅用于页面画图，模型使用已计算的均线/涨跌幅等技术指标，减少上下文占用。
+    const modelCandidates = candidates.map(candidate => {
+        const { sparkline, ...technical } = candidate.technical;
+        return { ...candidate, technical };
+    });
     const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 90_000);
     try {
         const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
         const response = await sessionFetch(url, {
             method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` }, signal: controller.signal,
-            body: JSON.stringify({ model, temperature: 0.2, response_format: { type: 'json_object' }, messages: [
+            body: JSON.stringify({ model, temperature: 0.2,
+                chat_template_kwargs: { enable_thinking: false },
+                response_format: { type: 'json_object' }, messages: [
                 { role: 'system', content: SYSTEM_PROMPT },
-                { role: 'user', content: `数据截至 ${shanghaiDateTimeStr()}，候选股数 ${candidates.length}。候选池：${JSON.stringify(candidates)}` },
+                { role: 'user', content: `数据截至 ${shanghaiDateTimeStr()}，候选股数 ${candidates.length}。候选池：${JSON.stringify(modelCandidates)}` },
             ] }),
         });
-        if (!response.ok) throw new Error(`模型请求失败: ${response.status}`);
+        if (!response.ok) {
+            const failure = await response.json().catch(() => null) as { error?: { message?: unknown } } | null;
+            const detail = typeof failure?.error?.message === 'string' ? failure.error.message.slice(0, 1000) : '';
+            throw new Error(`模型请求失败: HTTP ${response.status}${detail ? `，${detail}` : ''}`);
+        }
         const json: any = await response.json();
+        const finishReason = json?.choices?.[0]?.finish_reason;
         const content = json?.choices?.[0]?.message?.content ?? json?.choices?.[0]?.text ?? '';
+        console.info('[AiStockSelection] 模型响应', {
+            model, elapsedMs: Date.now() - startedAt, finishReason,
+            contentLength: typeof content === 'string' ? content.length : 0,
+            hasReasoning: Boolean(json?.choices?.[0]?.message?.reasoning ?? json?.choices?.[0]?.message?.reasoning_content),
+            completionTokens: json?.usage?.completion_tokens,
+        });
+        // 不把思考过程当最终推荐；被截断的 JSON 即使可以部分解析也不能发布。
+        if (finishReason === 'length') throw new Error('模型输出达到 token 上限，未生成完整答案');
+        if (typeof content !== 'string' || !content.trim()) throw new Error('模型最终答案为空（可能仅返回思考内容）');
         const parsed = parseModelJson(String(content));
         const candidateBySymbol = new Map(candidates.map(candidate => [candidate.symbol, candidate]));
         const industryCount = new Map<string, number>(); const stocks: SelectionItem[] = [];
@@ -330,16 +355,28 @@ async function selectWithAi(candidates: Candidate[]): Promise<{ output: Selectio
         }
         if (stocks.length) return { output: { summary: text(parsed?.summary).slice(0, 160) || '综合趋势、机构关注与盈利预测形成的候选结果，仅供信息参考。', stocks }, model };
         const output = fallback(candidates);
-        output.summary = '模型输出未通过结构校验，结果按多因子规则生成；数据仅供信息参考，不构成投资建议。';
+        console.warn('[AiStockSelection] 模型输出未通过结构或候选股校验');
+        output.summary = '模型输出未通过校验，当前为规则筛选结果，仅供信息参考。';
         return { output, model: null };
     } catch (error) {
-        console.warn('[AiStockSelection] 模型调用失败，使用规则降级：', error instanceof Error ? error.message : String(error));
-        return { output: fallback(candidates), model: null };
+        const timedOut = controller.signal.aborted;
+        console.warn('[AiStockSelection] 模型调用失败，使用规则降级：', {
+            elapsedMs: Date.now() - startedAt, timedOut,
+            message: error instanceof Error ? error.message : String(error),
+        });
+        const output = fallback(candidates);
+        output.summary = timedOut
+            ? '模型请求超过90秒，当前为规则筛选结果，仅供信息参考。'
+            : error instanceof Error && /token 上限|最终答案为空/.test(error.message)
+                ? `${error.message}，当前为规则筛选结果，仅供信息参考。`
+                : '模型请求失败，当前为规则筛选结果，仅供信息参考。';
+        return { output, model: null };
     } finally { clearTimeout(timer); }
 }
 
 export async function ensureAiStockSelectionSchema(): Promise<void> {
-    if (!schemaPromise) schemaPromise = (async () => {
+    if (!schemaPromise) {
+        const createSchema = async () => {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS ai_stock_selection_runs (
                 id BIGSERIAL PRIMARY KEY, trade_date DATE NOT NULL, trigger_source VARCHAR(20) NOT NULL,
@@ -362,7 +399,12 @@ export async function ensureAiStockSelectionSchema(): Promise<void> {
             )`);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_ai_stock_selection_runs_latest ON ai_stock_selection_runs(status, trade_date DESC, generated_at DESC)');
         console.log('[DB] ai_stock_selection tables ready');
-    })();
+        };
+        schemaPromise = createSchema().catch((error) => {
+            schemaPromise = null;
+            throw error;
+        });
+    }
     await schemaPromise;
 }
 
@@ -461,7 +503,14 @@ aiStockSelectionRouter.get('/latest', async (req: Request, res: Response) => {
         const result = await getLatest(date);
         if (!result) { createResponse(res, 404, '暂无AI选股结果，请等待定时任务生成或手动生成'); return; }
         createResponse(res, 200, 'success', result);
-    } catch (error) { createResponse(res, 500, error instanceof Error ? error.message : '读取AI选股结果失败'); }
+    } catch (error) {
+        const dbError = error as { code?: string; message?: string };
+        if (['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'].includes(String(dbError.code))) {
+            createResponse(res, 503, 'AI选股数据暂不可用：数据库连接失败，请检查数据库服务或 SSH 隧道');
+            return;
+        }
+        createResponse(res, 500, error instanceof Error ? error.message : '读取AI选股结果失败');
+    }
 });
 
 aiStockSelectionRouter.post('/generate', requireInternalTrigger, async (req: Request, res: Response) => {
