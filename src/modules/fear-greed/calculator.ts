@@ -12,7 +12,8 @@ import {
     sparkline,
 } from './indicators';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
-import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
+import { tradingCalendarStore } from '../../shared/utils/tradingCalendarStore';
+import { shanghaiDateStr, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
 /** tushare 客户端抽象（生产用 TushareService.tushareRequest） */
 export interface TushareClient {
@@ -57,12 +58,28 @@ const NEUTRAL = { score: 50, raw: 0, label: '中性', history: { dates: [], scor
  * TradingCalendarRefreshService 以 Tushare trade_cal 刷新）——本模块**不再直连** Tushare `trade_cal`。
  */
 export const __fearGreedDeps = {
-    /** 最近 n 个交易日（YYYYMMDD，升序） */
-    recentTradingDays: (n: number): string[] => {
-        const days = TradingCalendarService.getRecentTradingDays(new Date(), n); // 降序（最近在前）
-        return days
+    /** 最近 n 个交易日（YYYYMMDD，升序；收盘前自动剔除尚未出 EOD 的今日） */
+    recentTradingDays: (n: number, now: Date = new Date()): string[] => {
+        const health = tradingCalendarStore.getHealth();
+        // 日历未加载/无覆盖时 TradingCalendarService 会降级为「周一~周五」，
+        // 会把节假日当成交易日并把无数据日期写成 50/0 占位并永久缓存（2026-11-02 事故脏行来源）。
+        // 宁可本次计算失败（下次请求重算），也不污染缓存。
+        if (!health.loadedAt || !health.minDate || !health.maxDate) {
+            throw new Error('trading_calendar_not_loaded');
+        }
+        const { hour, minute } = shanghaiHourMinute(now);
+        const beforeClose = hour * 60 + minute < 15 * 60 + 30;
+        const today = shanghaiDateStr(now);
+        // 收盘前多取一天，剔除今日后仍保持 n 天窗口
+        const todayTrading = beforeClose && tradingCalendarStore.isTradingDay(today);
+        const days = TradingCalendarService.getRecentTradingDays(now, n + (todayTrading ? 1 : 0)); // 降序（最近在前）
+        const formatted = days
             .map((d) => `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`)
             .reverse();
+        if (todayTrading && formatted[formatted.length - 1] === today.replace(/-/g, '')) {
+            formatted.pop();
+        }
+        return formatted;
     },
 };
 

@@ -1,6 +1,7 @@
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { computeJq, resolveSnapshotDate, __fearGreedDeps, type BreadthCache, type DailyLimit, type LimitCache, type TushareClient } from '../src/modules/fear-greed/calculator';
+import { tradingCalendarStore } from '../src/shared/utils/tradingCalendarStore';
 
 /** 生成连续 YYYYMMDD 日期（跳过周末简化） */
 function genDates(n: number): string[] {
@@ -250,6 +251,53 @@ test('快照日期取最新已算出的交易日，跨 UTC 零点不写错日期
     const now = new Date('2026-11-02T23:30:00.000Z');
     assert.equal(resolveSnapshotDate(['20261102', '20261030'], now), '2026-11-02');
     assert.equal(resolveSnapshotDate([], now), '2026-11-03', '无历史时退回上海当日');
+});
+
+test('交易日历未加载时拒绝计算（不按工作日降级写节假日占位）', () => {
+    const prev = __fearGreedDeps.recentTradingDays;
+    tradingCalendarStore.__resetForTest();
+    __fearGreedDeps.recentTradingDays = originalRecentTradingDays;
+    try {
+        assert.throws(
+            () => __fearGreedDeps.recentTradingDays(10),
+            /trading_calendar_not_loaded/,
+            '日历未加载时按「周一~周五」降级会把节假日写进缓存（2026-11-02 事故脏行来源）',
+        );
+    } finally {
+        __fearGreedDeps.recentTradingDays = prev;
+    }
+});
+
+test('收盘前剔除今日（EOD 未发布），收盘后纳入', () => {
+    tradingCalendarStore.__setForTest(
+        {
+            '2026-10-29': true,
+            '2026-10-30': true,
+            '2026-11-01': false,
+            '2026-11-02': true,
+            '2026-11-03': true,
+            '2026-11-04': true,
+        },
+        '2026-10-29',
+        '2026-11-04',
+    );
+    const prev = __fearGreedDeps.recentTradingDays;
+    __fearGreedDeps.recentTradingDays = originalRecentTradingDays;
+    try {
+        // 上海 2026-11-03 09:30（UTC 01:30）：今日 EOD 未发布，窗口应止于 11-02
+        assert.deepEqual(originalRecentTradingDays(2, new Date('2026-11-03T01:30:00Z')), [
+            '20261030',
+            '20261102',
+        ]);
+        // 上海 2026-11-03 16:30（UTC 08:30）：收盘后纳入今日
+        assert.deepEqual(originalRecentTradingDays(2, new Date('2026-11-03T08:30:00Z')), [
+            '20261102',
+            '20261103',
+        ]);
+    } finally {
+        __fearGreedDeps.recentTradingDays = prev;
+        tradingCalendarStore.__resetForTest();
+    }
 });
 
 test('指标历史序列为倒序（最新在前）且数值 0-100', async () => {
