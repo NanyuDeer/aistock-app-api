@@ -12,6 +12,7 @@
 - `src/modules/fear-greed/calculator.ts` 新增 `resolveSnapshotDate(historyDates, now)`：快照日 = 最新已算出的交易日；`FearGreedService.getLatestJq` 的快照落库与 `buildDashboard.updateTime` 改用该值，**修掉上海 00:00-08:00 用 UTC 当日写错一天**的问题。
 - `src/modules/fear-greed/calculator.ts` 的交易窗口加固：① `tradingCalendarStore` 未加载/无覆盖时直接抛 `trading_calendar_not_loaded`，不再按「周一~周五」降级（降级会把节假日当交易日并写占位，是本次 37 条节假日脏行的来源）；② 上海 15:30 前自动剔除今日（EOD 未发布），避免每轮重复请求未发布数据。
 - `src/modules/quote/MarketSnapshotService.ts`：`highest_board` 的两个修复——① Tushare `limit_step` 的 `nums` 实测为**字符串**（`"6"`），`Number.isFinite("6")` 为 false 会把整行过滤成 0（`highest_board=0` 的真实原因），改为 `Number(row.nums)` 显式转数；② `limit_step` 返回空时用涨停池 `status`（`N天N板`）解析兜底，避免把“0 板”当成事实。
+- `src/index.ts`：恐贪启动预热改为**等交易日历预热完成后再执行**（`calendarWarmup.then(() => refreshJq('post'))`）。此前两者并发，日历尚未 `load()` 时恐贪窗口按 fail-closed 抛 `trading_calendar_not_loaded`，导致每次重启都打一条「启动预热失败」；仍不阻塞服务启动。
 
 ### 测试
 

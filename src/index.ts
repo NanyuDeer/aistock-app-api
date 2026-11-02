@@ -1084,7 +1084,7 @@ async function start() {
     }
 
     // 交易日历预热：异步执行，不阻塞服务启动（Tushare 慢不应导致起不来）
-    void (async () => {
+    const calendarWarmup: Promise<void> = (async () => {
         try {
             await TradingCalendarRefreshService.refresh();
             await tradingCalendarStore.load();
@@ -1093,6 +1093,7 @@ async function start() {
             console.error('[TradingCalendar] 预热失败（降级链生效）:', err instanceof Error ? err.message : String(err));
         }
     })();
+    void calendarWarmup;
 
     try {
         await NotificationService.ensureSchemaAtStartup();
@@ -1152,8 +1153,10 @@ async function start() {
     }
 
     // 恐贪指数启动预热（非阻塞）：首跑需逐日拉取全市场 daily（500 交易日 × ~5400 只），
-    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存
-    refreshJq('post')
+    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存。
+    // 必须等交易日历预热完成后再跑：恐贪窗口在日历未加载时 fail-closed（避免节假日被写成占位）。
+    calendarWarmup
+        .then(() => refreshJq('post'))
         .then((r) => console.log(`[FearGreedCron] 启动预热完成: 恐贪指数=${r.composite}`))
         .catch((err: unknown) => console.error('[FearGreedCron] 启动预热失败:', err instanceof Error ? err.message : String(err)));
 
