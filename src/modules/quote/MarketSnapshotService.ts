@@ -469,12 +469,13 @@ export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
     );
 }
 
-/** 连板天梯最高板数；无数据返回 0。 */
+/** 连板天梯最高板数；无数据返回 0。Tushare 的 nums 实测为字符串（"6"），必须显式转数。 */
 function computeHighestBoard(rows: LimitStepRow[]): number {
     let max = 0;
     for (const row of rows) {
-        if (Number.isFinite(row.nums) && row.nums > max) {
-            max = row.nums;
+        const nums = Number(row.nums);
+        if (Number.isFinite(nums) && nums > max) {
+            max = nums;
         }
     }
     return max;

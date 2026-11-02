@@ -11,13 +11,13 @@
 - `src/modules/fear-greed/calculator.ts`：**恐贪指标不再把“数据未发布”落库成中性占位**（2026-11-02 事故根因）。`breadth` 在 `total=0`（盘中/收盘前 Tushare EOD 未就绪）时不再写 `50` 并永久缓存，改为视为缺失并从尾部剔除无数据交易日，使最新值回退到最后有效日；`deriveDailyLimit` 在全市场 `daily` 返回空行时返回 `null`，`fetchLimitData` 只落库非空结果，并把缓存中 `sealCount+breakCount+downCount=0` 的历史脏行视为缺失重新推导（数据就绪后自动回补）。
 - `src/modules/fear-greed/calculator.ts` 新增 `resolveSnapshotDate(historyDates, now)`：快照日 = 最新已算出的交易日；`FearGreedService.getLatestJq` 的快照落库与 `buildDashboard.updateTime` 改用该值，**修掉上海 00:00-08:00 用 UTC 当日写错一天**的问题。
 - `src/modules/fear-greed/calculator.ts` 的交易窗口加固：① `tradingCalendarStore` 未加载/无覆盖时直接抛 `trading_calendar_not_loaded`，不再按「周一~周五」降级（降级会把节假日当交易日并写占位，是本次 37 条节假日脏行的来源）；② 上海 15:30 前自动剔除今日（EOD 未发布），避免每轮重复请求未发布数据。
-- `src/modules/quote/MarketSnapshotService.ts`：`highest_board` 在 `limit_step` 返回空时用涨停池 `status`（`N天N板`）解析兜底，避免把“0 板”当成事实（同日 `highest_board=0` 事故）。
+- `src/modules/quote/MarketSnapshotService.ts`：`highest_board` 的两个修复——① Tushare `limit_step` 的 `nums` 实测为**字符串**（`"6"`），`Number.isFinite("6")` 为 false 会把整行过滤成 0（`highest_board=0` 的真实原因），改为 `Number(row.nums)` 显式转数；② `limit_step` 返回空时用涨停池 `status`（`N天N板`）解析兜底，避免把“0 板”当成事实。
 
 ### 测试
 
 - `tests/fear-greed.calculator.test.ts` 新增 6 例：breadth 无数据日不落库占位且回退最后有效日；limit 无数据日不落库全 0 且指标取最后有效日；历史全 0 占位行自动回补；快照日期跨 UTC 零点仍取数据日；交易日历未加载时拒绝计算；收盘前剔除今日（EOD 未发布）。
-- `tests/MarketSnapshotService.test.ts` 新增 2 例：`limit_step` 为空时最高连板从涨停池 status 兜底（`首板/一字板/3天3板/6天6板/空` → 6）；天梯可用时优先天梯。
-- `node --import tsx --test tests/fear-greed.calculator.test.ts tests/MarketSnapshotService.test.ts` → **36 pass / 0 fail**；`tsc --noEmit` **exit 0**；全量 `npm test` → **1101 pass / 3 fail**（3 个失败为 `event_timeline.spec.ts` 既有失败，已用 `git stash` 在无改动树复现确认与本次无关）。
+- `tests/MarketSnapshotService.test.ts` 新增 3 例：`limit_step` 为空时最高连板从涨停池 status 兜底（`首板/一字板/3天3板/6天6板/空` → 6）；天梯可用时优先天梯；Tushare 字符串 `nums`（`"6"`）正确转数。
+- `node --import tsx --test tests/fear-greed.calculator.test.ts tests/MarketSnapshotService.test.ts` → **37 pass / 0 fail**；`tsc --noEmit` **exit 0**；全量 `npm test` → **1102 pass / 3 fail**（3 个失败为 `event_timeline.spec.ts` 既有失败，已用 `git stash` 在无改动树复现确认与本次无关）。
 
 ### 文档
 

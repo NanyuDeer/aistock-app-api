@@ -490,6 +490,25 @@ test('highest_board prefers limit_step ladder when available', async () => {
     }
 })
 
+test('highest_board coerces Tushare string nums (limit_step 返回 "6" 而非 6)', async () => {
+    // Tushare limit_step 的 nums 实测为字符串（如 "6"）；Number.isFinite("6") === false，
+    // 直接把整行过滤 → highest_board 落成 0（2026-11-02 事故真实原因）
+    applyCloseMocks({
+        limitStep: [
+            { ts_code: '001219.SZ', name: '青岛食品', trade_date: '20260720', nums: '6' as unknown as number },
+            { ts_code: '002172.SZ', name: '澳洋健康', trade_date: '20260720', nums: '4' as unknown as number },
+        ],
+        limitList: [makeLimitRow('换手板')],
+    })
+    try {
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
+        assert.equal(snapshot.limits.highest_board, 6)
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
 test('sectors are sorted independently by pct_change and net_amount', async () => {
     applyCloseMocks()
     try {

@@ -29,7 +29,8 @@
 
 ## 收盘快照（close-snapshot）约定
 
-- `highest_board` 以 `limit_step` 天梯为权威；天梯返回空时用涨停池 `status`（`N天N板`）解析兜底，
+- `highest_board` 以 `limit_step` 天梯为权威；**Tushare 返回的 `nums` 是字符串**（如 `"6"`），必须 `Number(row.nums)` 转数后再比较，
+  否则 `Number.isFinite("6") === false` 会把整行过滤成 0。天梯返回空时用涨停池 `status`（`N天N板`）解析兜底，
   禁止直接落成 0（2026-11-02 生产事故：天梯为空 → 0 被下游当成“无连板”事实）。
 - 参数为 `?date=YYYY-MM-DD`；**不是** `?trade_date=`（后者会被忽略并走“今日”分支，未收盘时返回 `409 market_not_closed`）。
 
