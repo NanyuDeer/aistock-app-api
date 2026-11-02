@@ -27,6 +27,12 @@
 - `shared/utils/stock` — 股票代码身份识别
 - `shared/utils/throttle` / `throttlers` — 限流
 
+## 收盘快照（close-snapshot）约定
+
+- `highest_board` 以 `limit_step` 天梯为权威；天梯返回空时用涨停池 `status`（`N天N板`）解析兜底，
+  禁止直接落成 0（2026-11-02 生产事故：天梯为空 → 0 被下游当成“无连板”事实）。
+- 参数为 `?date=YYYY-MM-DD`；**不是** `?trade_date=`（后者会被忽略并走“今日”分支，未收盘时返回 `409 market_not_closed`）。
+
 ## 跨模块依赖
 - `modules/monitor/ThsService` — 同花顺数据（分析用）
 - `modules/monitor/ClsStockNewsService` — 财联社新闻

@@ -2,6 +2,28 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [master] 2026-11-03 — 恐贪指数空值污染 + 收盘快照最高连板兜底
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- `src/modules/fear-greed/calculator.ts`：**恐贪指标不再把“数据未发布”落库成中性占位**（2026-11-02 事故根因）。`breadth` 在 `total=0`（盘中/收盘前 Tushare EOD 未就绪）时不再写 `50` 并永久缓存，改为视为缺失并从尾部剔除无数据交易日，使最新值回退到最后有效日；`deriveDailyLimit` 在全市场 `daily` 返回空行时返回 `null`，`fetchLimitData` 只落库非空结果，并把缓存中 `sealCount+breakCount+downCount=0` 的历史脏行视为缺失重新推导（数据就绪后自动回补）。
+- `src/modules/fear-greed/calculator.ts` 新增 `resolveSnapshotDate(historyDates, now)`：快照日 = 最新已算出的交易日；`FearGreedService.getLatestJq` 的快照落库与 `buildDashboard.updateTime` 改用该值，**修掉上海 00:00-08:00 用 UTC 当日写错一天**的问题。
+- `src/modules/quote/MarketSnapshotService.ts`：`highest_board` 在 `limit_step` 返回空时用涨停池 `status`（`N天N板`）解析兜底，避免把“0 板”当成事实（同日 `highest_board=0` 事故）。
+
+### 测试
+
+- `tests/fear-greed.calculator.test.ts` 新增 4 例：breadth 无数据日不落库占位且回退最后有效日；limit 无数据日不落库全 0 且指标取最后有效日；历史全 0 占位行自动回补；快照日期跨 UTC 零点仍取数据日。
+- `tests/MarketSnapshotService.test.ts` 新增 2 例：`limit_step` 为空时最高连板从涨停池 status 兜底（`首板/一字板/3天3板/6天6板/空` → 6）；天梯可用时优先天梯。
+- `node --import tsx --test tests/fear-greed.calculator.test.ts tests/MarketSnapshotService.test.ts` → **33 pass / 0 fail**；`tsc --noEmit` **exit 0**；全量 `npm test` → **1099 pass / 3 fail**（3 个失败为 `event_timeline.spec.ts` 既有失败，已用 `git stash` 在无改动树复现确认与本次无关）。
+
+### 文档
+
+- `src/modules/quote/AGENTS.md`：补充 `highest_board` 兜底说明。
+
+---
+
 ## [junliang] 2026-10-15 — 「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
 
 **开发者**: NanyuDeer

@@ -5,7 +5,7 @@
 import pool from '../../core/db';
 import redis from '../../core/redis';
 import { tushareRequest } from '../quote/TushareService';
-import { computeJq, type BreadthCache, type DailyLimit, type JqResult, type LimitCache } from './calculator';
+import { computeJq, resolveSnapshotDate, type BreadthCache, type DailyLimit, type JqResult, type LimitCache } from './calculator';
 import { buildSectorBoardData, defaultLoaders, unavailableBoard, type FgSectorBoardData, type FgSectorLoaders } from './sectorBoard';
 // 供 controller.sectors 的降级兜底复用同一失败结构（与 service 内部降级 tradeDate 语义一致）
 export { unavailableBoard };
@@ -181,8 +181,9 @@ export async function getLatestJq(force = false, timeSlot = 'post'): Promise<JqR
     memoryCache.set('jq', { ts: now, result });
 
     // PG 快照落库（按 index_key + trade_date + time_slot 去重）
+    // 快照日 = 最新已算出的交易日，而非墙钟 UTC 当日（上海 00:00-08:00 会写错一天）
     try {
-        const today = new Date().toISOString().slice(0, 10);
+        const tradeDate = resolveSnapshotDate(result.history.dates);
         await pool.query(
             `INSERT INTO fear_greed_snapshot (index_key, trade_date, composite, label, indicators_json, time_slot)
              VALUES ($1, $2, $3, $4, $5, $6)
@@ -190,7 +191,7 @@ export async function getLatestJq(force = false, timeSlot = 'post'): Promise<JqR
                composite = EXCLUDED.composite,
                label = EXCLUDED.label,
                indicators_json = EXCLUDED.indicators_json`,
-            [result.key, today, result.composite, result.label, JSON.stringify(result.indicators), timeSlot],
+            [result.key, tradeDate, result.composite, result.label, JSON.stringify(result.indicators), timeSlot],
         );
     } catch (err) {
         // 落库失败不影响返回（快照是辅助存储）
@@ -266,7 +267,8 @@ export async function buildDashboard(): Promise<Record<string, unknown>> {
     const historySnapshots = await getHistory(60);
 
     return {
-        updateTime: new Date().toISOString().slice(0, 10),
+        // 展示日期 = 数据日期（最新已算出的交易日），不随墙钟漂移
+        updateTime: resolveSnapshotDate(history.dates),
         indexName: result.name,
         currentIndex: composite,
         label: result.label,
