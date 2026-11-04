@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import express from 'express'
 import type { AddressInfo } from 'node:net'
 import http from 'node:http'
-import { rhythmMasterPublicRouter, loadCalendarEventsByDate } from './publicRouter'
+import { rhythmMasterPublicRouter, loadCalendarEventsByDate, mergeRhythmCalendarDays, normalizePositionIndex } from './publicRouter'
 import pool from '../../core/db'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
@@ -32,7 +32,7 @@ before(async () => {
         const dow = new Date(d + 'T00:00:00').getDay()
         if (dow !== 0 && dow !== 6) weekdayLevels[d] = 'active'
       }
-      return { rows: Object.keys(weekdayLevels).map((d) => ({ report_date: d, level: 'active', score: '60', basis_date: d, position_band: { min: 6, max: 8, text: '6~8 成，顺势持有' } })), rowCount: Object.keys(weekdayLevels).length }
+      return { rows: Object.keys(weekdayLevels).map((d) => ({ report_date: d, level: 'active', score: '60', basis_date: d, position_band: { min: 6, max: 8, text: '6~8 成，顺势持有' }, position_index: 2 })), rowCount: Object.keys(weekdayLevels).length }
     }
     if (String(sql).includes('agent_analysis_reports') && String(sql).includes('rhythm_master')) {
       return { rows: [
@@ -177,4 +177,81 @@ test('单日事件超上限折叠为 +N', async () => {
     assert.ok(day.filter((e) => e.overflow == null).length <= 3, '折叠后保留 ≤3 条')
     assert.equal(day.some((e) => e.overflow === 2), true, '5条超上限 → 溢出占位 2')
   } finally { ;(pool as any).query = orig }
+})
+
+// ---- §6.2 日历聚合行 position_index：严格 0-4 整数透传，非法 → null（禁止用 level 换算上色）----
+test('mergeRhythmCalendarDays：position_index 0-4 整数原样透传，level/score 保持现状', () => {
+  const dates = ['2026-11-04', '2026-11-03', '2026-11-02', '2026-10-31', '2026-10-30']
+  const rows = dates.map((d, i) => ({
+    report_date: d,
+    level: 'active',
+    score: '60',
+    basis_date: d,
+    position_band: { min: 6, max: 8, text: '6~8 成，顺势持有' },
+    position_index: i,
+  }))
+  const merged = mergeRhythmCalendarDays(dates, rows)
+  assert.deepEqual(merged.map((r) => r.position_index), [0, 1, 2, 3, 4])
+  assert.ok(merged.every((r) => r.level === 'active' && r.score === 60), 'level/score 不得被置 null（未升级客户端仍在读）')
+})
+
+test('mergeRhythmCalendarDays：position_index 缺失 / null / 字符串 / 浮点 / 越界 → null', () => {
+  const dates = ['2026-11-05', '2026-11-04', '2026-11-03', '2026-11-02', '2026-10-31', '2026-10-30', '2026-10-29']
+  const base = (d: string) => ({ report_date: d, level: 'active', score: '60', basis_date: d, position_band: null })
+  const rows: any[] = [
+    base(dates[0]), // 无 position_index 键（旧数据）
+    { ...base(dates[1]), position_index: null },
+    { ...base(dates[2]), position_index: '3' }, // 数字字符串不是 number
+    { ...base(dates[3]), position_index: 5 }, // 上越界
+    { ...base(dates[4]), position_index: -1 }, // 下越界
+    { ...base(dates[5]), position_index: 2.5 }, // 非整数
+  ]
+  const merged = mergeRhythmCalendarDays(dates, rows)
+  assert.deepEqual(merged.map((r) => r.position_index), [null, null, null, null, null, null, null])
+  assert.equal(merged[6].level, null, '行缺失日期仍为灰格')
+  assert.ok(merged.slice(0, 6).every((r) => r.level === 'active' && r.score === 60), 'position_index 非法不影响 level/score 原值')
+  assert.equal(normalizePositionIndex(0), 0)
+  assert.equal(normalizePositionIndex(4), 4)
+})
+
+test('GET /rhythm-master/calendar naturalDays 分支：position_index 透传 + 非法值降级 null，level 仍原样', async () => {
+  const orig = pool.query
+  const raw: unknown[] = [0, 1, 2, 3, 4, null, '3', 5, -1, 2.5]
+  ;(pool as any).query = async (sql: string, params?: unknown[]) => {
+    if (String(sql).includes('agent_analysis_reports') && String(sql).includes('= ANY')) {
+      const dates: string[] = (params?.[0] as string[] | undefined) ?? []
+      const rows = dates.map((d, i) => {
+        const row: Record<string, unknown> = {
+          report_date: d,
+          level: 'active',
+          score: '60',
+          basis_date: d,
+          position_band: { min: 4, max: 6, text: '半仓（四~六成）' },
+        }
+        // i >= raw.length 时故意不写 position_index 键（模拟旧数据）
+        if (i < raw.length) row.position_index = raw[i]
+        return row
+      })
+      return { rows, rowCount: rows.length }
+    }
+    return { rows: [], rowCount: 0 }
+  }
+  const app = express()
+  app.use('/api/agent', rhythmMasterPublicRouter)
+  const server = app.listen(0, '127.0.0.1')
+  await new Promise((r) => server.on('listening', r))
+  const port = (server.address() as AddressInfo).port
+  try {
+    const res = await get(port, '/api/agent/rhythm-master/calendar?naturalDays=12')
+    assert.equal(res.status, 200)
+    const days: any[] = res.json.data.days
+    assert.equal(days.length, 12)
+    const expected = [0, 1, 2, 3, 4, null, null, null, null, null]
+    assert.deepEqual(days.slice(0, 10).map((d) => d.position_index), expected)
+    assert.deepEqual(days.slice(10).map((d) => d.position_index), [null, null], '缺键日期 → null（灰格）')
+    assert.ok(days.every((d) => d.level === 'active' && d.score === 60), 'level/score 应照常返回原值')
+  } finally {
+    server.close()
+    ;(pool as any).query = orig
+  }
 })
