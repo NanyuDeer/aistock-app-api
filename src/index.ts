@@ -58,8 +58,8 @@ import { EmailAuthController } from './modules/auth/EmailAuthController';
 import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
-// 用户画像自动挖掘（一期）——推断表 DDL（cron/接口在后续 Task 接入）
-import { USER_PROFILE_INFERENCES_DDL } from './modules/profile-mining/ProfileMiningService';
+// 用户画像自动挖掘（一期）——推断表 DDL + 每日批次
+import { ProfileMiningService, USER_PROFILE_INFERENCES_DDL } from './modules/profile-mining/ProfileMiningService';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -709,6 +709,15 @@ if (BACKGROUND_JOBS_ENABLED) {
 cron.schedule('30 0 * * *', async () => {
     await TradingCalendarRefreshService.refresh();
     await tradingCalendarStore.load();
+}, { timezone: 'Asia/Shanghai' });
+
+// 用户画像自动挖掘（一期）：每日 00:30（与维护类同簇）。
+// 刻意**不挂 runIfTradingDay**：画像与交易日无关，周末用户照样看自选股、提问。
+// 批次内部已逐用户隔离异常，此处 catch 仅兜底未预期 rejection（永不阻断主流程）。
+cron.schedule('30 0 * * *', () => {
+    ProfileMiningService.runDailyMining().catch((err: unknown) => {
+        console.warn('[ProfileMiningCron] 批次异常（不阻断）:', err instanceof Error ? err.message : String(err));
+    });
 }, { timezone: 'Asia/Shanghai' });
 
 // 趋势股批量评分 — 每天凌晨2点（刷新板块轮动缓存后执行）

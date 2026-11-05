@@ -234,6 +234,152 @@ function warn(message: string, err: unknown): void {
     console.warn(`[ProfileMining] ${message}:`, err instanceof Error ? err.message : String(err));
 }
 
+export interface BatchResult {
+    users: number;
+    ok: number;
+    failed: number;
+    perDimension: Record<InferenceDimension, number>;
+}
+
+interface UserScopedRow {
+    user_id: string;
+}
+
+function groupRowsByUser<T extends UserScopedRow>(rows: T[]): Map<string, T[]> {
+    const map = new Map<string, T[]>();
+    for (const row of rows) {
+        const list = map.get(row.user_id);
+        if (list) list.push(row);
+        else map.set(row.user_id, [row]);
+    }
+    return map;
+}
+
+/** 单维度批量取数失败不阻断其他维度（该维度本批次跳过） */
+async function safeBatch<T>(
+    label: string,
+    fetch: () => Promise<Map<string, T>>,
+): Promise<Map<string, T>> {
+    try {
+        return await fetch();
+    } catch (err: unknown) {
+        warn(`${label} 批量取数失败（该维度本批次跳过）`, err);
+        return new Map();
+    }
+}
+
+// ── 批量取数：每维度一条聚合 SQL（WHERE 用户集），内存按 user_id 分组（避免 N+1）──
+
+async function fetchSectorsBatch(userIds: string[]): Promise<Map<string, SectorAggregateRow[]>> {
+    const result = await pool.query<SectorAggregateRow & UserScopedRow>(
+        `SELECT u.openid AS user_id,
+                COALESCE(NULLIF(TRIM(s.industry), ''), '') AS industry,
+                COUNT(*)::int AS count
+         FROM user_stocks us
+         JOIN users u ON (us.openid = u.openid OR us.user_id = u.id)
+         JOIN stocks s ON s.symbol = us.symbol
+         WHERE u.openid = ANY($1::text[])
+           AND NULLIF(TRIM(s.industry), '') IS NOT NULL
+         GROUP BY u.openid, COALESCE(NULLIF(TRIM(s.industry), ''), '')`,
+        [userIds],
+    );
+    return groupRowsByUser(result.rows);
+}
+
+async function fetchQuestionsBatch(userIds: string[]): Promise<Map<string, Array<{ question: string | null }>>> {
+    const result = await pool.query<UserScopedRow & { question: string | null }>(
+        `SELECT user_id, question
+         FROM chat_token_usage
+         WHERE user_id = ANY($1::text[])
+           AND created_at >= NOW() - INTERVAL '30 days'
+           AND question IS NOT NULL
+           AND TRIM(question) <> ''`,
+        [userIds],
+    );
+    return groupRowsByUser(result.rows);
+}
+
+async function fetchWatchEventsBatch(userIds: string[]): Promise<Map<string, EventAggregateRow[]>> {
+    const result = await pool.query<EventAggregateRow & UserScopedRow>(
+        `SELECT ue.openid AS user_id,
+                CASE
+                    WHEN e.is_limit_up THEN 'limit_up_radar'
+                    WHEN e.direction = 'up' THEN 'up_move'
+                    ELSE 'down_move'
+                END AS type,
+                COUNT(*)::int AS count
+         FROM stock_trace_user_events ue
+         JOIN stock_trace_events e ON e.event_id = ue.event_id
+         WHERE ue.openid = ANY($1::text[])
+           AND e.first_triggered_at >= NOW() - INTERVAL '30 days'
+         GROUP BY ue.openid, 1`,
+        [userIds],
+    );
+    const groupedRows = groupRowsByUser(result.rows);
+    const grouped = new Map<string, EventAggregateRow[]>();
+    for (const [userId, rows] of groupedRows) {
+        grouped.set(userId, rows.map((row) => ({ type: row.type, count: row.count })));
+    }
+
+    // insight push 表存在才叠加（to_regclass 探测；本地缺表安全跳过）
+    try {
+        const probe = await pool.query<{ reg: string | null }>(
+            `SELECT to_regclass('public.watchlist_insight_push_records') AS reg`,
+        );
+        if (!probe.rows[0]?.reg) return grouped;
+
+        const overlay = await pool.query<UserScopedRow & { count: number | string }>(
+            `SELECT openid AS user_id, COUNT(*)::int AS count
+             FROM watchlist_insight_push_records
+             WHERE openid = ANY($1::text[])
+               AND created_at >= NOW() - INTERVAL '30 days'
+             GROUP BY openid`,
+            [userIds],
+        );
+        for (const row of overlay.rows) {
+            const count = Number(row.count);
+            if (count <= 0) continue;
+            const list = grouped.get(row.user_id);
+            if (list) list.push({ type: 'insight_push', count });
+            else grouped.set(row.user_id, [{ type: 'insight_push', count }]);
+        }
+    } catch (err: unknown) {
+        warn('watch_events insight push 批量叠加跳过（不阻断）', err);
+    }
+    return grouped;
+}
+
+async function fetchActiveHoursBatch(userIds: string[]): Promise<Map<string, HourAggregateRow[]>> {
+    const result = await pool.query<HourAggregateRow & UserScopedRow>(
+        `SELECT user_id,
+                EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Shanghai'))::int AS hour,
+                COUNT(*)::int AS hits
+         FROM chat_token_usage
+         WHERE user_id = ANY($1::text[])
+           AND created_at >= NOW() - INTERVAL '30 days'
+         GROUP BY user_id, EXTRACT(HOUR FROM (created_at AT TIME ZONE 'Asia/Shanghai'))`,
+        [userIds],
+    );
+    return groupRowsByUser(result.rows);
+}
+
+async function fetchBreadthBatch(userIds: string[]): Promise<Map<string, number>> {
+    const result = await pool.query<UserScopedRow & { count: number | string }>(
+        `SELECT u.openid AS user_id, COUNT(*)::int AS count
+         FROM user_stocks us
+         JOIN users u ON (us.openid = u.openid OR us.user_id = u.id)
+         WHERE u.openid = ANY($1::text[])
+         GROUP BY u.openid`,
+        [userIds],
+    );
+    const map = new Map<string, number>();
+    for (const row of result.rows) {
+        map.set(row.user_id, Number(row.count));
+    }
+    return map;
+}
+
+
 
 export class ProfileMiningService {
     /** upsert 单维度推断（同日重跑幂等：ON CONFLICT DO UPDATE，`inferred_at` 一并刷新）。 */
@@ -387,7 +533,90 @@ export class ProfileMiningService {
     }
 
     // ─────────────────────────────────────────────────────────
-    // 批次（Task 3 实现）
+    // 每日批次
     // ─────────────────────────────────────────────────────────
+
+    /**
+     * 每日 00:30 挖掘批次（不挂交易日守卫）。
+     *
+     * 1. 只取 `setting_type='profile_mining' AND enabled=1` 的用户（未开启 = 零查询）；
+     * 2. 5 维度各一条批量聚合 SQL，内存按 user_id 分组；
+     * 3. 逐用户逐维度 upsert，单用户异常隔离；
+     * 4. 批次异常一律 warning 不上抛（「永不阻断主流程」）。
+     */
+    static async runDailyMining(): Promise<BatchResult> {
+        const perDimension: Record<InferenceDimension, number> = {
+            preferred_sectors: 0,
+            question_topics: 0,
+            watch_events: 0,
+            active_hours: 0,
+            watchlist_breadth: 0,
+        };
+
+        try {
+            const optIn = await pool.query<{ openid: string }>(
+                `SELECT openid
+                 FROM user_settings
+                 WHERE setting_type = 'profile_mining' AND enabled = 1`,
+            );
+            const userIds = optIn.rows
+                .map((row) => row.openid)
+                .filter((id): id is string => typeof id === 'string' && id !== '');
+            if (userIds.length === 0) {
+                console.log('[ProfileMining] 本批次 0 opt-in 用户，跳过');
+                return { users: 0, ok: 0, failed: 0, perDimension };
+            }
+
+            const [sectors, questions, events, hours, breadth] = await Promise.all([
+                safeBatch('preferred_sectors', () => fetchSectorsBatch(userIds)),
+                safeBatch('question_topics', () => fetchQuestionsBatch(userIds)),
+                safeBatch('watch_events', () => fetchWatchEventsBatch(userIds)),
+                safeBatch('active_hours', () => fetchActiveHoursBatch(userIds)),
+                safeBatch('watchlist_breadth', () => fetchBreadthBatch(userIds)),
+            ]);
+
+            let ok = 0;
+            let failed = 0;
+            for (const userId of userIds) {
+                try {
+                    const inferences: Array<Inference | null> = [
+                        buildPreferredSectors(sectors.get(userId) ?? []),
+                        buildQuestionTopics((questions.get(userId) ?? []).map((row) => row.question)),
+                        buildWatchEvents(events.get(userId) ?? []),
+                        buildActiveHours(hours.get(userId) ?? []),
+                        buildWatchlistBreadth(breadth.get(userId) ?? 0),
+                    ];
+                    for (const inference of inferences) {
+                        if (!inference) continue;
+                        await ProfileMiningService.upsertInference(
+                            userId,
+                            inference.dimension,
+                            inference.value,
+                            inference.confidence,
+                            inference.sampleSize,
+                            inference.windowDays,
+                        );
+                        perDimension[inference.dimension] += 1;
+                    }
+                    ok += 1;
+                } catch (err: unknown) {
+                    failed += 1;
+                    warn(`用户 ${userId} 挖掘失败（已隔离，继续其他用户）`, err);
+                }
+            }
+
+            const summary = (Object.keys(perDimension) as InferenceDimension[])
+                .map((dimension) => `${dimension}=${perDimension[dimension]}`)
+                .join(' ');
+            console.log(
+                `[ProfileMining] 批次完成 users=${userIds.length} ok=${ok} failed=${failed} ${summary}`,
+            );
+            return { users: userIds.length, ok, failed, perDimension };
+        } catch (err: unknown) {
+            warn('批次异常（不阻断主流程）', err);
+            return { users: 0, ok: 0, failed: 0, perDimension };
+        }
+    }
 }
+
 
