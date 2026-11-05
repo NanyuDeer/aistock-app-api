@@ -115,6 +115,19 @@ describe('runDailyMining', () => {
         }
     });
 
+    it('watch_events 聚合按「用户 + 派生类型」分组（防 PG 42803 静默丢维度）', async () => {
+        mockResponder = responderForUserIds(['o_on']);
+        await ProfileMiningService.runDailyMining();
+
+        const call = mockCalls.find((c) => c.sql.includes('FROM stock_trace_user_events'));
+        assert.ok(call, '应有一条 watch_events 批量聚合 SQL');
+        // 回归护栏：GROUP BY ... 1 只分组到 openid，CASE 列不在分组内 → PG 报 42803，
+        // 被 safeBatch 吞成 warning 后该维度永不产出（2026-11-05 集成冒烟实测踩到）。
+        // mock 不校验 SQL 语义，只能锁死分组位次。
+        assert.match(call!.sql, /GROUP BY\s+ue\.openid\s*,\s*2/i, 'watch_events 必须按第 2 列（CASE 派生类型）分组');
+        assert.doesNotMatch(call!.sql, /GROUP BY\s+ue\.openid\s*,\s*1\b/i, '不得退回按第 1 列分组');
+    });
+
     it('0 个 opt-in 用户 → 仅一条用户查询，其余维度零查询', async () => {
         mockResponder = (sql) => (sql.includes('FROM user_settings') ? { rows: [] } : { rows: [] });
         const result = await ProfileMiningService.runDailyMining();

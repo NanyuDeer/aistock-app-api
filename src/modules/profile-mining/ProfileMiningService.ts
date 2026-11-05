@@ -326,7 +326,11 @@ async function fetchWatchEventsBatch(userIds: string[]): Promise<Map<string, Eve
          JOIN stock_trace_events e ON e.event_id = ue.event_id
          WHERE ue.openid = ANY($1::text[])
            AND e.first_triggered_at >= NOW() - INTERVAL '30 days'
-         GROUP BY ue.openid, 1`,
+         -- 必须按「用户 + 派生类型」分组（2 = 上面的 CASE 列）。若按第 1 列（openid）
+         -- 分组，CASE 列不在 GROUP BY 内 → PG 报 42803，被 safeBatch 吞掉后该维度
+         -- 永不产出（2026-11-05 集成冒烟实测踩到）
+         GROUP BY ue.openid, 2
+         ORDER BY ue.openid, type`,
         [userIds],
     );
     const groupedRows = groupRowsByUser(result.rows);
