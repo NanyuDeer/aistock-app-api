@@ -162,6 +162,59 @@ describe('deleteInferences', () => {
     });
 });
 
+/**
+ * meta 聚合下移到 Service（收尾重构 P3）：Controller 不再自己拼 SQL，
+ * 避免同一张表出现「裸 SQL + Service 方法」两条访问路径。
+ */
+describe('getInferenceMeta', () => {
+    it('无数据 → count 0 / dimensions [] / updated_at null', async () => {
+        const meta = await ProfileMiningService.getInferenceMeta('o_none');
+        assert.strictEqual(meta.count, 0);
+        assert.deepStrictEqual(meta.dimensions, []);
+        assert.strictEqual(meta.updated_at, null);
+        const call = mockCalls.find((c) => c.sql.includes('FROM user_profile_inferences'));
+        assert.ok(call, '应走 user_profile_inferences 聚合查询');
+        assert.deepStrictEqual(call!.params, ['o_none']);
+    });
+
+    it('有数据 → 聚合 count / dimensions / updated_at，且不含推断 value', async () => {
+        const updatedAt = new Date('2026-11-05T00:30:00Z');
+        mockResponder = (sql) => {
+            if (sql.includes('FROM user_profile_inferences')) {
+                return {
+                    rows: [{
+                        count: 2,
+                        dimensions: ['preferred_sectors', 'question_topics'],
+                        updated_at: updatedAt,
+                    }],
+                };
+            }
+            return { rows: [], rowCount: 0 };
+        };
+        const meta = await ProfileMiningService.getInferenceMeta('o_1');
+        assert.strictEqual(meta.count, 2);
+        assert.deepStrictEqual(meta.dimensions, ['preferred_sectors', 'question_topics']);
+        assert.strictEqual(meta.updated_at, updatedAt);
+        assert.strictEqual(
+            Object.prototype.hasOwnProperty.call(meta, 'value'),
+            false,
+            'meta 不得包含推断 value（隐私：只给计数与维度名）',
+        );
+    });
+
+    it('pg 驱动返回字符串 count → 归一为 number', async () => {
+        mockResponder = (sql) => {
+            if (sql.includes('FROM user_profile_inferences')) {
+                return { rows: [{ count: '3', dimensions: ['watch_events'], updated_at: null }] };
+            }
+            return { rows: [], rowCount: 0 };
+        };
+        const meta = await ProfileMiningService.getInferenceMeta('o_1');
+        assert.strictEqual(meta.count, 3);
+        assert.strictEqual(typeof meta.count, 'number');
+    });
+});
+
 // ─────────────────────────────────────────────────────────────
 // Task 2：5 维度计算规则
 // ─────────────────────────────────────────────────────────────

@@ -8,17 +8,10 @@
  * 「永不阻断」：缓存失效失败仅 warning（TTL 300s 兜底）；DB 异常 500 兜底。
  */
 import { Request, Response, NextFunction } from 'express';
-import pool from '../../core/db';
 import { createResponse } from '../../shared/utils/response';
 import { resolveAuth } from '../../shared/utils/authGuard';
 import { delAgentInferenceCache, delAgentProfileCache } from '../user/profileController';
 import { ProfileMiningService } from './ProfileMiningService';
-
-interface MetaRow {
-    count: number | string;
-    dimensions: string[] | null;
-    updated_at: Date | string | null;
-}
 
 export class ProfileMiningController {
     private static log(stage: string, message: string, data?: unknown): void {
@@ -35,20 +28,9 @@ export class ProfileMiningController {
             return;
         }
         try {
-            const result = await pool.query<MetaRow>(
-                `SELECT COUNT(*)::int AS count,
-                        COALESCE(array_agg(dimension ORDER BY dimension), '{}'::text[]) AS dimensions,
-                        MAX(updated_at) AS updated_at
-                 FROM user_profile_inferences
-                 WHERE user_id = $1`,
-                [auth.openid],
-            );
-            const row = result.rows[0];
-            createResponse(res, 200, 'success', {
-                count: Number(row?.count ?? 0),
-                dimensions: Array.isArray(row?.dimensions) ? row.dimensions : [],
-                updated_at: row?.updated_at ?? null,
-            });
+            // 聚合走 Service（与 clear 同一访问路径，避免表结构变更漏改）
+            const meta = await ProfileMiningService.getInferenceMeta(auth.openid);
+            createResponse(res, 200, 'success', meta);
         } catch (err) {
             ProfileMiningController.log('meta', 'DB error', err instanceof Error ? err.message : String(err));
             createResponse(res, 500, '查询推断画像失败');

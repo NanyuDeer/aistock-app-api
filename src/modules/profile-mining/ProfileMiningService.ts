@@ -35,6 +35,20 @@ export interface InferenceRow {
     inferred_at: Date | string;
 }
 
+/** 推断画像元信息（公开侧 meta 接口契约；刻意不含 value） */
+export interface InferenceMeta {
+    count: number;
+    dimensions: string[];
+    updated_at: Date | string | null;
+}
+
+/** meta 聚合查询的原始行（COUNT / array_agg 在 pg 驱动下可能返回字符串） */
+interface MetaRow {
+    count: number | string;
+    dimensions: string[] | null;
+    updated_at: Date | string | null;
+}
+
 /**
  * 推断表 DDL（由 index.ts 启动时执行）。
  *
@@ -421,6 +435,30 @@ export class ProfileMiningService {
             [userId],
         );
         return result.rows;
+    }
+
+    /**
+     * 推断画像元信息：只返回计数与维度名，**不返回 value**（隐私边界，spec §3.8）。
+     *
+     * 收尾重构（2026-11-05）：聚合查询从 Controller 下移到这里，避免同一张表出现
+     * 「Controller 裸 SQL」与「Service 方法」两条访问路径（改表结构时易漏一处）。
+     */
+    static async getInferenceMeta(userId: string): Promise<InferenceMeta> {
+        const result = await pool.query<MetaRow>(
+            `SELECT COUNT(*)::int AS count,
+                    COALESCE(array_agg(dimension ORDER BY dimension), '{}'::text[]) AS dimensions,
+                    MAX(updated_at) AS updated_at
+             FROM user_profile_inferences
+             WHERE user_id = $1`,
+            [userId],
+        );
+        const row = result.rows[0];
+        return {
+            // pg 驱动下 COUNT 可能以字符串返回 → 统一归一为 number（与 internal 接口契约一致）
+            count: Number(row?.count ?? 0),
+            dimensions: Array.isArray(row?.dimensions) ? row.dimensions : [],
+            updated_at: row?.updated_at ?? null,
+        };
     }
 
     /** 删除某用户全部推断，返回删除行数。 */
