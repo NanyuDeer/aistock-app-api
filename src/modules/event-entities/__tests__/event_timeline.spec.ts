@@ -87,6 +87,25 @@ function requestJson(app: Express, path: string): Promise<CallResult> {
     });
 }
 
+// ── 相对日期工具（夹具禁用硬编码绝对日期） ──
+
+/**
+ * 上海时区墙钟日期（YYYY-MM-DD，固定 +8 无 DST），offsetDays 相对当前时间，可为负。
+ *
+ * 夹具一律用相对日期派生：硬编码绝对日期会随时钟推进过期 —— date-only 事件次日 0 点起
+ * 变 occurred，随即命中「occurred 必须在事件传导报告存在」准入被排除（本文件 2026-10-02、
+ * 2026-11-05 两次失败均因夹具日期过期）。
+ */
+function shanghaiDateStr(offsetDays: number): string {
+    return new Date(Date.now() + 8 * 3600 * 1000 + offsetDays * 86400000).toISOString().slice(0, 10);
+}
+
+/** YYYY-MM-DD 平移 days 天（可为负），用于构造相对查询窗口。 */
+function shiftDateStr(dateStr: string, days: number): string {
+    const ms = new Date(`${dateStr}T00:00:00+08:00`).getTime() + days * 86400000;
+    return new Date(ms + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 const NEWS_ENTITY = {
     event_id: 'EVT-news-1',
     title: '财联社9月17日电，央行今日进行1620亿元7天期逆回购操作，操作利率1.4%。',
@@ -118,14 +137,24 @@ const NEWS_ENTITY_NO_REPORT_ROW = {
     impact_sectors: [],
 };
 
+/**
+ * 日历夹具日期：相对当前时间的未来日期（date-only，上海墙钟 00:00）。
+ *
+ * 必须落在未来：路由规则「occurred 事件必须在事件传导报告存在，否则排除」，而 calendar
+ * 直查行恒无传导报告 —— 日期一旦过去，该行被丢弃，断言 3 条变 2 条（原硬编码
+ * 2026-10-20 于 2026-11-05 即已过期）。语义上 calendar 夹具是「未来事件无报告也应保留」。
+ */
+const CALENDAR_EVENT_DATE = shanghaiDateStr(7);
+
 /** event_entities 中残留的历史物化 calendar 行：新逻辑应排除（由直查替代，防重复） */
 const STALE_CALENDAR_ENTITY = {
     event_id: 'EVT-cal-stale',
     title: '中国10月LPR报价（残留物化行）',
     summary: null,
     publish_time: null,
-    event_start_time: '2026-10-20T00:00:00+08:00',
-    event_end_time: '2026-10-20T00:00:00+08:00',
+    // 与下方直查行同一事件（历史物化的重复行），日期同源派生
+    event_start_time: `${CALENDAR_EVENT_DATE}T00:00:00+08:00`,
+    event_end_time: `${CALENDAR_EVENT_DATE}T00:00:00+08:00`,
     event_status: 'scheduled',
     time_source: 'calendar',
     time_confidence: 0.95,
@@ -136,7 +165,7 @@ const STALE_CALENDAR_ENTITY = {
 
 /** market_calendar_events 直查行（qualify: importance=high → 通过） */
 const CALENDAR_ROW = {
-    event_date: '2026-10-20',
+    event_date: CALENDAR_EVENT_DATE,
     title: '中国10月LPR报价',
     importance: 'high',
     source: 'L4',
@@ -144,7 +173,17 @@ const CALENDAR_ROW = {
 };
 
 /** 直查行映射后的稳定 eventId（与路由内构造口径一致） */
-const CALENDAR_EVENT_ID = 'CAL-2026-10-20-中国10月LPR报价';
+const CALENDAR_EVENT_ID = `CAL-${CALENDAR_EVENT_DATE}-中国10月LPR报价`;
+
+/**
+ * 时间线查询窗口：左端锚定 news 夹具发生日（刻意固定为已发生的过去事件）、右端锚定未来
+ * calendar 夹具 —— 恒覆盖本文件两个夹具日，且不写死上界（原 2026-12-31 会随日期推进过期，
+ * 把未来 calendar 夹具挤出窗口）。
+ */
+const TIMELINE_QUERY =
+    `dateFrom=${shiftDateStr(NEWS_ENTITY.publish_time.slice(0, 10), -30)}` +
+    `&dateTo=${shiftDateStr(CALENDAR_EVENT_DATE, 30)}` +
+    `&pageSize=100`;
 
 const REFINED_TITLE = '央行开展7620亿元逆回购，含6000亿隔夜操作';
 
@@ -195,7 +234,7 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直�
         const app = buildApp();
         const result = await requestJson(
             app,
-            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+            `/api/agent/event/timeline?${TIMELINE_QUERY}`,
         );
         assert.equal(result.status, 200);
         assert.equal(result.body.code, 0);
@@ -223,7 +262,7 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直�
         const app = buildApp();
         const result = await requestJson(
             app,
-            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+            `/api/agent/event/timeline?${TIMELINE_QUERY}`,
         );
         const items = result.body.data?.items ?? [];
         const byId = new Map(items.map((it) => [it.eventId, it]));
@@ -240,7 +279,7 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直�
         const app = buildApp();
         await requestJson(
             app,
-            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+            `/api/agent/event/timeline?${TIMELINE_QUERY}`,
         );
         const enrichCall = mockCalls.find((c) => c.sql.includes('agent_analysis_reports'));
         assert.ok(enrichCall, '应发起事件传导报告增强查询');
@@ -257,7 +296,7 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直�
         const app = buildApp();
         const result = await requestJson(
             app,
-            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+            `/api/agent/event/timeline?${TIMELINE_QUERY}`,
         );
         const items = result.body.data?.items ?? [];
         const byId = new Map(items.map((it) => [it.eventId, it]));
@@ -280,13 +319,11 @@ describe('EventTimelinePublicRouter 标题对齐 + 影响板块 + calendar 直�
 describe('EventTimelinePublicRouter TIMESTAMPTZ=Date 兼容（回归）', () => {
     before(() => {
         installPoolMock();
-        // 夹具必须用「相对当前时间」的未来日期（date-only，上海墙钟 00:00）：
+        // 夹具必须用「相对当前时间」的未来日期（复用模块级 shanghaiDateStr）：
         // 硬编码绝对日期会随时钟推进过期 —— date-only 事件次日 0 点起变 occurred，
         // 随即命中「occurred 必须有传导报告」准入被排除（2026-10-02 本用例即因此失败：
         // 夹具 2026-10-01 已变成已发生）。本用例只验证 TIMESTAMPTZ 返回 Date 时
         // 排序不抛 500，与「事件是否已发生」无关，故用相对日期保证永不随时间失效。
-        const shanghaiDateStr = (offsetDays: number): string =>
-            new Date(Date.now() + 8 * 3600 * 1000 + offsetDays * 86400000).toISOString().slice(0, 10)
         const start1 = new Date(`${shanghaiDateStr(7)}T00:00:00+08:00`) // EVT-d-1（较早）
         const start2 = new Date(`${shanghaiDateStr(14)}T00:00:00+08:00`) // EVT-d-2（较晚）
         mockResponder = (sql: string) => {
@@ -338,7 +375,7 @@ describe('EventTimelinePublicRouter TIMESTAMPTZ=Date 兼容（回归）', () => 
         const app = buildApp();
         const result = await requestJson(
             app,
-            '/api/agent/event/timeline?dateFrom=2026-09-01&dateTo=2026-12-31&pageSize=100',
+            `/api/agent/event/timeline?${TIMELINE_QUERY}`,
         );
         assert.equal(result.status, 200, 'Date 类型 event_start_time 不应导致 500');
         assert.equal(result.body.code, 0);

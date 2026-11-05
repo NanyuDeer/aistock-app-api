@@ -14,7 +14,17 @@
 |------|------|------|
 | `/api/user/profile` | GET | 当前用户画像；无记录返回 `{}`（不 404） |
 | `/api/user/profile` | PUT | upsert 部分更新：仅更新传入字段（未传 → COALESCE 保留旧值）；`investment_preferences` **数组整体替换**（G7，非追加）；`risk_tolerance` 限定 `conservative | balanced | aggressive`；**成功后失效 agent-py 缓存（DEL `user_profile:{userId}`，消除 300s 旧画像窗口）** |
-| `/api/user/profile` | DELETE | 删除当前用户画像（`DELETE FROM user_profiles WHERE user_id=$1`）+ **DEL agent-py 缓存**；成功返回 `{code:0,data:{deleted:true}}` |
+| `/api/user/profile` | DELETE | 删除当前用户画像（`DELETE FROM user_profiles WHERE user_id=$1`）**+ 级联删除 `user_profile_inferences`（画像自动挖掘一期，PIPL 删除权）** + DEL 两个 agent-py 缓存 key（`user_profile:{id}` 与 `user_profile_inferences:{id}`）；成功返回 `{code:0,data:{deleted:true}}` |
+
+## 画像自动挖掘一期（2026-11-05）在本模块的落点
+
+本模块只承担 **DELETE 级联**，不承担挖掘逻辑（挖掘在 `src/modules/profile-mining/`，且**不得被本模块反向依赖**）：
+
+- `DELETE /api/user/profile` 依次执行：删 `user_profiles` 行 → 删 `user_profile_inferences` 行 → `delAgentProfileCache` → `delAgentInferenceCache`；任一步缓存失败仅 warning（TTL 300s 兜底），不阻断 200
+- `delAgentInferenceCache` 定义在本文件（与 `delAgentProfileCache` 同源工厂 `_agentCacheRedisFactory`），key 为 `user_profile_inferences:{userId}`，DB 同为 15
+- **显式画像仍是唯一权威**：本模块任何路径都不读、不写推断表内容（除上述级联删除），推断结果不覆盖 `user_profiles` 字段
+- 公开侧推断接口在 `modules/profile-mining/ProfileMiningController`（`GET /api/user/profile/inferences/meta`、`DELETE /api/user/profile/inferences`），不在本模块
+- 鉴权统一走 `src/shared/utils/authGuard.resolveAuth`（本文件与 profile-mining 共用；勿再新增 `private static requireAuth` 副本）
 
 ## 校验边界（超限 400）
 

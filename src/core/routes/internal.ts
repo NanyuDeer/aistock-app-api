@@ -44,6 +44,7 @@ import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 import { EmailService } from '../email/EmailService'
+import { ProfileMiningService } from '../../modules/profile-mining/ProfileMiningService'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -1735,6 +1736,42 @@ router.get('/user-profile/:userId', async (req: Request, res: Response) => {
         res.json({ code: 200, data: row ?? {} })
     } catch (err: unknown) {
         console.error('[Internal] user-profile GET error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+// ==================== 用户画像自动挖掘（一期） ====================
+
+/**
+ * GET /internal/user-profile-inferences/:userId
+ * 按 user_id 拉取推断画像（agent-py 对话入口注入用；与显式 user_profiles 分立）
+ *
+ * - 200：{ code: 200, data: [{ dimension, value, confidence, sample_size, window_days, inferred_at }] }
+ * - 200 + data: []：无推断数据（不 404——agent-py 无推断时零行为变化）
+ * - 400：userId 缺失
+ * - 502：服务异常
+ */
+router.get('/user-profile-inferences/:userId', async (req: Request, res: Response) => {
+    const user_id = param(req, 'userId')
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+    try {
+        const rows = await ProfileMiningService.listInferences(user_id)
+        res.json({
+            code: 200,
+            data: rows.map((row) => ({
+                dimension: row.dimension,
+                value: row.value,
+                // NUMERIC/INTEGER 在 pg 驱动下可能返回字符串，契约统一为 number
+                confidence: Number(row.confidence),
+                sample_size: Number(row.sample_size),
+                window_days: row.window_days === null ? null : Number(row.window_days),
+                inferred_at: row.inferred_at,
+            })),
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] user-profile-inferences GET error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
