@@ -58,8 +58,9 @@ import { EmailAuthController } from './modules/auth/EmailAuthController';
 import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
-// 用户画像自动挖掘（一期）——推断表 DDL + 每日批次
+// 用户画像自动挖掘（一期）——推断表 DDL + 每日批次 + 公开清理/计数接口
 import { ProfileMiningService, USER_PROFILE_INFERENCES_DDL } from './modules/profile-mining/ProfileMiningService';
+import { ProfileMiningController } from './modules/profile-mining/ProfileMiningController';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -277,6 +278,9 @@ app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings
 app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
 app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
 app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
+// 画像自动挖掘（一期）：推断计数 / 清除（JWT；meta 只返回计数与维度名，不返回推断内容）
+app.get('/api/user/profile/inferences/meta', (req, res, next) => ProfileMiningController.meta(req, res, next));
+app.delete('/api/user/profile/inferences', (req, res, next) => ProfileMiningController.clear(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
