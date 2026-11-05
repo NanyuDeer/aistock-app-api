@@ -1250,9 +1250,10 @@ router.get('/market/sectors', async (_req: Request, res: Response) => {
         ])
         // fetchIndexes 返回 CloseIndexFact：键为 ts_code（如 "000001.SH"），归一化为 6 位 code
         const idx = (indexes.status === 'fulfilled' && Array.isArray(indexes.value))
-            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; pct_chg?: number }) => ({
+            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; close?: number; pct_chg?: number }) => ({
                   code: String(it.ts_code ?? it.code ?? '').replace(/[^0-9]/g, '').slice(0, 6),
                   name: String(it.name ?? ''),
+                  close: it.close ?? null,
                   pct_chg: it.pct_chg ?? null,
               }))
             : []
