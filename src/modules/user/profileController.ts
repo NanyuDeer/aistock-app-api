@@ -13,8 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import Redis from 'ioredis';
 import pool from '../../core/db';
 import { createResponse } from '../../shared/utils/response';
-import { verifyJwt } from '../../shared/utils/jwt';
-import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist';
+import { resolveAuth } from '../../shared/utils/authGuard';
 
 const RISK_TOLERANCES = ['conservative', 'balanced', 'aggressive'] as const;
 const MAX_PREFERENCES = 10;
@@ -117,17 +116,8 @@ export class ProfileController {
         console.log(`[Profile][${stage}] ${ts} ${message}${detail}`);
     }
 
-    private static async requireAuth(req: Request): Promise<{ ok: true; openid: string } | { ok: false; code: number; message: string }> {
-        const token = extractTokenFromRequest(req);
-        if (!token) return { ok: false, code: 401, message: '未登录' };
-        const payload = verifyJwt(token, process.env.JWT_SECRET!);
-        if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
-        if (await isTokenRevoked(payload.jti)) return { ok: false, code: 401, message: REVOKED_MESSAGE };
-        return { ok: true, openid: payload.openid };
-    }
-
     static async get(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
@@ -146,7 +136,7 @@ export class ProfileController {
     }
 
     static async put(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
@@ -236,7 +226,7 @@ export class ProfileController {
     }
 
     static async del(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
