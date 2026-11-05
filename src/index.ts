@@ -58,6 +58,8 @@ import { EmailAuthController } from './modules/auth/EmailAuthController';
 import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
+// 用户画像自动挖掘（一期）——推断表 DDL（cron/接口在后续 Task 接入）
+import { USER_PROFILE_INFERENCES_DDL } from './modules/profile-mining/ProfileMiningService';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -1317,6 +1319,16 @@ async function start() {
         console.log('[DB] user_profiles table ready');
     } catch (err: unknown) {
         console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 用户画像自动挖掘（一期）：user_profile_inferences 推断表
+    // 与显式画像 user_profiles 分立，PRIMARY KEY (user_id, dimension) 唯一 upsert；
+    // confidence CHECK [0, 1] 由 DB 兜底。建表失败仅 warning（不阻断启动，对齐既有先例）。
+    try {
+        await pool.query(USER_PROFILE_INFERENCES_DDL);
+        console.log('[DB] user_profile_inferences table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_profile_inferences table check:', err instanceof Error ? err.message : String(err));
     }
 
     // is_vip 会员标记（2026-08-24 报告导出会员解锁用；默认 false）
