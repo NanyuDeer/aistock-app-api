@@ -133,6 +133,7 @@ import { TradingCalendarRefreshService } from './modules/market/TradingCalendarR
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
 import { aiStockSelectionRouter, ensureAiStockSelectionSchema, triggerAiStockSelection } from './core/routes/aiStockSelectionRouter';
+import { stockSelectionRouter, ensureStockSelectionSchema, triggerStockSelection } from './core/routes/stockSelectionRouter';
 import { initWebSocket } from './core/ws/handler';
 import { initChatBridge } from './core/ws/chat-bridge';
 import { shouldRunBackgroundJobs } from './core/qa_mode';
@@ -683,6 +684,7 @@ app.use('/api/fear-greed', fearGreedRouter); // 恐贪指数：公开查询（�
 
 // AI帮我选：结果对用户只读；生成接口仅供内部定时任务/运维凭 token 调用。
 app.use('/api/ai-stock-selection', aiStockSelectionRouter);
+app.use('/api/stock-selection', stockSelectionRouter);
 
 app.use((_req, res) => {
     res.status(404).json({ code: 404, message: 'Not Found' });
@@ -702,6 +704,12 @@ if (BACKGROUND_JOBS_ENABLED) {
 // - 每分钟 outbox 冲刷 / 飞书消息分析、通知补投 '*/5'、心跳 '*/10'：需全天候运行，不能因节假日停摆；
 // - 资讯爬虫 '0 8'/'0 15'：注释已注明"包括节假日"，本就应每日运行。
 // ========================================================
+
+// Persist all four methods after the daily market feed is complete; second slot retries missing/failed runs.
+cron.schedule('30 16,19 * * 1-5', () => runIfTradingDay('stock-selection-after-close', async () => {
+    try { console.log('[StockSelection] after-close:', await triggerStockSelection()); }
+    catch (e) { console.error('[StockSelection] after-close failed:', e); }
+}), { timezone: 'Asia/Shanghai' });
 
 // 交易日历刷新：每日 00:30（与维护类 cron 同簇）
 cron.schedule('30 0 * * *', async () => {
@@ -1114,6 +1122,15 @@ async function start() {
         await ensureAiStockSelectionSchema();
     } catch (err: unknown) {
         console.error('[AiStockSelection] schema unavailable:', err instanceof Error ? err.message : String(err));
+    }
+
+    try {
+        await ensureStockSelectionSchema();
+        if (BACKGROUND_JOBS_ENABLED) void calendarWarmup.then(() => triggerStockSelection())
+            .then(r => console.log('[StockSelection] startup recovery:', r))
+            .catch(e => console.error('[StockSelection] startup recovery failed:', e));
+    } catch (e) {
+        console.error('[StockSelection] schema unavailable:', e);
     }
 
     try {

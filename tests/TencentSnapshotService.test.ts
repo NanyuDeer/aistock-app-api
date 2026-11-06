@@ -100,6 +100,7 @@ function buildTencentQuoteLine(code: string, name: string): string {
     fields[3] = '10.50'
     fields[4] = '10.00'
     fields[5] = '10.10'
+    fields[30] = '20261106145000'
     fields[31] = '0.50'
     fields[32] = '5.00'
     fields[33] = '10.80'
@@ -146,6 +147,11 @@ test('explicit Tencent symbols are requested unchanged and retained in parsed ba
         assert.match(requestedUrls[0], /q=sh000001,sz000001/)
         assert.doesNotMatch(requestedUrls[0], /shsh000001|shsz000001/)
         assert.deepEqual(quotes.map((quote) => quote['股票代码']), ['sh000001', 'sz000001'])
+        const coreQuotes = await TencentQuoteService.getBatchQuotes(['sh000001'], 'core')
+        assert.equal(coreQuotes[0]['最新价'], 10.5)
+        assert.equal(coreQuotes[0]['涨跌额'], 0.5)
+        assert.equal(coreQuotes[0]['涨跌幅'], 5)
+        assert.equal(coreQuotes[0]['行情时间'], '20261106145000')
     } finally {
         requestMock.mock.restore()
     }
