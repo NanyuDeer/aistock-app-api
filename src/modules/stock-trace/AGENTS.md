@@ -2,6 +2,26 @@
 
 This module owns event-scoped stock-movement trace facts, snapshots, jobs, validated results, and artifacts.
 
+### 2026-10-17 收紧：板块选择排除宽基 + 按具体度排序
+
+- **问题**：`collectSectorSources` 按 `sector_name` 字母序 `LIMIT 3`，江淮汽车拿到的是「上证180成份股 / 低空经济 / DeepSeek概念」，既无法解释个股异动，又让 `sector_news` 召回大量成分股公告与宏观新闻。
+- **新口径**（`isBroadSectorName` / `selectSectorBoardNames`）：① 排除宽基指数（名称含「成份股/成分股」及上证50/沪深300/中证xxx 等）、两融、互联互通（沪股通/深股通/港股通）；② 剩余板块按 Tushare `ths_index.count`（成分股数）升序取 3 个 —— 板块越窄越具体；③ 索引缺失的板块排在最后，仍保留名称供字面召回兜底。
+- **复用同一份列表**：`sector_fact` 与 `collectSectorNews` 共用收紧后的板块，避免"证据用 A 板块、消息按 B 板块召回"的口径漂移。
+- **降级**：Tushare 索引/行情失败时只跳过 `sector_fact`，板块选择仍按「排除宽基 + 名称稳定序」执行，不阻断板块消息。
+- **跨仓一致**：Python `sector_tagging.is_broad_sector_name` 维护同一份宽基名单（两侧需同步修改）。
+
+### 2026-10-16 更新：板块消息 → 关联个股（sector 域新增 `sector_news` 证据）
+
+- **动机**：sector 域此前只有 `sector_fact`（该股 Top3 板块 + 同花顺板块日涨跌幅）——只能回答"板块动了多少"，无法回答"板块为什么动"。板块级新闻因既无 `symbol` 也无 `industry`（四个采集器都不填）而永远进不了归因上下文。
+- **事件库读取**：`loadEventStoreEvidence(symbol, capturedAt, sectors?)` 新增可选第三参，透传 `&sectors=` 给 Python `GET /api/agent/event/scrape-by-symbol/:symbol`；Python 侧用别名词典给事件打标准板块标签并与个股板块求交，为每条结果写 `match_type`（`symbol`/`sector`/`both`）。
+- **映射规则（重要）**：`toEventStoreSourceRecord` 只在 `match_type === 'sector'` 时映射 `kind='sector_news'`；`both` 事件仍按个股新闻（`news`）归 **company 域** —— **同一事件不允许在两个域重复计数**。payload 增记 `sector_tags` / `match_type`，便于排查"这条证据为什么进来"。
+- **采集**：`collectSectorSources` 在 board fact 之外新增 `collectSectorNews`（只取 `match_type='sector'`，套用与 company 域一致的 `T-72h ~ T+30min` 窗口）；**board fact 采集（Tushare）失败时仍保留板块消息**（外层 try/catch 只影响涨跌幅事实）。
+- **增量修订**：`INCREMENTAL_REUSE_KINDS` 增 `sector_news`；`reusedDomainAvailability` 认 `sector_fact` **或** `sector_news` 即代表 sector 域可用（否则只有板块消息的修订会把 sector 误读为 missing）。
+- **刻意限制（不要随手改）**：`sector_news` **不参与** `confirmed` 的独立事实门槛，也**不作为反向事实强制反证** —— 新闻方向字段来自规则/LLM 评分，可靠性低于行情事实，保持其弱证据定位。
+- **契约**：`SourceKind` 新增 `sector_news`（Python `schemas/stock_trace.py`、本仓 `types.ts`、前端 `stockTrace.ts` 三处同步）；agent-py `_KIND_LABELS` 映射「板块消息」；提示词允许 sector 候选引用 `sector_news`，并禁止把它当公司个体事实。
+- **无迁移**：`sector_tags` 存事件库 `content` JSONB（存量事件读时补算），`match_type` 仅为响应字段，快照表结构不变。
+- 测试：`__tests__/sectorNewsEvidence.spec.ts`（5 例：sectors 透传与 URL 编码 / `match_type=sector → sector_news` / `both` 仍为 news / 不传 sectors 旧行为 / 增量复用与 readiness）→ `npx tsc --noEmit` exit 0。
+
 ### 2026-10-15 修复：「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
 
 - **背景（用户可见缺陷）**：`POST /api/cn/favorites/movements/detect`（前端「立即检测」按钮）此前只做 `PriceTriggerDetector.runOnceForce()`——检测后建/修事件，**不入队归因**。归因入队此前只发生在"事件落定"路径（15:05 打点后串行落定 / 15:10 兜底 / 反向落定），而 `settleActiveEvents` 只扫 `trading_date = 当日` 的 active 事件且收盘后不再运行 → **非交易时段（或当日 15:10 之后）点出的检测会产生"永远停在 active、无 job"的孤儿事件**，前端卡片恒显「归因中」且不会被任何后续路径修复。

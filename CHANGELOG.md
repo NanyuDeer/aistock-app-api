@@ -2,6 +2,52 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [junliang] 2026-10-17 — 收紧板块召回：排除宽基板块 + 按成分股数取最具体板块
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- `collectSectorSources` 不再按 `sector_name` 字母序 `LIMIT 3`（会把「上证180成份股 / 低空经济 / DeepSeek概念」排在最前）。新增 `isBroadSectorName` / `selectSectorBoardNames`：排除宽基指数（`*成份股`）、两融、互联互通板块；剩余板块按 Tushare 成分股数量升序取 3 个（板块越窄越具体，越能解释个股异动）。
+- `collectSectorNews` 复用同一份收紧后的板块列表，宽基板块不再参与板块消息召回。
+- Tushare 索引读取失败时仍按「排除宽基 + 名称稳定序」选板块，只跳过 `sector_fact`，不阻断板块消息。
+
+### 验证
+
+- `sectorNewsEvidence.spec.ts` 9/9（新增 4 例板块选择口径）；`npx tsc --noEmit` exit 0。
+- 江淮汽车 600418 重采：`sector_fact` 由「上证180成份股 / 低空经济 / DeepSeek概念」变为「换电概念 / 飞行汽车(eVTOL) / 智能座舱」，`sector_news` 由 5 条噪声降为 0。
+
+## [junliang] 2026-10-16 — 板块消息「关联到个股」：sector 域新增 `sector_news` 证据
+
+**开发者**: NanyuDeer
+
+### 新增
+
+- `StockTraceSnapshotService.collectSectorNews(event, sectors, capturedAt)`（private）：把事件库中「仅板块命中」的板块消息收进 sector 证据域。只保留 `match_type='sector'`（`both` 已作为个股新闻进 company 域，避免同一事件跨域重复计数），套用与 company 域一致的 `T-72h ~ T+30min` 时效窗口；失败/空返回 `[]`，不阻塞归因。
+- 测试 `src/modules/stock-trace/__tests__/sectorNewsEvidence.spec.ts`（5 例）。
+
+### 变更
+
+- `loadEventStoreEvidence(symbol, capturedAt, sectors?)`：新增可选第三参，URL 追加 `&sectors=`（逗号连接 + encode），透传给 Python `GET /api/agent/event/scrape-by-symbol/:symbol`；不传时 URL 与旧版逐字一致。
+- `toEventStoreSourceRecord`：`match_type === 'sector'` 时映射 `kind='sector_news'`（否则沿用 announcement/news），payload 增记 `sector_tags` / `match_type` 供排查「这条证据为什么进来」。
+- `collectSectorSources`：board fact（Tushare 涨跌幅）与板块消息并列采集；**board fact 采集失败时仍保留板块消息**（外层 try/catch 只兜住涨跌幅事实）。
+- `INCREMENTAL_REUSE_KINDS` 增 `sector_news`；`reusedDomainAvailability` 认 `sector_fact` **或** `sector_news` 即代表 sector 域可用（否则只有板块消息的修订会把 sector 误读为 missing）。
+- `types.ts`：`SourceKind` 增 `'sector_news'`（与 agent-py `schemas/stock_trace.py`、前端 `stockTrace.ts` 三处同步）。
+
+### 设计说明
+
+- **刻意限制**：`sector_news` 不参与 `confirmed` 的独立事实门槛，也不作为反向事实强制反证 —— 新闻方向字段来自规则/LLM 评分，可靠性低于行情事实，保持其弱证据定位。
+- **无迁移**：`sector_tags` 存事件库 `content` JSONB（存量事件由 Python 读时补算），`match_type` 仅为响应字段，`stock_trace_snapshots` / `stock_trace_source_records` 表结构不变。
+
+### 测试
+
+- `node --import tsx --test --test-force-exit src/modules/stock-trace/__tests__/sectorNewsEvidence.spec.ts src/modules/stock-trace/__tests__/eventStoreEvidence.spec.ts` → **15 pass / 0 fail**
+- `npx tsc --noEmit` **exit 0**
+
+### 文档
+
+- `src/modules/stock-trace/AGENTS.md`：新增 2026-10-16 段落（映射规则 / 跨域不重复计数 / 刻意限制 / 无迁移）
+
 ## [junliang] 2026-10-15 — 「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
 
 **开发者**: NanyuDeer
