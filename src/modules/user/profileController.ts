@@ -13,8 +13,7 @@ import { Request, Response, NextFunction } from 'express';
 import Redis from 'ioredis';
 import pool from '../../core/db';
 import { createResponse } from '../../shared/utils/response';
-import { verifyJwt } from '../../shared/utils/jwt';
-import { isTokenRevoked, REVOKED_MESSAGE, extractTokenFromRequest } from '../../shared/utils/tokenBlacklist';
+import { resolveAuth } from '../../shared/utils/authGuard';
 
 const RISK_TOLERANCES = ['conservative', 'balanced', 'aggressive'] as const;
 const MAX_PREFERENCES = 10;
@@ -94,6 +93,21 @@ export async function delAgentProfileCache(userId: string): Promise<void> {
     }
 }
 
+/** 失效 agent-py 侧 user_profile_inferences 推断缓存（TTL 300s，与显式画像同 db）。
+ *  画像自动挖掘一期：「清除推断」与 DELETE /api/user/profile 均需同时 DEL 两个 key。 */
+export async function delAgentInferenceCache(userId: string): Promise<void> {
+    const c = _agentCacheRedisFactory.current();
+    try {
+        await c.connect();
+        await c.del(`user_profile_inferences:${userId}`);
+        ProfileController.log('delInferenceCache', 'invalidated', { userId });
+    } catch (err) {
+        ProfileController.log('delInferenceCache', 'failed (TTL 300s 兜底)', err instanceof Error ? err.message : String(err));
+    } finally {
+        c.disconnect();
+    }
+}
+
 export class ProfileController {
     // 非 private：delAgentProfileCache（模块级函数）跨库失效日志复用
     static log(stage: string, message: string, data?: unknown): void {
@@ -102,17 +116,8 @@ export class ProfileController {
         console.log(`[Profile][${stage}] ${ts} ${message}${detail}`);
     }
 
-    private static async requireAuth(req: Request): Promise<{ ok: true; openid: string } | { ok: false; code: number; message: string }> {
-        const token = extractTokenFromRequest(req);
-        if (!token) return { ok: false, code: 401, message: '未登录' };
-        const payload = verifyJwt(token, process.env.JWT_SECRET!);
-        if (!payload) return { ok: false, code: 401, message: 'token 无效或已过期' };
-        if (await isTokenRevoked(payload.jti)) return { ok: false, code: 401, message: REVOKED_MESSAGE };
-        return { ok: true, openid: payload.openid };
-    }
-
     static async get(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
@@ -131,7 +136,7 @@ export class ProfileController {
     }
 
     static async put(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
@@ -221,14 +226,17 @@ export class ProfileController {
     }
 
     static async del(req: Request, res: Response, _next: NextFunction): Promise<void> {
-        const auth = await ProfileController.requireAuth(req);
+        const auth = await resolveAuth(req);
         if (!auth.ok) {
             createResponse(res, auth.code, auth.message);
             return;
         }
         try {
             await pool.query('DELETE FROM user_profiles WHERE user_id = $1', [auth.openid]);
+            // 画像自动挖掘一期：PIPL 删除权 → 级联清除推断表（显式与推断同时清空）
+            await pool.query('DELETE FROM user_profile_inferences WHERE user_id = $1', [auth.openid]);
             await delAgentProfileCache(auth.openid);
+            await delAgentInferenceCache(auth.openid);
             ProfileController.log('del', 'profile deleted', { user_id: auth.openid });
             createResponse(res, 200, 'success', { deleted: true });
         } catch (err) {

@@ -311,7 +311,7 @@ describe('PUT /api/user/profile', () => {
 });
 
 describe('DELETE /api/user/profile', () => {
-    it('删除成功 → 200 + deleted:true + DEL db=1 缓存 key', async () => {
+    it('删除成功 → 200 + deleted:true + 级联删除推断 + DEL 两个缓存 key', async () => {
         mockCalls = [];
         mockResponder = () => ({ rows: [] });
         const app = buildApp();
@@ -324,7 +324,15 @@ describe('DELETE /api/user/profile', () => {
         const delCalls = mockCalls.filter((c) => c.sql.includes('DELETE FROM user_profiles'));
         assert.strictEqual(delCalls.length, 1);
         assert.deepStrictEqual(delCalls[0].params, ['o_del']);
-        assert.deepStrictEqual(cacheDelCalls, ['user_profile:o_del'], '删除后应 DEL agent-py 缓存 key');
+        // 级联：PIPL 删除权要求同时清除推断表（画像自动挖掘一期）
+        const delInferenceCalls = mockCalls.filter((c) => c.sql.includes('DELETE FROM user_profile_inferences'));
+        assert.strictEqual(delInferenceCalls.length, 1);
+        assert.deepStrictEqual(delInferenceCalls[0].params, ['o_del']);
+        assert.deepStrictEqual(
+            cacheDelCalls,
+            ['user_profile:o_del', 'user_profile_inferences:o_del'],
+            '删除后应 DEL 显式画像与推断两个 agent-py 缓存 key',
+        );
     });
 
     it('无 token → 401 不触达 SQL、不触碰缓存', async () => {

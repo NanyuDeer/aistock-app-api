@@ -19,7 +19,8 @@ test('mergeRhythmCalendarDays：行缺失日期补 level=null（灰格），有�
     const items = mergeRhythmCalendarDays(dates, rows)
     assert.equal(items.length, 3)
     // 行缺失 → 灰格（level=null）；position_band 为 2026-09 新增的逐日建议仓位列，缺失同样为 null
-    assert.deepEqual(items[0], { date: '2026-08-28', refresh_slot: 'after_close', level: null, score: null, basis_date: null, position_band: null })
+    // position_index 为 2026-11 新增的仓位档位序号（0-4），缺失同样为 null
+    assert.deepEqual(items[0], { date: '2026-08-28', refresh_slot: 'after_close', level: null, score: null, basis_date: null, position_band: null, position_index: null })
     // 有行 → 透传 level/score（score 字符串转 number）
     assert.equal(items[1].level, 'active')
     assert.equal(items[1].score, 59.9)
@@ -27,6 +28,8 @@ test('mergeRhythmCalendarDays：行缺失日期补 level=null（灰格），有�
     assert.equal(items[1].refresh_slot, 'after_close')
     // 行存在但 level=null（沿用前值）→ 同样灰格，但与"行缺失"共用 null 契约
     assert.equal(items[2].level, null)
+    // 行未带 position_index（旧数据）→ null（前端灰格，不回退 level 上色）
+    assert.equal(items[1].position_index, null)
 })
 
 test('mergeRhythmCalendarDays：日期顺序与传入一致（服务端已按交易日展开）', () => {

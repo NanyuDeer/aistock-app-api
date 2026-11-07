@@ -12,6 +12,8 @@ import {
     sparkline,
 } from './indicators';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
+import { tradingCalendarStore } from '../../shared/utils/tradingCalendarStore';
+import { shanghaiDateStr, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
 /** tushare 客户端抽象（生产用 TushareService.tushareRequest） */
 export interface TushareClient {
@@ -56,12 +58,28 @@ const NEUTRAL = { score: 50, raw: 0, label: '中性', history: { dates: [], scor
  * TradingCalendarRefreshService 以 Tushare trade_cal 刷新）——本模块**不再直连** Tushare `trade_cal`。
  */
 export const __fearGreedDeps = {
-    /** 最近 n 个交易日（YYYYMMDD，升序） */
-    recentTradingDays: (n: number): string[] => {
-        const days = TradingCalendarService.getRecentTradingDays(new Date(), n); // 降序（最近在前）
-        return days
+    /** 最近 n 个交易日（YYYYMMDD，升序；收盘前自动剔除尚未出 EOD 的今日） */
+    recentTradingDays: (n: number, now: Date = new Date()): string[] => {
+        const health = tradingCalendarStore.getHealth();
+        // 日历未加载/无覆盖时 TradingCalendarService 会降级为「周一~周五」，
+        // 会把节假日当成交易日并把无数据日期写成 50/0 占位并永久缓存（2026-11-02 事故脏行来源）。
+        // 宁可本次计算失败（下次请求重算），也不污染缓存。
+        if (!health.loadedAt || !health.minDate || !health.maxDate) {
+            throw new Error('trading_calendar_not_loaded');
+        }
+        const { hour, minute } = shanghaiHourMinute(now);
+        const beforeClose = hour * 60 + minute < 15 * 60 + 30;
+        const today = shanghaiDateStr(now);
+        // 收盘前多取一天，剔除今日后仍保持 n 天窗口
+        const todayTrading = beforeClose && tradingCalendarStore.isTradingDay(today);
+        const days = TradingCalendarService.getRecentTradingDays(now, n + (todayTrading ? 1 : 0)); // 降序（最近在前）
+        const formatted = days
             .map((d) => `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`)
             .reverse();
+        if (todayTrading && formatted[formatted.length - 1] === today.replace(/-/g, '')) {
+            formatted.pop();
+        }
+        return formatted;
     },
 };
 
@@ -213,23 +231,34 @@ async function breadth(client: TushareClient, cache: BreadthCache): Promise<JqIn
 
         const newRows: { tradeDate: string; upRatio: number }[] = [];
         for (const d of missing) {
-            const ratio = total.get(d) ? (up.get(d) ?? 0) / total.get(d)! * 100 : 50;
+            // 盘中/收盘前 Tushare 当日 EOD 尚未发布 → total=0。
+            // 此时必须**视为缺失**：写 50 占位会被永久缓存，让“最新一日”永久伪造成中性（2026-11-02 事故根因）。
+            const totalCount = total.get(d) ?? 0;
+            if (totalCount === 0) continue;
+            const ratio = (up.get(d) ?? 0) / totalCount * 100;
             cached.set(d, ratio);
             newRows.push({ tradeDate: d, upRatio: ratio });
         }
-        await cache.upsert(newRows);
+        if (newRows.length > 0) await cache.upsert(newRows);
     }
 
-    const ordered = dates.map((d) => Math.round(clamp(cached.get(d) ?? 50) * 100) / 100);
+    // 尾部剔除没有缓存值的交易日（“今日”数据未就绪），使最新值回退到最后一个有效交易日；
+    // 中间缺失仍按中性 50 展示（不落库，下次计算会重取）。
+    let validEnd = dates.length;
+    while (validEnd > 0 && !cached.has(dates[validEnd - 1])) validEnd -= 1;
+    if (validEnd === 0) return { key: 'breadth', name: '股价强度', desc: '上涨家数占比，反映市场宽度', ...NEUTRAL };
+    const validDates = dates.slice(0, validEnd);
+
+    const ordered = validDates.map((d) => Math.round(clamp(cached.get(d) ?? 50) * 100) / 100);
     const current = ordered[ordered.length - 1];
     return {
         key: 'breadth',
         name: '股价强度',
         desc: '上涨家数占比，反映市场宽度',
         score: current,
-        raw: Math.round((cached.get(dates[dates.length - 1]) ?? 50) * 100) / 100,
+        raw: Math.round((cached.get(validDates[validDates.length - 1]) ?? 50) * 100) / 100,
         label: levelOf(current),
-        history: { dates: dates.slice().reverse(), scores: ordered.slice().reverse() },
+        history: { dates: validDates.slice().reverse(), scores: ordered.slice().reverse() },
     };
 }
 
@@ -335,13 +364,16 @@ function round2(v: number): number {
     return Math.round(v * 100) / 100;
 }
 
-/** 从 daily 全市场数据推导某交易日的涨跌停聚合 */
-async function deriveDailyLimit(client: TushareClient, date: string): Promise<DailyLimit> {
+/** 从 daily 全市场数据推导某交易日的涨跌停聚合；无当日数据（盘中/未发布）返回 null */
+async function deriveDailyLimit(client: TushareClient, date: string): Promise<DailyLimit | null> {
     const rows = await client.request(
         'daily',
         { trade_date: date },
         'ts_code,pre_close,close,high',
     );
+    // 全市场 daily 无行 = 该交易日 EOD 尚未发布（盘中/收盘前/接口抖动）。
+    // 不能落库全 0 占位：会被永久缓存，让封板率/连板高度等指标长期失真（2026-11-02 事故根因）。
+    if (rows.length === 0) return null;
     let seal = 0, broken = 0, down = 0;
     const sealCodes: string[] = [];
     for (const r of rows) {
@@ -368,12 +400,23 @@ async function deriveDailyLimit(client: TushareClient, date: string): Promise<Da
  */
 async function fetchLimitData(client: TushareClient, dates: string[], cache: LimitCache): Promise<DailyLimit[]> {
     const cached = await cache.getAll();
-    const missing = dates.filter((d) => !cached.has(d));
+    // 历史脏行（全 0）说明当年是“数据未发布占位”，视为缺失重新推导 → 数据就绪后自动回补；
+    // 仍取不到时从缓存视图删除，避免占位值继续参与指标计算。
+    const isPlaceholder = (x: DailyLimit) => x.sealCount + x.breakCount + x.downCount === 0;
+    const missing = dates.filter((d) => {
+        const hit = cached.get(d);
+        return !hit || isPlaceholder(hit);
+    });
     for (const d of missing) {
-        cached.set(d, await deriveDailyLimit(client, d));
+        const derived = await deriveDailyLimit(client, d);
+        if (derived) cached.set(d, derived);
+        else cached.delete(d);
     }
     if (missing.length) {
-        await cache.upsert(missing.map((d) => cached.get(d)!));
+        const fresh = missing
+            .map((d) => cached.get(d))
+            .filter((x): x is DailyLimit => !!x);
+        if (fresh.length) await cache.upsert(fresh);
     }
 
     // 按日期升序回放连板
@@ -480,6 +523,20 @@ async function margin(client: TushareClient): Promise<JqIndicator> {
         excluded: true,
         history: sparkline(values, orderedDates, SPARK),
     };
+}
+
+/**
+ * 快照/看板日期：取最新已算出的交易日（history.dates[0]，YYYYMMDD）。
+ * 禁止用 `new Date().toISOString()`（UTC 当日）：上海 00:00-08:00 会写错一天，
+ * 且盘中“今日”尚无数据时会把未完成日当成快照日（2026-11-03 事故）。
+ * 无历史时退回上海当日。
+ */
+export function resolveSnapshotDate(historyDates: string[], now: Date = new Date()): string {
+    const latest = historyDates[0] ?? '';
+    if (latest.length === 8) {
+        return `${latest.slice(0, 4)}-${latest.slice(4, 6)}-${latest.slice(6, 8)}`;
+    }
+    return shanghaiDateStr(now);
 }
 
 /** 计算韭圈儿恐贪指数（完整结构，含各指标历史序列） */

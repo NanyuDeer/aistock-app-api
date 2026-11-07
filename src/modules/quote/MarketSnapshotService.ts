@@ -20,6 +20,7 @@ import {
     getMoneyflowThsByDate,
     type IndexDailyRow,
     type DailyPriceRow,
+    type LimitListThsRow,
     type LimitStepRow,
     type MoneyflowCntThsRow,
     type MoneyflowIndDcRow,
@@ -468,13 +469,39 @@ export function hasCompleteMainForceFields(rows: MoneyflowThsRow[]): boolean {
     );
 }
 
-/** 连板天梯最高板数；无数据返回 0。 */
+/** 连板天梯最高板数；无数据返回 0。Tushare 的 nums 实测为字符串（"6"），必须显式转数。 */
 function computeHighestBoard(rows: LimitStepRow[]): number {
     let max = 0;
     for (const row of rows) {
-        if (Number.isFinite(row.nums) && row.nums > max) {
-            max = row.nums;
+        const nums = Number(row.nums);
+        if (Number.isFinite(nums) && nums > max) {
+            max = nums;
         }
+    }
+    return max;
+}
+
+/**
+ * 从同花顺涨停池 status 解析连板数（如 "3天3板" → 3）。
+ * "首板"/"一字板"/"换手板"/空 → 1（能进涨停池即至少 1 板）。
+ */
+function parseBoardCountFromStatus(status: unknown): number {
+    const matched = String(status ?? '').match(/\d+天(\d+)板/);
+    if (!matched) return 1;
+    const count = Number(matched[1]);
+    return Number.isFinite(count) && count > 0 ? count : 1;
+}
+
+/**
+ * 连板天梯（limit_step）不可用时的兜底：用涨停池 status 解析最高连板。
+ * 2026-11-02 生产事故：limit_step 返回空 → highest_board 落成 0，
+ * 下游把“无连板”当成事实；涨停池本身含 "N天N板" 状态，可无损兜底。
+ */
+function computeHighestBoardFromPool(rows: LimitListThsRow[]): number {
+    let max = 0;
+    for (const row of rows) {
+        const count = parseBoardCountFromStatus(row.status);
+        if (count > max) max = count;
     }
     return max;
 }
@@ -698,7 +725,8 @@ export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMa
     const downPool = await deps.getLimitListThs(currentTradeDate, LIMIT_POOL_ARGS[1]);
     const brokenPool = await deps.getLimitListThs(currentTradeDate, LIMIT_POOL_ARGS[2]);
     const limitStepRows = await deps.getLimitStep(currentTradeDate);
-    const highestBoard = computeHighestBoard(limitStepRows);
+    // 天梯优先（权威连板数据）；limit_step 为空时用涨停池 status 兜底，避免 0 被当成事实
+    const highestBoard = computeHighestBoard(limitStepRows) || computeHighestBoardFromPool(upPool);
 
     // ---- 7. 概念板块（涨跌与资金流各自独立排序，前 5 / 后 5） ----
     const sectorRows = await deps.getMoneyflowCntThs(currentTradeDate);

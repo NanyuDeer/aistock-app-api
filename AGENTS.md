@@ -217,6 +217,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | `POST /internal/usage/records` | chat_token_usage | 记录一次对话 token 用量（Python ws.py 计费回调；user_id 必填非空、token 字段非负整数；成功 `{code:200,data:{id}}`） |
 | `GET /internal/usage/summary?user_id=` | chat_token_usage | 按 user_id 累计用量（SUM/COUNT 聚合，无记录全 0，返回 prompt/completion/total_tokens + turn_count） |
 | `GET /internal/user-profile/:userId` | user_profiles | 用户画像检索（Phase 4-3；agent-py 对话入口按 user_id 拉取注入，Redis 5min 缓存；无记录返回 200 + 空对象，不 404） |
+| `GET /internal/user-profile-inferences/:userId` | user_profile_inferences | 推断画像检索（画像自动挖掘一期；返回 `{code:200,data:[{dimension,value,confidence,sample_size,window_days,inferred_at}]}`，confidence/sample_size 为 number；**无数据返回 200 + data:[]，不 404**；与显式 user_profiles 分立，agent-py 按 `confidence>=0.55` 过滤后合并注入） |
 | `POST /internal/predictions` | prediction_records | 预测记录落库（大盘溯源预测；source_type/source_id/schema_version/prediction/due_dates） |
 | `GET /internal/predictions?status=pending` | prediction_records | 读取全部 pending 预测（到期验证扫描） |
 | `PUT /internal/predictions/:id/verification` | prediction_records | 回写单档位验证结果；**2026-08-31 A1 起**：`type=early_exit` 时 result 可缺省（早退标记 entry 不参与 verified 判定），result 校验用 service 导出的 `VALID_RESULTS`（hit/miss/insufficient）；**透传扩展字段**（methodology_version/baseline_neutral/target_type 等——A3 统计 _filter_v2 口径依赖，不得截断） |

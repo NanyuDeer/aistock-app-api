@@ -58,6 +58,9 @@ import { EmailAuthController } from './modules/auth/EmailAuthController';
 import { PasswordAuthController } from './modules/auth/PasswordAuthController';
 // user 用户画像（Phase 4-3 全局用户记忆）
 import { ProfileController } from './modules/user/profileController';
+// 用户画像自动挖掘（一期）——推断表 DDL + 每日批次 + 公开清理/计数接口
+import { ProfileMiningService, USER_PROFILE_INFERENCES_DDL } from './modules/profile-mining/ProfileMiningService';
+import { ProfileMiningController } from './modules/profile-mining/ProfileMiningController';
 // chat 会话元数据（P9 会话管理）
 import { SessionController } from './modules/chat/sessionController';
 import { FeishuMessageController, ensureFeishuMessageSchema,} from './modules/auth/feishuMessageController';
@@ -275,6 +278,9 @@ app.get('/api/users/me/settings', (req, res, next) => UserController.getSettings
 app.get('/api/user/profile', (req, res, next) => ProfileController.get(req, res, next));
 app.put('/api/user/profile', (req, res, next) => ProfileController.put(req, res, next));
 app.delete('/api/user/profile', (req, res, next) => ProfileController.del(req, res, next));
+// 画像自动挖掘（一期）：推断计数 / 清除（JWT；meta 只返回计数与维度名，不返回推断内容）
+app.get('/api/user/profile/inferences/meta', (req, res, next) => ProfileMiningController.meta(req, res, next));
+app.delete('/api/user/profile/inferences', (req, res, next) => ProfileMiningController.clear(req, res, next));
 app.put('/api/users/me/settings/:settingType', (req, res, next) => UserController.updateSetting(req, res, next));
 app.get('/api/users/me/news/push', (req, res, next) => UserController.getPushNews(req, res, next));
 app.get('/api/users/me/push-history', (req, res, next) => UserController.getPushHistory(req, res, next));
@@ -709,6 +715,15 @@ cron.schedule('30 0 * * *', async () => {
     await tradingCalendarStore.load();
 }, { timezone: 'Asia/Shanghai' });
 
+// 用户画像自动挖掘（一期）：每日 00:30（与维护类同簇）。
+// 刻意**不挂 runIfTradingDay**：画像与交易日无关，周末用户照样看自选股、提问。
+// 批次内部已逐用户隔离异常，此处 catch 仅兜底未预期 rejection（永不阻断主流程）。
+cron.schedule('30 0 * * *', () => {
+    ProfileMiningService.runDailyMining().catch((err: unknown) => {
+        console.warn('[ProfileMiningCron] 批次异常（不阻断）:', err instanceof Error ? err.message : String(err));
+    });
+}, { timezone: 'Asia/Shanghai' });
+
 // 趋势股批量评分 — 每天凌晨2点（刷新板块轮动缓存后执行）
 cron.schedule('0 2 * * *', async () => {
     console.log('[TrendCron] 开始批量趋势股评分');
@@ -1084,7 +1099,7 @@ async function start() {
     }
 
     // 交易日历预热：异步执行，不阻塞服务启动（Tushare 慢不应导致起不来）
-    void (async () => {
+    const calendarWarmup: Promise<void> = (async () => {
         try {
             await TradingCalendarRefreshService.refresh();
             await tradingCalendarStore.load();
@@ -1093,6 +1108,7 @@ async function start() {
             console.error('[TradingCalendar] 预热失败（降级链生效）:', err instanceof Error ? err.message : String(err));
         }
     })();
+    void calendarWarmup;
 
     try {
         await NotificationService.ensureSchemaAtStartup();
@@ -1152,8 +1168,10 @@ async function start() {
     }
 
     // 恐贪指数启动预热（非阻塞）：首跑需逐日拉取全市场 daily（500 交易日 × ~5400 只），
-    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存
-    refreshJq('post')
+    // 若等首个 HTTP 请求再算会超时；后台预热填充 limit_daily/内存缓存，之后请求走缓存。
+    // 必须等交易日历预热完成后再跑：恐贪窗口在日历未加载时 fail-closed（避免节假日被写成占位）。
+    calendarWarmup
+        .then(() => refreshJq('post'))
         .then((r) => console.log(`[FearGreedCron] 启动预热完成: 恐贪指数=${r.composite}`))
         .catch((err: unknown) => console.error('[FearGreedCron] 启动预热失败:', err instanceof Error ? err.message : String(err)));
 
@@ -1314,6 +1332,16 @@ async function start() {
         console.log('[DB] user_profiles table ready');
     } catch (err: unknown) {
         console.warn('[DB] user_profiles table check:', err instanceof Error ? err.message : String(err));
+    }
+
+    // 用户画像自动挖掘（一期）：user_profile_inferences 推断表
+    // 与显式画像 user_profiles 分立，PRIMARY KEY (user_id, dimension) 唯一 upsert；
+    // confidence CHECK [0, 1] 由 DB 兜底。建表失败仅 warning（不阻断启动，对齐既有先例）。
+    try {
+        await pool.query(USER_PROFILE_INFERENCES_DDL);
+        console.log('[DB] user_profile_inferences table ready');
+    } catch (err: unknown) {
+        console.warn('[DB] user_profile_inferences table check:', err instanceof Error ? err.message : String(err));
     }
 
     // is_vip 会员标记（2026-08-24 报告导出会员解锁用；默认 false）

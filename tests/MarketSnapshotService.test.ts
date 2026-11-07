@@ -185,6 +185,34 @@ function makeMoneyflowRow(partial: Partial<MoneyflowThsRow> & Pick<MoneyflowThsR
     }
 }
 
+/** 同花顺涨停池行（仅 fill 本用例关心的字段；status 形如 "N天N板" / "首板"）。 */
+function makeLimitRow(status: string, ts_code = '600001.SH'): LimitListThsRow {
+    return {
+        trade_date: '20260720',
+        ts_code,
+        name: '测试股',
+        price: 10,
+        pct_chg: 10,
+        open_num: 0,
+        lu_desc: '',
+        limit_type: '涨停池',
+        tag: '',
+        status,
+        first_lu_time: '',
+        last_lu_time: '',
+        limit_order: 0,
+        limit_amount: 0,
+        turnover_rate: 0,
+        free_float: 0,
+        lu_limit_order: 0,
+        limit_up_suc_rate: 0,
+        turnover: 0,
+        rise_rate: 0,
+        sum_float: 0,
+        market_type: 'HS',
+    }
+}
+
 /** 000001.SH 序列：用于识别当前(20260720)与前一日(20260717)交易日。 */
 const SH_INDEX_ROWS: IndexDailyRow[] = [
     makeIndexRow({ ts_code: '000001.SH', trade_date: '20260720', close: 3200, pct_chg: 0.6, amount: 60000000 }),
@@ -420,6 +448,61 @@ test('builds a complete close snapshot with normalized monetary units', async ()
         assert.equal(snapshot.turnover.amount_yuan, 6000000)
         assert.equal(snapshot.main_force.large_and_extra_large_net_yuan, 800000)
         assert.deepEqual(limitPoolArguments(), ['涨停池', '跌停池', '炸板池'])
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('highest_board falls back to limit_list_ths status when limit_step is empty', async () => {
+    // limit_step 返回空（Tushare 该接口偶发无数据）→ 用涨停池 status 解析最高连板，
+    // 而不是把 highest_board 落成 0（0 会被下游当作“无连板/数据缺失”）
+    applyCloseMocks({
+        limitStep: [],
+        limitList: [
+            makeLimitRow('首板', '600001.SH'),
+            makeLimitRow('一字板', '600002.SH'),
+            makeLimitRow('3天3板', '600003.SH'),
+            makeLimitRow('6天6板', '600004.SH'),
+            makeLimitRow('', '600005.SH'),
+        ],
+    })
+    try {
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
+        assert.equal(snapshot.limits.highest_board, 6)
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('highest_board prefers limit_step ladder when available', async () => {
+    applyCloseMocks({
+        limitStep: [{ ts_code: '600004.SH', name: '测试股', trade_date: '20260720', nums: 7 }],
+        limitList: [makeLimitRow('6天6板', '600004.SH')],
+    })
+    try {
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
+        assert.equal(snapshot.limits.highest_board, 7)
+    } finally {
+        restoreDeps?.()
+        restoreDeps = null
+    }
+})
+
+test('highest_board coerces Tushare string nums (limit_step 返回 "6" 而非 6)', async () => {
+    // Tushare limit_step 的 nums 实测为字符串（如 "6"）；Number.isFinite("6") === false，
+    // 直接把整行过滤 → highest_board 落成 0（2026-11-02 事故真实原因）
+    applyCloseMocks({
+        limitStep: [
+            { ts_code: '001219.SZ', name: '青岛食品', trade_date: '20260720', nums: '6' as unknown as number },
+            { ts_code: '002172.SZ', name: '澳洋健康', trade_date: '20260720', nums: '4' as unknown as number },
+        ],
+        limitList: [makeLimitRow('换手板')],
+    })
+    try {
+        const snapshot = await getTodayCloseSnapshot(new Date('2026-07-20T15:31:00+08:00'))
+        assert.equal(snapshot.limits.highest_board, 6)
     } finally {
         restoreDeps?.()
         restoreDeps = null
