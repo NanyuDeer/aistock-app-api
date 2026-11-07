@@ -115,6 +115,11 @@ export const tradingCalendarStore = {
         return isoDate >= minDate && isoDate <= maxDate;
     },
 
+    /** Exact row presence for consumers that must not use the weekday fallback. Does not alter global health. */
+    hasDate(isoDate: string): boolean {
+        return calendar.has(isoDate);
+    },
+
     /** 同步判定；三级降级链，降级必有告警 */
     isTradingDay(isoDate: string): boolean {
         if (loadedAt && minDate && maxDate) {
