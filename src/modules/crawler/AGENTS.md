@@ -43,6 +43,8 @@
 - 东方财富不允许对外暴露，仅限内部爬虫使用
 - 爬虫调度由 cron 管理（每天 8:00 和 15:00）
 - AI 研判使用 LLM，失败时跳过返回纯数据
+- **`stock_info_judgements` 去重粒度 = 股票 + 文章（2026-11-08 起）**：同一篇文章会被多只股票的新闻搜索返回，而研判是针对「这只股票」出的，因此 `dedupe_key` 必须计入 `symbol`（`buildStockInfoDedupeRawKey`，md5 十六进制）；`getExistingJudgements` / `buildStockInfoExistingKeys` 同样按 symbol 粒度，缺 symbol 的调用一律跳过（不做文章级误判）。历史键重算见迁移 `src/db/migrations/024_stock_info_judgements_per_stock_dedupe.sql`，错配行清单见 `docs/sql/stock_info_misattribution_report.sql`（只读，人工核对后再清理）。
+- 资讯相关性门槛：`ai_relevance` 为 `market` / `mention_only` 的新闻不入库（`isIngestableRelevance`），`stock_specific` / `sector` 才入库。
 
 ### 2026-09-03 更新：资讯 forecast 回写端点——已于 2026-09-13 移除
 

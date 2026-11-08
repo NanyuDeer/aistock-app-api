@@ -8,7 +8,7 @@
  * - 41 只股票串行处理，不会阻塞 Express 事件循环
  */
 
-import { StockInfoService } from '../StockInfoService';
+import { StockInfoService, buildStockInfoDedupeRawKey } from '../StockInfoService';
 import { StockInfoPushService } from '../StockInfoPushService';
 import { EastmoneyCrawler } from './EastmoneyCrawler';
 import { extractPdfContent } from './PdfExtractor';
@@ -25,18 +25,20 @@ import type {
     SourceRef,
     SubmitItem,
 } from './types';
-import { isAnnouncement } from './types';
+import { isAnnouncement, isIngestableRelevance } from './types';
 
-/** 构建来源引用（移植自 submitter.py build_source_ref） */
+/** 构建来源引用（移植自 submitter.py build_source_ref）；带 symbol 以按「股票 + 文章」去重 */
 function buildSourceRef(item: CrawlCandidate): SourceRef {
     if (isAnnouncement(item)) {
         return {
+            symbol: item.symbol,
             source: 'eastmoney',
             info_type: 'announcement',
             source_id: `eastmoney-announcement-${item.art_code}`,
         };
     }
     return {
+        symbol: item.symbol,
         source: 'eastmoney',
         info_type: 'news',
         source_id: `eastmoney-news-${item.code}`,
@@ -48,7 +50,6 @@ function buildSubmitItem(item: CrawlCandidate, judgement: AiJudgement): SubmitIt
     const sourceRef = buildSourceRef(item);
     if (isAnnouncement(item)) {
         return {
-            symbol: item.symbol,
             stock_name: item.stock_name,
             ...sourceRef,
             title: item.title,
@@ -58,10 +59,10 @@ function buildSubmitItem(item: CrawlCandidate, judgement: AiJudgement): SubmitIt
             ai_horizon: judgement.ai_horizon,
             ai_keywords: judgement.ai_keywords,
             ai_summary: judgement.ai_summary,
+            ai_relevance: judgement.ai_relevance,
         };
     }
     return {
-        symbol: item.symbol,
         stock_name: item.stock_name,
         ...sourceRef,
         title: item.title,
@@ -71,6 +72,7 @@ function buildSubmitItem(item: CrawlCandidate, judgement: AiJudgement): SubmitIt
         ai_horizon: judgement.ai_horizon,
         ai_keywords: judgement.ai_keywords,
         ai_summary: judgement.ai_summary,
+        ai_relevance: judgement.ai_relevance,
     };
 }
 
@@ -82,7 +84,10 @@ const DEFAULT_OPTIONS: Required<CrawlOptions> = {
     announcement_page_size: 20,
     news_page_size: 10,
     max_announcements_per_stock: 3,
-    max_news_per_stock: 3,
+    // 3 → 5（2026-11-07）：新闻多了「相关性门槛」（market/mention_only 直接丢弃），
+    // 按代码检索命中的前 3 条里常有多条是市场统计/名单，若只取 3 条研判，过滤后个股经常 0 条。
+    // 取 5 条研判以保证过滤后仍有覆盖；代价是每只股票多 2 次 LLM 调用。
+    max_news_per_stock: 5,
     max_pdf_pages: 6,
 };
 
@@ -140,12 +145,10 @@ export class StockInfoCrawlService {
 
         console.log(`[CrawlService] 候选资讯: ${candidates.length} 条`);
 
-        // 3. 去重检查（直接查 DB，省去 HTTP）
+        // 3. 去重检查（直接查 DB，省去 HTTP）——粒度：股票 + 文章
         const sourceRefs = candidates.map(buildSourceRef);
         const existingKeys = await StockInfoService.getExistingJudgements(sourceRefs);
-        const existingSet = new Set(
-            existingKeys.map(k => `${k.source}|${k.info_type}|${k.source_id}`),
-        );
+        const existingSet = new Set(existingKeys.map(k => k.key));
         console.log(`[CrawlService] 已存在: ${existingSet.size} 条`);
 
         // 4. PDF 提取 + AI 研判 + 构建提交项
@@ -153,7 +156,7 @@ export class StockInfoCrawlService {
 
         for (const item of candidates) {
             const sourceRef = buildSourceRef(item);
-            const sourceKey = `${sourceRef.source}|${sourceRef.info_type}|${sourceRef.source_id}`;
+            const sourceKey = buildStockInfoDedupeRawKey(sourceRef);
             if (existingSet.has(sourceKey)) {
                 skipped++;
                 continue;
@@ -211,6 +214,17 @@ export class StockInfoCrawlService {
                 try {
                     const judgement = await StockInfoJudgeService.judgeNews(news);
                     if (judgement) {
+                        // 相关性门槛：新闻接口是按代码全文检索，命中里大量是「百元股名单 / 资金流向日报 /
+                        // 主力动向榜单」这类只列举代码的市场统计文章；AI 判为 market / mention_only 的
+                        // 不属于这只股票的资讯，直接丢弃，不进入研判表与自选消息。
+                        if (!isIngestableRelevance(judgement.ai_relevance)) {
+                            console.log(
+                                `[CrawlService] 丢弃无关资讯(${judgement.ai_relevance}): ` +
+                                `${news.symbol} ${news.title.slice(0, 30)}`,
+                            );
+                            skipped++;
+                            continue;
+                        }
                         console.log(`[CrawlService] AI研判成功: ${news.symbol} ${judgement.ai_impact} - ${judgement.ai_summary.slice(0, 30)}`);
                         submitItems.push(buildSubmitItem(news, judgement));
                     } else {
