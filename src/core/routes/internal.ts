@@ -20,6 +20,7 @@ import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKey
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
+import { buildCausalInputs } from '../../modules/causal/causalInputsService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import {
     getEventVitality,
@@ -1115,6 +1116,56 @@ router.get('/industry/graph', async (_req: Request, res: Response) => {
     } catch (err: unknown) {
         console.error('[Internal] industry/graph error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/market/causal-inputs
+ *
+ * 归因输入批量出口（MCRE M1）。Python 四路检验器通过本接口一次性取数，
+ * 不在 Python 内重复实现 A 股数据获取（见根 AGENTS.md）。
+ *
+ * 返回的 completeness 用于投票的「弃权」判定：某类数据缺失时对应字段为 null，
+ * 而不是空对象——否则「没数据」会被误判为「无反应」。
+ */
+const CAUSAL_INPUT_KINDS = ['prices', 'sector_returns', 'flows', 'consensus'] as const
+
+router.post('/market/causal-inputs', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const tradeDate = String(body.tradeDate ?? '')
+    const symbols = Array.isArray(body.symbols) ? body.symbols.map(String) : []
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+        res.status(400).json({ code: -1, message: 'invalid tradeDate (expected YYYY-MM-DD)' })
+        return
+    }
+    if (symbols.length === 0) {
+        res.status(400).json({ code: -1, message: 'symbols must not be empty' })
+        return
+    }
+
+    try {
+        const windowRaw = body.window as Record<string, unknown> | undefined
+        const needRaw = Array.isArray(body.need) ? body.need.map(String) : undefined
+        const need = needRaw?.filter((kind): kind is (typeof CAUSAL_INPUT_KINDS)[number] =>
+            (CAUSAL_INPUT_KINDS as readonly string[]).includes(kind),
+        )
+
+        const data = await buildCausalInputs({
+            tradeDate,
+            symbols,
+            window: windowRaw
+                ? {
+                      pre: Number.isFinite(Number(windowRaw.pre)) ? Number(windowRaw.pre) : undefined,
+                      post: Number.isFinite(Number(windowRaw.post)) ? Number(windowRaw.post) : undefined,
+                  }
+                : undefined,
+            need: need && need.length > 0 ? need : undefined,
+        })
+        res.json({ code: 0, data })
+    } catch (err: unknown) {
+        console.error('[Internal] market/causal-inputs error:', errMsg(err))
+        res.status(500).json({ code: -1, message: errMsg(err) })
     }
 })
 
