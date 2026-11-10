@@ -1,4 +1,4 @@
-import { getStockIdentity } from '../../shared/utils/stock';
+import { getStockIdentity, normalizeStockSymbol } from '../../shared/utils/stock';
 import { eastmoneyThrottler } from '../../shared/utils/throttlers';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 
@@ -53,10 +53,26 @@ export class TencentKlineService {
         return dateStr;
     }
 
+    /**
+     * 解析腾讯 K 线代码。显式交易所标记优先，裸码才按前 3 位判市场。
+     *
+     * 为什么不直接 `getStockIdentity(symbol)` 拼接：它只看前 3 位且不剥离后缀，
+     * `000300.SH` 会被拼成 `sz000300.SH`（腾讯无此代码，返回空序列）；
+     * 且 `000xxx` 既有深市个股（000001）也有沪市指数（000300/000905），
+     * 只靠前缀无法区分——必须尊重调用方给出的 `.SH/.SZ/.BJ`。
+     */
+    private static toTencentCode(symbol: string): string {
+        const text = String(symbol ?? '').trim();
+        if (/^(sh|sz|bj)\d{6}$/i.test(text)) return text.toLowerCase();
+        const suffixed = text.match(/^(\d{6})\.(SH|SZ|BJ)$/i);
+        if (suffixed) return `${suffixed[2].toLowerCase()}${suffixed[1]}`;
+        const bare = normalizeStockSymbol(text) || text;
+        return `${getStockIdentity(bare).tencentPrefix}${bare}`;
+    }
+
     private static buildKlineUrl(options: KLineOptions): URL {
         const { symbol, klt = 101, fqt = 1, limit = 1000, startDate, endDate } = options;
-        const identity = getStockIdentity(symbol);
-        const code = `${identity.tencentPrefix}${symbol}`;
+        const code = this.toTencentCode(symbol);
         const period = PERIOD_MAP[klt] || 'day';
         const fqtType = FQT_MAP[fqt] ?? '';
         const start = startDate ? this.formatDate(startDate) : '';
@@ -75,8 +91,7 @@ export class TencentKlineService {
      *  分钟接口按窗口拉取最近数据，不校验起止日期，limit 作为窗口上限。 */
     private static buildMinuteUrl(options: KLineOptions): URL {
         const { symbol, klt = 1, fqt = 1, limit = 800 } = options;
-        const identity = getStockIdentity(symbol);
-        const code = `${identity.tencentPrefix}${symbol}`;
+        const code = this.toTencentCode(symbol);
         const period = PERIOD_MAP[klt] || 'm1';
         const fqtType = FQT_MAP[fqt] ?? '';
 
