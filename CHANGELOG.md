@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [fix/causal-inputs-symbol] 2026-11-10 — 腾讯 K 线代码按交易所后缀取码
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- `src/modules/quote/TencentKlineService.ts`：新增 `toTencentCode`，显式交易所标记优先——`.SH/.SZ/.BJ` 后缀按后缀取码（`000300.SH` → `sh000300`）、已带 `sh/sz/bj` 前缀原样保留、裸 6 位码才走 `getStockIdentity` 前缀判定。日/周/月与分钟两个 URL 构造统一走该函数。
+- 根因：原实现直接 `${tencentPrefix}${symbol}`，`getStockIdentity` 只看前 3 位且不剥离后缀 → `000300.SH` 被拼成 `sz000300.SH`（腾讯无此代码，返回空序列），`000xxx` 既有深市个股也有沪市指数，仅靠前缀无法区分。M0 上线验证时 `POST /internal/market/causal-inputs` 传 `000300.SH` 得到 `prices: {}`。
+
+### 测试
+
+- 新增 `src/modules/quote/__tests__/tencent-kline-symbol.spec.ts`：覆盖带后缀指数/个股、裸码、已带前缀、分钟 URL 五种取码场景。
+
+---
+
 ## [xusiyun] 2026-11-10 — 事件影响存活度改为「只标已消散」
 
 **开发者**: xusiyun
