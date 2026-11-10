@@ -2,6 +2,23 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [xusiyun] 2026-11-10 — 事件影响存活度改为「只标已消散」
+
+**开发者**: xusiyun
+
+### 重构
+
+- `src/modules/monitor/EventImpactVitalityService.ts`：存活度打分去掉时间衰减，`vitality` 只表传导强度（0~1）；状态判定改为两层——①按事件类型定期限 `horizon = half_life × VITALITY_HORIZON_MULTIPLIER`（policy 56 / macro 40 / geopolitical 28 / industry、技术 20 / company 12 / 市场动态 8 天）；②窗口内 `aligned_days ≥ 1`（曾形成定向传导）且（年龄 ≥ 期限 或 最近连续 `VITALITY_REVERSAL_DAYS` 日反向超额）→ `expired`；曾起效未到期 → `alive`；从未形成定向传导 → `fading`；行业映射不到板块 → `no_observation`。
+- 配置项 `VITALITY_ALIVE_MIN` / `VITALITY_EXPIRED_MAX` 退役，新增 `VITALITY_HORIZON_MULTIPLIER`（默认 4）/ `VITALITY_REVERSAL_DAYS`（默认 2）；事件类型归一新增 监管→policy、技术→industry、市场/行情→market（半衰期 2 天）。
+- `decayFactor` 改为 `eventHorizonDays`，新增 `judgeReversed`；`classifyStatus` 改为基于「是否曾对齐 + 期限 + 反向」判定。
+
+### 测试
+
+- `src/modules/monitor/__tests__/eventImpactVitalityService.spec.ts` 覆盖期限判定、反向证伪、未起效不判 expired、market 类型期限。
+- 同步 `AGENTS.md` / `src/modules/monitor/AGENTS.md` 的新口径与开关说明。
+
+---
+
 ## [master] 2026-11-03 — 恐贪指数空值污染 + 收盘快照最高连板兜底
 
 **开发者**: NanyuDeer
