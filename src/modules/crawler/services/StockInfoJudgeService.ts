@@ -6,7 +6,14 @@
  * prompt 和 JSON 解析逻辑直接移植自 Python
  */
 
-import type { AiJudgement, EastmoneyAnnouncement, EastmoneyNews, PdfContent } from './types';
+import {
+    isStockRelevance,
+    type AiJudgement,
+    type EastmoneyAnnouncement,
+    type EastmoneyNews,
+    type PdfContent,
+    type StockRelevance,
+} from './types';
 import { sessionFetch } from '../../../shared/utils/httpAgent';
 
 const IMPACTS = new Set(['重大利好', '利好', '中性', '利空', '重大利空']);
@@ -67,13 +74,20 @@ export function buildAnnouncementPrompt(announcement: EastmoneyAnnouncement, pdf
 export function buildNewsPrompt(news: EastmoneyNews): string {
     return (
         JUDGE_EVIDENCE_RULES +
-        '请研判这条A股新闻对股票的影响，并返回严格JSON：\n' +
+        '请研判这条A股新闻对目标股票的影响，并返回严格JSON：\n' +
         '{' +
+        '"ai_relevance":"stock_specific|sector|market|mention_only",' +
         '"ai_impact":"重大利好|利好|中性|利空|重大利空",' +
         '"ai_horizon":"短期|中期|长期|中长期",' +
         '"ai_keywords":["最多8个关键词"],' +
         '"ai_summary":"一句最终短结论"' +
         '}\n\n' +
+        'ai_relevance 先判定这条新闻与目标股票的关系（影响后续是否入库，务必准确）：\n' +
+        '- stock_specific：新闻主体就是这家公司（业绩、公告解读、产品/订单、管理层、股价异动的个股归因）\n' +
+        '- sector：讲所在行业/板块景气或产业链，公司是其中一员且有实质关联\n' +
+        '- market：全市场统计或名单（如“百元股数量”“主力资金净流入榜单”“XX股获机构买入评级”“行业资金流向日报”），个股只是被列举\n' +
+        '- mention_only：仅在文中被顺带提及，没有关于这家公司的实质信息\n' +
+        '注意：只是名单里出现该股票代码/名称的，一律不是 stock_specific。\n\n' +
         `股票代码：${news.symbol}\n` +
         `股票名称：${news.stock_name}\n` +
         `新闻标题：${news.title}\n` +
@@ -106,8 +120,10 @@ function loadJsonObject(raw: string): Record<string, any> | null {
     }
 }
 
-/** 解析 AI 研判结果（移植自 Python parse_ai_judgement） */
-function parseAiJudgement(raw: string): AiJudgement | null {
+/** 解析 AI 研判结果（移植自 Python parse_ai_judgement）
+ * 导出供单测直接验证 ai_relevance 解析口径。
+ */
+export function parseAiJudgement(raw: string): AiJudgement | null {
     const data = loadJsonObject(raw);
     if (!data) return null;
 
@@ -123,11 +139,16 @@ function parseAiJudgement(raw: string): AiJudgement | null {
         .filter((k: string) => k)
         .slice(0, 8);
 
+    // 相关性缺失或非法值一律按 stock_specific 兜底：宁可少过滤，也不能因模型漏字段误杀正常资讯
+    const relevanceRaw = String(data.ai_relevance || '').trim();
+    const aiRelevance: StockRelevance = isStockRelevance(relevanceRaw) ? relevanceRaw : 'stock_specific';
+
     return {
         ai_impact: impact,
         ai_horizon: horizon,
         ai_keywords: cleanKeywords,
         ai_summary: summary,
+        ai_relevance: aiRelevance,
     };
 }
 

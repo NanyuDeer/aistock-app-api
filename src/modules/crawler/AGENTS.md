@@ -52,6 +52,8 @@
 - `due_dates` 只由 agent-py `_compute_due_dates` 产出，app-api 侧**不得引入第二套交易日历**。
 - app-api 侧交易日判定以 `trading_calendar` 表为准（Tushare `trade_cal` / `exchange=SSE` 刷新，见根 `AGENTS.md` §6.5）；与 agent-py 的 `chinese_calendar` **尚未统一**（另立 spec）。两套口径并存期间，跨服务交易日结论以各自事实源为准，勿互相假定一致。
 - **不得恢复 `stock_info_judgements.forecast` 列或前端预判区**（迁移 022 已删该列；P2 入环统一走 `prediction_records`）。
+- **`stock_info_judgements` 去重粒度 = 股票 + 文章（2026-11-08 起）**：同一篇文章会被多只股票的新闻搜索返回，而研判是针对「这只股票」出的，因此 `dedupe_key` 必须计入 `symbol`（`buildStockInfoDedupeRawKey`，md5 十六进制）；`getExistingJudgements` / `buildStockInfoExistingKeys` 同样按 symbol 粒度，缺 symbol 的调用一律跳过（不做文章级误判）。历史键重算见迁移 `src/db/migrations/024_stock_info_judgements_per_stock_dedupe.sql`，错配行清单见 `docs/sql/stock_info_misattribution_report.sql`（只读，人工核对后再清理）。
+- 资讯相关性门槛：`ai_relevance` 为 `market` / `mention_only` 的新闻不入库（`isIngestableRelevance`），`stock_specific` / `sector` 才入库。
 
 ### 2026-09-03 更新：资讯 forecast 回写端点——已于 2026-09-13 移除
 

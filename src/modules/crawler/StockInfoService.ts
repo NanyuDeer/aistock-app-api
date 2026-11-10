@@ -4,6 +4,7 @@ import path from 'path';
 import pool from '../../core/db';
 import { getStockIdentity, normalizeStockSymbol } from '../../shared/utils/stock';
 import { StockInfoPredictionService } from './services/StockInfoPredictionService';
+import { isStockRelevance, type StockRelevance } from './services/types';
 
 export type StockInfoTargetSource = 'all' | 'favorites' | 'leaders';
 export type StockInfoType = 'news' | 'announcement';
@@ -45,12 +46,15 @@ export interface StockInfoJudgementInput {
     ai_horizon: StockInfoHorizon;
     ai_keywords?: unknown[];
     ai_summary: string;
+    /** 与目标股票的相关性（stock_specific/sector 才入库）；缺省按 stock_specific 兜底 */
+    ai_relevance?: string;
 }
 
-export interface NormalizedStockInfoJudgementInput extends Omit<StockInfoJudgementInput, 'source_id' | 'ai_keywords'> {
+export interface NormalizedStockInfoJudgementInput extends Omit<StockInfoJudgementInput, 'source_id' | 'ai_keywords' | 'ai_relevance'> {
     stock_name: string;
     source_id: string | null;
     ai_keywords: string[];
+    ai_relevance: StockRelevance;
     dedupe_key: string;
 }
 
@@ -97,6 +101,7 @@ export interface StockInfoPushWindow {
 }
 
 export interface StockInfoExistingInput {
+    symbol?: unknown;
     source?: unknown;
     info_type?: unknown;
     source_id?: unknown;
@@ -104,6 +109,7 @@ export interface StockInfoExistingInput {
 
 export interface StockInfoExistingKey {
     key: string;
+    symbol: string;
     source: string;
     info_type: StockInfoType;
     source_id: string;
@@ -214,6 +220,37 @@ function normalizeStringArray(value: unknown): string[] {
     return result;
 }
 
+/**
+ * 去重键原文：**文章 + 股票**。
+ *
+ * 2026-11-08 起去重粒度从「文章」改为「股票 + 文章」：同一篇文章会被多只股票的新闻
+ * 搜索返回，而 AI 研判是针对「这只股票」出的（摘要讲的就是该股）。文章级去重会把
+ * 它们压成一行 —— symbol 是首只股票、ai_* 被后一只股票的研判覆盖，于是 A 的
+ * 个股异动里出现讲 B 的摘要。计入 symbol 后每股独立一行、内容自洽。
+ */
+export function buildStockInfoDedupeRawKey(item: {
+    symbol: string;
+    info_type: string;
+    source: string;
+    source_id: string | null;
+    title?: string;
+    url?: string;
+}): string {
+    return item.source_id
+        ? `${item.source}|${item.info_type}|${item.source_id}|${item.symbol}`
+        : `${item.symbol}|${item.info_type}|${item.title}|${item.url}`;
+}
+
+/**
+ * 去重键哈希（md5 十六进制小写）。
+ *
+ * 用 md5 而非 sha1：迁移脚本可直接用 PostgreSQL 内置 `md5()` 复算历史行，
+ * 无需 pgcrypto 扩展（`crypto.createHash('md5')` 与 `md5()` 对同一 UTF-8 串结果一致）。
+ */
+export function hashStockInfoDedupeKey(rawKey: string): string {
+    return crypto.createHash('md5').update(rawKey).digest('hex');
+}
+
 function buildDedupeKey(item: {
     symbol: string;
     info_type: string;
@@ -222,10 +259,7 @@ function buildDedupeKey(item: {
     title: string;
     url: string;
 }): string {
-    const rawKey = item.source_id
-        ? `${item.source}|${item.info_type}|${item.source_id}`
-        : `${item.symbol}|${item.info_type}|${item.title}|${item.url}`;
-    return crypto.createHash('sha1').update(rawKey).digest('hex');
+    return hashStockInfoDedupeKey(buildStockInfoDedupeRawKey(item));
 }
 
 export function buildStockInfoExistingKeys(rawItems: StockInfoExistingInput[]): StockInfoExistingKey[] {
@@ -235,12 +269,14 @@ export function buildStockInfoExistingKeys(rawItems: StockInfoExistingInput[]): 
         const source = cleanText(raw.source);
         const infoType = cleanText(raw.info_type) as StockInfoType;
         const sourceId = cleanText(raw.source_id);
-        if (!source || !sourceId || !VALID_INFO_TYPES.has(infoType)) continue;
+        // 缺 symbol 无法判定归属：宁可返回「未存在」（多判一次）也不做文章级误判
+        const symbol = normalizeSymbol(raw.symbol);
+        if (!source || !sourceId || !symbol || !VALID_INFO_TYPES.has(infoType)) continue;
 
-        const key = `${source}|${infoType}|${sourceId}`;
+        const key = buildStockInfoDedupeRawKey({ symbol, source, info_type: infoType, source_id: sourceId });
         if (seen.has(key)) continue;
         seen.add(key);
-        keys.push({ key, source, info_type: infoType, source_id: sourceId });
+        keys.push({ key, symbol, source, info_type: infoType, source_id: sourceId });
     }
     return keys;
 }
@@ -275,6 +311,9 @@ export function normalizeStockInfoJudgementInput(raw: Record<string, any>): Norm
     if (!aiSummary) throw new Error('ai_summary is required');
 
     const sourceId = cleanText(raw.source_id) || null;
+    // 相关性缺省/非法值按 stock_specific 兜底：公告路径与旧调用方都不带该字段，不能因此丢数据
+    const relevanceRaw = cleanText(raw.ai_relevance);
+    const aiRelevance: StockRelevance = isStockRelevance(relevanceRaw) ? relevanceRaw : 'stock_specific';
     const normalized = {
         symbol,
         stock_name: cleanText(raw.stock_name),
@@ -288,6 +327,7 @@ export function normalizeStockInfoJudgementInput(raw: Record<string, any>): Norm
         ai_horizon: aiHorizon,
         ai_keywords: normalizeStringArray(raw.ai_keywords),
         ai_summary: aiSummary,
+        ai_relevance: aiRelevance,
     };
 
     return {
@@ -353,10 +393,13 @@ export class StockInfoService {
                 ai_horizon TEXT NOT NULL,
                 ai_keywords JSONB NOT NULL DEFAULT '[]',
                 ai_summary TEXT NOT NULL,
+                ai_relevance TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         `);
+        // 兼容已存在的旧表：新闻相关性（2026-11-07 新闻噪音治理，旧行为 NULL）
+        await pool.query('ALTER TABLE stock_info_judgements ADD COLUMN IF NOT EXISTS ai_relevance TEXT');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_info_judgements_symbol_time ON stock_info_judgements(symbol, published_at DESC)');
         await pool.query('CREATE INDEX IF NOT EXISTS idx_stock_info_judgements_type_impact_time ON stock_info_judgements(info_type, ai_impact, published_at DESC)');
         this.schemaReady = true;
@@ -396,14 +439,18 @@ export class StockInfoService {
         for (const raw of rawItems) {
             try {
                 const item = normalizeStockInfoJudgementInput(raw);
+                // dedupe_key 已按「股票 + 文章」去重（2026-11-08）：同一篇文章会被多只股票的
+                // 新闻搜索返回，每只股票的 AI 研判各不相同，故每股独立一行。
+                // 冲突只可能来自「同一只股票重复抓到同一篇文章」，因此可以安全刷新 AI 字段；
+                // 但 stock_name / symbol 属身份字段，**永不改写**（否则会留下
+                // 「symbol=股票A + stock_name=股票B」的错配行）。
                 const result = await pool.query(
                     `INSERT INTO stock_info_judgements (
                         dedupe_key, symbol, stock_name, info_type, source, source_id,
-                        title, url, published_at, ai_impact, ai_horizon, ai_keywords, ai_summary
+                        title, url, published_at, ai_impact, ai_horizon, ai_keywords, ai_summary, ai_relevance
                     )
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10, $11, $12::jsonb, $13)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10, $11, $12::jsonb, $13, $14)
                     ON CONFLICT(dedupe_key) DO UPDATE SET
-                        stock_name = EXCLUDED.stock_name,
                         title = EXCLUDED.title,
                         url = EXCLUDED.url,
                         published_at = EXCLUDED.published_at,
@@ -411,6 +458,7 @@ export class StockInfoService {
                         ai_horizon = EXCLUDED.ai_horizon,
                         ai_keywords = EXCLUDED.ai_keywords,
                         ai_summary = EXCLUDED.ai_summary,
+                        ai_relevance = EXCLUDED.ai_relevance,
                         updated_at = CURRENT_TIMESTAMP
                     RETURNING id, (xmax = 0) AS inserted`,
                     [
@@ -427,6 +475,7 @@ export class StockInfoService {
                         item.ai_horizon,
                         JSON.stringify(item.ai_keywords),
                         item.ai_summary,
+                        item.ai_relevance,
                     ],
                 );
                 const inserted = Boolean(result.rows[0]?.inserted);
@@ -456,17 +505,17 @@ export class StockInfoService {
         const keys = buildStockInfoExistingKeys(rawItems);
         if (keys.length === 0) return [];
 
+        // 直接按去重键比对（键已含 symbol）：不再用 source|info_type|source_id 反推，
+        // 否则同一篇文章在别家股票名下存在时会误判为「本股已抓过」。
+        const hashes = Array.from(new Set(keys.map(item => hashStockInfoDedupeKey(item.key))));
         const result = await pool.query(
-            `SELECT source, info_type, source_id
+            `SELECT dedupe_key
              FROM stock_info_judgements
-             WHERE source_id IS NOT NULL
-               AND dedupe_key = ANY($1::text[])`,
-            [keys.map(item => crypto.createHash('sha1').update(item.key).digest('hex'))],
+             WHERE dedupe_key = ANY($1::text[])`,
+            [hashes],
         );
-        const existing = new Set(
-            result.rows.map((row: any) => `${cleanText(row.source)}|${cleanText(row.info_type)}|${cleanText(row.source_id)}`),
-        );
-        return keys.filter(item => existing.has(item.key));
+        const existing = new Set(result.rows.map((row: any) => cleanText(row.dedupe_key)));
+        return keys.filter(item => existing.has(hashStockInfoDedupeKey(item.key)));
     }
 
     static async queryJudgements(params: StockInfoQueryParams): Promise<{ total: number; items: StockInfoJudgementRow[] }> {
@@ -572,5 +621,26 @@ export class StockInfoService {
             ...row,
             ai_keywords: Array.isArray(row.ai_keywords) ? row.ai_keywords : [],
         }));
+    }
+
+    /**
+     * 批量取 stocks 表的权威股票名称（symbol → name）。
+     * 用于校验「研判行的 stock_name 是否真的属于该 symbol」：历史上同一篇文章被多只股票抓到后，
+     * 冲突更新只改了 stock_name 没改 symbol，会留下 symbol 与名称错配的脏行；
+     * 建通知前用权威名称比对即可把这些「别家股票的资讯」挡在当前股票之外。
+     */
+    static async getStockNamesBySymbols(symbols: string[]): Promise<Map<string, string>> {
+        const unique = Array.from(new Set(symbols.map(s => String(s || '').trim()).filter(Boolean)));
+        const names = new Map<string, string>();
+        if (!unique.length) return names;
+        const result = await pool.query<{ symbol: string; name: string | null }>(
+            'SELECT symbol, name FROM stocks WHERE symbol = ANY($1::text[])',
+            [unique],
+        );
+        for (const row of result.rows) {
+            const name = String(row.name || '').trim();
+            if (row.symbol && name) names.set(row.symbol, name);
+        }
+        return names;
     }
 }
