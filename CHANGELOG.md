@@ -2,6 +2,21 @@
 
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
+## [fix/causal-inputs-symbol-key] 2026-11-10 — getKLine 响应键改用同一套取码
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- `src/modules/quote/TencentKlineService.ts`：`getKLine` 读取 `json.data[code]` 时仍用旧的 `${tencentPrefix}${symbol}` 拼键，导致 URL 已按 `sh000300` 请求、键却是 `sz000300.SH` → 恒为空。改为复用 `toTencentCode`，URL 与响应键取码口径统一。
+- 影响：PR #141 修复了 URL 构造但漏了响应键，线上 `000300.SH` 仍返回 `prices: {}`；裸码不受影响。
+
+### 测试
+
+- `tencent-kline-symbol.spec.ts` 新增 `getKLine 必须按同一套取码读取响应键`：stub `fetchKlineJson` 返回 `sh000300` 键，断言能解析出 1 根日 K（修复前 0 根）。
+
+---
+
 ## [fix/causal-inputs-symbol] 2026-11-10 — 腾讯 K 线代码按交易所后缀取码
 
 **开发者**: NanyuDeer
