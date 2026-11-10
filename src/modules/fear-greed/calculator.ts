@@ -194,38 +194,18 @@ async function breadth(client: TushareClient, cache: BreadthCache): Promise<JqIn
         const up = new Map<string, number>();
         const total = new Map<string, number>();
 
-        // daily 单次调用有行数上限（实测 ~6000 行/次）。若整窗请求（20 只 × 500 交易日 ≈ 1 万行），
-        // 超出部分会被静默截断（只返回最近 300 天），早期日期 total=0 → 落库成默认 50 的假中性值。
-        // 因此按缺失区间切成 ≤120 自然日的段：20 只 × ~85 交易日 ≈ ≤1800 行/次，远低于上限。
-        // 同时只请求缺失区间 [lo, hi]，避免每次全窗重拉。
-        const toDate = (s: string) => new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
-        const toYmd = (d: Date) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-        const slices: [string, string][] = [];
-        {
-            const lo = toDate(missing[0]);
-            const hi = toDate(missing[missing.length - 1]);
-            for (let cur = new Date(lo); cur <= hi; cur.setDate(cur.getDate() + 121)) {
-                const sliceEnd = new Date(cur);
-                sliceEnd.setDate(sliceEnd.getDate() + 120);
-                slices.push([toYmd(cur), toYmd(sliceEnd > hi ? hi : sliceEnd)]);
-            }
-        }
-
-        const batchSize = 20;
-        for (let i = 0; i < members.length; i += batchSize) {
-            const batch = members.slice(i, i + batchSize).join(',');
-            for (const [s, e] of slices) {
-                const rows = await client.request(
-                    'daily',
-                    { ts_code: batch, start_date: s, end_date: e },
-                    'ts_code,trade_date,pct_chg',
-                );
-                for (const r of rows) {
-                    const d = String(r.trade_date);
-                    const p = Number(r.pct_chg ?? 0);
-                    total.set(d, (total.get(d) ?? 0) + 1);
-                    if (p > 0) up.set(d, (up.get(d) ?? 0) + 1);
-                }
+        // Tushare daily 的 ts_code 逗号多选实测无效（多个代码一起请求恒返回 0 行），
+        // 原「每批 20 只 × 每段 120 天」的批量写法因此永远拿不到数据、缓存补不上，
+        // 每次计算都重新跑完全部历史（恐贪 dashboard 超时的根因之一）。
+        // 改为按缺失交易日拉当日全市场（单次约 5500 行，远低于行数上限）再按成分股过滤：
+        // 每个缺失日仅 1 次调用，数据一定能落缓存。
+        const memberSet = new Set(members);
+        for (const d of missing) {
+            const rows = await client.request('daily', { trade_date: d }, 'ts_code,pct_chg');
+            for (const r of rows) {
+                if (!memberSet.has(String(r.ts_code))) continue;
+                total.set(d, (total.get(d) ?? 0) + 1);
+                if (Number(r.pct_chg ?? 0) > 0) up.set(d, (up.get(d) ?? 0) + 1);
             }
         }
 
