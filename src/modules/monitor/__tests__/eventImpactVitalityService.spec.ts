@@ -12,15 +12,16 @@ import { describe, it, mock } from 'node:test';
 import pool from '../../../core/db';
 import {
     buildBoardPct,
-    classifyStatus,
     computeVitality,
-    decayFactor,
     diffDays,
     directedExcess,
     dominantDirection,
+    eventHorizonDays,
     getLatestVitality,
     getLatestVitalityByEventIds,
     judgeAligned,
+    judgeImpactStatus,
+    judgeReversed,
     normalizeEventTypeCategory,
     resolveIndustryBoardCode,
     shiftDate,
@@ -33,13 +34,13 @@ import {
 const CONFIG: VitalityConfig = {
     enabled: true,
     windowMaxDays: 45,
-    aliveMin: 0.6,
-    expiredMax: 0.3,
+    horizonMultiplier: 4,
+    reversalDays: 2,
     excessMinPct: 0.5,
     recentAlignedDays: 3,
     excessScalePct: 2,
     weights: { aligned: 0.35, recency: 0.3, cumExcess: 0.2, reinforce: 0.15 },
-    halfLifeByType: { policy: 14, macro: 10, geopolitical: 7, industry: 5, company: 3 },
+    halfLifeByType: { policy: 14, macro: 10, geopolitical: 7, industry: 5, company: 3, market: 2 },
     halfLifeDefault: 5,
     reinforceTarget: 2,
     topIndustries: 3,
@@ -87,18 +88,15 @@ describe('dominantDirection：按 impactStrength 加权（1.5 倍阈值）', () 
     });
 });
 
-describe('decayFactor：半衰期指数衰减', () => {
-    it('age≤0 → 1', () => {
-        assert.equal(decayFactor(0, 5), 1);
-        assert.equal(decayFactor(-3, 5), 1);
+describe('eventHorizonDays：事件类型 → 正常寿命（期限）', () => {
+    it('类型期限 = 半衰期 × horizonMultiplier（policy 14×4=56 / company 3×4=12 / market 2×4=8）', () => {
+        assert.equal(eventHorizonDays('policy_release', CONFIG), 56);
+        assert.equal(eventHorizonDays('公司公告', CONFIG), 12);
+        assert.equal(eventHorizonDays('市场动态', CONFIG), 8);
     });
-    it('一个半衰期 → 0.5；两个 → 0.25', () => {
-        assert.equal(decayFactor(5, 5), 0.5);
-        assert.ok(Math.abs(decayFactor(10, 5) - 0.25) < 1e-9);
-    });
-    it('异常半衰期（≤0）→ 0，不产生虚高存活度', () => {
-        assert.equal(decayFactor(1, 0), 0);
-        assert.equal(decayFactor(1, -1), 0);
+    it('未识别类型走 halfLifeDefault（industry 5×4=20）', () => {
+        assert.equal(eventHorizonDays('unknown_thing', CONFIG), 20);
+        assert.equal(eventHorizonDays('', CONFIG), 20);
     });
 });
 
@@ -123,29 +121,51 @@ describe('judgeAligned / directedExcess：方向一致性判定', () => {
     });
 });
 
-describe('classifyStatus：分档边界', () => {
-    it('alive ≥ 0.6（含边界）', () => {
-        assert.equal(classifyStatus(0.6, CONFIG), 'alive');
+describe('judgeReversed：反向超额（逻辑被证伪）判定', () => {
+    it('bullish 事件出现 ≤ -0.5% 的超额 → 反向', () => {
+        assert.equal(judgeReversed(-0.5, 'bullish', 0.5), true);
+        assert.equal(judgeReversed(0.5, 'bullish', 0.5), false);
     });
-    it('fading 区间 [0.3, 0.6)', () => {
-        assert.equal(classifyStatus(0.3, CONFIG), 'fading');
-        assert.equal(classifyStatus(0.599, CONFIG), 'fading');
+    it('bearish 事件出现 ≥ +0.5% 的超额 → 反向', () => {
+        assert.equal(judgeReversed(0.5, 'bearish', 0.5), true);
+        assert.equal(judgeReversed(-0.5, 'bearish', 0.5), false);
     });
-    it('expired < 0.3', () => {
-        assert.equal(classifyStatus(0.299, CONFIG), 'expired');
+    it('neutral 无方向 → 不判反向', () => {
+        assert.equal(judgeReversed(-2, 'neutral', 0.5), false);
     });
-    it('vitality 为 null → no_observation（禁判 expired）', () => {
-        assert.equal(classifyStatus(null, CONFIG), 'no_observation');
+});
+
+describe('judgeImpactStatus：先分类型期限，再判影响是否消散', () => {
+    const base = { observable: true, everAligned: true, ageDays: 5, horizonDays: 56, reversed: false };
+
+    it('曾传导 + 未到期 → alive（默认预期，前端不标注）', () => {
+        assert.equal(judgeImpactStatus(base), 'alive');
+    });
+    it('曾传导 + 到期（ageDays ≥ horizonDays，含边界）→ expired', () => {
+        assert.equal(judgeImpactStatus({ ...base, ageDays: 56 }), 'expired');
+        assert.equal(judgeImpactStatus({ ...base, ageDays: 57 }), 'expired');
+    });
+    it('曾传导 + 被反向证伪 → 提前 expired', () => {
+        assert.equal(judgeImpactStatus({ ...base, reversed: true }), 'expired');
+    });
+    it('从未形成定向传导 → fading（未起效 ≠ 已消散，禁判 expired）', () => {
+        assert.equal(judgeImpactStatus({ ...base, everAligned: false, ageDays: 57 }), 'fading');
+    });
+    it('无可观测行情 → no_observation（vitality=null，禁判 expired）', () => {
+        assert.equal(judgeImpactStatus({ ...base, observable: false, ageDays: 57 }), 'no_observation');
     });
 });
 
 describe('normalizeEventTypeCategory：event_type 关键词归一', () => {
-    it('政策 / 宏观 / 地缘 / 行业 / 公司', () => {
+    it('政策 / 宏观 / 地缘 / 行业 / 公司 / 市场动态', () => {
         assert.equal(normalizeEventTypeCategory('policy_release'), 'policy');
+        assert.equal(normalizeEventTypeCategory('监管变化'), 'policy');
         assert.equal(normalizeEventTypeCategory('宏观数据'), 'macro');
         assert.equal(normalizeEventTypeCategory('geopolitical_conflict'), 'geopolitical');
         assert.equal(normalizeEventTypeCategory('industry_supply'), 'industry');
+        assert.equal(normalizeEventTypeCategory('技术突破'), 'industry');
         assert.equal(normalizeEventTypeCategory('company_earnings'), 'company');
+        assert.equal(normalizeEventTypeCategory('市场动态'), 'market');
         assert.equal(normalizeEventTypeCategory('unknown_thing'), 'unknown');
     });
 });
@@ -184,7 +204,7 @@ describe('topChainIndustries：impactStrength 降序 Top N，过滤空行业', (
 });
 
 describe('computeVitality：端到端评分', () => {
-    it('持续顺向超额 → fading（3 日窗口内 2 个观测日）', () => {
+    it('持续顺向超额 → alive（未到期，传导强度分不乘衰减）', () => {
         const result = computeVitality({
             baseline: baseline(),
             statDate: '2026-10-05',
@@ -195,8 +215,8 @@ describe('computeVitality：端到端评分', () => {
             config: CONFIG,
         });
         // observedDays=2, alignedRatio=1, recency=2/3, cum=1, reinforce=0 → base 0.75
-        assert.equal(result.impact_status, 'fading');
-        assert.equal(result.vitality, 0.431); // 0.75 × 0.5^(4/5)
+        assert.equal(result.impact_status, 'alive');
+        assert.equal(result.vitality, 0.75);
         assert.equal(result.observed_industries[0].obs_days, 2);
         assert.equal(result.observed_industries[0].aligned_days, 2);
         assert.equal(result.window_start, '2026-10-01');
@@ -221,8 +241,8 @@ describe('computeVitality：端到端评分', () => {
             ],
             config: CONFIG,
         });
-        assert.equal(result.impact_status, 'expired'); // base 仅剩 cum_excess 0.2 → 0.115
-        assert.equal(result.vitality, 0.115);
+        assert.equal(result.impact_status, 'fading'); // 从未形成定向传导 → 不判消散
+        assert.equal(result.vitality, 0.2);
         assert.equal(result.reinforce_count, 0);
         assert.equal(result.observed_industries[0].weak_days, 2);
         assert.equal(result.observed_industries[0].aligned_days, 0);
@@ -248,7 +268,62 @@ describe('computeVitality：端到端评分', () => {
         });
         assert.equal(result.reinforce_count, 1);
         assert.equal(result.observed_industries[0].weak_days, 0);
-        assert.ok((result.vitality ?? 0) > 0.431, `期望加成后高于 0.431，实际 ${result.vitality}`);
+        assert.equal(result.impact_status, 'alive');
+        assert.equal(result.vitality, 0.825); // 0.75 + 0.15 × (1/2)
+    });
+
+    it('长周期事件（政策，期限 56 天）：第 7 天仍存活 → 不标「影响已消散」', () => {
+        const result = computeVitality({
+            baseline: baseline({ event_type: 'policy_release', event_date: '2026-10-01' }),
+            statDate: '2026-10-08',
+            industryIndex: INDEX,
+            boardPct: new Map([['881274', new Map([['2026-10-02', 3.0], ['2026-10-03', 2.0]])]]),
+            benchmarkPct: new Map([['2026-10-02', 0.5], ['2026-10-03', 0.0]]),
+            peerEvents: [],
+            config: CONFIG,
+        });
+        assert.equal(result.impact_status, 'alive');
+    });
+
+    it('一次性行情事件（市场动态，期限 8 天）：到期后必标「影响已消散」', () => {
+        const result = computeVitality({
+            baseline: baseline({ event_type: '市场动态', event_date: '2026-10-01' }),
+            statDate: '2026-10-09',
+            industryIndex: INDEX,
+            boardPct: new Map([['881274', new Map([['2026-10-02', 3.0], ['2026-10-03', 2.0]])]]),
+            benchmarkPct: new Map([['2026-10-02', 0.5], ['2026-10-03', 0.0]]),
+            peerEvents: [],
+            config: CONFIG,
+        });
+        assert.equal(result.impact_status, 'expired');
+    });
+
+    it('从未形成定向传导（30 天后仍无 aligned）→ fading，不标「影响已消散」', () => {
+        const result = computeVitality({
+            baseline: baseline({ event_type: '市场动态', event_date: '2026-10-01' }),
+            statDate: '2026-10-31',
+            industryIndex: INDEX,
+            boardPct: new Map([['881274', new Map([['2026-10-02', 0.1], ['2026-10-03', -0.1]])]]),
+            benchmarkPct: new Map([['2026-10-02', 0.0], ['2026-10-03', 0.0]]),
+            peerEvents: [],
+            config: CONFIG,
+        });
+        assert.equal(result.observed_industries[0].aligned_days, 0);
+        assert.equal(result.impact_status, 'fading');
+    });
+
+    it('曾传导后被反向证伪（连续 2 日反向超额）→ 提前 expired', () => {
+        const result = computeVitality({
+            baseline: baseline({ event_type: 'policy_release', event_date: '2026-10-01' }),
+            statDate: '2026-10-04',
+            industryIndex: INDEX,
+            boardPct: new Map([['881274', new Map([['2026-10-02', 3.0], ['2026-10-03', -2.0], ['2026-10-04', -2.0]])]]),
+            benchmarkPct: new Map([['2026-10-02', 0.0], ['2026-10-03', 0.0], ['2026-10-04', 0.0]]),
+            peerEvents: [],
+            config: CONFIG,
+        });
+        assert.equal(result.observed_industries[0].aligned_days, 1);
+        assert.equal(result.impact_status, 'expired');
     });
 
     it('行业映射不到板块 → no_observation（vitality=null，不判 expired）', () => {
