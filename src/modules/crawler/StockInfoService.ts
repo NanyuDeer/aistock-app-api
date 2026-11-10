@@ -270,7 +270,7 @@ export function buildStockInfoExistingKeys(rawItems: StockInfoExistingInput[]): 
         const infoType = cleanText(raw.info_type) as StockInfoType;
         const sourceId = cleanText(raw.source_id);
         // 缺 symbol 无法判定归属：宁可返回「未存在」（多判一次）也不做文章级误判
-        const symbol = normalizeSymbol(raw.symbol);
+        const symbol = normalizeStockSymbol(raw.symbol);
         if (!source || !sourceId || !symbol || !VALID_INFO_TYPES.has(infoType)) continue;
 
         const key = buildStockInfoDedupeRawKey({ symbol, source, info_type: infoType, source_id: sourceId });
