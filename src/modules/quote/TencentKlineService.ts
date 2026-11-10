@@ -163,8 +163,8 @@ export class TencentKlineService {
         const url = isMinute ? this.buildMinuteUrl(options) : this.buildKlineUrl(options);
         const json: any = await this.fetchKlineJson(url);
 
-        const identity = getStockIdentity(options.symbol);
-        const code = `${identity.tencentPrefix}${options.symbol}`;
+        // 响应键必须与 URL 用同一套取码，否则带后缀/带前缀的 symbol 会取不到数据
+        const code = this.toTencentCode(options.symbol);
         const stockData = json.data?.[code];
         if (!stockData) return [];
 
