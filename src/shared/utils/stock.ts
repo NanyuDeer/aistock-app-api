@@ -22,7 +22,7 @@ export function normalizeStockSymbol(raw: unknown): string {
 }
 
 export function getStockIdentity(symbol: string): StockIdentity {
-    if (symbol.startsWith('600') || symbol.startsWith('601') || symbol.startsWith('603')) {
+    if (symbol.startsWith('600') || symbol.startsWith('601') || symbol.startsWith('603') || symbol.startsWith('605')) {
         return { market: 'sh', board: '沪市主板', eastmoneyId: 1, tencentPrefix: 'sh' };
     }
     if (symbol.startsWith('688')) {

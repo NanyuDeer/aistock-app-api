@@ -228,3 +228,8 @@ This module owns event-scoped stock-movement trace facts, snapshots, jobs, valid
 - **加入即打点**：`PriceTriggerDetector.detectSymbols(symbols, now)`（新增）——仅对给定 symbols 拉 `activity` 行情（复用 detect 的字段/阈值/eligible 过滤），命中（相对昨收 ≥ PRICE_TRIGGER_PERCENT）即 `processPriceFact(..., { immediateEnqueue: true })` 盘中立即归因，使新加入股当天即可见归因（不回填历史）。`UserController.addFavorites` 在交易时段（`isAShareTradingTime`）对新加入 symbols 调用它；非交易时段跳过（避免用收盘价误判）。检测失败仅告警不影响添加。
 - `listRecentEvents`（未登录/全局）还原原样（无持仓期概念）；`StockTraceController.list` 登录分支调用还原为不带额外参数。
 - monitor.vue（前端）移除老雷达数据源 `watchlistInsightApi.getInsights`（存量 watchlist_insight_events 08-30 起停用，含 8 月初远古事件）。
+
+### 2026-11-07 修复：事件创建 openid 空值 + 归因交易日日期格式
+
+- `StockTraceService.createUserEvents` 的 `user_stocks` 查询追加 `AND openid IS NOT NULL`：存量持仓行存在 `openid IS NULL`（实测 25/160），直接插入 `stock_trace_user_events`（openid NOT NULL）会抛错并回滚整个事件创建事务（生产错误日志近 4 天 12,862 条）。
+- `StockTraceService.getTriggerEvent` 投影改为 `e.trading_date::text AS trading_date`（与 `getUserEvent` 等查询同口径）：DATE 列经 node-postgres 返回 JS Date，`String(date).slice(0,10)` 得到 `"Fri Nov 06"`，下游 `collectInsightArticleSources` 的 `WHERE trade_date = $1::date` 报 `invalid input syntax for type date`（实测 32 次调用 32 次报错）。

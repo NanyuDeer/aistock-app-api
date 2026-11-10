@@ -366,3 +366,9 @@ pm2 logs aistock-api      # 查看日志
 > - `ForecastSlot`、`LightPredictTarget` 类型（`types.ts`）
 > - `StockTraceService.listLightPredictTargets`、`upsertEventForecast`；`StockInfoService.upsertJudgementForecast`
 > - `PriceFact.isLimitUp?` 保留（涨停文章命中标记，仅 `is_limit_up` 断句）。
+
+### 2026-11-07 修复：事件创建/归因日期/板块轮动/605 段
+
+- `StockTraceService.createUserEvents` 过滤 `user_stocks.openid IS NULL`；`getTriggerEvent` 用 `trading_date::text`。详见 `src/modules/stock-trace/AGENTS.md`。
+- `RotationBoardStore.computePctMap` 输出 `YYYY-MM-DD` 日期键；`shared/utils/stock.ts` 的 `getStockIdentity` 补沪市主板 `605` 段。详见 `src/modules/monitor/AGENTS.md`。
+- 影响面：自选股异动事件创建成功率、洞见归因文章源、节奏大师板块涨跌幅、趋势股 605 段评分。

@@ -69,3 +69,8 @@
   - 各源 INSERT+通知，已存在跳过；昨日四源均无新增时用前 2 个自然日窗口重扫补漏
   - `disclosure_date.pre_date` 额外推送"预计披露日"前瞻提醒（仅订阅者）
   - 事实（实测）：`forecast`/`report_rc`/`disclosure_date` 可按日期全市场批查；`express_vip` 按 end_date 全量（不支持按 ann_date）；`income`/`cashflow`/`balancesheet`/`express` 必须传 ts_code。快报(express)与预告(forecast)目标公司基本不重叠（银行/券商常发快报但从不发预告），两者都需要。TushareService 提供 `getForecastByAnnDate`（forecast 按公告日批查）、`getExpressVip`（express_vip 按报告期全量分页）
+
+### 2026-11-07 修复：板块轮动 pct_change 全 0 + 605 段交易所映射
+
+- `RotationBoardStore.computePctMap` 输出日期键统一为 `YYYY-MM-DD`（原为 K 线原始 `YYYYMMDD`）：`buildRowsFromMrpm` 传入的是 `normalizeTradingDate` 后的连字符日期，键口径不一致使 `pctMap.get(code)?.get(date)` 恒 miss，`?? 0` 把 mrpm 覆盖的近 30 个交易日 `pct_change` 全部写成 0（实测 159 日 / 3181 行中 602 行为 0，且集中在最近 30 日）。历史行由日线推导、口径本已一致，无需改动。
+- `shared/utils/stock.ts` 的 `getStockIdentity` 补 `605` 段（沪市主板，2019 年起启用）：此前落入 `unknown`，`toTsCode` 生成 `605xxx.UNKNOWN` 导致 Tushare 日线返回空、趋势股技术面 NaN（实测 9 只 605 股票 96 行全部 NaN）。

@@ -281,7 +281,10 @@ export function computePctMap(klines: Map<string, Map<string, number>>): Map<str
         for (let i = 1; i < sorted.length; i++) {
             const prev = byDate.get(sorted[i - 1])!;
             const cur = byDate.get(sorted[i])!;
-            if (prev > 0) m.set(sorted[i], (cur - prev) / prev * 100);
+            // 输出键统一为 YYYY-MM-DD：下游 buildRowsFromMrpm 传入的是 normalizeTradingDate
+            // 后的日期（mrpm datetime 为 YYYY-MM-DD），保持 YYYYMMDD 会导致查表恒 miss、
+            // 近 30 日 pct_change 全部落 0。
+            if (prev > 0) m.set(normalizeTradingDate(sorted[i]), (cur - prev) / prev * 100);
         }
         pctMap.set(code, m);
     }

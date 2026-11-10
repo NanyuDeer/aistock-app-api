@@ -77,4 +77,34 @@ describe('processPriceFact immediateEnqueue', () => {
         assert.equal(result.mutation, 'ignored');
         assert.equal(enqueued, 0);
     });
+
+    it('user_stocks 中 openid 为空的行应跳过（不违反 stock_trace_user_events.openid NOT NULL）', async () => {
+        const insertedOpenids: unknown[] = [];
+        let userStocksSql = '';
+        const client = {
+            async query(text: string | { text: string }, params?: unknown[]): Promise<{ rows: unknown[] }> {
+                const sql = typeof text === 'string' ? text : text.text;
+                if (/^BEGIN|^COMMIT|^ROLLBACK/i.test(sql)) return { rows: [] };
+                if (/FROM user_stocks WHERE symbol/.test(sql)) {
+                    userStocksSql = sql;
+                    const rows: Array<{ openid: string | null }> = [{ openid: 'o1' }, { openid: null }, { openid: 'o2' }];
+                    // 模拟 PostgreSQL：SQL 带 openid IS NOT NULL 时才过滤空值（真实 DB 行为）
+                    return { rows: sql.includes('openid IS NOT NULL') ? rows.filter((r) => r.openid !== null) : rows };
+                }
+                if (/INSERT INTO stock_trace_user_events/.test(sql)) {
+                    insertedOpenids.push(params?.[2]);
+                }
+                return { rows: [] };
+            },
+            async release(): Promise<void> {},
+        };
+        mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+        mock.method(pool, 'connect', (async () => client) as unknown as typeof pool.connect);
+        mock.method(StockTraceJobService, 'publishPending', (async () => ({ published: 0, failed: 0 })) as unknown as typeof StockTraceJobService.publishPending);
+
+        const result = await StockTraceService.processPriceFact(security, fact);
+        assert.equal(result.mutation, 'created');
+        assert.ok(userStocksSql.includes('openid IS NOT NULL'), '未过滤空 openid');
+        assert.deepEqual(insertedOpenids, ['o1', 'o2'], '只应为有效用户建关联行');
+    });
 });
