@@ -99,6 +99,7 @@ interface ParsedTencentIndex {
     value: number;
     change: number;
     changeAmount: number;
+    observedAt?: string;
 }
 
 function parseTencentIndexLine(line: string): ParsedTencentIndex | null {
@@ -113,6 +114,10 @@ function parseTencentIndexLine(line: string): ParsedTencentIndex | null {
     const value = parseFloat(parts[3]);
     const changeAmount = parseFloat(parts[31]);
     const change = parseFloat(parts[32]);
+    const timestamp = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(parts[30] || '');
+    const observedAt = timestamp
+        ? new Date(`${timestamp[1]}-${timestamp[2]}-${timestamp[3]}T${timestamp[4]}:${timestamp[5]}:${timestamp[6]}+08:00`)
+        : null;
 
     if (!Number.isFinite(value)) return null;
 
@@ -121,6 +126,7 @@ function parseTencentIndexLine(line: string): ParsedTencentIndex | null {
         value,
         change: Number.isFinite(change) ? change : 0,
         changeAmount: Number.isFinite(changeAmount) ? changeAmount : 0,
+        observedAt: observedAt && Number.isFinite(observedAt.getTime()) ? observedAt.toISOString() : undefined,
     };
 }
 
@@ -226,6 +232,7 @@ export interface CnIndexQuoteFact {
     latest_price: number | null;
     change_pct: number | null;
     change_amount: number | null;
+    observed_at?: string;
 }
 
 /** Reusable live A-share index facts for Stock Trace collectors. */
@@ -242,6 +249,7 @@ export async function getCnIndexQuoteFacts(symbols: string[]): Promise<CnIndexQu
             latest_price: quote ? quote.value : null,
             change_pct: quote ? quote.change : null,
             change_amount: quote ? quote.changeAmount : null,
+            observed_at: quote?.observedAt,
         };
     });
 }

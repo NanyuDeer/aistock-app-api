@@ -95,7 +95,7 @@ function hash(value: unknown): string {
 }
 
 // 增量采集复用域：盘中基本不变，修订时复用上一版本 enriched 快照；价格相关域重采
-const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'sector_news', 'market_fact', 'insight_article']);
+const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'sector_news', 'insight_article']);
 
 export function pickReusableSources(records: StockSourceRecord[]): StockSourceRecord[] {
     return records.filter((record) => INCREMENTAL_REUSE_KINDS.has(record.kind));
@@ -230,7 +230,9 @@ function isEventStoreEvent(value: unknown): value is EventStoreEvent {
 
 /** 事件库事件 → StockSourceRecord（字段映射按简报 Step 4；contentHash 由 sourceRecord() 自动计算）。 */
 function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedAt: Date): StockSourceRecord {
-    const occurredAt = asDate(ev.scrape_at, capturedAt);
+    const firstObservedAt = asDate(ev.scrape_at, capturedAt);
+    const publishedAt = ev.payload?.published_at ?? ev.payload?.publish_time ?? ev.payload?.time;
+    const occurredAt = typeof publishedAt === 'string' ? asDate(publishedAt, firstObservedAt) : firstObservedAt;
     const summary = typeof ev.summary === 'string' ? ev.summary : '';
     const title = typeof ev.title === 'string' && ev.title ? ev.title : '无标题';
     const sourceLevel: SourceLevel =
@@ -260,6 +262,7 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
         freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - occurredAt.getTime()) / 1000)),
         payload: {
             symbol: payloadSymbol,
+            first_observed_at: firstObservedAt.toISOString(),
             involved_keywords: Array.isArray(ev.involved_keywords) ? ev.involved_keywords : [],
             direction: typeof ev.direction === 'string' ? ev.direction : undefined,
             impact_score: typeof ev.impact_score === 'number' ? ev.impact_score : undefined,
@@ -477,32 +480,35 @@ export class StockTraceSnapshotService {
             freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - event.triggeredAt.getTime()) / 1000)),
             payload: { latest_price: event.latestPrice, previous_close: event.previousClose, change_pct: event.actualValue },
         });
+        const market = await this.captureTriggerMarket(event);
         return this.persist({
-            event, stage: 'initial', capturedAt, sourceRecords: [trigger, quote],
+            event, stage: 'initial', capturedAt, sourceRecords: [trigger, quote, ...market],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' },
+            dataReadiness: { company: 'missing', sector: 'missing', market: market.length ? 'partial' : 'missing', capital: 'missing', technical: 'missing', article: 'missing' },
         });
     }
 
     static async captureCorrected(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
+        const triggerMarket = this.captureTriggerMarket(event);
         // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
         if (incremental) {
             const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
             if (previousRecords && previousRecords.length > 0) {
                 const reused = pickReusableSources(previousRecords);
+                const market = await triggerMarket;
                 const [capital, technical] = await Promise.allSettled([
                     withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
                     withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
                 ]);
                 const sourceRecords = [
                     ...this.baseSources(event, capturedAt),
-                    ...reused,
+                    ...reused, ...market,
                     ...(capital.status === 'fulfilled' ? capital.value : []),
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
-                    ...reusedDomainAvailability(reused),
+                    ...reusedDomainAvailability([...reused, ...market]),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
@@ -510,11 +516,11 @@ export class StockTraceSnapshotService {
                 return this.persist({ event, stage: 'corrected', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
         }
-        const initial = await this.captureInitialForStage(event, 'corrected');
+        const initial = await this.captureInitialForStage(event, 'corrected', await triggerMarket);
         return initial;
     }
 
-    private static async captureInitialForStage(event: TriggerEvent, stage: 'corrected'): Promise<StockTraceSnapshot> {
+    private static async captureInitialForStage(event: TriggerEvent, stage: 'corrected', market: StockSourceRecord[]): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
         const trigger = sourceRecord({
             sourceId: `trigger:${event.eventId}:r${event.triggerRevision}`, kind: 'trigger_fact',
@@ -530,9 +536,9 @@ export class StockTraceSnapshotService {
             symbol: event.symbol, windowStart: event.windowStartAt, windowEnd: event.windowEndAt, occurredAt: event.triggeredAt, capturedAt,
             payload: { latest_price: event.latestPrice, previous_close: event.previousClose, change_pct: event.actualValue },
         });
-        return this.persist({ event, stage, capturedAt, sourceRecords: [trigger, quote],
+        return this.persist({ event, stage, capturedAt, sourceRecords: [trigger, quote, ...market],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' } });
+            dataReadiness: { company: 'missing', sector: 'missing', market: market.length ? 'partial' : 'missing', capital: 'missing', technical: 'missing', article: 'missing' } });
     }
 
     static scheduleEnriched(event: TriggerEvent, incremental = false): void {
@@ -548,6 +554,7 @@ export class StockTraceSnapshotService {
 
     static async captureEnriched(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
+        const market = await this.readTriggerMarket(event);
         // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
         if (incremental) {
             const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
@@ -559,12 +566,12 @@ export class StockTraceSnapshotService {
                 ]);
                 const sourceRecords = [
                     ...this.baseSources(event, capturedAt),
-                    ...reused,
+                    ...reused, ...market,
                     ...(capital.status === 'fulfilled' ? capital.value : []),
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
-                    ...reusedDomainAvailability(reused),
+                    ...reusedDomainAvailability([...reused, ...market]),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
@@ -575,10 +582,9 @@ export class StockTraceSnapshotService {
                 return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
         }
-        const [company, sector, market, capital, technical, article] = await Promise.allSettled([
+        const [company, sector, capital, technical, article] = await Promise.allSettled([
             withinEnrichedBudget(this.collectCompanySources(event, capturedAt)),
             withinEnrichedBudget(this.collectSectorSources(event, capturedAt)),
-            withinEnrichedBudget(this.collectMarketSources(event, capturedAt)),
             withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
             withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
             withinEnrichedBudget(this.collectInsightArticleSources(event, capturedAt)),
@@ -587,7 +593,7 @@ export class StockTraceSnapshotService {
             ...this.baseSources(event, capturedAt),
             ...(company.status === 'fulfilled' ? company.value : []),
             ...(sector.status === 'fulfilled' ? sector.value : []),
-            ...(market.status === 'fulfilled' ? market.value : []),
+            ...market,
             ...(capital.status === 'fulfilled' ? capital.value : []),
             ...(technical.status === 'fulfilled' ? technical.value : []),
             ...(article.status === 'fulfilled' ? article.value : []),
@@ -595,7 +601,7 @@ export class StockTraceSnapshotService {
         const readiness = buildDataReadiness([
             { layer: 'company', count: company.status === 'fulfilled' ? company.value.length : 0 },
             { layer: 'sector', count: sector.status === 'fulfilled' ? sector.value.length : 0 },
-            { layer: 'market', count: market.status === 'fulfilled' ? market.value.length : 0 },
+            { layer: 'market', count: market.length },
             { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
             { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
             { layer: 'article', count: article.status === 'fulfilled' ? article.value.length : 0 },
@@ -760,9 +766,41 @@ export class StockTraceSnapshotService {
         }
     }
 
-    private static async collectMarketSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const indexes = await getCnIndexQuoteFacts(['000001', '399001', '399006', '000680', '000688']);
-        return indexes.filter((index) => index.latest_price !== null).map((index) => sourceRecord({ sourceId: `market:${index.symbol}:${capturedAt.getTime()}`, kind: 'market_fact', provider: 'tencent_index', sourceLevel: 'A', title: index.name, contentExcerpt: `${index.name} change ${Number(index.change_pct).toFixed(2)}%.`, sourceRef: index.symbol, occurredAt: capturedAt, capturedAt, payload: { ...index } }));
+    private static async captureTriggerMarket(event: TriggerEvent): Promise<StockSourceRecord[]> {
+        try {
+            const indexes = await withinEnrichedBudget(getCnIndexQuoteFacts(['000001', '399001', '399006', '000680', '000688']));
+            const capturedAt = new Date();
+            return indexes.flatMap((index) => {
+                if (!index.observed_at || index.latest_price === null || index.change_pct === null) return [];
+                const occurredAt = new Date(index.observed_at);
+                const age = event.triggeredAt.getTime() - occurredAt.getTime();
+                if (!Number.isFinite(age) || age < 0 || age > 300_000) return [];
+                return [sourceRecord({
+                    sourceId: `market:${index.symbol}:${occurredAt.getTime()}`,
+                    kind: 'market_fact', provider: 'tencent_index', sourceLevel: 'A',
+                    title: index.name, contentExcerpt: `${index.name} change ${index.change_pct.toFixed(2)}%.`,
+                    sourceRef: index.symbol, occurredAt, capturedAt, freshnessSeconds: Math.floor(age / 1000),
+                    payload: { ...index },
+                })];
+            });
+        } catch {
+            return [];
+        }
+    }
+
+    private static async readTriggerMarket(event: TriggerEvent): Promise<StockSourceRecord[]> {
+        await this.ensureSchema();
+        const { rows } = await pool.query<StockSourceRecord>(`
+            SELECT DISTINCT ON (r.source_id) r.source_id AS "sourceId", r.kind, r.provider,
+                r.source_level AS "sourceLevel", r.title, r.content_excerpt AS "contentExcerpt",
+                r.source_ref AS "sourceRef", r.occurred_at AS "occurredAt", r.captured_at AS "capturedAt",
+                r.freshness_seconds AS "freshnessSeconds", r.payload, r.content_hash AS "contentHash"
+            FROM stock_trace_snapshots s JOIN stock_trace_source_records r USING (snapshot_id)
+            WHERE s.event_id = $1 AND s.trigger_revision = $2
+              AND s.snapshot_stage IN ('initial', 'corrected') AND r.kind = 'market_fact'
+            ORDER BY r.source_id, r.captured_at
+        `, [event.eventId, event.triggerRevision]);
+        return rows;
     }
 
     // capital 域：Tushare 资金流（最近可用交易日），8s 超时降级

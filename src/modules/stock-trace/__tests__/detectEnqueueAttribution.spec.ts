@@ -104,7 +104,22 @@ describe('enqueueAttributionForTodayActiveEvents（立即检测的归因补齐�
 });
 
 describe('StockTraceController.detect（立即检测端点）', () => {
-    it('检测后补齐归因入队，并在响应中返回 enqueued 条数', async () => {
+    it('周末返回休市状态，跳过行情检测和归因入队', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-08T02:00:00Z') });
+        const detect = mock.method(PriceTriggerDetector, 'runOnceForce', async () => {});
+        const enqueue = mock.method(StockTraceService, 'enqueueAttributionForTodayActiveEvents', async () => 0);
+        let body: unknown;
+        const res = { json: (payload: unknown) => { body = payload; } } as unknown as Response;
+
+        await StockTraceController.detect({} as Request, res, (error) => { throw error; });
+
+        assert.deepEqual(body, { code: 200, data: { triggered: false, enqueued: 0, reason: 'market_closed' } });
+        assert.equal(detect.mock.callCount(), 0);
+        assert.equal(enqueue.mock.callCount(), 0);
+    });
+
+    it('检测后补齐归因入队，并在响应中返回 enqueued 条数', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-11-06T02:00:00Z') });
         let ran = 0;
         mock.method(PriceTriggerDetector, 'runOnceForce', (async () => { ran += 1; }) as unknown as typeof PriceTriggerDetector.runOnceForce);
         mock.method(StockTraceService, 'getFavoriteSecurities', (async () => [

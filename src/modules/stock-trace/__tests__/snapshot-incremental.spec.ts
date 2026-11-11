@@ -22,7 +22,7 @@ describe('pickReusableSources（增量采集复用域判定）', () => {
             rec('c1', 'capital_fact'), rec('k1', 'technical_fact'),
         ];
         const reused = pickReusableSources(input).map((r) => r.kind);
-        assert.deepEqual(reused, ['news', 'announcement', 'sector_fact', 'market_fact']);
+        assert.deepEqual(reused, ['news', 'announcement', 'sector_fact']);
     });
 });
 
