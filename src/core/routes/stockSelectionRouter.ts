@@ -3,7 +3,7 @@ import { createResponse } from '../../shared/utils/response';
 import { shanghaiDateStr, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { tradingCalendarStore } from '../../shared/utils/tradingCalendarStore';
-import { selectionStocks, selectionMarketDay, selectionBenchmark } from '../../modules/quote/SelectionMarketData';
+import { selectionStocks, selectionMarketDay, selectionBenchmark, selectionUpperLimits, selectionAnnualFinancials, selectionDailyRatios, selectionDividends, selectionResearch, selectionCompanyForecasts } from '../../modules/quote/SelectionMarketData';
 import { SelectionService, parseQuery } from '../../modules/stock-selection/SelectionService';
 import { PostgresSelectionStore } from '../../modules/stock-selection/SelectionStore';
 import { HISTORY_DAYS } from '../../modules/stock-selection/types';
@@ -36,9 +36,21 @@ export function selectionContext(now = new Date()) {
         return { tradeDate, dates };
     } catch { throw new CalendarUnavailableError('权威交易日历历史覆盖不足，无法生成90交易日选股特征'); }
 }
+export function nextQuoteTradeDate(date: string): string | null {
+    if (!tradingCalendarStore.hasDate(date)) return null;
+    try {
+        const next = shanghaiDateStr(TradingCalendarService.getNextTradingDay(new Date(`${date}T16:30:00+08:00`)));
+        assertCalendarRange(date, next);
+        return next;
+    } catch {
+        return null;
+    }
+}
+
 const store = new PostgresSelectionStore();
 export const stockSelectionService = new SelectionService(store, {
-    context: () => selectionContext(), latestTradeDate: () => selectionTradeDate(), stocks: selectionStocks, day: selectionMarketDay, benchmark: selectionBenchmark,
+    context: () => selectionContext(), nextTradingDate: nextQuoteTradeDate, stocks: selectionStocks, day: selectionMarketDay, upperLimits: selectionUpperLimits, financials: selectionAnnualFinancials, ratios: selectionDailyRatios, dividends: selectionDividends,
+    research: selectionResearch, companyForecasts: selectionCompanyForecasts, benchmark: selectionBenchmark,
 });
 export const ensureStockSelectionSchema = () => store.ensureSchema();
 export const triggerStockSelection = () => stockSelectionService.generate();

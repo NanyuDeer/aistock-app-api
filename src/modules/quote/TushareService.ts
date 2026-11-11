@@ -169,11 +169,12 @@ export interface DividendRow {
     ts_code: string; end_date: string; ann_date: string;
     div_proc: string; stk_div: number; stk_bo_rate: number;
     stk_co_rate: number; cash_div: number; cash_div_tax: number;
-    record_date: string;
+    record_date: string; ex_date: string; pay_date: string; imp_ann_date: string; base_share: number;
 }
 
 export async function getDividend(symbol: string): Promise<DividendRow[]> {
-    const rows = await tushareRequest('dividend', { ts_code: toTsCode(symbol) });
+    const rows = await tushareRequest('dividend', { ts_code: toTsCode(symbol) },
+        'ts_code,end_date,ann_date,div_proc,stk_div,stk_bo_rate,stk_co_rate,cash_div,cash_div_tax,record_date,ex_date,pay_date,imp_ann_date,base_share');
     return rows as unknown as DividendRow[];
 }
 

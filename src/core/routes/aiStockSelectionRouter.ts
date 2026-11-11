@@ -1,3 +1,6 @@
+import { nextQuoteTradeDate } from './stockSelectionRouter';
+import { METHOD_HORIZONS } from '../../modules/stock-selection/types';
+import { PostgresSelectionStore } from '../../modules/stock-selection/SelectionStore';
 import { NextFunction, Request, Response, Router } from 'express';
 import pool from '../db';
 import { createResponse } from '../../shared/utils/response';
@@ -10,9 +13,12 @@ import { ClsStockNewsService } from '../../modules/monitor/ClsStockNewsService';
 
 const TOP_PER_SOURCE = 10;
 const RESULT_LIMIT = 10;
-const PROMPT_VERSION = 'ai-stock-selection.v1';
+const PROMPT_VERSION = 'ai-stock-selection.v2';
+const SHORT_TERM_WEIGHT = 3;
+const MODEL_SHORTLIST_LIMIT = 20;
+const selectionSnapshots = new PostgresSelectionStore();
 
-type RankKey = 'trendRank' | 'institutionRank' | 'netProfitForecastRank' | 'epsForecastRank' | 'netProfitGrowthRank' | 'epsGrowthRank';
+type RankKey = 'shortTermRank' | 'trendRank' | 'institutionRank' | 'netProfitForecastRank' | 'epsForecastRank' | 'netProfitGrowthRank' | 'epsGrowthRank';
 type SourceRanks = Record<RankKey, number | null>;
 
 interface Candidate {
@@ -20,6 +26,7 @@ interface Candidate {
     name: string;
     industry: string;
     sourceRanks: SourceRanks;
+    shortTerm?: { tradeDate: string; signals: Array<{ rank: number; reason: string[] }> };
     trend: Record<string, unknown>;
     institution: Record<string, unknown>;
     forecast: Record<string, unknown>;
@@ -50,7 +57,7 @@ const numberOrNull = (value: unknown): number | null => {
 };
 
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
-const newRanks = (): SourceRanks => ({ trendRank: null, institutionRank: null, netProfitForecastRank: null, epsForecastRank: null, netProfitGrowthRank: null, epsGrowthRank: null });
+const newRanks = (): SourceRanks => ({ shortTermRank: null, trendRank: null, institutionRank: null, netProfitForecastRank: null, epsForecastRank: null, netProfitGrowthRank: null, epsGrowthRank: null });
 
 /**
  * 生成任务只允许定时器/运维系统调用；普通登录用户不可触发，避免重复调用模型与市场数据源。
@@ -89,10 +96,31 @@ function setRank(candidate: Candidate, key: RankKey, rank: number): void {
 }
 
 function weight(candidate: Candidate): number {
-    return Object.values(candidate.sourceRanks).reduce<number>((sum, rank) => sum + (rank ? TOP_PER_SOURCE + 1 - rank : 0), 0);
+    return Object.entries(candidate.sourceRanks).reduce((sum, [key, rank]) =>
+        sum + (rank ? (TOP_PER_SOURCE + 1 - rank) * (key === 'shortTermRank' ? SHORT_TERM_WEIGHT : 1) : 0), 0);
 }
 
-async function loadCandidates(): Promise<Candidate[]> {
+async function addShortTermCandidates(candidates: Map<string, Candidate>, tradeDate: string): Promise<void> {
+    const [run] = await selectionSnapshots.previousPublished(tradeDate, 1);
+    if (!run || nextQuoteTradeDate(run.tradeDate) !== tradeDate) return;
+    const ranked = run.batch.stocks.flatMap(stock => {
+        const signals = stock.signals.filter(signal => {
+            const stats = run.batch.methodStats[signal.method];
+            return METHOD_HORIZONS[signal.method] === 'short' && stats && stats.unavailable * 4 <= stats.pass + stats.fail;
+        }).sort((a, b) => a.rank - b.rank);
+        if (!signals.length) return [];
+        const points = 2100 / (20 + signals[0].rank) + (signals[1] ? 210 / (20 + signals[1].rank) : 0);
+        return [{ stock, signals, points }];
+    }).sort((a, b) => b.points - a.points || a.stock.symbol.localeCompare(b.stock.symbol));
+    ranked.slice(0, TOP_PER_SOURCE).forEach(({ stock, signals }, index) => {
+        const candidate = ensureCandidate(candidates, { ...stock });
+        if (!candidate) return;
+        setRank(candidate, 'shortTermRank', index + 1);
+        candidate.shortTerm = { tradeDate: run.tradeDate, signals: signals.map(({ rank, reason }) => ({ rank, reason })) };
+    });
+}
+
+async function loadCandidates(tradeDate: string): Promise<Candidate[]> {
     const candidates = new Map<string, Candidate>();
     const latestForecast = `
         WITH latest AS (
@@ -154,6 +182,9 @@ async function loadCandidates(): Promise<Candidate[]> {
     addForecast(eps.rows, 'epsForecastRank');
     addForecast(netGrowth.rows, 'netProfitGrowthRank');
     addForecast(epsGrowth.rows, 'epsGrowthRank');
+    await addShortTermCandidates(candidates, tradeDate).catch(error => {
+        console.warn('[AiStockSelection] 短线名单读取失败:', error instanceof Error ? error.message : String(error));
+    });
     return [...candidates.values()].sort((a, b) => weight(b) - weight(a) || a.symbol.localeCompare(b.symbol));
 }
 
@@ -234,7 +265,7 @@ async function enrichCandidates(candidates: Candidate[]): Promise<void> {
 }
 
 const SYSTEM_PROMPT = `你是一名严谨、克制的A股多因子选股分析助手。仅能从输入候选池中选择股票，只能引用输入字段，不得虚构数据。
-综合趋势评分、机构调研热度、盈利预测、行情、技术面、资金流和近期资讯，选出最多10只股票。
+短线量价信号是权重最高的单项因子。结合趋势评分、机构调研热度、盈利预测、行情、资金流和近期资讯，给出最多20只可考虑的股票。
 多因子共振优先；ST、停牌、跌停不得推荐；涨停、异常波动或资金流出必须降低排序或提示风险；同一行业最多3只。
 每只股票的 reason 必须是“综合判断理由”：优先写盈利预期、趋势位置/均线、资金流、近期事件或行情强弱之间的关系，并尽量引用输入中的数值或事实。
 reason 不得出现“进入榜单”“入选榜单”“候选池”“排名第几”“趋势榜/热门榜/预测榜”等候选来源措辞；这些仅用于你内部排序，不能作为展示理由。
@@ -242,7 +273,7 @@ reason 不得出现“进入榜单”“入选榜单”“候选池”“排名�
 严格只输出JSON：{"summary":"不超过100字，含数据时效和整体风险","stocks":[{"rank":1,"symbol":"6位代码","recommendationLevel":"较高|中等|关注","reason":["事实理由1","事实理由2"],"riskTip":"主要风险"}]}`;
 
 function fallbackReasons(candidate: Candidate): string[] {
-    const reasons: string[] = [];
+    const reasons: string[] = candidate.shortTerm?.signals[0]?.reason.slice(0, 1) || [];
     const forecast = candidate.forecast;
     const technical = candidate.technical;
     const flow = candidate.capitalFlow;
@@ -335,7 +366,13 @@ async function selectWithAi(candidates: Candidate[]): Promise<{ output: Selectio
         const candidateBySymbol = new Map(candidates.map(candidate => [candidate.symbol, candidate]));
         const industryCount = new Map<string, number>(); const stocks: SelectionItem[] = [];
         const rawStocks = Array.isArray(parsed?.stocks) ? parsed.stocks : [];
-        for (const raw of rawStocks) {
+        const shortlist = rawStocks.slice(0, MODEL_SHORTLIST_LIMIT).flatMap((raw: unknown, index: number) => {
+            if (!raw || typeof raw !== 'object') return [];
+            const item = raw as Record<string, unknown>;
+            const candidate = candidateBySymbol.get(text(item.symbol ?? item.stockCode ?? item['股票代码']));
+            return candidate ? [{ raw, score: weight(candidate) + (MODEL_SHORTLIST_LIMIT - index) / 2 }] : [];
+        }).sort((a, b) => b.score - a.score);
+        for (const { raw } of shortlist) {
             if (!raw || typeof raw !== 'object') continue;
             const item = raw as Record<string, unknown>;
             const symbol = text(item.symbol ?? item.stockCode ?? item['股票代码']); const candidate = candidateBySymbol.get(symbol);
@@ -434,10 +471,10 @@ async function persistRun(runId: number, candidates: Candidate[], output: Select
     );
 }
 
-async function executeRun(runId: number): Promise<void> {
+async function executeRun(runId: number, tradeDate: string): Promise<void> {
     try {
-        const candidates = await loadCandidates();
-        if (!candidates.length) throw new Error('六个榜单均未返回可用候选股票');
+        const candidates = await loadCandidates(tradeDate);
+        if (!candidates.length) throw new Error('各因子均未返回可用候选股票');
         await enrichCandidates(candidates);
         const { output, model } = await selectWithAi(candidates);
         await persistRun(runId, candidates, output, model);
@@ -456,18 +493,58 @@ export async function triggerAiStockSelection(triggerSource: 'schedule' | 'manua
         `INSERT INTO ai_stock_selection_runs (trade_date, trigger_source, status, prompt_version)
          VALUES ($1, $2, 'generating', $3) RETURNING id`, [tradeDate, triggerSource, PROMPT_VERSION],
     );
-    const runId = Number(result.rows[0]?.id); activeRunId = runId; void executeRun(runId);
+    const runId = Number(result.rows[0]?.id); activeRunId = runId; void executeRun(runId, tradeDate);
     return { runId, status: 'generating' };
+}
+
+async function aiEntryPerformance(tradeDate: string, symbols: string[]) {
+    const { rows } = await pool.query<{ symbol: string; date: string; sessions: number }>(`
+        WITH published AS (
+            SELECT DISTINCT ON (trade_date) id, trade_date
+            FROM ai_stock_selection_runs
+            WHERE trade_date <= $1::date AND status = 'ready'
+            ORDER BY trade_date DESC, generated_at DESC NULLS LAST, id DESC
+        ), membership AS (
+            SELECT selected.symbol, p.trade_date,
+                count(*) FILTER (WHERE r.symbol IS NULL) OVER (
+                    PARTITION BY selected.symbol ORDER BY p.trade_date DESC
+                ) AS missed
+            FROM published p CROSS JOIN unnest($2::text[]) AS selected(symbol)
+            LEFT JOIN ai_stock_selection_results r ON r.run_id = p.id AND r.symbol = selected.symbol
+                AND r.rank <= $3
+        )
+        SELECT symbol, min(trade_date)::text AS date, count(*)::int AS sessions
+        FROM membership WHERE missed = 0 GROUP BY symbol
+    `, [tradeDate, symbols, RESULT_LIMIT]);
+    const entries = new Map(rows.map(row => [row.symbol, { ...row, price: null as number | null, closeReturn: null as number | null }]));
+    const table = await pool.query("SELECT to_regclass('stock_selection_market_days') AS name");
+    if (!table.rows[0]?.name) return { entries, quoteDate: null };
+    const latest = await pool.query<{ date: string }>(`
+        SELECT trade_date::text AS date FROM stock_selection_market_days
+        WHERE trade_date <= $1::date ORDER BY trade_date DESC LIMIT 1
+    `, [tradeDate]);
+    const closeDate = latest.rows[0]?.date;
+    if (!closeDate) return { entries, quoteDate: null };
+    const dates = new Set([closeDate, ...rows.filter(row => row.date <= closeDate).map(row => row.date)]);
+    const snapshots = new Map(await Promise.all([...dates].map(async date => [date, await selectionSnapshots.snapshot(date)] as const)));
+    for (const entry of entries.values()) {
+        const first = snapshots.get(entry.date)?.bars[entry.symbol];
+        const last = snapshots.get(closeDate)?.bars[entry.symbol];
+        if (!first || !last || first.close <= 0 || first.factor <= 0 || last.factor <= 0) continue;
+        entry.price = first.close;
+        entry.closeReturn = (last.close * last.factor / (first.close * first.factor) - 1) * 100;
+    }
+    return { entries, quoteDate: nextQuoteTradeDate(closeDate) };
 }
 
 async function getLatest(date?: string): Promise<Record<string, unknown> | null> {
     await ensureAiStockSelectionSchema();
     const where = date ? 'WHERE trade_date = $1' : '';
     const run = await pool.query(
-        `SELECT id, trade_date, status, candidate_count, data_as_of, generated_at, summary, model, prompt_version, error_message
+        `SELECT id, trade_date::text, status, candidate_count, data_as_of, generated_at, summary, model, prompt_version, error_message
          FROM ai_stock_selection_runs ${where}
          ORDER BY CASE WHEN status = 'ready' THEN 0 WHEN status = 'generating' THEN 1 ELSE 2 END,
-           generated_at DESC NULLS LAST, created_at DESC LIMIT 1`, date ? [date] : [],
+           trade_date DESC, generated_at DESC NULLS LAST, id DESC LIMIT 1`, date ? [date] : [],
     );
     const row = run.rows[0] as Record<string, unknown> | undefined;
     if (!row) return null;
@@ -478,15 +555,22 @@ async function getLatest(date?: string): Promise<Record<string, unknown> | null>
          LEFT JOIN ai_stock_selection_candidates c ON c.run_id = r.run_id AND c.symbol = r.symbol
          WHERE r.run_id = $1 ORDER BY r.rank ASC`, [row.id],
     );
+    const performance = row.status === 'ready' && stocks.rows.length
+        ? await aiEntryPerformance(String(row.trade_date), stocks.rows.map(stock => stock.symbol)).catch(error => {
+            console.warn('[AiStockSelection] 入选表现读取失败:', error instanceof Error ? error.message : String(error));
+            return null;
+        })
+        : null;
     return {
         runId: Number(row.id), tradeDate: String(row.trade_date), status: row.status,
+        nextQuoteTradeDate: performance?.quoteDate ?? null,
         candidateCount: Number(row.candidate_count || 0), dataAsOf: row.data_as_of, generatedAt: row.generated_at,
         summary: row.summary, model: row.model, promptVersion: row.prompt_version, errorMessage: row.error_message,
         stocks: stocks.rows.map(item => {
             const market = item.market && typeof item.market === 'object' ? item.market as Record<string, unknown> : {};
             const technical = item.technical && typeof item.technical === 'object' ? item.technical as Record<string, unknown> : {};
             return {
-                rank: Number(item.rank), symbol: item.symbol, name: item.stock_name, industry: item.industry,
+                rank: Number(item.rank), symbol: item.symbol, entry: performance?.entries.get(item.symbol), name: item.stock_name, industry: item.industry,
                 recommendationLevel: item.recommendation_level, reason: Array.isArray(item.reasons) ? item.reasons : [], riskTip: item.risk_tip,
                 price: numberOrNull(market.price), changePct: numberOrNull(market.changePct),
                 sparkline: Array.isArray(technical.sparkline) ? technical.sparkline.map(numberOrNull).filter((value): value is number => value !== null) : [],

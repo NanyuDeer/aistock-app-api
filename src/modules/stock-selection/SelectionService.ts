@@ -1,19 +1,27 @@
-import { combine, evaluateMarket } from './rules';
+import { addDividendMethod, DailyRatios, DividendPayment } from './dividendRules';
+import { addEarningsRevisions, addEventCatalysts, CompanyForecast, ResearchForecast } from './announcementRules';
+import { addFinancialMethods, AnnualFinancials } from './financialRules';
+import { combine, evaluateMarket, matchesAllMethods } from './rules';
 import { SelectionStore } from './SelectionStore';
 import { Bar, Batch, FUSION_VERSION, HISTORY_DAYS, Horizon, MarketDay, Method, METHODS, METHOD_HORIZONS, RULE_VERSION, Stock } from './types';
 
 export interface SelectionSource {
     /** Validated authoritative calendar, ascending dates, ending at the latest fully closed session. */
     context(): { tradeDate: string; dates: string[] };
-    /** Read path only needs the latest closed session, not the full feature-generation window. */
-    latestTradeDate?(): string;
+    nextTradingDate?(date: string): string | null;
     stocks(): Promise<Stock[]>;
     day(date: string): Promise<MarketDay>;
+    upperLimits?(date: string): Promise<Map<string, number>>;
+    financials?(date: string): Promise<Map<string, AnnualFinancials[]>>;
+    ratios?(date: string): Promise<Map<string, DailyRatios>>;
+    dividends?(date: string, symbols: string[]): Promise<Map<string, DividendPayment[]>>;
+    research?(date: string): Promise<ResearchForecast[]>;
+    companyForecasts?(start: string, end: string): Promise<CompanyForecast[]>;
     benchmark(start: string, end: string): Promise<Bar[]>;
 }
 export interface SelectionQuery { horizon: Horizon; methods: Method[]; limit: number; date?: string }
 export function parseQuery(query: Record<string, unknown>): SelectionQuery {
-    if (query.horizon !== 'short' && query.horizon !== 'swing') throw new Error('horizon必须为short或swing');
+    if (query.horizon !== 'short' && query.horizon !== 'swing' && query.horizon !== 'long') throw new Error('horizon必须为short、swing或long');
     if (typeof query.methods !== 'string' || !query.methods.trim()) throw new Error('请选择methods');
     const methods = [...new Set(query.methods.split(',').map(v => v.trim()))];
     if (methods.some(m => !METHODS.includes(m as Method))) throw new Error('包含未上线或无效的方法');
@@ -28,6 +36,11 @@ export function parseQuery(query: Record<string, unknown>): SelectionQuery {
         date = query.date;
     }
     return { horizon: query.horizon, methods: (methods as Method[]).sort(), limit, date };
+}
+
+function methodAvailable(batch: Batch, method: Method): boolean {
+    const stats = batch.methodStats[method];
+    return Boolean(stats && stats.unavailable * 4 <= stats.pass + stats.fail);
 }
 
 export class SelectionService {
@@ -60,34 +73,86 @@ export class SelectionService {
             }
         }
         const benchmark = await this.source.benchmark(dates[0], tradeDate);
-        const batch = evaluateMarket(stocks, raw, dates, benchmark);
-        batch.inputs = { provider: 'Tushare daily+adj_factor+stock_basic+index_daily', adjustment: 'signal-date-qfq;volume-adjusted',
+        const upperLimits = await this.source.upperLimits?.(tradeDate).catch(error => {
+            console.warn('[StockSelection] 涨停价读取失败:', error instanceof Error ? error.message : String(error));
+            return undefined;
+        });
+        const batch = evaluateMarket(stocks, raw, dates, benchmark, upperLimits);
+        batch.inputs = { provider: upperLimits?.size ? 'Tushare daily+adj_factor+stock_basic+index_daily+stk_limit' : 'Tushare daily+adj_factor+stock_basic+index_daily',
+            adjustment: 'signal-date-qfq;volume-adjusted',
             benchmark: '000300.SH', universeFetchedAt, universe: stocks,
             benchmarkCloses: benchmark.filter(b => dates.includes(b.date)).map(b => ({ date: b.date, close: b.close })), snapshots };
         const usable = batch.methodStats.trend_following;
         const applicable = usable.pass + usable.fail + usable.unavailable;
         if (!applicable || usable.unavailable / applicable > 0.2) throw new Error('连续历史数据覆盖不足80%，本次不发布');
+        const optional = async <T>(name: string, data: Promise<T> | undefined) => {
+            try { return await data; }
+            catch (error) { console.warn(`[StockSelection] ${name}读取失败:`, error); return undefined; }
+        };
+        const [financials, ratios, research, forecasts] = await Promise.all([
+            optional('批量年报', this.source.financials?.(tradeDate)),
+            optional('日度估值和股息率', this.source.ratios?.(tradeDate)),
+            optional('研报预测', this.source.research?.(tradeDate)),
+            optional('业绩预告', this.source.companyForecasts?.(dates[dates.length - 4], tradeDate)),
+        ]);
+        const valuations = ratios && new Map([...ratios].map(([symbol, row]) => [symbol, row.pe]));
+        addFinancialMethods(batch, stocks, raw, dates, financials, valuations);
+        addEarningsRevisions(batch, stocks, raw, dates, research);
+        addEventCatalysts(batch, stocks, raw, dates, forecasts);
+        await addDividendMethod(batch, stocks, raw, dates, financials, ratios, this.source.dividends);
         return batch;
     }
+    private async trackEntries(run: { tradeDate: string; batch: Batch }, methods: Method[]) {
+        const entries = new Map(combine(run.batch.stocks, methods, 15).map(stock => [stock.symbol, {
+            date: run.tradeDate, sessions: 1, price: stock.price,
+        }]));
+        const active = new Set(entries.keys());
+        let before = run.tradeDate;
+        while (active.size && this.store.previousPublished) {
+            const history = await this.store.previousPublished(before);
+            if (!history.length) break;
+            for (const day of history) {
+                if (!methods.every(method => methodAvailable(day.batch, method))) continue;
+                const members = new Map(combine(day.batch.stocks, methods, 15).map(stock => [stock.symbol, stock]));
+                for (const symbol of active) {
+                    const member = members.get(symbol);
+                    if (!member) active.delete(symbol);
+                    else entries.set(symbol, { date: day.tradeDate, sessions: entries.get(symbol)!.sessions + 1, price: member.price });
+                }
+                if (!active.size) break;
+            }
+            before = history[history.length - 1].tradeDate;
+        }
+        const dates = new Set([run.tradeDate, ...[...entries.values()].map(entry => entry.date)]);
+        const snapshots = new Map(await Promise.all([...dates].map(async date => [date, await this.store.snapshot(date)] as const)));
+        return new Map([...entries].map(([symbol, entry]) => {
+            const first = snapshots.get(entry.date)?.bars[symbol];
+            const latest = snapshots.get(run.tradeDate)?.bars[symbol];
+            const adjusted = first && latest && first.factor > 0 && latest.factor > 0
+                ? first.close * first.factor / latest.factor : null;
+            const closeReturn = entry.date === run.tradeDate ? 0
+                : adjusted && latest ? (latest.close / adjusted - 1) * 100 : null;
+            return [symbol, { ...entry, closeReturn }] as const;
+        }));
+    }
+
     async results(query: SelectionQuery) {
-        const expectedDate = query.date || (this.source.latestTradeDate ? this.source.latestTradeDate() : this.source.context().tradeDate);
+        const expectedDate = query.date ?? null;
         await this.store.ensureSchema();
         const run = await this.store.latest(query.date);
-        const base = { horizon: query.horizon, methods: query.methods, mode: 'blend', ruleVersion: RULE_VERSION, fusionVersion: FUSION_VERSION,
+        const base = { horizon: query.horizon, methods: query.methods, mode: 'blend', ruleVersion: run?.ruleVersion || RULE_VERSION, fusionVersion: FUSION_VERSION,
             expectedTradeDate: expectedDate, tradeDate: run?.tradeDate || null, runId: run?.id || null,
             dataAsOf: run?.dataAsOf || null, generatedAt: run?.generatedAt || null, candidateCount: 0,
-            summary: '符合任一所选方法即可入选，综合表现优先。盘后确认，非实时买点。',
+            summary: '同时符合全部所选方法才可入选，综合表现优先。盘后确认，非实时买点。',
             methodStats: run?.batch?.methodStats || null };
         if (!run) return { ...base, status: 'empty', stocks: [] };
-        if (run.tradeDate !== expectedDate) return { ...base, status: 'stale', stocks: [] };
+        if (expectedDate && run.tradeDate !== expectedDate) return { ...base, status: 'stale', stocks: [] };
         if (run.status !== 'ready' || !run.batch) return { ...base, status: run.status, stocks: [] };
-        const unavailable = query.methods.filter(m => {
-            const s = run.batch!.methodStats[m];
-            const evaluated = s.pass + s.fail;
-            return s.unavailable > 0 && evaluated / (evaluated + s.unavailable) < 0.8;
-        });
+        const unavailable = query.methods.filter(method => !methodAvailable(run.batch!, method));
         if (unavailable.length) return { ...base, status: 'unavailable', unavailableMethods: unavailable, stocks: [] };
-        return { ...base, status: 'ready', candidateCount: run.batch.stocks.filter(c => c.signals.some(s => query.methods.includes(s.method))).length,
-            stocks: combine(run.batch.stocks, query.methods, query.limit) };
+        const stocks = combine(run.batch.stocks, query.methods, query.limit);
+        const entries = stocks.length ? await this.trackEntries({ tradeDate: run.tradeDate, batch: run.batch }, query.methods) : new Map();
+        return { ...base, status: 'ready', nextQuoteTradeDate: this.source.nextTradingDate?.(run.tradeDate) ?? null, candidateCount: run.batch.stocks.filter(c => matchesAllMethods(c, query.methods)).length,
+            stocks: stocks.map(stock => ({ ...stock, entry: entries.get(stock.symbol) })) };
     }
 }
