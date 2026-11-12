@@ -1172,7 +1172,7 @@ router.post('/market/causal-inputs', async (req: Request, res: Response) => {
                 : undefined,
             need: need && need.length > 0 ? need : undefined,
         })
-        res.json({ code: 0, data })
+        res.json({ code: 200, data })
     } catch (err: unknown) {
         console.error('[Internal] market/causal-inputs error:', errMsg(err))
         res.status(500).json({ code: -1, message: errMsg(err) })
@@ -1212,7 +1212,7 @@ router.post('/event-node-mappings/upsert', async (req: Request, res: Response) =
                 }
             }),
         )
-        res.json({ code: 0, data: { written } })
+        res.json({ code: 200, data: { written } })
     } catch (err: unknown) {
         console.error('[Internal] event-node-mappings/upsert error:', errMsg(err))
         res.status(400).json({ code: -1, message: errMsg(err) })
@@ -1234,7 +1234,7 @@ router.get('/event-node-mappings', async (req: Request, res: Response) => {
 
     try {
         const data = await getMappings(eventId)
-        res.json({ code: 0, data: { eventId, ...data } })
+        res.json({ code: 200, data: { eventId, ...data } })
     } catch (err: unknown) {
         console.error('[Internal] event-node-mappings error:', errMsg(err))
         res.status(500).json({ code: -1, message: errMsg(err) })

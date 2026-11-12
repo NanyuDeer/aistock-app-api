@@ -132,6 +132,7 @@ import { requireLogin } from './shared/utils/requireLogin';
 import { runIfTradingDay } from './shared/utils/cronGuards';
 import { tradingCalendarStore } from './shared/utils/tradingCalendarStore';
 import { TradingCalendarRefreshService } from './modules/market/TradingCalendarRefreshService';
+import { fetchAndStore } from './modules/causal/macroExpectationService';
 
 // core 基础设施
 import { ConfigController } from './core/routes/configController';
@@ -721,6 +722,15 @@ cron.schedule('30 16,19 * * 1-5', () => runIfTradingDay('stock-selection-after-c
 cron.schedule('30 0 * * *', async () => {
     await TradingCalendarRefreshService.refresh();
     await tradingCalendarStore.load();
+}, { timezone: 'Asia/Shanghai' });
+
+// 宏观预期抓取：每日 20:30。
+// 故意**不加** runIfTradingDay 守卫：周末与节假日同样有经济数据公布，
+// 且抓的是「今日 + 未来 7 天」滚动窗口，漏一天就会永久缺失——
+// 接口的历史 forecast 字段会被清空（实测：两个月前的指标只剩前值与实际值）。
+cron.schedule('30 20 * * *', async () => {
+    try { console.log('[MacroExpectations] 写入', await fetchAndStore(7), '行'); }
+    catch (e) { console.error('[MacroExpectations] 抓取失败:', e); }
 }, { timezone: 'Asia/Shanghai' });
 
 // 用户画像自动挖掘（一期）：每日 00:30（与维护类同簇）。
