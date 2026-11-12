@@ -20,6 +20,7 @@ import { loadStockNameMap, resolveStockName } from '../../modules/monitor/HotKey
 import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
+import { buildCausalInputs } from '../../modules/causal/causalInputsService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import {
     getEventVitality,
@@ -44,6 +45,7 @@ import { MAX_SYMBOLS } from '../../modules/quote/indexController'
 import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules/quote/ThsBoardService'
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 import { EmailService } from '../email/EmailService'
+import { ProfileMiningService } from '../../modules/profile-mining/ProfileMiningService'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -1118,6 +1120,56 @@ router.get('/industry/graph', async (_req: Request, res: Response) => {
 })
 
 /**
+ * POST /internal/market/causal-inputs
+ *
+ * 归因输入批量出口（MCRE M1）。Python 四路检验器通过本接口一次性取数，
+ * 不在 Python 内重复实现 A 股数据获取（见根 AGENTS.md）。
+ *
+ * 返回的 completeness 用于投票的「弃权」判定：某类数据缺失时对应字段为 null，
+ * 而不是空对象——否则「没数据」会被误判为「无反应」。
+ */
+const CAUSAL_INPUT_KINDS = ['prices', 'sector_returns', 'flows', 'consensus'] as const
+
+router.post('/market/causal-inputs', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const tradeDate = String(body.tradeDate ?? '')
+    const symbols = Array.isArray(body.symbols) ? body.symbols.map(String) : []
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate)) {
+        res.status(400).json({ code: -1, message: 'invalid tradeDate (expected YYYY-MM-DD)' })
+        return
+    }
+    if (symbols.length === 0) {
+        res.status(400).json({ code: -1, message: 'symbols must not be empty' })
+        return
+    }
+
+    try {
+        const windowRaw = body.window as Record<string, unknown> | undefined
+        const needRaw = Array.isArray(body.need) ? body.need.map(String) : undefined
+        const need = needRaw?.filter((kind): kind is (typeof CAUSAL_INPUT_KINDS)[number] =>
+            (CAUSAL_INPUT_KINDS as readonly string[]).includes(kind),
+        )
+
+        const data = await buildCausalInputs({
+            tradeDate,
+            symbols,
+            window: windowRaw
+                ? {
+                      pre: Number.isFinite(Number(windowRaw.pre)) ? Number(windowRaw.pre) : undefined,
+                      post: Number.isFinite(Number(windowRaw.post)) ? Number(windowRaw.post) : undefined,
+                  }
+                : undefined,
+            need: need && need.length > 0 ? need : undefined,
+        })
+        res.json({ code: 0, data })
+    } catch (err: unknown) {
+        console.error('[Internal] market/causal-inputs error:', errMsg(err))
+        res.status(500).json({ code: -1, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/institution-research/history
  * 机构调研推荐热门股历史记录（从数据库查询，分页）
  *
@@ -1250,9 +1302,10 @@ router.get('/market/sectors', async (_req: Request, res: Response) => {
         ])
         // fetchIndexes 返回 CloseIndexFact：键为 ts_code（如 "000001.SH"），归一化为 6 位 code
         const idx = (indexes.status === 'fulfilled' && Array.isArray(indexes.value))
-            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; pct_chg?: number }) => ({
+            ? indexes.value.map((it: { ts_code?: string; code?: string; name?: string; close?: number; pct_chg?: number }) => ({
                   code: String(it.ts_code ?? it.code ?? '').replace(/[^0-9]/g, '').slice(0, 6),
                   name: String(it.name ?? ''),
+                  close: it.close ?? null,
                   pct_chg: it.pct_chg ?? null,
               }))
             : []
@@ -1734,6 +1787,42 @@ router.get('/user-profile/:userId', async (req: Request, res: Response) => {
         res.json({ code: 200, data: row ?? {} })
     } catch (err: unknown) {
         console.error('[Internal] user-profile GET error:', errMsg(err))
+        res.status(502).json({ code: 502, message: errMsg(err) })
+    }
+})
+
+// ==================== 用户画像自动挖掘（一期） ====================
+
+/**
+ * GET /internal/user-profile-inferences/:userId
+ * 按 user_id 拉取推断画像（agent-py 对话入口注入用；与显式 user_profiles 分立）
+ *
+ * - 200：{ code: 200, data: [{ dimension, value, confidence, sample_size, window_days, inferred_at }] }
+ * - 200 + data: []：无推断数据（不 404——agent-py 无推断时零行为变化）
+ * - 400：userId 缺失
+ * - 502：服务异常
+ */
+router.get('/user-profile-inferences/:userId', async (req: Request, res: Response) => {
+    const user_id = param(req, 'userId')
+    if (!user_id) {
+        return res.status(400).json({ code: 400, message: 'userId is required' })
+    }
+    try {
+        const rows = await ProfileMiningService.listInferences(user_id)
+        res.json({
+            code: 200,
+            data: rows.map((row) => ({
+                dimension: row.dimension,
+                value: row.value,
+                // NUMERIC/INTEGER 在 pg 驱动下可能返回字符串，契约统一为 number
+                confidence: Number(row.confidence),
+                sample_size: Number(row.sample_size),
+                window_days: row.window_days === null ? null : Number(row.window_days),
+                inferred_at: row.inferred_at,
+            })),
+        })
+    } catch (err: unknown) {
+        console.error('[Internal] user-profile-inferences GET error:', errMsg(err))
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })

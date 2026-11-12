@@ -16,6 +16,19 @@ const CACHE_TTL_SECONDS = 30 * 60; // 30 分钟（与 Python 版一致）
 const memoryCache = new Map<string, { ts: number; result: JqResult }>();
 
 /**
+ * PG DATE 列经 pg 驱动返回 Date 对象（本地时区午夜）。直接 String(date) 得到
+ * "Wed Nov 04 2026 00:00:00 GMT+0800..."，与计算侧 YYYYMMDD 键永不相等 →
+ * 所有历史日都被判为「缺失」，每次请求全量重抓 500 个交易日（2026-11-08 线上
+ * 「恐贪指数一直无数据」根因）。统一按本地日期分量归一为 YYYYMMDD。
+ */
+export function pgDateToYmd(v: unknown): string {
+    if (v instanceof Date) {
+        return `${v.getFullYear()}${String(v.getMonth() + 1).padStart(2, '0')}${String(v.getDate()).padStart(2, '0')}`;
+    }
+    return String(v).replace(/-/g, '').slice(0, 8);
+}
+
+/**
  * 数据源瞬时网络抖动重试。Tushare 接口偶发 TLS 断开/请求中止（沙箱网络不稳定），
  * 而一次 computeJq 需串行调用数十次外部接口，任一次失败都会让整次刷新失败。
  * 仅对网络类错误重试（业务拒绝如无权限不重试，避免无谓重复调用与日志噪音）。
@@ -44,8 +57,8 @@ const breadthCache: BreadthCache = {
         try {
             const { rows } = await pool.query('SELECT trade_date, up_ratio FROM breadth_daily');
             const map = new Map<string, number>();
-            for (const r of rows as { trade_date: string; up_ratio: number }[]) {
-                map.set(String(r.trade_date).replace(/-/g, ''), Number(r.up_ratio));
+            for (const r of rows as { trade_date: unknown; up_ratio: number }[]) {
+                map.set(pgDateToYmd(r.trade_date), Number(r.up_ratio));
             }
             // 合并内存缓存（PG 缺失的日期用内存补齐）
             for (const [k, v] of memBreadth) if (!map.has(k)) map.set(k, v);
@@ -77,8 +90,8 @@ const limitCache: LimitCache = {
                 `SELECT trade_date, seal_count, break_count, down_count, seal_codes FROM limit_daily`,
             );
             const map = new Map<string, DailyLimit>();
-            for (const r of rows as { trade_date: string; seal_count: number; break_count: number; down_count: number; seal_codes: string | string[] }[]) {
-                const date = String(r.trade_date).replace(/-/g, '');
+            for (const r of rows as { trade_date: unknown; seal_count: number; break_count: number; down_count: number; seal_codes: string | string[] }[]) {
+                const date = pgDateToYmd(r.trade_date);
                 map.set(date, {
                     date,
                     sealCount: Number(r.seal_count),

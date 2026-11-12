@@ -18,17 +18,28 @@ export interface RhythmPositionBand {
     text?: string
 }
 
-/** 日历聚合行（契约 #7）：level 可空——行缺失/沿用前值 → null（前端灰格）。 */
+/** 日历聚合行（契约 #7）：level 兼容保留（未升级客户端仍读它上色，不得置 null）；
+ *  position_index 为日历上色的唯一依据，行缺失/数据非法 → null（前端灰格）。 */
 export interface RhythmCalendarRow {
     report_date: string
     level: string | null
     score: string | null
     basis_date: string | null
     position_band: RhythmPositionBand | null
+    position_index?: number | null
+}
+
+/** 仓位档位序号（0 空 / 1 轻 / 2 半 / 3 重 / 4 满）。
+ *  严格：必须 0-4 整数；缺失 / null / 非 number（含数字字符串）/ 浮点 / 越界 → null。
+ *  禁止由 level 换算——level 是情绪强度档位词，换算会给出错误仓位。 */
+export function normalizePositionIndex(value: unknown): number | null {
+    if (typeof value !== 'number' || !Number.isInteger(value)) return null
+    return value >= 0 && value <= 4 ? value : null
 }
 
 /** 日历聚合纯函数（design-debate R7 裁决）：把"最近 N 个交易日"与"after_close 行"
  *  合并为补位网格。行缺失日期 → level=null（灰格），有行透传 level/score/basis_date/position_band。
+ *  position_index 严格校验为 0-4 整数，非法即 null（前端灰格，不回退 level 上色）。
  *  恒取 after_close（三时点 level 恒等，删 slot 参数）。 */
 export function mergeRhythmCalendarDays(
     dates: string[],
@@ -40,6 +51,7 @@ export function mergeRhythmCalendarDays(
     score: number | null
     basis_date: string | null
     position_band: RhythmPositionBand | null
+    position_index: number | null
 }> {
     const byDate = new Map(rows.map((r) => [r.report_date, r]))
     return dates.map((d) => {
@@ -51,6 +63,7 @@ export function mergeRhythmCalendarDays(
             score: row?.score != null ? Number(row.score) : null,
             basis_date: row?.basis_date ?? null,
             position_band: row?.position_band ?? null,
+            position_index: normalizePositionIndex(row?.position_index),
         }
     })
 }
@@ -121,7 +134,8 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
                 content->'rhythm_card'->>'level' AS level,
                 content->'rhythm_card'->>'score' AS score,
                 content->>'basis_date' AS basis_date,
-                content->'rhythm_card'->'position_band' AS position_band
+                content->'rhythm_card'->'position_band' AS position_band,
+                content->'rhythm_card'->'position_index' AS position_index
          FROM agent_analysis_reports
          WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
            AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])
@@ -138,6 +152,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
           score: row?.score != null ? Number(row.score) : null,
           basis_date: row?.basis_date ?? null,
           position_band: row?.position_band ?? null,
+          position_index: normalizePositionIndex(row?.position_index),
           events: eventsByDate.get(d) ?? [],
         }
       })
@@ -153,7 +168,8 @@ rhythmMasterPublicRouter.get('/rhythm-master/calendar', async (req: Request, res
                     content->'rhythm_card'->>'level' AS level,
                     content->'rhythm_card'->>'score' AS score,
                     content->>'basis_date' AS basis_date,
-                    content->'rhythm_card'->'position_band' AS position_band
+                    content->'rhythm_card'->'position_band' AS position_band,
+                    content->'rhythm_card'->'position_index' AS position_index
              FROM agent_analysis_reports
              WHERE report_type = 'rhythm_master' AND user_id = 'after_close'
                AND (report_date AT TIME ZONE 'Asia/Shanghai')::date = ANY($1::date[])

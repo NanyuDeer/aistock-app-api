@@ -26,10 +26,17 @@
  *   recency_score = min(自最新观测日向前的连续 aligned 天数 / VITALITY_RECENT_ALIGNED_DAYS, 1)
  *   cum_excess     = 窗口内定向超额均值 / 2%（饱和归一到 [0,1]）
  *   reinforce      = min(窗口内同行业新增同向重大事件数 / 2, 1)
- *   decay          = 0.5 ^ (age_days / half_life(event_type))
- *   vitality = (0.35·aligned_ratio + 0.30·recency_score + 0.20·cum_excess + 0.15·reinforce) × decay
- *   分档：alive ≥ VITALITY_ALIVE_MIN / fading 中间 / expired < VITALITY_EXPIRED_MAX /
- *        no_observation（行业映射不到板块，vitality=NULL，禁判 expired）
+ *   vitality = 0.35·aligned_ratio + 0.30·recency_score + 0.20·cum_excess + 0.15·reinforce
+ *              （传导强度分 0~1；不再乘时间衰减 —— 衰减已并入下文的「类型期限」判定）
+ *
+ * 状态判定（2026-11-09 用户确认口径：前端只标注「影响已消散」）：
+ *   第 1 层 事件类型 → 正常寿命 horizon = half_life(event_type) × VITALITY_HORIZON_MULTIPLIER
+ *   第 2 层 是否曾形成定向传导（窗口内 aligned_days ≥ 1）；没有则不判消散（未起效 ≠ 已消散）
+ *   第 3 层 消散判定：年龄 ≥ 期限（寿命到期）或 最近连续反向超额 ≥ VITALITY_REVERSAL_DAYS（逻辑被证伪）
+ *   分档：expired  = 影响已消散（唯一需要主动告知的档）
+ *        alive    = 曾传导且仍在有效期内（默认预期，不标注）
+ *        fading   = 有行情但从未形成定向传导（默认预期，不标注）
+ *        no_observation（行业映射不到板块 / 无观测日，vitality=NULL，禁判 expired）
  *
  * 模块解耦：本文件与板块数据同属 monitor 模块；仅复用同名模块已有的
  * `RotationBoardStore.fetchBoardKline` 与 quote 数据源（quote 作为数据源提供方，
@@ -55,7 +62,7 @@ export interface ChainNode {
 /** 事件链主导方向。 */
 export type Direction = 'bullish' | 'bearish' | 'neutral';
 
-/** 存活度分档。 */
+/** 存活度分档（expired 为唯一需要前端标注的档；fading 为「观察中但未起效」的内部诊断态）。 */
 export type ImpactStatus = 'alive' | 'fading' | 'expired' | 'no_observation';
 
 /** 单行业观测明细（落 observed_industries JSONB）。 */
@@ -82,10 +89,10 @@ export interface VitalityConfig {
     enabled: boolean;
     /** 观测窗口上限（自事件日起算的自然日） */
     windowMaxDays: number;
-    /** alive 阈值 */
-    aliveMin: number;
-    /** expired 阈值 */
-    expiredMax: number;
+    /** 事件期限倍数：horizon = half_life(event_type) × 该倍数（到期即判影响消散） */
+    horizonMultiplier: number;
+    /** 反向证伪所需连续反向超额天数（曾传导后连续反向 → 提前判消散） */
+    reversalDays: number;
     /** 单日定向超额门槛（%） */
     excessMinPct: number;
     /** recency 满分所需连续 aligned 天数 */
@@ -141,6 +148,8 @@ const DEFAULT_HALF_LIFE: Record<string, number> = {
     geopolitical: 7,
     industry: 5,
     company: 3,
+    // 一次性行情事件（市场动态）：影响随当日行情释放，期限最短
+    market: 2,
 };
 
 function envBool(env: NodeJS.ProcessEnv, name: string, def: boolean): boolean {
@@ -158,14 +167,16 @@ function envNum(env: NodeJS.ProcessEnv, name: string, def: number): number {
 
 /**
  * 事件类型 → 半衰期类别（LLM 给的 event_type 取值不稳定，按关键词兜底归一）。
- * 只影响 decay 快慢，不影响状态判定权（状态仍由确定性公式给出）。
+ * 半衰期只决定事件期限（寿命），不参与打分。
  */
 export function normalizeEventTypeCategory(eventType: string): string {
     const t = String(eventType || '').toLowerCase();
-    if (t.includes('policy') || t.includes('政策')) return 'policy';
+    if (t.includes('policy') || t.includes('政策') || t.includes('监管')) return 'policy';
     if (t.includes('geo') || t.includes('war') || t.includes('地缘') || t.includes('战争')) return 'geopolitical';
     if (t.includes('macro') || t.includes('宏观') || t.includes('rate') || t.includes('利率')) return 'macro';
+    if (t.includes('market') || t.includes('市场') || t.includes('行情')) return 'market';
     if (t.includes('industry') || t.includes('行业') || t.includes('supply') || t.includes('chain')) return 'industry';
+    if (t.includes('tech') || t.includes('技术')) return 'industry';
     if (t.includes('company') || t.includes('公司') || t.includes('earning') || t.includes('finance')) return 'company';
     return 'unknown';
 }
@@ -184,8 +195,8 @@ export function loadVitalityConfig(env: NodeJS.ProcessEnv = process.env): Vitali
     return {
         enabled: envBool(env, 'VITALITY_ENABLED', true),
         windowMaxDays: envNum(env, 'VITALITY_WINDOW_MAX_DAYS', 45),
-        aliveMin: envNum(env, 'VITALITY_ALIVE_MIN', 0.6),
-        expiredMax: envNum(env, 'VITALITY_EXPIRED_MAX', 0.3),
+        horizonMultiplier: envNum(env, 'VITALITY_HORIZON_MULTIPLIER', 4),
+        reversalDays: envNum(env, 'VITALITY_REVERSAL_DAYS', 2),
         excessMinPct: envNum(env, 'VITALITY_EXCESS_MIN_PCT', 0.5),
         recentAlignedDays: envNum(env, 'VITALITY_RECENT_ALIGNED_DAYS', 3),
         excessScalePct: envNum(env, 'VITALITY_EXCESS_SCALE_PCT', 2),
@@ -215,11 +226,11 @@ export function dominantDirection(chain: ChainNode[], ratio = 1.5): Direction {
     return 'neutral';
 }
 
-/** 指数衰减（半衰期）。ageDays ≤ 0 → 1；halfLife ≤ 0 → 0（异常配置不产生虚高存活度）。 */
-export function decayFactor(ageDays: number, halfLifeDays: number): number {
-    if (!(halfLifeDays > 0)) return 0;
-    if (ageDays <= 0) return 1;
-    return Math.pow(0.5, ageDays / halfLifeDays);
+/** 事件期限（自然日）：类型半衰期 × horizonMultiplier；未识别类型走 halfLifeDefault。 */
+export function eventHorizonDays(eventType: string, config: VitalityConfig): number {
+    const category = normalizeEventTypeCategory(eventType);
+    const halfLife = config.halfLifeByType[category] ?? config.halfLifeDefault;
+    return Math.max(1, Math.round(halfLife * config.horizonMultiplier));
 }
 
 /** 单日是否对齐：方向一致且幅度达标；neutral 只判幅度。 */
@@ -237,12 +248,40 @@ export function directedExcess(dailyExcess: number, direction: Direction): numbe
     return Math.abs(dailyExcess);
 }
 
-/** 分档（vitality 为 null → no_observation）。 */
-export function classifyStatus(vitality: number | null, config: VitalityConfig): ImpactStatus {
-    if (vitality === null || !Number.isFinite(vitality)) return 'no_observation';
-    if (vitality >= config.aliveMin) return 'alive';
-    if (vitality < config.expiredMax) return 'expired';
-    return 'fading';
+/** 单日是否反向（与主导方向相反且幅度达标）；neutral 无方向，不判反向。 */
+export function judgeReversed(dailyExcess: number, direction: Direction, excessMinPct: number): boolean {
+    if (!Number.isFinite(dailyExcess)) return false;
+    if (direction === 'bullish') return dailyExcess <= -excessMinPct;
+    if (direction === 'bearish') return dailyExcess >= excessMinPct;
+    return false;
+}
+
+/** 状态判定输入。 */
+export interface ImpactJudgement {
+    /** 是否有可观测行情（观测日为 0 → false） */
+    observable: boolean;
+    /** 窗口内是否形成过定向传导（aligned_days ≥ 1） */
+    everAligned: boolean;
+    /** 事件距统计日的自然日 */
+    ageDays: number;
+    /** 类型期限（自然日，见 eventHorizonDays） */
+    horizonDays: number;
+    /** 是否被反向证伪（曾传导后最近连续反向） */
+    reversed: boolean;
+}
+
+/**
+ * 状态判定：先按类型期限定寿命，再判是否消散。
+ *
+ * - 从未形成定向传导 → fading：没起效 ≠ 已消散，不得标「影响已消散」；
+ * - 曾传导 + 到期 / 被反向证伪 → expired（唯一需要前端标注的档）；
+ * - 其余 → alive（仍在有效期内，默认预期，不标注）。
+ */
+export function judgeImpactStatus(input: ImpactJudgement): ImpactStatus {
+    if (!input.observable) return 'no_observation';
+    if (!input.everAligned) return 'fading';
+    if (input.reversed || input.ageDays >= input.horizonDays) return 'expired';
+    return 'alive';
 }
 
 /** YYYY-MM-DD 加 N 天（自然日，固定 +08）。 */
@@ -484,16 +523,21 @@ export function computeVitality(input: VitalityComputationInput): VitalityResult
     const reinforce = Math.min(reinforceCount / config.reinforceTarget, 1);
 
     const ageDays = diffDays(baseline.event_date, statDate);
-    const category = normalizeEventTypeCategory(baseline.event_type);
-    const halfLife = config.halfLifeByType[category] ?? config.halfLifeDefault;
-    const decay = decayFactor(ageDays, halfLife);
+    const horizonDays = eventHorizonDays(baseline.event_type, config);
+
+    // 反向证伪：从最新观测日往回数「连续反向超额」天数（弱归因日不阻断，看的是板块本身走势）
+    let reversalRun = 0;
+    for (let i = dayStats.length - 1; i >= 0; i--) {
+        if (judgeReversed(dayStats[i].excess, direction, config.excessMinPct)) reversalRun += 1;
+        else break;
+    }
 
     const base =
         config.weights.aligned * alignedRatio +
         config.weights.recency * recencyScore +
         config.weights.cumExcess * cumExcess +
         config.weights.reinforce * reinforce;
-    const vitality = round3(clamp01(base * decay));
+    const vitality = round3(clamp01(base));
 
     const observedIndustries: ObservedIndustry[] = [...perIndustry.values()].map((s) => ({
         ...s,
@@ -502,7 +546,13 @@ export function computeVitality(input: VitalityComputationInput): VitalityResult
 
     return {
         vitality,
-        impact_status: classifyStatus(vitality, config),
+        impact_status: judgeImpactStatus({
+            observable: true,
+            everAligned: alignedDays > 0,
+            ageDays,
+            horizonDays,
+            reversed: reversalRun >= config.reversalDays,
+        }),
         observed_industries: observedIndustries,
         reinforce_count: reinforceCount,
         benchmark: config.benchmarkCode,

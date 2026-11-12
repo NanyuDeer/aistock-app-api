@@ -305,4 +305,32 @@ describe('StockTraceService 事件投影（报告数据来源）', () => {
         assert.ok(seenSql.includes('e.trading_date::text'), 'SQL 未把 trading_date 转文本');
         assert.equal(event?.trading_date, '2026-09-13');
     });
+
+    it('getTriggerEvent 投影含 trading_date::text（归因快照按交易日取文章）', async () => {
+        let seenSql = '';
+        mock.method(pool, 'query', async (sql: unknown) => {
+            const text = typeof sql === 'string' ? sql : String((sql as { text?: string }).text ?? '');
+            if (text.includes('INNER JOIN stock_trace_event_revisions')) {
+                seenSql = text;
+                return {
+                    rows: [{
+                        event_id: 'mv:1', symbol: '003018', stock_name: '某科技', direction: 'up',
+                        trading_date: '2026-11-06', trigger_revision: 1,
+                        triggered_at: new Date('2026-11-06T01:30:00Z'),
+                        window_start_at: new Date('2026-11-06T01:30:00Z'),
+                        window_end_at: new Date('2026-11-06T03:00:00Z'),
+                        latest_price: '15.5', previous_close: '14.15',
+                        actual_value: '9.5', threshold_value: '7',
+                        severity: 'high', rule_version: 'price-v1',
+                    }],
+                };
+            }
+            return { rows: [] };
+        });
+        const event = await StockTraceService.getTriggerEvent('mv:1');
+        // DATE 列必须转文本：否则 String(Date).slice(0,10) = "Fri Nov 06"，
+        // collectInsightArticleSources 的 trade_date=$1::date 会报 invalid input syntax
+        assert.ok(seenSql.includes('e.trading_date::text'), 'SQL 未把 trading_date 转文本');
+        assert.equal(event?.tradingDate, '2026-11-06');
+    });
 });

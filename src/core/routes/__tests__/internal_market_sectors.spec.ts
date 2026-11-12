@@ -2,9 +2,10 @@
  * GET /internal/market/sectors — 盘内板块快照（午间报机会/风险候选源）
  *
  * 用例：
- * 1. 正常四源 → 200，indexes[].code 归一化为 6 位（去 .SH/.SZ）
- * 2. breadth.advance_ratio 由 advance_count/total_count 现算
- * 3. gainers[].pct_change 由 Tencent zdf 映射（toSectorFact）
+ * 1. 正常四源 → 200，indexes[].code 归一化为 6 位（去 .SH/.SZ），close 原样透传
+ * 2. indexes[] 上游缺 close 时输出 null（不得缺键、不得用 pct_chg 反推）
+ * 3. breadth.advance_ratio 由 advance_count/total_count 现算
+ * 4. gainers[].pct_change 由 Tencent zdf 映射（toSectorFact）
  *
  * Mock 策略：路由在请求时 dynamic-import TencentSnapshotService，测试直接
  * 重赋值其 static 方法（class 静态属性可写），命中同一模块实例。
@@ -108,12 +109,32 @@ describe('GET /internal/market/sectors', () => {
         const res = await call(app, '/internal/market/sectors');
 
         assert.strictEqual(res.status, 200);
-        const body = res.json as { code: number; data: { indexes: { code: string }[]; breadth: { advance_ratio: number }; gainers: { pct_change: number }[]; availability: { state: string } } };
+        const body = res.json as { code: number; data: { indexes: { code: string; close: number | null }[]; breadth: { advance_ratio: number }; gainers: { pct_change: number }[]; availability: { state: string } } };
         assert.strictEqual(body.code, 200);
         assert.strictEqual(body.data.indexes[0].code, '000001'); // ts_code 归一化去 .SH
+        assert.strictEqual(body.data.indexes[0].close, 3400); // CloseIndexFact.close 原样透传（盘中点位）
         assert.ok(Math.abs(body.data.breadth.advance_ratio - 0.62) < 1e-9); // 3100/5000 现算
         assert.strictEqual(body.data.gainers[0].pct_change, 3.2); // zdf → pct_change
         assert.strictEqual(body.data.availability.state, 'available');
+    });
+
+    it('emits close: null when the upstream index fact has no close', async () => {
+        // 上游缺字段时不得用 pct_chg 反推，也不得缺键
+        TencentSnapshotService.fetchIndexes = async () =>
+            ([{ ts_code: '000001.SH', name: '上证指数', trade_date: '', pct_chg: 0.35, amount: 1e8, source: 'tushare:index_daily' } as unknown as CloseIndexFact]);
+        TencentSnapshotService.fetchMarketBreadth = async () =>
+            ({ breadth: { total_count: 5000, advance_count: 3100, avg_change_pct: 0.4 } as never, availability: { state: 'available' } });
+        TencentSnapshotService.fetchTencentBoardRank = async (_boardType, direct) =>
+            ([{ code: 'BK001', name: '半导体', zdf: '3.2', zljlr: '12.3', lzg: { name: '中芯' } }]);
+
+        const app = buildApp();
+        const res = await call(app, '/internal/market/sectors');
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { code: number; data: { indexes: Record<string, unknown>[] } };
+        assert.strictEqual(body.data.indexes[0].close, null);
+        assert.ok(Object.prototype.hasOwnProperty.call(body.data.indexes[0], 'close')); // 键必须存在
+        assert.strictEqual(body.data.indexes[0].code, '000001');
     });
 
     it('returns partial availability when some sources reject', async () => {

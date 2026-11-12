@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { buildRowsFromMrpm, mergeRotationRows, normalizeTradingDate, type MrpmPayload, type DailyRotationRow } from '../RotationBoardStore';
+import { buildRowsFromMrpm, computePctMap, mergeRotationRows, normalizeTradingDate, type MrpmPayload, type DailyRotationRow } from '../RotationBoardStore';
 
 function day(datetime: string, codes: [string, string][]): MrpmPayload['up'][number] {
     return { datetime, stocks: codes.map(([stockcode, stockname]) => ({ stockcode, stockname })) };
@@ -87,5 +87,20 @@ describe('mergeRotationRows：mrpm 覆盖的日期以 mrpm 为准', () => {
         assert.equal(day1012.length, 1, '同一天只能有一套行');
         assert.equal(day1012[0].board_code, '881274', '10-12 应以 mrpm 为准');
         assert.equal(normalizeTradingDate(merged.find((r) => r.board_code === '881107')!.trading_date), '2026-10-08', '未覆盖日保留');
+    });
+});
+
+describe('computePctMap：日期键与 mrpm 同口径', () => {
+    // 回归：last.js K 线日期键是 YYYYMMDD，而 mrpm 的 datetime 经 normalizeTradingDate
+    // 变为 YYYY-MM-DD；若 computePctMap 输出仍保留 YYYYMMDD，syncRotationHistory 里
+    // pctMap.get(code)?.get(date) 恒 miss → 近 30 日 pct_change 全部写 0。
+    it('输出键为 YYYY-MM-DD，buildRowsFromMrpm 能取到真实 pct', () => {
+        const klines = new Map([['881274', new Map([['20261009', 100], ['20261012', 105.5]])]]);
+        const pctMap = computePctMap(klines);
+        assert.equal(pctMap.get('881274')?.get('2026-10-12'), 5.5, '应按 YYYY-MM-DD 命中');
+
+        const mrpm: MrpmPayload = { up: [day('2026-10-12', [['881274', '影视院线']])], down: [] };
+        const rows = buildRowsFromMrpm(mrpm, (code, date) => pctMap.get(code)?.get(date));
+        assert.equal(rows[0].pct_change, 5.5, 'mrpm 覆盖日的 pct 不应被记 0');
     });
 });

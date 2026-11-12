@@ -483,8 +483,10 @@ export class StockTraceService {
     }
 
     private static async createUserEvents(client: PoolClient, eventId: string, symbol: string): Promise<string[]> {
+        // openid 为 NULL 的持仓行（存量脏数据，实测 25/160）不能进关联表：
+        // stock_trace_user_events.openid 为 NOT NULL，插入即抛错并回滚整个事件创建事务。
         const recipients = await client.query<{ openid: string }>(`
-            SELECT openid FROM user_stocks WHERE symbol = $1
+            SELECT openid FROM user_stocks WHERE symbol = $1 AND openid IS NOT NULL
         `, [symbol]);
         for (const recipient of recipients.rows) {
             await client.query(`
@@ -1018,7 +1020,7 @@ export class StockTraceService {
     static async getTriggerEvent(eventId: string, triggerRevision?: number): Promise<TriggerEvent | null> {
         await this.ensureSchema();
         const result = await pool.query(`
-            SELECT e.event_id, e.symbol, e.stock_name, e.trading_date, e.direction, e.window_start_at, e.window_end_at,
+            SELECT e.event_id, e.symbol, e.stock_name, e.trading_date::text AS trading_date, e.direction, e.window_start_at, e.window_end_at,
                    r.trigger_revision, r.triggered_at, r.latest_price, r.previous_close,
                    r.actual_value, r.threshold_value, r.severity, r.rule_version
             FROM stock_trace_events e

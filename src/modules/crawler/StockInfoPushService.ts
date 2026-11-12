@@ -113,15 +113,32 @@ export class StockInfoPushService {
             const notificationCandidates = await StockInfoService.getAppNotificationCandidates(window);
             summary.candidates += candidates.length;
 
+            // 个股资讯异动只应承载「这只股票自己的资讯」：研判行的 stock_name 若与该 symbol 的
+            // 权威名称不一致，说明这篇资讯属于别的股票（同一篇文章被多只股票抓到、冲突更新后
+            // 名称与代码错配），建通知会让别家资讯出现在当前股票的自选消息里，故直接跳过。
+            const authoritativeNames = await StockInfoService.getStockNamesBySymbols(
+                notificationCandidates.map(judgement => judgement.symbol),
+            );
+
             // App 通知中心保留该时间窗口内所有资讯研判；外部渠道仍只推重大事件。
             for (const judgement of notificationCandidates) {
+                const authoritativeName = authoritativeNames.get(judgement.symbol);
+                const judgementName = String(judgement.stock_name || '').trim();
+                if (authoritativeName && judgementName && judgementName !== authoritativeName) {
+                    console.warn(
+                        `[StockInfoPush] 跳过归属不一致的资讯: symbol=${judgement.symbol} ` +
+                        `研判名称=${judgementName} 权威名称=${authoritativeName}`,
+                    );
+                    continue;
+                }
+                const stockName = authoritativeName || judgementName || judgement.symbol;
                 try {
                     await NotificationService.createForWatchers({
                         category: 'stock_info',
                         sourceKey: `stock-info:${judgement.id}`,
                         symbol: judgement.symbol,
-                        stockName: judgement.stock_name || undefined,
-                        title: `${judgement.stock_name || judgement.symbol}：资讯异动`,
+                        stockName,
+                        title: `${stockName}：资讯异动`,
                         // 与个股详情“个股异动”列表保持一致，方便用户跳转后识别同一条资讯。
                         summary: judgement.title || judgement.ai_summary || '自选股资讯出现新动态',
                         targetPath: `/modules/favorites/pages/detail?symbol=${encodeURIComponent(judgement.symbol)}&anchor=stock-info`,
