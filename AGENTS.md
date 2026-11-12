@@ -334,6 +334,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 15:35 | 板块轮动榜同步 | RotationBoardStore.syncRotationHistory（交易日收盘后增量，幂等；首次部署启动时自动回填近140交易日） |
 | 15:50 | 事件影响存活度 | EventImpactVitalityService.runVitalityDaily（交易日守卫；`VITALITY_ENABLED` 默认 true 生产启用，显式设 false 可关闭计算） |
 | 19:05 | 收盘后任务 | — |
+| 20:30 | 宏观预期快照 | `fetchAndStore(7)` 落 `macro_expectations`（今日 + 未来 7 天，point-in-time 回溯供 M1 预期差）；**不挂交易日守卫**，失败只告警不重试 |
 
 > 所有 cron 任务必须指定 `{ timezone: 'Asia/Shanghai' }`。
 >

@@ -95,6 +95,9 @@ import { PriceTriggerDetector } from './modules/stock-trace/PriceTriggerDetector
 import { PerformanceReportController } from './modules/monitor/performanceReportController';
 import { StockSyncService } from './modules/monitor/StockSyncService';
 
+// causal 归因输入模块（MCRE M0：宏观预期需每日落库，M1 预期差要用 point-in-time 快照）
+import { fetchAndStore as fetchMacroExpectations } from './modules/causal/macroExpectationService';
+
 // insight 自选股洞察模块
 import { runCycle as runInsightCycle } from './modules/insight/InsightService';
 import insightInternalRouter from './modules/insight/internalRouter';
@@ -740,6 +743,19 @@ cron.schedule('0 2 * * *', async () => {
         console.log('[TrendCron] 批量趋势股评分完成');
     } catch (err: unknown) {
         console.error('[TrendCron] 批量趋势股评分失败:', err instanceof Error ? err.message : String(err));
+    }
+}, { timezone: 'Asia/Shanghai' });
+
+// 宏观预期快照 — 每日 20:30（清单 §5：M1 预期差基线，必须每日落库；不接调度则表永远停在首灌数据）
+// 刻意不挂 runIfTradingDay：宏观日历与 A 股交易日无关，周末/节假日同样有海外数据发布，
+// 且抓的是「今日 + 未来 7 天」窗口，漏一天就少一天快照。
+// 失败只告警不重试：下游 queryExpectations 缺数据返回 null，不阻断归因主流程。
+cron.schedule('30 20 * * *', async () => {
+    try {
+        const written = await fetchMacroExpectations(7);
+        console.log(`[MacroExpectationCron] 写入 ${written} 行`);
+    } catch (err: unknown) {
+        console.error('[MacroExpectationCron] 抓取失败:', err instanceof Error ? err.message : String(err));
     }
 }, { timezone: 'Asia/Shanghai' });
 

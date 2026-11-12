@@ -1,5 +1,21 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-12 — 宏观预期快照接入每日定时任务（MCRE M0 收尾）
+
+**开发者**: NanyuDeer
+
+### 新增
+
+- `src/index.ts`：新增 `cron.schedule('30 20 * * *', ...)`，每日 20:30（Asia/Shanghai）执行 `fetchAndStore(7)`，把「今日 + 未来 7 天」宏观日历写入 `macro_expectations`。此前该函数只被验证脚本调用、未接调度，表会停在首灌数据，M1 预期差无法每日更新。
+- 刻意不挂 `runIfTradingDay`：宏观日历与 A 股交易日无关（周末/节假日仍有海外数据发布），且抓取窗口滚动 7 天，漏一天就少一天快照；失败只告警不重试，下游 `queryExpectations` 缺数据返回 null，不阻断归因主流程。
+
+### 验证
+
+- `npx tsc --noEmit` 通过。
+- 服务器手工执行同函数：写入 5 行、point-in-time 可见 4 个指标；`tradeDate=2026-11-13` 复测 `/internal/market/causal-inputs` 的 `completeness.macro_expectations=true`。
+
+---
+
 ## [junliang] 2026-11-11 — 异动溯源 P0 补充与体验修复
 
 **开发者**: junliang
