@@ -21,6 +21,7 @@ import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { buildCausalInputs } from '../../modules/causal/causalInputsService'
+import { getMappings, upsertMappings } from '../../modules/causal/eventNodeMappingService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import {
     getEventVitality,
@@ -1174,6 +1175,68 @@ router.post('/market/causal-inputs', async (req: Request, res: Response) => {
         res.json({ code: 0, data })
     } catch (err: unknown) {
         console.error('[Internal] market/causal-inputs error:', errMsg(err))
+        res.status(500).json({ code: -1, message: errMsg(err) })
+    }
+})
+
+/**
+ * POST /internal/event-node-mappings/upsert
+ *
+ * 事件 → 图谱节点映射落库。Python 侧算完向量召回与图谱确认后回调本接口。
+ * 落库的意义不只是性能：向量召回不可复现，缓存后回放才能拿到同一份映射。
+ */
+router.post('/event-node-mappings/upsert', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const eventId = String(body.eventId ?? '')
+    const mappings = body.mappings
+
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId must not be empty' })
+        return
+    }
+    if (!Array.isArray(mappings)) {
+        res.status(400).json({ code: -1, message: 'mappings must be an array' })
+        return
+    }
+
+    try {
+        const written = await upsertMappings(
+            eventId,
+            mappings.map((item) => {
+                const row = (item ?? {}) as Record<string, unknown>
+                return {
+                    nodeId: String(row.nodeId ?? ''),
+                    similarity: Number(row.similarity),
+                    confirmed: Boolean(row.confirmed),
+                    reason: row.reason === undefined ? undefined : String(row.reason),
+                }
+            }),
+        )
+        res.json({ code: 0, data: { written } })
+    } catch (err: unknown) {
+        console.error('[Internal] event-node-mappings/upsert error:', errMsg(err))
+        res.status(400).json({ code: -1, message: errMsg(err) })
+    }
+})
+
+/**
+ * GET /internal/event-node-mappings?eventId=xxx
+ *
+ * 读取映射缓存。cached=false 表示从未计算过；cached=true 但 mappings 为空
+ * 表示算过但全部被过滤——两者不可混用，否则每次回放都会重跑 embedding。
+ */
+router.get('/event-node-mappings', async (req: Request, res: Response) => {
+    const eventId = String(req.query.eventId ?? '')
+    if (!eventId) {
+        res.status(400).json({ code: -1, message: 'eventId is required' })
+        return
+    }
+
+    try {
+        const data = await getMappings(eventId)
+        res.json({ code: 0, data: { eventId, ...data } })
+    } catch (err: unknown) {
+        console.error('[Internal] event-node-mappings error:', errMsg(err))
         res.status(500).json({ code: -1, message: errMsg(err) })
     }
 })
