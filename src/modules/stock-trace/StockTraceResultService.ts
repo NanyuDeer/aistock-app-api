@@ -182,14 +182,27 @@ export function validateStockTraceResult(input: ValidationInput): string[] {
         if ((input.confidenceScore || 0) < 0.75) errors.push('confirmed:confidence_below_threshold');
         const companyEvidence = input.candidates.find((candidate) => candidate.layer === 'company')?.supportingEvidenceIds
             .map((id) => sourceMap.get(id)).filter((source): source is StockSourceRecord => Boolean(source)) || [];
-        const hasAEvent = companyEvidence.some((source) => source.sourceLevel === 'A');
-        const hasBEvent = companyEvidence.some((source) => source.sourceLevel === 'B' && valueDirection(source) === input.direction);
+        const companyEvents = companyEvidence.filter((source) => source.kind === 'announcement' || source.kind === 'news');
+        const hasAEvent = companyEvents.some((source) => source.sourceLevel === 'A');
+        const hasBEvent = companyEvents.some((source) => source.sourceLevel === 'B' && valueDirection(source) === input.direction);
         const hasIndependentFact = input.sources.some((source) => (source.kind === 'sector_fact' || source.kind === 'market_fact') && source.sourceLevel !== 'D' && valueDirection(source) === input.direction && Boolean(source.occurredAt) && source.occurredAt!.getTime() <= input.windowEndAt.getTime());
         if (!hasAEvent && !hasBEvent) errors.push('confirmed:missing_qualified_company_event');
         if (!hasAEvent && !hasIndependentFact) errors.push('confirmed:missing_independent_market_fact');
         if (companyEvidence.some((source) => source.sourceLevel === 'D')) errors.push('confirmed:grade_d_evidence');
     }
     return errors;
+}
+
+function sourcesAtTrigger(sources: StockSourceRecord[], fallback: Date): StockSourceRecord[] {
+    const trigger = sources.find((source) => source.kind === 'trigger_fact');
+    const cutoff = (trigger?.occurredAt ?? fallback).getTime();
+    return sources.filter((source) => {
+        const observed = source.payload.first_observed_at;
+        return (source.occurredAt ?? source.capturedAt).getTime() <= cutoff
+            && (typeof observed !== 'string' || Date.parse(observed) <= cutoff)
+            && (source.kind === 'trigger_fact' || source.kind === 'quote_fact'
+                || !source.windowEnd || source.windowEnd.getTime() <= cutoff);
+    });
 }
 
 export class StockTraceResultService {
@@ -229,9 +242,13 @@ export class StockTraceResultService {
         if (!snapshot) throw new Error('snapshot_not_found');
         const triggerSource = snapshot.sourceRecords.find((source) => source.kind === 'trigger_fact');
         if (!triggerSource) throw new Error('snapshot_missing_trigger_fact');
-        const companyEvidence = snapshot.sourceRecords.filter((source) => (source.kind === 'announcement' || source.kind === 'news') && source.occurredAt && source.occurredAt.getTime() <= snapshot.windowEndAt.getTime());
-        const sectorFacts = snapshot.sourceRecords.filter((source) => source.kind === 'sector_fact' && source.occurredAt && source.occurredAt.getTime() <= snapshot.windowEndAt.getTime());
-        const marketFacts = snapshot.sourceRecords.filter((source) => source.kind === 'market_fact' && source.occurredAt && source.occurredAt.getTime() <= snapshot.windowEndAt.getTime());
+        const cutoff = (triggerSource.occurredAt ?? snapshot.windowEndAt).getTime();
+        const timely = sourcesAtTrigger(snapshot.sourceRecords, snapshot.windowEndAt);
+        const companyEvidence = timely.filter((source) => source.kind === 'announcement' || source.kind === 'news');
+        const sectorFacts = timely.filter((source) => source.kind === 'sector_fact'
+            && source.occurredAt && cutoff - source.occurredAt.getTime() <= 300_000);
+        const marketFacts = timely.filter((source) => source.kind === 'market_fact'
+            && source.occurredAt && cutoff - source.occurredAt.getTime() <= 300_000);
         const sectorEvidence = sectorFacts.filter((source) => valueDirection(source) === snapshot.direction);
         const marketEvidence = marketFacts.filter((source) => valueDirection(source) === snapshot.direction);
         const sectorCounter = sectorFacts.filter((source) => valueDirection(source) !== null && valueDirection(source) !== 'neutral' && valueDirection(source) !== snapshot.direction);
@@ -298,7 +315,8 @@ export class StockTraceResultService {
         }));
         const validationErrors = validateStockTraceResult({
             attributionStatus: input.attribution_status, confidenceScore: input.confidence_score,
-            candidates, chains, sources: snapshot.sourceRecords, windowEndAt: snapshot.windowEndAt,
+            candidates, chains, sources: sourcesAtTrigger(snapshot.sourceRecords, snapshot.windowEndAt),
+            windowEndAt: snapshot.windowEndAt,
             direction: snapshot.direction,
         });
         const result: StockTraceResult = {

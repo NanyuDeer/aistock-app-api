@@ -3,7 +3,7 @@ import pool from '../../core/db';
 import { ClsStockNewsService } from '../monitor/ClsStockNewsService';
 import { StockInfoService } from '../crawler/StockInfoService';
 import { StockTraceJobService } from './StockTraceJobService';
-import { getThsDaily, getThsIndex } from '../quote/TushareService';
+import { getThsDaily, getThsIndex, type ThsIndexRow } from '../quote/TushareService';
 import { getCnIndexQuoteFacts } from '../quote/indexController';
 import { asBeijingAwareText, shanghaiDateStr, shanghaiDateYyyymmdd } from '../../shared/utils/shanghaiTime';
 import type { CapitalFlowResult } from '../quote/TushareCapitalFlowService';
@@ -33,6 +33,51 @@ const COLLECTOR_VERSIONS = {
 
 let schemaPromise: Promise<void> | null = null;
 
+// 宽基指数 / 两融 / 互联互通：几乎覆盖全市场，与个股异动无因果关联，
+// 不作为板块证据，也不参与板块消息召回（与 agent-py sector_tagging.py 保持一致）。
+const BROAD_SECTOR_MARKERS = ['成份股', '成分股'];
+const BROAD_SECTOR_NAMES = new Set([
+    '上证50', '上证180', '沪深300', '中证100', '中证500', '中证1000',
+    '深证100', '创业板指', '科创50', '融资融券', '转融券标的',
+    '沪股通', '深股通', '港股通', 'MSCI中国', '富时罗素', '标普道琼斯A股',
+]);
+
+export function isBroadSectorName(name: string): boolean {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    if (BROAD_SECTOR_NAMES.has(trimmed)) return true;
+    return BROAD_SECTOR_MARKERS.some((marker) => trimmed.includes(marker));
+}
+
+/**
+ * 选出用于板块证据与板块消息召回的板块（最多 `limit` 个）。
+ *
+ * 旧口径按 `sector_name` 字母序 `LIMIT 3`，会把「上证180成份股 / 低空经济 /
+ * DeepSeek概念」这类宽泛板块排在最前，既无法解释个股异动，又会召回大量噪声。
+ * 新口径：
+ * 1. 排除宽基/两融/互联互通；
+ * 2. 按成分股数量升序 —— 板块越窄越具体，越能描述个股身份；
+ * 3. 行情索引缺失的板块排在最后（仍保留名称，供字面召回兜底）。
+ */
+export function selectSectorBoardNames(
+    sectorNames: readonly string[],
+    indexByName: ReadonlyMap<string, { count?: number }>,
+    limit = 3,
+): string[] {
+    const memberCount = (name: string): number => {
+        const count = indexByName.get(name)?.count;
+        return typeof count === 'number' && Number.isFinite(count)
+            ? count
+            : Number.POSITIVE_INFINITY;
+    };
+    return sectorNames
+        .filter((name) => !isBroadSectorName(name))
+        .sort((left, right) => (
+            memberCount(left) - memberCount(right) || left.localeCompare(right, 'zh-CN')
+        ))
+        .slice(0, limit);
+}
+
 function stableJson(value: unknown): string {
     if (value instanceof Date) return JSON.stringify(value.toISOString());
     if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -50,7 +95,7 @@ function hash(value: unknown): string {
 }
 
 // 增量采集复用域：盘中基本不变，修订时复用上一版本 enriched 快照；价格相关域重采
-const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'market_fact', 'insight_article']);
+const INCREMENTAL_REUSE_KINDS = new Set<StockSourceRecord['kind']>(['news', 'announcement', 'sector_fact', 'sector_news', 'insight_article']);
 
 export function pickReusableSources(records: StockSourceRecord[]): StockSourceRecord[] {
     return records.filter((record) => INCREMENTAL_REUSE_KINDS.has(record.kind));
@@ -65,7 +110,7 @@ export function reusedDomainAvailability(reused: StockSourceRecord[]): Array<{ l
     const kinds = new Set(reused.map((record) => record.kind));
     const counts: Array<{ layer: DataReadinessDomains; count: number }> = [];
     if (kinds.has('news') || kinds.has('announcement')) counts.push({ layer: 'company', count: 1 });
-    if (kinds.has('sector_fact')) counts.push({ layer: 'sector', count: 1 });
+    if (kinds.has('sector_fact') || kinds.has('sector_news')) counts.push({ layer: 'sector', count: 1 });
     if (kinds.has('market_fact')) counts.push({ layer: 'market', count: 1 });
     if (kinds.has('insight_article')) counts.push({ layer: 'article', count: 1 });
     return counts;
@@ -172,6 +217,10 @@ interface EventStoreEvent {
     scrape_at?: string;
     score_date?: string;
     payload?: Record<string, unknown>;
+    /** 板块标签（标准板块名，Python 侧纯规则计算） */
+    sector_tags?: string[];
+    /** 匹配方式：仅在按板块召回时由 Python 写入（sector=仅板块命中 / both=个股+板块） */
+    match_type?: string;
 }
 
 function isEventStoreEvent(value: unknown): value is EventStoreEvent {
@@ -181,7 +230,9 @@ function isEventStoreEvent(value: unknown): value is EventStoreEvent {
 
 /** 事件库事件 → StockSourceRecord（字段映射按简报 Step 4；contentHash 由 sourceRecord() 自动计算）。 */
 function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedAt: Date): StockSourceRecord {
-    const occurredAt = asDate(ev.scrape_at, capturedAt);
+    const firstObservedAt = asDate(ev.scrape_at, capturedAt);
+    const publishedAt = ev.payload?.published_at ?? ev.payload?.publish_time ?? ev.payload?.time;
+    const occurredAt = typeof publishedAt === 'string' ? asDate(publishedAt, firstObservedAt) : firstObservedAt;
     const summary = typeof ev.summary === 'string' ? ev.summary : '';
     const title = typeof ev.title === 'string' && ev.title ? ev.title : '无标题';
     const sourceLevel: SourceLevel =
@@ -197,7 +248,8 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
             : (typeof ev.payload?.symbol === 'string' ? ev.payload.symbol : undefined);
     return sourceRecord({
         sourceId: ev.event_id,
-        kind: ev.source === 'announcement' ? 'announcement' : 'news',
+        // 仅板块命中的板块消息 → 独立证据类型，避免被当作公司个体事实
+        kind: ev.match_type === 'sector' ? 'sector_news' : ev.source === 'announcement' ? 'announcement' : 'news',
         provider: typeof ev.source === 'string' && ev.source ? ev.source : 'event_store',
         sourceLevel,
         title,
@@ -210,9 +262,13 @@ function toEventStoreSourceRecord(ev: EventStoreEvent, symbol: string, capturedA
         freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - occurredAt.getTime()) / 1000)),
         payload: {
             symbol: payloadSymbol,
+            first_observed_at: firstObservedAt.toISOString(),
             involved_keywords: Array.isArray(ev.involved_keywords) ? ev.involved_keywords : [],
             direction: typeof ev.direction === 'string' ? ev.direction : undefined,
             impact_score: typeof ev.impact_score === 'number' ? ev.impact_score : undefined,
+            // 板块召回可解释性：记录命中的板块标签与匹配方式（排查"为什么这条证据进来了"）
+            sector_tags: Array.isArray(ev.sector_tags) ? ev.sector_tags : undefined,
+            match_type: typeof ev.match_type === 'string' ? ev.match_type : undefined,
         },
     });
 }
@@ -298,10 +354,18 @@ export function toCapitalSourceRecord(
  * StockTraceTriggerService 的 fetch + X-Internal-Token 先例）。
  * date 用上海时区当日（shanghaiDateStr），与 Node 侧交易日约定一致。
  *
+ * `sectors`（可选）：个股所属板块名。传入时 Python 额外召回「板块标签命中」的
+ * 板块消息，并写入 `match_type`；本函数据此把**仅板块命中**的事件映射为
+ * `kind='sector_news'`（归 sector 域），`both` 仍按个股新闻处理（归 company 域）。
+ *
  * 任何失败（未配置 / 网络错 / HTTP 错 / 解析错）或空结果都返回 []，
  * 由调用方降级到原采集路径——绝不抛异常（P0 功能保护）。
  */
-export async function loadEventStoreEvidence(symbol: string, capturedAt: Date): Promise<StockSourceRecord[]> {
+export async function loadEventStoreEvidence(
+    symbol: string,
+    capturedAt: Date,
+    sectors?: string[],
+): Promise<StockSourceRecord[]> {
     // 与 app-api 反代一致（index.ts:135 AGENT_PY_URL 优先，PYTHON_AGENT_URL 兼容旧命名）
     const baseUrl = process.env.AGENT_PY_URL || process.env.PYTHON_AGENT_URL || '';
     const token = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || '';
@@ -312,7 +376,10 @@ export async function loadEventStoreEvidence(symbol: string, capturedAt: Date): 
         });
         return [];
     }
-    const url = `${baseUrl.replace(/\/+$/, '')}/api/agent/event/scrape-by-symbol/${encodeURIComponent(symbol)}?date=${shanghaiDateStr()}`;
+    const sectorsQuery = sectors && sectors.length > 0
+        ? `&sectors=${encodeURIComponent(sectors.join(','))}`
+        : '';
+    const url = `${baseUrl.replace(/\/+$/, '')}/api/agent/event/scrape-by-symbol/${encodeURIComponent(symbol)}?date=${shanghaiDateStr()}${sectorsQuery}`;
     try {
         const response = await fetch(url, {
             method: 'GET',
@@ -413,32 +480,35 @@ export class StockTraceSnapshotService {
             freshnessSeconds: Math.max(0, Math.floor((capturedAt.getTime() - event.triggeredAt.getTime()) / 1000)),
             payload: { latest_price: event.latestPrice, previous_close: event.previousClose, change_pct: event.actualValue },
         });
+        const market = await this.captureTriggerMarket(event);
         return this.persist({
-            event, stage: 'initial', capturedAt, sourceRecords: [trigger, quote],
+            event, stage: 'initial', capturedAt, sourceRecords: [trigger, quote, ...market],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' },
+            dataReadiness: { company: 'missing', sector: 'missing', market: market.length ? 'partial' : 'missing', capital: 'missing', technical: 'missing', article: 'missing' },
         });
     }
 
     static async captureCorrected(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
+        const triggerMarket = this.captureTriggerMarket(event);
         // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
         if (incremental) {
             const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
             if (previousRecords && previousRecords.length > 0) {
                 const reused = pickReusableSources(previousRecords);
+                const market = await triggerMarket;
                 const [capital, technical] = await Promise.allSettled([
                     withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
                     withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
                 ]);
                 const sourceRecords = [
                     ...this.baseSources(event, capturedAt),
-                    ...reused,
+                    ...reused, ...market,
                     ...(capital.status === 'fulfilled' ? capital.value : []),
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
-                    ...reusedDomainAvailability(reused),
+                    ...reusedDomainAvailability([...reused, ...market]),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
@@ -446,11 +516,11 @@ export class StockTraceSnapshotService {
                 return this.persist({ event, stage: 'corrected', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
         }
-        const initial = await this.captureInitialForStage(event, 'corrected');
+        const initial = await this.captureInitialForStage(event, 'corrected', await triggerMarket);
         return initial;
     }
 
-    private static async captureInitialForStage(event: TriggerEvent, stage: 'corrected'): Promise<StockTraceSnapshot> {
+    private static async captureInitialForStage(event: TriggerEvent, stage: 'corrected', market: StockSourceRecord[]): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
         const trigger = sourceRecord({
             sourceId: `trigger:${event.eventId}:r${event.triggerRevision}`, kind: 'trigger_fact',
@@ -466,9 +536,9 @@ export class StockTraceSnapshotService {
             symbol: event.symbol, windowStart: event.windowStartAt, windowEnd: event.windowEndAt, occurredAt: event.triggeredAt, capturedAt,
             payload: { latest_price: event.latestPrice, previous_close: event.previousClose, change_pct: event.actualValue },
         });
-        return this.persist({ event, stage, capturedAt, sourceRecords: [trigger, quote],
+        return this.persist({ event, stage, capturedAt, sourceRecords: [trigger, quote, ...market],
             missingFields: ['company_context', 'sector_context', 'market_context'],
-            dataReadiness: { company: 'missing', sector: 'missing', market: 'missing', capital: 'missing', technical: 'missing', article: 'missing' } });
+            dataReadiness: { company: 'missing', sector: 'missing', market: market.length ? 'partial' : 'missing', capital: 'missing', technical: 'missing', article: 'missing' } });
     }
 
     static scheduleEnriched(event: TriggerEvent, incremental = false): void {
@@ -484,6 +554,7 @@ export class StockTraceSnapshotService {
 
     static async captureEnriched(event: TriggerEvent, incremental = false): Promise<StockTraceSnapshot> {
         const capturedAt = new Date();
+        const market = await this.readTriggerMarket(event);
         // 增量采集：修订时复用上一 enriched 快照"盘面基本不变"域，仅重采 capital/technical 与当期 baseSources
         if (incremental) {
             const previousRecords = await this.getLatestEnrichedForEvent(event.eventId);
@@ -495,12 +566,12 @@ export class StockTraceSnapshotService {
                 ]);
                 const sourceRecords = [
                     ...this.baseSources(event, capturedAt),
-                    ...reused,
+                    ...reused, ...market,
                     ...(capital.status === 'fulfilled' ? capital.value : []),
                     ...(technical.status === 'fulfilled' ? technical.value : []),
                 ];
                 const readiness = buildDataReadiness([
-                    ...reusedDomainAvailability(reused),
+                    ...reusedDomainAvailability([...reused, ...market]),
                     { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
                     { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
                 ]);
@@ -511,10 +582,9 @@ export class StockTraceSnapshotService {
                 return this.persist({ event, stage: 'enriched', capturedAt, sourceRecords, missingFields, dataReadiness: readiness });
             }
         }
-        const [company, sector, market, capital, technical, article] = await Promise.allSettled([
+        const [company, sector, capital, technical, article] = await Promise.allSettled([
             withinEnrichedBudget(this.collectCompanySources(event, capturedAt)),
             withinEnrichedBudget(this.collectSectorSources(event, capturedAt)),
-            withinEnrichedBudget(this.collectMarketSources(event, capturedAt)),
             withinEnrichedBudget(this.collectCapitalSources(event, capturedAt)),
             withinEnrichedBudget(this.collectTechnicalSources(event, capturedAt)),
             withinEnrichedBudget(this.collectInsightArticleSources(event, capturedAt)),
@@ -523,7 +593,7 @@ export class StockTraceSnapshotService {
             ...this.baseSources(event, capturedAt),
             ...(company.status === 'fulfilled' ? company.value : []),
             ...(sector.status === 'fulfilled' ? sector.value : []),
-            ...(market.status === 'fulfilled' ? market.value : []),
+            ...market,
             ...(capital.status === 'fulfilled' ? capital.value : []),
             ...(technical.status === 'fulfilled' ? technical.value : []),
             ...(article.status === 'fulfilled' ? article.value : []),
@@ -531,7 +601,7 @@ export class StockTraceSnapshotService {
         const readiness = buildDataReadiness([
             { layer: 'company', count: company.status === 'fulfilled' ? company.value.length : 0 },
             { layer: 'sector', count: sector.status === 'fulfilled' ? sector.value.length : 0 },
-            { layer: 'market', count: market.status === 'fulfilled' ? market.value.length : 0 },
+            { layer: 'market', count: market.length },
             { layer: 'capital', count: capital.status === 'fulfilled' ? capital.value.length : 0 },
             { layer: 'technical', count: technical.status === 'fulfilled' ? technical.value.length : 0 },
             { layer: 'article', count: article.status === 'fulfilled' ? article.value.length : 0 },
@@ -626,31 +696,111 @@ export class StockTraceSnapshotService {
     }
 
     private static async collectSectorSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const mapping = await pool.query<{ sector_name: string }>(`SELECT sector_name FROM stock_concept_mapping WHERE symbol = $1 ORDER BY sector_name LIMIT 3`, [event.symbol]);
+        const mapping = await pool.query<{ sector_name: string }>(`SELECT sector_name FROM stock_concept_mapping WHERE symbol = $1`, [event.symbol]);
         if (mapping.rows.length === 0) return [];
-        const indexRows = await getThsIndex('N', 'A');
-        const indexByName = new Map(indexRows.map((row) => [row.name, row]));
+
+        // 板块行情失败（Tushare 超时/限流）不能连带丢掉板块消息证据：
+        // 索引缺失时仍按「排除宽基 + 名称稳定序」选出板块，只跳过 sector_fact。
+        let indexByName = new Map<string, ThsIndexRow>();
+        try {
+            const indexRows = await getThsIndex('N', 'A');
+            indexByName = new Map(indexRows.map((row) => [row.name, row]));
+        } catch (err) {
+            console.warn('[StockTraceSnapshot] collectSectorFacts failed, keep sector news only', {
+                symbol: event.symbol,
+                error: err instanceof Error ? err.message : String(err),
+            });
+        }
+
+        const sectors = selectSectorBoardNames(
+            mapping.rows.map((row) => row.sector_name),
+            indexByName,
+        );
+        const records: StockSourceRecord[] = [];
         const startDate = new Date(capturedAt.getTime() - 10 * 24 * 60 * 60 * 1000);
         const startDateStr = shanghaiDateYyyymmdd(startDate);
-        const records: StockSourceRecord[] = [];
-        for (const board of mapping.rows) {
-            const index = indexByName.get(board.sector_name);
+        for (const boardName of sectors) {
+            const index = indexByName.get(boardName);
             if (!index) continue;
             try {
                 const dailyRows = await getThsDaily(index.ts_code, startDateStr);
                 const latest = dailyRows.sort((left, right) => String(right.trade_date).localeCompare(String(left.trade_date)))[0];
                 if (!latest) continue;
-                records.push(sourceRecord({ sourceId: `ths-board:${index.ts_code}:${latest.trade_date}`, kind: 'sector_fact', provider: 'ths', sourceLevel: 'B', title: board.sector_name, contentExcerpt: `Board latest daily change ${Number(latest.pct_change).toFixed(2)}% on ${latest.trade_date}.`, sourceRef: index.ts_code, symbol: event.symbol, occurredAt: tradeDateAsUtc(latest.trade_date, capturedAt), capturedAt, payload: { board_code: index.ts_code, board_name: board.sector_name, board_type: index.type, trade_date: latest.trade_date, pct_change: Number(latest.pct_change), close: Number(latest.close), turnover_rate: Number(latest.turnover_rate) } }));
+                records.push(sourceRecord({ sourceId: `ths-board:${index.ts_code}:${latest.trade_date}`, kind: 'sector_fact', provider: 'ths', sourceLevel: 'B', title: boardName, contentExcerpt: `Board latest daily change ${Number(latest.pct_change).toFixed(2)}% on ${latest.trade_date}.`, sourceRef: index.ts_code, symbol: event.symbol, occurredAt: tradeDateAsUtc(latest.trade_date, capturedAt), capturedAt, payload: { board_code: index.ts_code, board_name: boardName, board_type: index.type, trade_date: latest.trade_date, pct_change: Number(latest.pct_change), close: Number(latest.close), turnover_rate: Number(latest.turnover_rate) } }));
             } catch {
                 continue;
             }
         }
-        return records;
+        return [...records, ...(await this.collectSectorNews(event, sectors, capturedAt))];
     }
 
-    private static async collectMarketSources(event: TriggerEvent, capturedAt: Date): Promise<StockSourceRecord[]> {
-        const indexes = await getCnIndexQuoteFacts(['000001', '399001', '399006', '000680', '000688']);
-        return indexes.filter((index) => index.latest_price !== null).map((index) => sourceRecord({ sourceId: `market:${index.symbol}:${capturedAt.getTime()}`, kind: 'market_fact', provider: 'tencent_index', sourceLevel: 'A', title: index.name, contentExcerpt: `${index.name} change ${Number(index.change_pct).toFixed(2)}%.`, sourceRef: index.symbol, occurredAt: capturedAt, capturedAt, payload: { ...index } }));
+    /**
+     * 板块消息（事件库「板块标签命中」）→ sector 域证据。
+     *
+     * 与 board fact 并列：板块涨跌幅回答「板块动了多少」，板块消息回答「板块为什么动」。
+     * 只保留 `match_type='sector'`（both 已作为个股新闻进 company 域，避免同一事件
+     * 在两域重复计数），并套用与 company 域一致的 T-72h ~ T+30min 时效窗口。
+     * 失败/空一律返回 []（不阻塞归因）。
+     */
+    private static async collectSectorNews(
+        event: TriggerEvent,
+        sectors: string[],
+        capturedAt: Date,
+    ): Promise<StockSourceRecord[]> {
+        try {
+            const records = await loadEventStoreEvidence(event.symbol, capturedAt, sectors);
+            const minTime = capturedAt.getTime() - 72 * 60 * 60 * 1000;
+            const maxTime = capturedAt.getTime() + 30 * 60 * 1000;
+            return records.filter((record) =>
+                record.kind === 'sector_news'
+                && record.occurredAt !== undefined
+                && record.occurredAt.getTime() >= minTime
+                && record.occurredAt.getTime() <= maxTime,
+            );
+        } catch (err) {
+            console.warn('[StockTraceSnapshot] collectSectorNews failed', {
+                symbol: event.symbol,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            return [];
+        }
+    }
+
+    private static async captureTriggerMarket(event: TriggerEvent): Promise<StockSourceRecord[]> {
+        try {
+            const indexes = await withinEnrichedBudget(getCnIndexQuoteFacts(['000001', '399001', '399006', '000680', '000688']));
+            const capturedAt = new Date();
+            return indexes.flatMap((index) => {
+                if (!index.observed_at || index.latest_price === null || index.change_pct === null) return [];
+                const occurredAt = new Date(index.observed_at);
+                const age = event.triggeredAt.getTime() - occurredAt.getTime();
+                if (!Number.isFinite(age) || age < 0 || age > 300_000) return [];
+                return [sourceRecord({
+                    sourceId: `market:${index.symbol}:${occurredAt.getTime()}`,
+                    kind: 'market_fact', provider: 'tencent_index', sourceLevel: 'A',
+                    title: index.name, contentExcerpt: `${index.name} change ${index.change_pct.toFixed(2)}%.`,
+                    sourceRef: index.symbol, occurredAt, capturedAt, freshnessSeconds: Math.floor(age / 1000),
+                    payload: { ...index },
+                })];
+            });
+        } catch {
+            return [];
+        }
+    }
+
+    private static async readTriggerMarket(event: TriggerEvent): Promise<StockSourceRecord[]> {
+        await this.ensureSchema();
+        const { rows } = await pool.query<StockSourceRecord>(`
+            SELECT DISTINCT ON (r.source_id) r.source_id AS "sourceId", r.kind, r.provider,
+                r.source_level AS "sourceLevel", r.title, r.content_excerpt AS "contentExcerpt",
+                r.source_ref AS "sourceRef", r.occurred_at AS "occurredAt", r.captured_at AS "capturedAt",
+                r.freshness_seconds AS "freshnessSeconds", r.payload, r.content_hash AS "contentHash"
+            FROM stock_trace_snapshots s JOIN stock_trace_source_records r USING (snapshot_id)
+            WHERE s.event_id = $1 AND s.trigger_revision = $2
+              AND s.snapshot_stage IN ('initial', 'corrected') AND r.kind = 'market_fact'
+            ORDER BY r.source_id, r.captured_at
+        `, [event.eventId, event.triggerRevision]);
+        return rows;
     }
 
     // capital 域：Tushare 资金流（最近可用交易日），8s 超时降级

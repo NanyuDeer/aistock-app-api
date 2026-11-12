@@ -1,5 +1,17 @@
 # Changelog — aistock-app-api
 
+## [junliang] 2026-11-11 — 异动溯源 P0 补充与体验修复
+
+**开发者**: junliang
+
+- 初始及修订快照冻结供应商标注时间在触发前五分钟内的指数行情，enriched 复用同修订快照，不重取事后行情。
+- 分离消息发布时间与首次观测时间；规则兜底和外部结果校验均筛选触发时点证据，公司 confirmed 仅接受新闻或公告。
+- 两个列表接口透出同一有效 artifact 的 movement_view，供前端按归因状态展示。
+- 非交易时段立即检测返回 market_closed，跳过扫描和归因入队。
+- 验证：stock-trace 测试 142 项通过，tsc --noEmit 通过。
+
+---
+
 > 所有修改记录按时间倒序排列。每条记录标注分支、时间、开发者。
 
 ## [fix/causal-inputs-symbol-key] 2026-11-10 — getKLine 响应键改用同一套取码
@@ -55,6 +67,7 @@
 
 ### 修复
 
+
 - `src/modules/fear-greed/calculator.ts`：**恐贪指标不再把“数据未发布”落库成中性占位**（2026-11-02 事故根因）。`breadth` 在 `total=0`（盘中/收盘前 Tushare EOD 未就绪）时不再写 `50` 并永久缓存，改为视为缺失并从尾部剔除无数据交易日，使最新值回退到最后有效日；`deriveDailyLimit` 在全市场 `daily` 返回空行时返回 `null`，`fetchLimitData` 只落库非空结果，并把缓存中 `sealCount+breakCount+downCount=0` 的历史脏行视为缺失重新推导（数据就绪后自动回补）。
 - `src/modules/fear-greed/calculator.ts` 新增 `resolveSnapshotDate(historyDates, now)`：快照日 = 最新已算出的交易日；`FearGreedService.getLatestJq` 的快照落库与 `buildDashboard.updateTime` 改用该值，**修掉上海 00:00-08:00 用 UTC 当日写错一天**的问题。
 - `src/modules/fear-greed/calculator.ts` 的交易窗口加固：① `tradingCalendarStore` 未加载/无覆盖时直接抛 `trading_calendar_not_loaded`，不再按「周一~周五」降级（降级会把节假日当交易日并写占位，是本次 37 条节假日脏行的来源）；② 上海 15:30 前自动剔除今日（EOD 未发布），避免每轮重复请求未发布数据。
@@ -91,6 +104,51 @@
 - 新增测试 `src/modules/monitor/__tests__/rotationBoardMrpm.spec.ts`（3 例）。全量 1046/1046 绿，tsc exit 0。
 
 ---
+## [junliang] 2026-10-17 — 收紧板块召回：排除宽基板块 + 按成分股数取最具体板块
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- `collectSectorSources` 不再按 `sector_name` 字母序 `LIMIT 3`（会把「上证180成份股 / 低空经济 / DeepSeek概念」排在最前）。新增 `isBroadSectorName` / `selectSectorBoardNames`：排除宽基指数（`*成份股`）、两融、互联互通板块；剩余板块按 Tushare 成分股数量升序取 3 个（板块越窄越具体，越能解释个股异动）。
+- `collectSectorNews` 复用同一份收紧后的板块列表，宽基板块不再参与板块消息召回。
+- Tushare 索引读取失败时仍按「排除宽基 + 名称稳定序」选板块，只跳过 `sector_fact`，不阻断板块消息。
+
+### 验证
+
+- `sectorNewsEvidence.spec.ts` 9/9（新增 4 例板块选择口径）；`npx tsc --noEmit` exit 0。
+- 江淮汽车 600418 重采：`sector_fact` 由「上证180成份股 / 低空经济 / DeepSeek概念」变为「换电概念 / 飞行汽车(eVTOL) / 智能座舱」，`sector_news` 由 5 条噪声降为 0。
+
+## [junliang] 2026-10-16 — 板块消息「关联到个股」：sector 域新增 `sector_news` 证据
+
+**开发者**: NanyuDeer
+
+### 新增
+
+- `StockTraceSnapshotService.collectSectorNews(event, sectors, capturedAt)`（private）：把事件库中「仅板块命中」的板块消息收进 sector 证据域。只保留 `match_type='sector'`（`both` 已作为个股新闻进 company 域，避免同一事件跨域重复计数），套用与 company 域一致的 `T-72h ~ T+30min` 时效窗口；失败/空返回 `[]`，不阻塞归因。
+- 测试 `src/modules/stock-trace/__tests__/sectorNewsEvidence.spec.ts`（5 例）。
+
+### 变更
+
+- `loadEventStoreEvidence(symbol, capturedAt, sectors?)`：新增可选第三参，URL 追加 `&sectors=`（逗号连接 + encode），透传给 Python `GET /api/agent/event/scrape-by-symbol/:symbol`；不传时 URL 与旧版逐字一致。
+- `toEventStoreSourceRecord`：`match_type === 'sector'` 时映射 `kind='sector_news'`（否则沿用 announcement/news），payload 增记 `sector_tags` / `match_type` 供排查「这条证据为什么进来」。
+- `collectSectorSources`：board fact（Tushare 涨跌幅）与板块消息并列采集；**board fact 采集失败时仍保留板块消息**（外层 try/catch 只兜住涨跌幅事实）。
+- `INCREMENTAL_REUSE_KINDS` 增 `sector_news`；`reusedDomainAvailability` 认 `sector_fact` **或** `sector_news` 即代表 sector 域可用（否则只有板块消息的修订会把 sector 误读为 missing）。
+- `types.ts`：`SourceKind` 增 `'sector_news'`（与 agent-py `schemas/stock_trace.py`、前端 `stockTrace.ts` 三处同步）。
+
+### 设计说明
+
+- **刻意限制**：`sector_news` 不参与 `confirmed` 的独立事实门槛，也不作为反向事实强制反证 —— 新闻方向字段来自规则/LLM 评分，可靠性低于行情事实，保持其弱证据定位。
+- **无迁移**：`sector_tags` 存事件库 `content` JSONB（存量事件由 Python 读时补算），`match_type` 仅为响应字段，`stock_trace_snapshots` / `stock_trace_source_records` 表结构不变。
+
+### 测试
+
+- `node --import tsx --test --test-force-exit src/modules/stock-trace/__tests__/sectorNewsEvidence.spec.ts src/modules/stock-trace/__tests__/eventStoreEvidence.spec.ts` → **15 pass / 0 fail**
+- `npx tsc --noEmit` **exit 0**
+
+### 文档
+
+- `src/modules/stock-trace/AGENTS.md`：新增 2026-10-16 段落（映射规则 / 跨域不重复计数 / 刻意限制 / 无迁移）
 
 ## [junliang] 2026-10-15 — 「立即检测」端点补齐归因入队（消除非交易时段的孤儿 active 事件）
 

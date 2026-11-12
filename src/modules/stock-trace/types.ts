@@ -58,7 +58,7 @@ export type SourceLevel = 'A' | 'B' | 'C' | 'D';
 export type DataReadiness = 'complete' | 'partial' | 'missing';
 
 export type SourceKind =
-    | 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'market_fact'
+    | 'trigger_fact' | 'quote_fact' | 'sector_fact' | 'sector_news' | 'market_fact'
     | 'announcement' | 'news' | 'capital_fact' | 'technical_fact'
     | 'insight_article';
 

@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import { verifyJwt } from '../../shared/utils/jwt';
 import { isTokenRevoked } from '../../shared/utils/tokenBlacklist';
+import { isAShareTradingTime } from '../../shared/utils/tradingTime';
 import { StockTraceService } from './StockTraceService';
 import { StockTraceArtifactService } from './StockTraceArtifactService';
 import { presentStockTraceAnalysis } from './StockTracePresentation';
@@ -281,9 +282,12 @@ export class StockTraceController {
      */
     static async detect(_req: Request, res: Response, next: NextFunction): Promise<void> {
         try {
-            await PriceTriggerDetector.runOnceForce();
-            // 2026-10-15：检测只建/修事件、不入队归因，而非交易时段（或当日 15:10 之后）产生的
-            // active 事件不会被任何落定路径扫到 → 卡片恒显「归因中」。此处补齐当日缺 job 的归因入队。
+            const now = new Date();
+            if (!(await isAShareTradingTime({ now }))) {
+                res.json({ code: 200, data: { triggered: false, enqueued: 0, reason: 'market_closed' } });
+                return;
+            }
+            await PriceTriggerDetector.runOnceForce(now);
             const securities = await StockTraceService.getFavoriteSecurities();
             const enqueued = await StockTraceService.enqueueAttributionForTodayActiveEvents(
                 securities.map((security) => security.symbol),
