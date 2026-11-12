@@ -122,7 +122,7 @@ export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: 
             [`收盘价高于MA20、MA20高于MA60，且两条均线均向上`, `近60日相对沪深300收益${excess60.toFixed(2)}个百分点，最大回撤${dd60.toFixed(2)}%`],
             '收盘跌破MA60或中期均线转弱时重新评估');
         const peers = industryReturns.get(stock.industry) || [];
-        if (peers.length < 5) stats.momentum_continuation.unavailable++;
+        if (peers.length < 5 || peers.length / industryMembers.get(stock.industry)! < 0.8) stats.momentum_continuation.unavailable++;
         else {
             const industryExcess20 = return20 - mean(peers);
             const persistence = bars.slice(-10).filter((v, i) => v.close > ma(bars, end - 9 + i, 20)).length;

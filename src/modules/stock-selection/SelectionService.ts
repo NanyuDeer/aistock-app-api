@@ -9,6 +9,7 @@ export interface SelectionSource {
     /** Validated authoritative calendar, ascending dates, ending at the latest fully closed session. */
     context(): { tradeDate: string; dates: string[] };
     nextTradingDate?(date: string): string | null;
+    previousTradingDate?(date: string): string | null;
     stocks(): Promise<Stock[]>;
     day(date: string): Promise<MarketDay>;
     upperLimits?(date: string): Promise<Map<string, number>>;
@@ -18,6 +19,8 @@ export interface SelectionSource {
     research?(date: string): Promise<ResearchForecast[]>;
     companyForecasts?(start: string, end: string): Promise<CompanyForecast[]>;
     benchmark(start: string, end: string): Promise<Bar[]>;
+    /** Suspended symbols per ISO date within the window. */
+    suspensions?(start: string, end: string): Promise<Map<string, Set<string>>>;
 }
 export interface SelectionQuery { horizon: Horizon; methods: Method[]; limit: number; date?: string }
 export function parseQuery(query: Record<string, unknown>): SelectionQuery {
@@ -42,31 +45,61 @@ function methodAvailable(batch: Batch, method: Method): boolean {
     const stats = batch.methodStats[method];
     return Boolean(stats && stats.unavailable * 4 <= stats.pass + stats.fail);
 }
+/** Vendors can add late rows on the trade date itself; only a fetch on a later Shanghai date is final. */
+function settled(day: MarketDay): boolean {
+    const fetched = Date.parse(day.fetchedAt);
+    return Number.isFinite(fetched) && new Date(fetched + 8 * 3600_000).toISOString().slice(0, 10) > day.date;
+}
+
+interface Universe {
+    stocks: Stock[]; fetchedAt: string;
+    /** null when the suspension list is unavailable: suspended stocks then also count as gaps. */
+    suspended: Map<string, Set<string>> | null;
+    checked: Set<string>;
+}
+const DAY_MS = 86_400_000;
 
 export class SelectionService {
     constructor(private store: SelectionStore, private source: SelectionSource) {}
     async generate() {
         const context = this.source.context();
-        return this.store.run(context.tradeDate, () => this.build(context));
+        let universe: Promise<Universe> | undefined;
+        const load = () => universe ??= this.universe(context.dates);
+        return this.store.run(context.tradeDate, async () => this.build(context, await load()), async used => {
+            const loaded = await load();
+            // Snapshots only gain bars, so the bar count is their version. Any mismatch with what the published
+            // batch used means it is stale, including bars filled by an earlier refresh whose rebuild failed.
+            const recorded = new Map((used || []).map(snapshot => [snapshot.date, snapshot.bars]));
+            let changed = false;
+            for (const date of context.dates) {
+                const refreshed = await this.marketDay(date, loaded, true);
+                const before = recorded.get(date);
+                changed = refreshed.changed || (before !== undefined && refreshed.day !== null && Object.keys(refreshed.day.bars).length !== before) || changed;
+            }
+            return changed;
+        });
     }
-    private async build(context: { tradeDate: string; dates: string[] }): Promise<Batch> {
+    private async universe(dates: string[]): Promise<Universe> {
+        const stocks = await this.source.stocks();
+        if (stocks.length < 1000 || new Set(stocks.map(s => s.symbol)).size !== stocks.length) throw new Error('全市场股票范围不完整或存在重复代码');
+        const fetchedAt = new Date().toISOString();
+        const suspended = this.source.suspensions
+            ? await this.source.suspensions(dates[0], dates[dates.length - 1]).catch(error => {
+                console.warn('[StockSelection] 停牌列表读取失败:', error instanceof Error ? error.message : String(error));
+                return null;
+            })
+            : null;
+        return { stocks, fetchedAt, suspended, checked: new Set() };
+    }
+    private async build(context: { tradeDate: string; dates: string[] }, universe: Universe): Promise<Batch> {
         const { tradeDate, dates } = context;
         if (dates.length !== HISTORY_DAYS || dates[dates.length - 1] !== tradeDate) throw new Error('历史窗口不完整');
-        const stocks = await this.source.stocks();
-        const universeFetchedAt = new Date().toISOString();
-        if (stocks.length < 1000 || new Set(stocks.map(s => s.symbol)).size !== stocks.length) throw new Error('全市场股票范围不完整或存在重复代码');
+        const { stocks, fetchedAt: universeFetchedAt } = universe;
         const raw = new Map<string, Bar[]>();
-        const snapshots: Array<{ date: string; fetchedAt: string }> = [];
+        const snapshots: Array<{ date: string; fetchedAt: string; bars: number }> = [];
         for (const date of dates) {
-            let day = await this.store.snapshot(date);
-            if (!day) {
-                day = await this.source.day(date);
-                const expected = stocks.filter(s => s.listDate && s.listDate <= date.replace(/-/g, '')).length;
-                const covered = stocks.filter(s => day!.bars[s.symbol]).length;
-                if (day.date !== date || covered < expected * 0.9 || Object.values(day.bars).some(b => b.date !== date)) throw new Error(`${date}行情或复权因子覆盖不足90%`);
-                await this.store.saveSnapshot(day);
-            }
-            snapshots.push({ date, fetchedAt: day.fetchedAt });
+            const day = (await this.marketDay(date, universe, false)).day!;
+            snapshots.push({ date, fetchedAt: day.fetchedAt, bars: Object.keys(day.bars).length });
             for (const stock of stocks) {
                 const b = day.bars[stock.symbol];
                 if (b) { const rows = raw.get(stock.symbol) || []; rows.push(b); raw.set(stock.symbol, rows); }
@@ -102,24 +135,68 @@ export class SelectionService {
         await addDividendMethod(batch, stocks, raw, dates, financials, ratios, this.source.dividends);
         return batch;
     }
-    private async trackEntries(run: { tradeDate: string; batch: Batch }, methods: Method[]) {
-        const entries = new Map(combine(run.batch.stocks, methods, 15).map(stock => [stock.symbol, {
+    /**
+     * A stored snapshot is refetched when a listed stock lacks a bar without being suspended: every generation while
+     * the snapshot was taken on its own trade date, afterwards at doubling intervals (1, 2, 4… days since the last
+     * fetch) so late vendor rows are still picked up at bounded cost. Stored bars always win.
+     */
+    private needsRefresh(stored: MarketDay, universe: Universe): boolean {
+        const compact = stored.date.replace(/-/g, '');
+        const suspended = universe.suspended?.get(stored.date);
+        const gap = universe.stocks.some(s => s.listDate && s.listDate <= compact && !stored.bars[s.symbol] && !suspended?.has(s.symbol));
+        if (!gap) return false;
+        if (!settled(stored)) return true;
+        return Date.now() - Date.parse(stored.fetchedAt) >= 2 ** (stored.refreshes ?? 0) * DAY_MS;
+    }
+    private async marketDay(date: string, universe: Universe, storedOnly: boolean): Promise<{ day: MarketDay | null; changed: boolean }> {
+        const stored = await this.store.snapshot(date);
+        if (stored ? universe.checked.has(date) || !this.needsRefresh(stored, universe) : storedOnly) return { day: stored, changed: false };
+        universe.checked.add(date);
+        let fresh: MarketDay;
+        try {
+            fresh = await this.source.day(date);
+            if (fresh.date !== date || Object.values(fresh.bars).some(b => b.date !== date)) throw new Error(`${date}行情日期不一致`);
+        } catch (error) {
+            if (stored) return { day: stored, changed: false };
+            throw error;
+        }
+        const day: MarketDay = { date, fetchedAt: fresh.fetchedAt, bars: { ...fresh.bars, ...stored?.bars },
+            refreshes: stored && settled(stored) ? (stored.refreshes ?? 0) + 1 : stored?.refreshes };
+        if (!stored) {
+            const expected = universe.stocks.filter(s => s.listDate && s.listDate <= date.replace(/-/g, '')).length;
+            if (universe.stocks.filter(s => day.bars[s.symbol]).length < expected * 0.9) throw new Error(`${date}行情或复权因子覆盖不足90%`);
+        }
+        await this.store.saveSnapshot(day);
+        return { day, changed: Boolean(stored) && Object.keys(day.bars).length > Object.keys(stored!.bars).length };
+    }
+    private previousSession(batch: Batch, date: string): string | null {
+        const window = batch.inputs?.snapshots?.map(snapshot => snapshot.date);
+        if (window && window.length >= 2 && window[window.length - 1] === date) return window[window.length - 2];
+        try { return this.source.previousTradingDate?.(date) ?? null; }
+        catch { return null; }
+    }
+    /** Streaks are measured against the list the caller sees, so the lookback uses the requested limit. */
+    private async trackEntries(run: { tradeDate: string; batch: Batch }, methods: Method[], limit: number) {
+        const entries = new Map(combine(run.batch.stocks, methods, limit).map(stock => [stock.symbol, {
             date: run.tradeDate, sessions: 1, price: stock.price,
         }]));
         const active = new Set(entries.keys());
         let before = run.tradeDate;
-        while (active.size && this.store.previousPublished) {
+        let expected = this.previousSession(run.batch, run.tradeDate);
+        // A missing or unusable batch on the preceding trading day ends every streak; weekends and holidays are not sessions.
+        scan: while (active.size && expected && this.store.previousPublished) {
             const history = await this.store.previousPublished(before);
             if (!history.length) break;
             for (const day of history) {
-                if (!methods.every(method => methodAvailable(day.batch, method))) continue;
-                const members = new Map(combine(day.batch.stocks, methods, 15).map(stock => [stock.symbol, stock]));
+                if (day.tradeDate !== expected || !methods.every(method => methodAvailable(day.batch, method))) break scan;
+                const members = new Map(combine(day.batch.stocks, methods, limit).map(stock => [stock.symbol, stock]));
                 for (const symbol of active) {
                     const member = members.get(symbol);
                     if (!member) active.delete(symbol);
                     else entries.set(symbol, { date: day.tradeDate, sessions: entries.get(symbol)!.sessions + 1, price: member.price });
                 }
-                if (!active.size) break;
+                expected = this.previousSession(day.batch, day.tradeDate);
+                if (!active.size || !expected) break scan;
             }
             before = history[history.length - 1].tradeDate;
         }
@@ -151,7 +228,7 @@ export class SelectionService {
         const unavailable = query.methods.filter(method => !methodAvailable(run.batch!, method));
         if (unavailable.length) return { ...base, status: 'unavailable', unavailableMethods: unavailable, stocks: [] };
         const stocks = combine(run.batch.stocks, query.methods, query.limit);
-        const entries = stocks.length ? await this.trackEntries({ tradeDate: run.tradeDate, batch: run.batch }, query.methods) : new Map();
+        const entries = stocks.length ? await this.trackEntries({ tradeDate: run.tradeDate, batch: run.batch }, query.methods, query.limit) : new Map();
         return { ...base, status: 'ready', nextQuoteTradeDate: this.source.nextTradingDate?.(run.tradeDate) ?? null, candidateCount: run.batch.stocks.filter(c => matchesAllMethods(c, query.methods)).length,
             stocks: stocks.map(stock => ({ ...stock, entry: entries.get(stock.symbol) })) };
     }

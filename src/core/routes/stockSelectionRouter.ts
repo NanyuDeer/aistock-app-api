@@ -3,7 +3,7 @@ import { createResponse } from '../../shared/utils/response';
 import { shanghaiDateStr, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { tradingCalendarStore } from '../../shared/utils/tradingCalendarStore';
-import { selectionStocks, selectionMarketDay, selectionBenchmark, selectionUpperLimits, selectionAnnualFinancials, selectionDailyRatios, selectionDividends, selectionResearch, selectionCompanyForecasts } from '../../modules/quote/SelectionMarketData';
+import { selectionStocks, selectionMarketDay, selectionBenchmark, selectionUpperLimits, selectionAnnualFinancials, selectionDailyRatios, selectionDividends, selectionResearch, selectionCompanyForecasts, selectionSuspensions } from '../../modules/quote/SelectionMarketData';
 import { SelectionService, parseQuery } from '../../modules/stock-selection/SelectionService';
 import { PostgresSelectionStore } from '../../modules/stock-selection/SelectionStore';
 import { HISTORY_DAYS } from '../../modules/stock-selection/types';
@@ -46,11 +46,21 @@ export function nextQuoteTradeDate(date: string): string | null {
         return null;
     }
 }
+export function previousQuoteTradeDate(date: string): string | null {
+    if (!tradingCalendarStore.hasDate(date)) return null;
+    try {
+        const previous = shanghaiDateStr(TradingCalendarService.getPreviousTradingDay(new Date(`${date}T12:00:00+08:00`)));
+        assertCalendarRange(previous, date);
+        return previous;
+    } catch {
+        return null;
+    }
+}
 
 const store = new PostgresSelectionStore();
 export const stockSelectionService = new SelectionService(store, {
-    context: () => selectionContext(), nextTradingDate: nextQuoteTradeDate, stocks: selectionStocks, day: selectionMarketDay, upperLimits: selectionUpperLimits, financials: selectionAnnualFinancials, ratios: selectionDailyRatios, dividends: selectionDividends,
-    research: selectionResearch, companyForecasts: selectionCompanyForecasts, benchmark: selectionBenchmark,
+    context: () => selectionContext(), nextTradingDate: nextQuoteTradeDate, previousTradingDate: previousQuoteTradeDate, stocks: selectionStocks, day: selectionMarketDay, upperLimits: selectionUpperLimits, financials: selectionAnnualFinancials, ratios: selectionDailyRatios, dividends: selectionDividends,
+    research: selectionResearch, companyForecasts: selectionCompanyForecasts, benchmark: selectionBenchmark, suspensions: selectionSuspensions,
 });
 export const ensureStockSelectionSchema = () => store.ensureSchema();
 export const triggerStockSelection = () => stockSelectionService.generate();

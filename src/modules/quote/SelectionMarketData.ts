@@ -1,11 +1,31 @@
 import { getDividend, tushareRequest } from './TushareService';
-export const __selectionMarketDependencies = { request: tushareRequest };
+export const __selectionMarketDependencies = {
+    request: tushareRequest, dividend: getDividend,
+    sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms)),
+};
+
+const RETRY_DELAYS_MS = [3000, 10000, 30000];
+const TRANSIENT = /ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|EPIPE|socket hang up|aborted|timeout|fetch failed|HTTP错误: (429|5\d\d)|每分钟|每小时|频率|最多访问/i;
+function transient(error: unknown): boolean {
+    const e = error as { name?: string; code?: string; message?: string; cause?: { code?: string } } | null;
+    return e?.name === 'AbortError' || e?.name === 'TimeoutError' || TRANSIENT.test(`${e?.code || ''} ${e?.cause?.code || ''} ${e?.message || ''}`);
+}
+/** Network failures and rate limits are retried; business errors (permissions, bad params) fail immediately. */
+export async function selectionRetry<T>(call: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+        try { return await call(); }
+        catch (error) {
+            if (attempt >= RETRY_DELAYS_MS.length || !transient(error)) throw error;
+            await __selectionMarketDependencies.sleep(RETRY_DELAYS_MS[attempt]);
+        }
+    }
+}
 
 /** Pagination must advance: reject duplicated/truncated pages instead of silently screening a partial universe. */
 export async function selectionPages(api: string, params: Record<string, unknown>, fields: string, reportIdentity?: (row: Record<string, unknown>) => string, pageSize = 5000): Promise<Record<string, unknown>[]> {
     const all: Record<string, unknown>[] = [], seen = new Set<string>();
     for (let offset = 0; offset < 100000; offset += pageSize) {
-        const rows = await __selectionMarketDependencies.request(api, { ...params, limit: pageSize, offset }, fields);
+        const rows = await selectionRetry(() => __selectionMarketDependencies.request(api, { ...params, limit: pageSize, offset }, fields));
         const previousLength = all.length;
         for (const row of rows) {
             const key = reportIdentity ? reportIdentity(row) : `${row.ts_code}:${row.trade_date || ''}`;
@@ -47,6 +67,18 @@ export async function selectionMarketDay(date: string) {
         return [[String(r.ts_code).split('.')[0], bar] as const];
     });
     return { date, bars: Object.fromEntries(entries), fetchedAt: new Date().toISOString() };
+}
+/** Suspended symbols per ISO date; a symbol missing from daily bars without a suspension is a vendor gap. */
+export async function selectionSuspensions(start: string, end: string): Promise<Map<string, Set<string>>> {
+    const rows = await selectionPages('suspend_d', { start_date: start.replace(/-/g, ''), end_date: end.replace(/-/g, ''), suspend_type: 'S' },
+        'ts_code,trade_date,suspend_type');
+    const byDate = new Map<string, Set<string>>();
+    for (const row of rows) {
+        const code = String(row.ts_code), date = iso(row.trade_date);
+        if (!date || row.suspend_type !== 'S' || !/^\d{6}\.(SH|SZ|BJ)$/.test(code)) continue;
+        byDate.set(date, (byDate.get(date) || new Set()).add(code.split('.')[0]));
+    }
+    return byDate;
 }
 export async function selectionBenchmark(start: string, end: string) {
     const rows = await selectionPages('index_daily', { ts_code: '000300.SH', start_date: start.replace(/-/g, ''), end_date: end.replace(/-/g, '') }, 'ts_code,trade_date,open,high,low,close,pct_chg,vol,amount');
@@ -94,13 +126,15 @@ async function annualRows(api: string, period: string, asOf: string, fields: str
 }
 
 export async function selectionAnnualFinancials(asOf: string) {
-    // Use the same three fiscal years for every stock, switching after the annual reporting deadline.
+    // Growth methods switch after the Apr 30 report deadline; dividend screening switches after Aug 31,
+    // so May–Aug also needs the prior three-year window.
     const latestYear = Number(asOf.slice(0, 4)) - (asOf.slice(5) > '04-30' ? 1 : 2);
+    const firstYear = Number(asOf.slice(0, 4)) - (asOf.slice(5) > '08-31' ? 1 : 2) - 2;
     const byStock = new Map<string, Array<{
         year: number; disclosed: string; revenue: number; profit: number;
         operatingCash: number; assets: number; liabilities: number; equity: number;
     }>>();
-    for (let year = latestYear - 2; year <= latestYear; year++) {
+    for (let year = firstYear; year <= latestYear; year++) {
         const period = `${year}1231`;
         const income = await annualRows('income_vip', period, asOf, ['total_revenue', 'n_income_attr_p']);
         const cash = await annualRows('cashflow_vip', period, asOf, ['n_cashflow_act']);
@@ -121,25 +155,27 @@ export async function selectionAnnualFinancials(asOf: string) {
 }
 
 export async function selectionDailyRatios(date: string) {
-    const rows = await selectionPages('daily_basic', { trade_date: date.replace(/-/g, '') }, 'ts_code,trade_date,pe_ttm,dv_ttm');
+    const rows = await selectionPages('daily_basic', { trade_date: date.replace(/-/g, '') }, 'ts_code,trade_date,pe_ttm,dv_ttm,total_mv');
     return new Map(rows.filter(row => iso(row.trade_date) === date && /^\d{6}\.(SH|SZ|BJ)$/.test(String(row.ts_code)))
         .map(row => {
             const pe = numeric(row.pe_ttm);
             const yieldTtm = numeric(row.dv_ttm);
+            const marketCap = numeric(row.total_mv) * 10_000;
             return [String(row.ts_code).split('.')[0], { pe: Number.isFinite(pe) ? pe : null,
-                dividendYield: Number.isFinite(yieldTtm) ? yieldTtm : null }] as const;
+                dividendYield: Number.isFinite(yieldTtm) ? yieldTtm : null,
+                marketCap: Number.isFinite(marketCap) && marketCap > 0 ? marketCap : null }] as const;
         }));
 }
 
 export async function selectionDividends(date: string, symbols: string[]) {
     const byStock = new Map<string, Array<{ year: number; exDate: string; cash: number }>>();
-    const fiscalYear = Number(date.slice(0, 4)) - (date.slice(5) > '04-30' ? 1 : 2);
+    const fiscalYear = Number(date.slice(0, 4)) - (date.slice(5) > '08-31' ? 1 : 2);
     let cursor = 0;
     await Promise.all(Array.from({ length: Math.min(symbols.length, 8) }, async () => {
         while (cursor < symbols.length) {
             const symbol = symbols[cursor++];
             try {
-                const rows = await getDividend(symbol);
+                const rows = await selectionRetry(() => __selectionMarketDependencies.dividend(symbol));
                 const events = new Map<string, { year: number; exDate: string; cash: number }>();
                 for (const row of rows) {
                     const year = Number(String(row.end_date).slice(0, 4));

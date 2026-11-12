@@ -8,11 +8,18 @@ export interface AnnualFinancials {
 export const FINANCIAL_METHODS = ['quality_growth', 'garp'] as const;
 export const financialStockInScope = (s: Stock) => /^\d{6}$/.test(s.symbol) && Boolean(s.industry) && !/ST|退/i.test(s.name)
     && !/银行|证券|保险|金融|期货|信托/.test(s.industry);
+/** Annual reports are due by Apr 30; final dividends are implemented by Aug 31 (AGM by Jun 30 plus two months). */
+export const reportFiscalYear = (date: string) => Number(date.slice(0, 4)) - (date.slice(5) > '04-30' ? 1 : 2);
+export const dividendFiscalYear = (date: string) => Number(date.slice(0, 4)) - (date.slice(5) > '08-31' ? 1 : 2);
+export function annualWindow(years: AnnualFinancials[] | undefined, last: number, date: string): AnnualFinancials[] | null {
+    const window = [last - 2, last - 1, last].map(year => years?.find(y => y.year === year));
+    return window.every(y => y && y.disclosed <= date) ? window as AnnualFinancials[] : null;
+}
 
 export function addFinancialMethods(batch: Batch, stocks: Stock[], raw: Map<string, Bar[]>, dates: string[],
     financials?: ReadonlyMap<string, AnnualFinancials[]>, valuations?: ReadonlyMap<string, number | null>): void {
     const date = dates[dates.length - 1];
-    const fiscalYear = Number(date.slice(0, 4)) - (date.slice(5) > '04-30' ? 1 : 2);
+    const fiscalYear = reportFiscalYear(date);
     const candidates = new Map(batch.stocks.map(stock => [stock.symbol, stock]));
     const peers = new Map<string, Array<number | null>>();
     const peerCounts = new Map<string, number>();
@@ -33,6 +40,8 @@ export function addFinancialMethods(batch: Batch, stocks: Stock[], raw: Map<stri
         medians.set(industry, (positive[mid] + positive[Math.floor((positive.length - 1) / 2)]) / 2);
     }
     for (const method of FINANCIAL_METHODS) batch.methodStats[method] = { pass: 0, fail: 0, unavailable: 0, notApplicable: 0 };
+    const garpChecks: Array<() => void> = [];
+    let garpMissing = 0;
     for (const stock of stocks) {
         const mark = (key: 'notApplicable' | 'unavailable' | 'fail') => {
             for (const method of FINANCIAL_METHODS) batch.methodStats[method][key]++;
@@ -40,8 +49,8 @@ export function addFinancialMethods(batch: Batch, stocks: Stock[], raw: Map<stri
         if (!financialStockInScope(stock) || !stock.listDate || stock.listDate > `${fiscalYear - 2}0101`) { mark('notApplicable'); continue; }
         const bars = raw.get(stock.symbol) || [];
         const quote = bars.find(b => b.date === date);
-        const years = financials?.get(stock.symbol);
-        if (!quote || !years || years.length !== 3 || years.some((y, index) => y.year !== fiscalYear - 2 + index || y.disclosed > date)) {
+        const years = annualWindow(financials?.get(stock.symbol), fiscalYear, date);
+        if (!quote || !years) {
             mark('unavailable');
             continue;
         }
@@ -66,16 +75,24 @@ export function addFinancialMethods(batch: Batch, stocks: Stock[], raw: Map<stri
         add('quality_growth', sustained && revenueGrowth >= 8 && profitGrowth >= 12 && roe >= 12 && cashCoverage >= 0.9 && debtRatio <= 65,
             Math.min(revenueGrowth, 35) + Math.min(profitGrowth, 40) + Math.min(roe, 25) + Math.min(cashCoverage, 2) * 8 - debtRatio / 5, reasons);
         const growth = sustained && revenueGrowth >= 6 && profitGrowth >= 10 && roe >= 9 && cashCoverage >= 0.8 && debtRatio <= 70;
+        if (!growth) { add('garp', false, 0, []); continue; }
         const pe = valuations?.get(stock.symbol), industryMedianPe = medians.get(stock.industry);
-        if (growth && (pe == null || (pe > 0 && industryMedianPe === undefined))) batch.methodStats.garp.unavailable++;
-        else {
-            const peg = growth && pe != null ? pe / Math.min(profitGrowth, 30) : 0;
-            add('garp', growth && pe != null && pe > 0 && industryMedianPe !== undefined
-                && pe <= 35 && pe <= industryMedianPe && peg <= 1.5,
-            Math.min(profitGrowth, 30) + Math.min(roe, 25) + (1.5 - peg) * 20,
-            [...reasons, `市盈率TTM ${pe?.toFixed(1)}倍，同业正市盈率中位数${industryMedianPe?.toFixed(1)}倍`],
-            { pe: pe ?? undefined, industryMedianPe, peg });
-        }
+        if (pe === undefined || (industryMedianPe === undefined && pe !== null && pe > 0)) { garpMissing++; continue; }
+        const peg = pe !== null ? pe / Math.min(profitGrowth, 30) : 0;
+        garpChecks.push(() => add('garp', pe !== null && pe > 0 && industryMedianPe !== undefined
+            && pe <= 35 && pe <= industryMedianPe && peg <= 1.5,
+        Math.min(profitGrowth, 30) + Math.min(roe, 25) + (1.5 - peg) * 20,
+        [...reasons, `市盈率TTM ${pe?.toFixed(1)}倍，同业正市盈率中位数${industryMedianPe?.toFixed(1)}倍`],
+        { pe: pe ?? undefined, industryMedianPe, peg }));
+    }
+    // Valuation coverage is judged among growth stocks; when insufficient the whole method is unavailable, not an empty list.
+    const garp = batch.methodStats.garp;
+    if (garpMissing * 4 > garpChecks.length) {
+        garp.unavailable += garp.fail + garpChecks.length + garpMissing;
+        garp.fail = 0;
+    } else {
+        garp.unavailable += garpMissing;
+        garpChecks.forEach(check => check());
     }
     rankCandidates(batch.stocks, FINANCIAL_METHODS);
 }

@@ -5,7 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { adjustBars, combine, evaluateMarket } from '../rules';
 import { parseQuery, SelectionService, SelectionSource } from '../SelectionService';
-import { Run, SelectionStore } from '../SelectionStore';
+import { RefreshInputs, Run, SelectionStore } from '../SelectionStore';
 import { Bar, Batch, Candidate, MarketDay, METHODS, Stock } from '../types';
 
 const dates = Array.from({ length: 90 }, (_, i) => new Date(Date.UTC(2026, 5, 1 + i)).toISOString().slice(0, 10));
@@ -36,6 +36,10 @@ test('行业强势要求上涨扩散和持续性，覆盖不足独立标记', ()
     assert.equal(narrow.methodStats.industry_strength.fail, 6);
     const missing = evaluateMarket(stocks, new Map(stocks.slice(0, 4).map(s => [s.symbol, bars()])), dates, benchmark);
     assert.equal(missing.methodStats.industry_strength.unavailable, 6);
+    // Six valid peers out of eight members is 75% coverage: momentum peers are unavailable, not a thin average.
+    const extra = [...stocks, ...['600010', '600011'].map(symbol => ({ ...stocks[0], symbol }))];
+    const thin = evaluateMarket(extra, new Map(stocks.map(s => [s.symbol, bars()])), dates, benchmark);
+    assert.deepEqual(thin.methodStats.momentum_continuation, { pass: 0, fail: 0, unavailable: 8, notApplicable: 0 });
 });
 test('涨停打板用实际涨停价确认非一字封板，缺价格不可判定', () => {
     const history = bars();
@@ -70,6 +74,12 @@ test('成长方法按披露日取数，估值条件独立且可同类融合', ()
     addFinancialMethods(missingValuation, stocks, raw, dates, financials);
     assert.equal(missingValuation.methodStats.quality_growth.pass, 5);
     assert.equal(missingValuation.methodStats.garp.unavailable, 6);
+    const emptyValuation = evaluate();
+    addFinancialMethods(emptyValuation, stocks, raw, dates, financials, new Map());
+    assert.deepEqual(emptyValuation.methodStats.garp, { pass: 0, fail: 0, unavailable: 6, notApplicable: 0 });
+    const lossMaking = evaluate();
+    addFinancialMethods(lossMaking, stocks, raw, dates, financials, new Map(stocks.map((stock, i) => [stock.symbol, i === 1 ? null : 15])));
+    assert.deepEqual(lossMaking.methodStats.garp, { pass: 4, fail: 1, unavailable: 1, notApplicable: 0 });
     assert.throws(() => parseQuery({ horizon: 'long', methods: 'garp,industry_strength' }));
 });
 test('盈利预期上修仅比较同机构同预测年度，矛盾报告不计入', () => {
@@ -86,6 +96,29 @@ test('盈利预期上修仅比较同机构同预测年度，矛盾报告不计�
     const conflict = evaluate();
     addEarningsRevisions(conflict, stocks, raw, dates, [...reports, { ...reports[1], profit: 90 }]);
     assert.equal(conflict.methodStats.earnings_revision.pass, 0);
+
+    // A conflict on a date outside the compared pair still excludes the institution.
+    const staleConflict = evaluate();
+    addEarningsRevisions(staleConflict, stocks, raw, dates, [...reports,
+        { symbol: stock.symbol, reportDate: dates[40], institution: '甲', year: 2027, profit: 80 },
+        { symbol: stock.symbol, reportDate: dates[40], institution: '甲', year: 2027, profit: 81 }]);
+    assert.deepEqual(staleConflict.methodStats.earnings_revision, { pass: 0, fail: 0, unavailable: 0, notApplicable: 6 });
+
+    // 100 → 120 → 110 inside the window: the latest adjustment is a cut of 8.3%, not a rise of 10% versus 20 days ago.
+    const reversal = evaluate();
+    addEarningsRevisions(reversal, stocks, raw, dates, ['甲', '乙'].flatMap(institution => [
+        { symbol: stock.symbol, reportDate: dates[60], institution, year: 2027, profit: 100 },
+        { symbol: stock.symbol, reportDate: dates[75], institution, year: 2027, profit: 120 },
+        { symbol: stock.symbol, reportDate: dates[85], institution, year: 2027, profit: 110 },
+    ]));
+    assert.equal(reversal.methodStats.earnings_revision.pass, 0);
+    assert.equal(reversal.methodStats.earnings_revision.fail, 1);
+    const recent = evaluate();
+    addEarningsRevisions(recent, stocks, raw, dates, ['甲', '乙'].flatMap(institution => [
+        { symbol: stock.symbol, reportDate: dates[75], institution, year: 2027, profit: 100 },
+        { symbol: stock.symbol, reportDate: dates[85], institution, year: 2027, profit: 110 },
+    ]));
+    assert.equal(recent.methodStats.earnings_revision.pass, 1);
 });
 
 test('事件催化要求首发利好和公告后量价，后续修正使旧事件失效', () => {
@@ -100,24 +133,86 @@ test('事件催化要求首发利好和公告后量价，后续修正使旧事�
     const revised = evaluate();
     addEventCatalysts(revised, stocks, raw, dates, [event, { ...event, announced: dates[88], type: '预减' }]);
     assert.equal(revised.methodStats.event_catalyst.pass, 0);
+
+    // A revision of another period must not override this period's qualifying first announcement.
+    const otherPeriod = evaluate();
+    addEventCatalysts(otherPeriod, stocks, raw, dates, [event,
+        { ...event, announced: dates[88], period: '2026-09-30', firstAnnouncement: dates[70], type: '预减', growth: -40 }]);
+    assert.equal(otherPeriod.methodStats.event_catalyst.pass, 1);
+
+    // Pre-market release: +18% on the announcement day then +3%. The full reaction exceeds the 15% cap.
+    const jumped = bars();
+    Object.assign(jumped[87], { open: 118, high: 121, low: 117, close: 120, amount: 300_000_000 });
+    Object.assign(jumped[88], { open: 120, high: 122, low: 119, close: 121 });
+    Object.assign(jumped[89], { open: 122, high: 124.5, low: 121, close: 123.6, amount: 180_000_000 });
+    const gapped = evaluate();
+    addEventCatalysts(gapped, stocks, new Map([[symbol, jumped]]), dates, [event]);
+    assert.deepEqual(gapped.methodStats.event_catalyst, { pass: 0, fail: 1, unavailable: 0, notApplicable: 5 });
+
+    // Two first announcements: the newer lacks post-announcement turnover, the older confirms and triggers.
+    const twoReports = bars();
+    Object.assign(twoReports[88], { amount: 180_000_000 });
+    Object.assign(twoReports[89], { close: 108, open: 103, high: 109, low: 103 });
+    const both = evaluate();
+    addEventCatalysts(both, stocks, new Map([[symbol, twoReports]]), dates,
+        [event, { ...event, announced: dates[88], firstAnnouncement: dates[88], period: '2026-09-30' }]);
+    assert.equal(both.methodStats.event_catalyst.pass, 1);
+    assert.equal(both.stocks.find(stock => stock.symbol === symbol)!.signals.find(signal => signal.method === 'event_catalyst')!.reason[0].startsWith(dates[87]), true);
+
+    // The newer announcement fails and the older one's window misses a bar: undecidable, not a failure.
+    const holed = bars().filter((_, i) => i !== 67);
+    const partial = evaluate();
+    addEventCatalysts(partial, stocks, new Map([[symbol, holed]]), dates,
+        [event, { ...event, announced: dates[88], firstAnnouncement: dates[88], period: '2026-09-30' }]);
+    assert.deepEqual(partial.methodStats.event_catalyst, { pass: 0, fail: 0, unavailable: 1, notApplicable: 5 });
+
+    // Likewise when the qualifying announcement fails but another period has conflicting same-day records.
+    const contested = evaluate();
+    addEventCatalysts(contested, stocks, new Map([[symbol, bars()]]), dates,
+        [event, { ...event, period: '2026-09-30' }, { ...event, period: '2026-09-30', growth: 10 }]);
+    assert.deepEqual(contested.methodStats.event_catalyst, { pass: 0, fail: 0, unavailable: 1, notApplicable: 5 });
 });
 
 test('红利稳健核对三个财年的实际派息及现金流，数据失败与未连续派息区分', async () => {
     const raw = new Map(stocks.map(stock => [stock.symbol, bars()]));
-    const financials = new Map(stocks.map(stock => [stock.symbol, [2023, 2024, 2025].map(year => ({
+    const financials = new Map(stocks.map(stock => [stock.symbol, [2022, 2023, 2024, 2025].map(year => ({
         year, disclosed: `${year + 1}-04-15`, revenue: 200, profit: 30,
         operatingCash: 40, assets: 150, liabilities: 50, equity: 100,
     }))]));
-    const ratios = new Map(stocks.map(stock => [stock.symbol, { pe: 10, dividendYield: 4 }]));
-    const payments = [2023, 2024, 2025].map(year => ({ year, exDate: `${year + 1}-06-01`, cash: 15 }));
+    // Stock 3 has a high TTM yield from a one-off payout outside the window; its FY yield is 1% versus 3%.
+    const ratios = new Map(stocks.map((stock, i) => [stock.symbol, { pe: 10, dividendYield: i === 3 ? 9 : 4, marketCap: i === 3 ? 1500 : 500 }]));
+    // Signal date 2026-08-29 precedes the Sept 1 switch, so FY2025 final dividends are not yet required.
+    const payments = [2022, 2023, 2024].map(year => ({ year, exDate: `${year + 1}-06-01`, cash: 15 }));
     const batch = evaluate();
     await addDividendMethod(batch, stocks, raw, dates, financials, ratios, async () => new Map([
-        [stocks[0].symbol, payments],
+        [stocks[0].symbol, payments], [stocks[3].symbol, payments], [stocks[4].symbol, payments],
         [stocks[1].symbol, payments.slice(1)],
         [stocks[2].symbol, [{ ...payments[0], cash: 40 }, ...payments.slice(1)]],
     ]));
-    assert.deepEqual(batch.methodStats.stable_dividend, { pass: 1, fail: 2, unavailable: 3, notApplicable: 0 });
-    assert.deepEqual(combine(batch.stocks, ['stable_dividend'], 15).map(row => row.symbol), [stocks[0].symbol]);
+    assert.deepEqual(batch.methodStats.stable_dividend, { pass: 3, fail: 2, unavailable: 1, notApplicable: 0 });
+    assert.deepEqual(combine(batch.stocks, ['stable_dividend'], 15).map(row => row.symbol), [0, 4, 3].map(i => stocks[i].symbol));
+    const metrics = batch.stocks[0].signals.find(signal => signal.method === 'stable_dividend')!.metrics;
+    assert.equal(metrics.fiscalYear, 2024);
+    assert.equal(metrics.fiscalYield, 3);
+
+    const lossMaking = new Map([...ratios].map(([symbol, row], i) => [symbol, i === 0 ? { ...row, pe: null } : row]));
+    const loss = evaluate();
+    await addDividendMethod(loss, stocks, raw, dates, financials, lossMaking, async () => new Map(stocks.slice(1).map(stock => [stock.symbol, payments])));
+    assert.deepEqual(loss.methodStats.stable_dividend, { pass: 5, fail: 1, unavailable: 0, notApplicable: 0 });
+
+    const sparse = evaluate();
+    await addDividendMethod(sparse, stocks, raw, dates, financials, ratios, async () => new Map([[stocks[0].symbol, payments]]));
+    assert.deepEqual(sparse.methodStats.stable_dividend, { pass: 0, fail: 0, unavailable: 6, notApplicable: 0 });
+    assert.ok(!sparse.stocks.some(stock => stock.signals.some(signal => signal.method === 'stable_dividend')));
+
+    const lowYield = new Map(stocks.map((stock, i) => [stock.symbol, { pe: 10, dividendYield: i < 5 ? 1 : 4, marketCap: 500 }]));
+    const screened = evaluate();
+    await addDividendMethod(screened, stocks, raw, dates, financials, lowYield, async () => new Map([[stocks[5].symbol, payments]]));
+    assert.deepEqual(screened.methodStats.stable_dividend, { pass: 1, fail: 5, unavailable: 0, notApplicable: 0 });
+
+    const noRatios = evaluate();
+    await addDividendMethod(noRatios, stocks, raw, dates, financials, new Map(), async () => new Map());
+    assert.deepEqual(noRatios.methodStats.stable_dividend, { pass: 0, fail: 0, unavailable: 6, notApplicable: 0 });
 });
 test('突破区间和均量不含当日；未放量不入选', () => {
     const input = bars();
@@ -199,11 +294,19 @@ class MemoryStore implements SelectionStore {
     async snapshot(date: string) { return this.days.get(date) || null; }
     async saveSnapshot(day: MarketDay) { this.days.set(day.date, day); }
     async latest() { return this.current; }
-    async run(date: string, build: () => Promise<Batch>) {
-        this.current = { id: '1', tradeDate: date, status: 'generating', generatedAt: null, dataAsOf: date, batch: null };
-        try { this.current.batch = await build(); this.current.status = 'ready'; }
-        catch (e) { this.current.status = 'failed'; throw e; }
-        return { status: this.current.status };
+    async run(date: string, build: () => Promise<Batch>, refresh?: RefreshInputs) {
+        const ready = this.current?.status === 'ready' && this.current.tradeDate === date ? this.current : null;
+        if (ready && !(await refresh?.(ready.batch?.inputs?.snapshots ?? null))) return { status: 'ready' };
+        const run: Run = { id: '1', tradeDate: date, status: 'generating', generatedAt: null, dataAsOf: date, batch: null };
+        this.current = run;
+        try { run.batch = await build(); run.status = 'ready'; }
+        catch (e) {
+            // Like PostgresSelectionStore.latest(), a failed rebuild leaves the published batch visible.
+            run.status = 'failed';
+            if (ready) this.current = ready;
+            throw e;
+        }
+        return { status: run.status };
     }
 }
 test('批量生成→持久化→单/多选读取；失败和过期不泄露旧结果，快照复用', async () => {
@@ -280,15 +383,157 @@ test('连续入选以有效名单的前15只为准，断档重置并按复权因
             stock.symbol, { ...bars()[index], close: index === 87 ? 100 : 55, factor: index === 87 ? 1 : 2 },
         ])) });
     }
-    const service = new SelectionService(store, {
-        context: () => { throw new Error('读取不需要日历'); },
+    const source: SelectionSource = {
+        context: () => { throw new Error('读取不需要日历'); }, previousTradingDate: date => dates[dates.indexOf(date) - 1] ?? null,
         stocks: async () => [], day: async () => { throw new Error('读取不采集行情'); }, benchmark: async () => [],
-    });
-    const result = await service.results(parseQuery({ horizon: 'swing', methods: 'trend_following' }));
+    };
+    const service = new SelectionService(store, source);
+    const query = parseQuery({ horizon: 'swing', methods: 'trend_following' });
+    const result = await service.results(query);
     const entry = (symbol: string) => result.stocks.find(stock => stock.symbol === symbol)?.entry;
     assert.equal(entry(stocks[0].symbol)?.sessions, 1);
     assert.equal(entry(stocks[0].symbol)?.closeReturn, 0);
     assert.equal(entry(stocks[1].symbol)?.sessions, 3);
     assert.equal(entry(stocks[1].symbol)?.date, dates[87]);
     assert.ok(Math.abs(entry(stocks[1].symbol)!.closeReturn! - 10) < 1e-9);
+
+    // dates[88] has no published batch: the streak stops instead of jumping to dates[87].
+    const gapStore = Object.assign(new MemoryStore(), {
+        async previousPublished(before: string) { return [{ tradeDate: dates[87], batch }].filter(day => day.tradeDate < before); },
+    });
+    gapStore.current = store.current;
+    gapStore.days = store.days;
+    const gap = await new SelectionService(gapStore, source).results(query);
+    assert.ok(gap.stocks.every(stock => stock.entry?.sessions === 1));
+
+    // The batch's own window says dates[88] was not a session (holiday), so dates[87] is adjacent.
+    const holiday = { ...batch, inputs: { snapshots: [dates[86], dates[87], dates[89]].map(date => ({ date, fetchedAt: date })) } } as unknown as Batch;
+    gapStore.current = { ...store.current!, batch: holiday };
+    const bridged = await new SelectionService(gapStore, { ...source, previousTradingDate: undefined }).results(query);
+    assert.equal(bridged.stocks.find(stock => stock.symbol === stocks[1].symbol)?.entry?.sessions, 2);
+});
+
+test('快照缺少未停牌个股时补全并重建已就绪批次；停牌缺口不重抓，跨日快照按倍增间隔重抓，版本落后于已发布批次时持续重算', async () => {
+    const store = new MemoryStore();
+    const universe = Array.from({ length: 1000 }, (_, i) => ({ ...stocks[0], symbol: String(600000 + i) }));
+    const [suspendedSymbol, lateSymbol] = [universe[998].symbol, universe[999].symbol];
+    const full = (date: string, close?: number) => {
+        const day = Object.fromEntries(universe.map(s => [s.symbol, { ...bars()[dates.indexOf(date)], ...(close ? { close } : {}) }]));
+        if (date === last) delete day[suspendedSymbol];
+        return day;
+    };
+    const last = dates[89];
+    const partial = full(last);
+    delete partial[lateSymbol];
+    store.days.set(last, { date: last, fetchedAt: `${last}T08:40:00.000Z`, bars: partial });
+    const reads: string[] = [];
+    const fetchedAt = `${last}T11:30:00.000Z`;
+    const source: SelectionSource = {
+        context: () => ({ tradeDate: last, dates }), stocks: async () => universe, benchmark: async () => benchmark,
+        suspensions: async () => new Map([[last, new Set([suspendedSymbol])]]),
+        day: async date => { reads.push(date); return { date, fetchedAt, bars: full(date, date === last ? 999 : undefined) }; },
+    };
+    const service = new SelectionService(store, source);
+    await service.generate();
+    const merged = store.days.get(last)!;
+    assert.equal(Object.keys(merged.bars).length, 999);
+    assert.equal(merged.bars[universe[0].symbol].close, bars()[89].close);
+    assert.equal(merged.bars[lateSymbol].close, 999);
+    assert.equal(reads.filter(date => date === last).length, 1);
+
+    // Evening rerun: the only remaining gap is a suspension, so the ready batch is reused without refetching.
+    const published = store.current!.batch;
+    reads.length = 0;
+    await service.generate();
+    assert.equal(store.current!.batch, published);
+    assert.equal(reads.length, 0);
+
+    // A vendor gap in a final snapshot is refetched, and the new bar rebuilds the ready batch.
+    const vendorGap = universe[5].symbol;
+    delete store.days.get(dates[50])!.bars[vendorGap];
+    await service.generate();
+    assert.deepEqual(reads, [dates[50]]);
+    assert.notEqual(store.current!.batch, published);
+    assert.ok(store.days.get(dates[50])!.bars[vendorGap]);
+    assert.equal(store.days.get(dates[50])!.refreshes, 1);
+
+    // Bars filled by a refresh whose rebuild failed still rebuild later, because the batch used an older version.
+    const flaky = universe[11].symbol;
+    delete store.days.get(dates[55])!.bars[flaky];
+    source.suspensions = async () => new Map([[last, new Set([suspendedSymbol])], [dates[55], new Set([flaky])]]);
+    await service.generate();
+    const stale = store.current!.batch!;
+    assert.equal(stale.inputs!.snapshots[55].bars, 999);
+    source.suspensions = async () => new Map([[last, new Set([suspendedSymbol])]]);
+    source.benchmark = async () => { throw new Error('基准下载失败'); };
+    reads.length = 0;
+    await assert.rejects(service.generate());
+    assert.deepEqual(reads, [dates[55]]);
+    assert.ok(store.days.get(dates[55])!.bars[flaky]);
+    assert.equal(store.current!.batch, stale);
+    source.benchmark = async () => benchmark;
+    reads.length = 0;
+    await service.generate();
+    assert.equal(reads.length, 0);
+    assert.notEqual(store.current!.batch, stale);
+    assert.equal(store.current!.batch!.inputs!.snapshots[55].bars, 1000);
+
+    // A vendor that keeps omitting a stock is retried at doubling intervals, so a late row is still picked up.
+    const missing = universe[7].symbol;
+    delete store.days.get(dates[60])!.bars[missing];
+    const now = () => new Date().toISOString();
+    source.day = async date => { reads.push(date); const day = full(date); delete day[missing]; return { date, fetchedAt: now(), bars: day }; };
+    reads.length = 0;
+    await service.generate();
+    const rebuilt = store.current!.batch;
+    for (let i = 0; i < 4; i++) await service.generate();
+    assert.deepEqual(reads, [dates[60]]);
+    assert.equal(store.current!.batch, rebuilt);
+    assert.equal(store.days.get(dates[60])!.refreshes, 1);
+    store.days.get(dates[60])!.fetchedAt = new Date(Date.now() - 3 * 86_400_000).toISOString();
+    source.day = async date => { reads.push(date); return { date, fetchedAt: now(), bars: full(date) }; };
+    await service.generate();
+    assert.deepEqual(reads, [dates[60], dates[60]]);
+    assert.ok(store.days.get(dates[60])!.bars[missing]);
+    assert.notEqual(store.current!.batch, rebuilt);
+
+    // Without the suspension list final snapshots are still refetched, on the same schedule.
+    const unseen = universe[9].symbol;
+    delete store.days.get(dates[65])!.bars[unseen];
+    source.suspensions = async () => { throw new Error('停牌接口不可用'); };
+    reads.length = 0;
+    await service.generate();
+    assert.ok(reads.includes(dates[65]));
+    assert.ok(store.days.get(dates[65])!.bars[unseen]);
+
+    // Refetch failures keep the stored data.
+    source.suspensions = async () => new Map([[last, new Set([suspendedSymbol])]]);
+    delete store.days.get(dates[70])!.bars[missing];
+    const before = store.days.get(dates[70]);
+    source.day = async () => { throw new Error('网络中断'); };
+    await service.generate();
+    assert.equal(store.days.get(dates[70]), before);
+});
+
+test('连续入选按请求条数回溯：昨日第12名今日进前10，查询前10名时为首次入选', async () => {
+    const universe = Array.from({ length: 20 }, (_, i) => ({ ...stocks[0], symbol: String(600000 + i) }));
+    const today = evaluateMarket(universe, new Map(universe.map(s => [s.symbol, bars()])), dates, benchmark);
+    const yesterday = structuredClone(today);
+    yesterday.stocks.forEach((stock, i) => {
+        stock.signals.find(signal => signal.method === 'trend_following')!.rank = i < 3 ? 11 + i : i < 13 ? i - 2 : i + 1;
+    });
+    const store = Object.assign(new MemoryStore(), {
+        async previousPublished(before: string) { return [{ tradeDate: dates[88], batch: yesterday }].filter(day => day.tradeDate < before); },
+    });
+    store.current = { id: '1', tradeDate: dates[89], status: 'ready', generatedAt: null, dataAsOf: dates[89], batch: today };
+    const service = new SelectionService(store, {
+        context: () => { throw new Error('读取不需要日历'); }, previousTradingDate: date => dates[dates.indexOf(date) - 1] ?? null,
+        stocks: async () => [], day: async () => { throw new Error('读取不采集行情'); }, benchmark: async () => [],
+    });
+    const sessions = async (limit: string) => Object.fromEntries((await service.results(parseQuery({ horizon: 'swing', methods: 'trend_following', limit })))
+        .stocks.map(stock => [stock.symbol, stock.entry?.sessions]));
+    const top10 = await sessions('10');
+    assert.deepEqual([0, 1, 2, 3, 9].map(i => top10[universe[i].symbol]), [1, 1, 1, 2, 2]);
+    const top15 = await sessions('15');
+    assert.equal(top15[universe[0].symbol], 2);
 });

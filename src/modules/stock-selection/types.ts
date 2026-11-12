@@ -12,7 +12,7 @@ export const METHOD_NAMES: Record<Method, string> = {
     trend_following: '趋势跟随', pullback_stabilization: '回踩企稳', industry_strength: '行业强势', earnings_revision: '盈利预期上修',
     quality_growth: '优质成长', garp: '合理估值成长', stable_dividend: '红利稳健',
 };
-export const RULE_VERSION = 'after-close.v4';
+export const RULE_VERSION = 'after-close.v9';
 export const FUSION_VERSION = 'intersection-rank-max-second-0.1.v2';
 export const HISTORY_DAYS = 90;
 export interface Stock { symbol: string; name: string; industry: string; listDate: string }
@@ -21,7 +21,8 @@ export interface Bar {
     date: string; open: number; high: number; low: number; close: number;
     volume: number; amount: number; factor: number; changePct: number;
 }
-export interface MarketDay { date: string; bars: Record<string, Bar>; fetchedAt: string }
+/** refreshes counts refetches after the snapshot became final; it sets the doubling retry interval. */
+export interface MarketDay { date: string; bars: Record<string, Bar>; fetchedAt: string; refreshes?: number }
 export interface Evidence {
     method: Method; score: number; rank: number; reason: string[];
     metrics: Record<string, number>; invalidation: string;
@@ -36,7 +37,8 @@ export interface Batch {
     inputs?: {
         provider: string; adjustment: string; benchmark: string; universeFetchedAt: string;
         universe: Stock[]; benchmarkCloses: Array<{ date: string; close: number }>;
-        snapshots: Array<{ date: string; fetchedAt: string }>;
+        /** bars is the snapshot's bar count when used; snapshots only gain bars, so it identifies the version. */
+        snapshots: Array<{ date: string; fetchedAt: string; bars?: number }>;
     };
 }
 export interface SelectionResultItem extends Stock {
