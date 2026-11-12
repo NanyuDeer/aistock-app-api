@@ -1,5 +1,19 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-12 — 移除重复的宏观抓取定时任务
+
+**开发者**: NanyuDeer
+
+### 修复
+
+- PR #146 与本地已有实现同时注册了每日 20:30 的宏观抓取 cron，会导致每天重复抓取两次。保留 PR #146 的 `fetchAndStoreWithRetry(7)`（带重试与醒目告警），删除旧实现及其 import。
+
+### 验证
+
+- `npx tsc --noEmit` 通过；全仓仅剩 1 处 `30 20 * * *` 注册。
+
+---
+
 ## [master] 2026-11-12 — 宏观预期快照接入每日定时任务（MCRE M0 收尾）
 
 **开发者**: NanyuDeer
