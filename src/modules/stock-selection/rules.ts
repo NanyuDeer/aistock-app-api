@@ -1,4 +1,4 @@
-import { Bar, Batch, Candidate, Evidence, HISTORY_DAYS, Method, METHODS, METHOD_NAMES, MethodStats, SelectionResultItem, Stock } from './types';
+import { Bar, Batch, Candidate, Evidence, HISTORY_DAYS, Method, METHODS, MARKET_METHODS, METHOD_NAMES, MethodStats, SelectionResultItem, Stock } from './types';
 
 const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
 const pct = (a: number, b: number) => (a / b - 1) * 100;
@@ -28,7 +28,7 @@ export function adjustBars(raw: Bar[], dates: string[]): Bar[] | null {
     }));
 }
 
-export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: string[], benchmark: Bar[]): Batch {
+export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: string[], benchmark: Bar[], upperLimits?: ReadonlyMap<string, number>): Batch {
     if (dates.length !== HISTORY_DAYS || new Set(dates).size !== dates.length || dates.some((d, i) => i > 0 && d <= dates[i - 1])) throw new Error('交易日窗口必须为90个连续且升序的交易日');
     const indexByDate = new Map(benchmark.map(b => [b.date, b.close]));
     const index = dates.map(d => indexByDate.get(d));
@@ -46,27 +46,54 @@ export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: 
     }
     // Equal-weight current industry peers; explicitly a cohort comparison, not an industry index.
     const industryReturns = new Map<string, number[]>();
+    const industryMembers = new Map<string, number>();
+    const industryWeekly = new Map<string, number[][]>();
     for (const stock of applicable) {
+        if (!stock.industry) continue;
+        industryMembers.set(stock.industry, (industryMembers.get(stock.industry) || 0) + 1);
         const bars = prepared.get(stock.symbol);
         if (bars && stock.industry) {
             const values = industryReturns.get(stock.industry) || [];
             values.push(pct(bars[end].close, bars[end - 20].close));
             industryReturns.set(stock.industry, values);
+            const weeks = industryWeekly.get(stock.industry) || [[], [], [], []];
+            weeks.forEach((returns, week) => {
+                const last = end - week * 5;
+                returns.push(pct(bars[last].close, bars[last - 5].close));
+            });
+            industryWeekly.set(stock.industry, weeks);
         }
+    }
+    const strongIndustryMetrics = new Map<string, {
+        industryExcess20: number; industryReturn20: number; breadth: number; strongWeeks: number; industryPeerCount: number;
+    }>();
+    for (const [industry, returns] of industryReturns) {
+        if (returns.length < 5 || returns.length / industryMembers.get(industry)! < 0.8) continue;
+        const industryReturn20 = mean(returns);
+        const strongWeeks = industryWeekly.get(industry)!.filter((values, week) => {
+            const last = end - week * 5;
+            return mean(values) > pct(index[last]!, index[last - 5]!);
+        }).length;
+        strongIndustryMetrics.set(industry, {
+            industryReturn20, industryExcess20: industryReturn20 - index20,
+            breadth: returns.filter(value => value > 0).length / returns.length,
+            strongWeeks, industryPeerCount: returns.length,
+        });
     }
     let eligibleCount = 0;
     const candidates: Candidate[] = [];
     for (const stock of stocks) {
+        for (const method of METHODS) if (!MARKET_METHODS.includes(method)) stats[method].notApplicable++;
         const bars = prepared.get(stock.symbol);
         const isApplicable = applicableSymbols.has(stock.symbol);
         if (!isApplicable || !bars) {
-            for (const m of METHODS) stats[m][isApplicable ? 'unavailable' : 'notApplicable']++;
+            for (const m of MARKET_METHODS) stats[m][isApplicable ? 'unavailable' : 'notApplicable']++;
             continue;
         }
         const b = bars[end], previous = bars[end - 1];
         const avgAmount20 = mean(bars.slice(-20).map(v => v.amount));
         if (b.amount < 50_000_000 || avgAmount20 < 50_000_000) {
-            for (const m of METHODS) stats[m].notApplicable++;
+            for (const m of MARKET_METHODS) stats[m].notApplicable++;
             continue;
         }
         eligibleCount++;
@@ -95,7 +122,7 @@ export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: 
             [`收盘价高于MA20、MA20高于MA60，且两条均线均向上`, `近60日相对沪深300收益${excess60.toFixed(2)}个百分点，最大回撤${dd60.toFixed(2)}%`],
             '收盘跌破MA60或中期均线转弱时重新评估');
         const peers = industryReturns.get(stock.industry) || [];
-        if (peers.length < 5) stats.momentum_continuation.unavailable++;
+        if (peers.length < 5 || peers.length / industryMembers.get(stock.industry)! < 0.8) stats.momentum_continuation.unavailable++;
         else {
             const industryExcess20 = return20 - mean(peers);
             const persistence = bars.slice(-10).filter((v, i) => v.close > ma(bars, end - 9 + i, 20)).length;
@@ -103,6 +130,28 @@ export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: 
                 clamp(50 + excess20 + industryExcess20 * 0.5 + persistence * 2 - dd20 - Math.max(0, bias20 - 8)),
                 [`近20日相对沪深300收益${excess20.toFixed(2)}个百分点、相对同行等权样本${industryExcess20.toFixed(2)}个百分点`, `近10日有${persistence}日收盘高于MA20，当前偏离MA20为${bias20.toFixed(2)}%`],
                 '跌破MA20、相对强弱转负或明显过热时重新评估', { industryExcess20, industryPeerCount: peers.length, persistence });
+        }
+        const upperLimit = upperLimits?.get(stock.symbol);
+        if (!upperLimit || !Number.isFinite(upperLimit) || upperLimit <= 0) stats.limit_up_breakout.unavailable++;
+        else {
+            const atLimit = Math.round(b.close * 100) === Math.round(upperLimit * 100);
+            const tradedBelowLimit = Math.round(b.low * 100) < Math.round(upperLimit * 100);
+            add('limit_up_breakout', atLimit && tradedBelowLimit,
+                clamp(45 + Math.min(volumeRatio, 5) * 5 + Math.min(b.amount / 100_000_000, 5) * 5),
+                [`收盘封于当日涨停价${upperLimit.toFixed(2)}元，盘中最低价低于涨停价`,
+                    `成交量为此前20日均量的${volumeRatio.toFixed(2)}倍`],
+                '下一交易日走弱时重新评估，盘后日线无法判断盘中回封过程', { upperLimit });
+        }
+        const industry = strongIndustryMetrics.get(stock.industry);
+        if (!industry) stats.industry_strength.unavailable++;
+        else {
+            const stockExcess = return20 - industry.industryReturn20;
+            add('industry_strength', industry.industryReturn20 > 0 && industry.industryExcess20 >= 3 && industry.breadth >= 0.6
+                && industry.strongWeeks >= 3 && b.close > ma20 && slope20 > 0 && stockExcess >= 0 && bias20 <= 12 && dd20 <= 12,
+                clamp(40 + industry.industryExcess20 + industry.breadth * 20 + industry.strongWeeks * 4 + stockExcess * 0.5 - dd20),
+                [`近20日同行等权样本跑赢沪深300 ${industry.industryExcess20.toFixed(2)}个百分点，${(industry.breadth * 100).toFixed(0)}%样本上涨`,
+                    `最近4个五交易日区间有${industry.strongWeeks}个跑赢沪深300，个股近20日较同行高${stockExcess.toFixed(2)}个百分点`],
+                '行业扩散度或相对强度回落、个股收盘跌破MA20时重新评估', { ...industry, stockExcess });
         }
         // The previous 10 sessions must contain a pullback from an earlier peak and a support test.
         const peak = Math.max(...bars.slice(end - 20, end - 5).map(v => v.high));
@@ -121,11 +170,19 @@ export function evaluateMarket(stocks: Stock[], raw: Map<string, Bar[]>, dates: 
             `收盘跌破本轮回踩低点${trough.toFixed(2)}元时重新评估`, { pullbackPct, contraction, supportLow: trough });
         if (signals.length) candidates.push({ ...stock, price: b.close, changePct: b.changePct, sparkline: bars.slice(-20).map(v => round(v.close)), signals });
     }
-    for (const method of METHODS) {
+    rankCandidates(candidates, MARKET_METHODS);
+    return { stocks: candidates, universeCount: stocks.length, eligibleCount, methodStats: stats };
+}
+
+export function rankCandidates(candidates: Candidate[], methods: readonly Method[]): void {
+    for (const method of methods) {
         const matched = candidates.filter(c => c.signals.some(s => s.method === method)).sort((a, b) => b.signals.find(s => s.method === method)!.score - a.signals.find(s => s.method === method)!.score || a.symbol.localeCompare(b.symbol));
         matched.forEach((c, i) => { c.signals.find(s => s.method === method)!.rank = i + 1; });
     }
-    return { stocks: candidates, universeCount: stocks.length, eligibleCount, methodStats: stats };
+}
+
+export function matchesAllMethods(stock: Candidate, methods: readonly Method[]): boolean {
+    return methods.length > 0 && methods.every(method => stock.signals.some(signal => signal.method === method));
 }
 
 /** Fixed rank mapping: rank 1 = 100; fusion uses only the two strongest selected signals. */
@@ -133,8 +190,8 @@ export function combine(stocks: Candidate[], methods: Method[], limit: number): 
     const selected = [...new Set(methods)];
     const rows: SelectionResultItem[] = [];
     for (const stock of stocks) {
+        if (!matchesAllMethods(stock, selected)) continue;
         const signals = stock.signals.filter(s => selected.includes(s.method)).sort((a, b) => a.rank - b.rank || a.method.localeCompare(b.method));
-        if (!signals.length) continue;
         const points = signals.map(s => 2100 / (20 + s.rank));
         const score = points[0] + (points[1] || 0) * 0.1;
         rows.push({ ...stock, signals, rank: 0, compositeScore: round(score),
@@ -144,4 +201,17 @@ export function combine(stocks: Candidate[], methods: Method[], limit: number): 
         });
     }
     return rows.sort((a, b) => b.compositeScore - a.compositeScore || a.symbol.localeCompare(b.symbol)).slice(0, limit).map((s, i) => ({ ...s, rank: i + 1 }));
+}
+
+export function appendSignal(batch: Batch, candidates: Map<string, Candidate>, stock: Stock, bars: Bar[], dates: string[], signal: Evidence): void {
+    let candidate = candidates.get(stock.symbol);
+    if (!candidate) {
+        const quote = bars.find(bar => bar.date === dates[dates.length - 1])!;
+        const recent = adjustBars(bars, dates.slice(-20));
+        candidate = { ...stock, price: quote.close, changePct: quote.changePct,
+            sparkline: recent?.map(bar => round(bar.close)) || [], signals: [] };
+        candidates.set(stock.symbol, candidate);
+        batch.stocks.push(candidate);
+    }
+    candidate.signals.push(signal);
 }

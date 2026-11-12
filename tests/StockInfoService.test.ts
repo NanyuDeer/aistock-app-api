@@ -4,6 +4,7 @@ import pool from '../src/core/db';
 import {
     buildStockInfoTargets,
     buildStockInfoExistingKeys,
+    hashStockInfoDedupeKey,
     normalizeStockInfoJudgementInput,
     shouldPushStockInfoJudgement,
     StockInfoService,
@@ -92,7 +93,7 @@ runTest('normalizeStockInfoJudgementInput validates and clips crawler payload', 
 
     assert.equal(item.symbol, '000001');
     assert.equal(item.source_id, null);
-    assert.equal(item.dedupe_key.length, 40);
+    assert.equal(item.dedupe_key.length, 32);
     assert.deepEqual(item.ai_keywords, ['涨价', '订单', '回购', '分红', '扩产', '并购', '中标', '降本']);
 });
 
@@ -111,47 +112,37 @@ runTest('normalizeStockInfoJudgementInput rejects invalid enum values', () => {
     }), /info_type/);
 });
 
-runTest('buildStockInfoExistingKeys normalizes source info_type and source_id', () => {
-    const keys = buildStockInfoExistingKeys([
-        { source: ' eastmoney ', info_type: 'announcement', source_id: ' eastmoney-announcement-AN1 ' },
-        { source: 'eastmoney', info_type: 'news', source_id: 'eastmoney-news-N1' },
-        { source: '', info_type: 'news', source_id: 'eastmoney-news-N2' },
-        { source: 'eastmoney', info_type: 'report', source_id: 'eastmoney-report-R1' },
-        { source: 'eastmoney', info_type: 'news', source_id: '' },
-        { source: 'eastmoney', info_type: 'news', source_id: 'eastmoney-news-N1' },
-    ]);
-
-    assert.deepEqual(keys, [
-        { key: 'eastmoney|announcement|eastmoney-announcement-AN1', source: 'eastmoney', info_type: 'announcement', source_id: 'eastmoney-announcement-AN1' },
-        { key: 'eastmoney|news|eastmoney-news-N1', source: 'eastmoney', info_type: 'news', source_id: 'eastmoney-news-N1' },
-    ]);
-});
-
-runAsyncTest('getExistingJudgements returns rows already stored by dedupe key', async () => {
-    const originalQuery = pool.query.bind(pool);
-    const calls: any[][] = [];
-    (pool as any).query = async (...args: any[]) => {
-        calls.push(args);
-        if (String(args[0]).includes('CREATE TABLE') || String(args[0]).includes('CREATE INDEX')) {
-            return { rows: [] };
-        }
-        return {
-            rows: [
-                { source: 'eastmoney', info_type: 'announcement', source_id: 'eastmoney-announcement-AN1' },
-            ],
-        };
+runAsyncTest('stock info dedupe isolates stocks and keeps retries on the same key', async () => {
+    const article = {
+        source: 'eastmoney',
+        info_type: 'news',
+        source_id: 'eastmoney-news-N1',
+        title: '同一篇新闻',
+        url: 'https://example.com/news',
+        published_at: '2026-06-08T09:30:00+08:00',
+        ai_impact: '中性',
+        ai_horizon: '短期',
+        ai_summary: '结论',
     };
+    const first = { ...article, symbol: 'SZ300750' };
+    const second = { ...article, symbol: '603259' };
+    const retry = { ...first, symbol: '300750', ai_summary: '更新后的结论' };
+    const firstKey = normalizeStockInfoJudgementInput(first).dedupe_key;
+    const secondKey = normalizeStockInfoJudgementInput(second).dedupe_key;
+    assert.notEqual(firstKey, secondKey);
+    assert.equal(normalizeStockInfoJudgementInput(retry).dedupe_key, firstKey);
 
+    const keys = buildStockInfoExistingKeys([first, second, retry, article]);
+    assert.deepEqual(keys.map(item => hashStockInfoDedupeKey(item.key)), [firstKey, secondKey]);
+
+    const originalQuery = pool.query;
+    (pool as any).query = async (sql: string, params: unknown[]) => {
+        if (!sql.includes('dedupe_key = ANY')) return { rows: [] };
+        assert.deepEqual(params, [[firstKey, secondKey]]);
+        return { rows: [{ dedupe_key: firstKey }] };
+    };
     try {
-        const existing = await StockInfoService.getExistingJudgements([
-            { source: 'eastmoney', info_type: 'announcement', source_id: 'eastmoney-announcement-AN1' },
-            { source: 'eastmoney', info_type: 'news', source_id: 'eastmoney-news-N1' },
-        ]);
-
-        assert.deepEqual(existing, [
-            { key: 'eastmoney|announcement|eastmoney-announcement-AN1', source: 'eastmoney', info_type: 'announcement', source_id: 'eastmoney-announcement-AN1' },
-        ]);
-        assert.equal(calls.some(call => String(call[0]).includes('dedupe_key = ANY')), true);
+        assert.deepEqual(await StockInfoService.getExistingJudgements([first, second, retry]), [keys[0]]);
     } finally {
         (pool as any).query = originalQuery;
     }

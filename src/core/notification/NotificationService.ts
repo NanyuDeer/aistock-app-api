@@ -258,15 +258,19 @@ export class NotificationService {
         return flushed;
     }
 
-    static async list(openid: string, limit: number, cursor?: string, unreadOnly = false): Promise<{ items: UserNotification[]; nextCursor: string | null; unreadCount: number }> {
+    static async list(openid: string, limit: number, cursor?: string, unreadOnly = false, symbol?: string): Promise<{ items: UserNotification[]; nextCursor: string | null; unreadCount: number }> {
         await this.ensureSchema();
         const parsedCursor = cursor ? this.decodeCursor(cursor) : null;
         const params: unknown[] = [openid];
         let where = 'WHERE openid = $1';
         if (unreadOnly) where += ' AND read_at IS NULL';
+        if (symbol) {
+            params.push(symbol);
+            where += ` AND symbol = $${params.length}`;
+        }
         if (parsedCursor) {
             params.push(parsedCursor.createdAt, parsedCursor.id);
-            where += ' AND (created_at, id) < ($2::timestamptz, $3::uuid)';
+            where += ` AND (created_at, id) < ($${params.length - 1}::timestamptz, $${params.length}::uuid)`;
         }
         params.push(limit + 1);
         const [listResult, unreadResult] = await Promise.all([
