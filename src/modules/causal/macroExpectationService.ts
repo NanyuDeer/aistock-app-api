@@ -229,6 +229,46 @@ export async function fetchAndStore(windowDays = 7, now = new Date()): Promise<n
 }
 
 /**
+ * 带重试的抓取。
+ *
+ * 为什么重试比告警重要：接口的历史 forecast 会被清空，漏抓一天那天的预期
+ * 就**永久丢失**。瞬时故障（网络抖动、接口 502）必须自愈，不能只报错。
+ *
+ * 3 次全失败才打 `[ALERT]` 前缀——便于用 pm2 日志或外部监控 grep。
+ * 之所以用日志而不是推送：`notification_outbox` 依赖 openid 定向投递，
+ * 运维告警没有对应接收人，接渠道需要先指定接收方。
+ */
+export async function fetchAndStoreWithRetry(
+    windowDays = 7,
+    attempts = 3,
+    delayMs = 5 * 60_000,
+    now = new Date(),
+): Promise<number | null> {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+            const written = await fetchAndStore(windowDays, now);
+            if (attempt > 1) {
+                console.warn(`[MacroExpectations] 第 ${attempt} 次尝试成功，写入 ${written} 行`);
+            }
+            return written;
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error(`[MacroExpectations] 第 ${attempt}/${attempts} 次抓取失败: ${message}`);
+            if (attempt === attempts) {
+                console.error(
+                    '[ALERT] 宏观预期抓取连续失败 %d 次，今日预期数据可能永久丢失' +
+                        '（接口历史 forecast 会被清空，补不回来）。请检查华尔街见闻接口可用性。',
+                    attempts,
+                );
+                return null;
+            }
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+        }
+    }
+    return null;
+}
+
+/**
  * point-in-time 查询：某指标在 `at` 时刻可见的最新快照。
  *
  * 按 as_of <= at 过滤，绝不使用事后修订的数据。
