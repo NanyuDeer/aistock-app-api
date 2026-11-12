@@ -68,15 +68,27 @@ export interface MacroExpectationView {
  * 比缺数据更难排查。
  */
 const INDICATOR_RULES: Array<{ pattern: RegExp; key: string; unit: string }> = [
+    // 顺序即优先级：先匹配者胜。CPI 通用规则放前面，美国 CPI 靠 country 前缀区分。
     { pattern: /CPI(同比|年率)/, key: 'CPI_YOY', unit: '%' },
     { pattern: /PPI(同比|年率)/, key: 'PPI_YOY', unit: '%' },
     { pattern: /社会融资规模/, key: 'TSF', unit: '亿元' },
     { pattern: /M2货币供应同比/, key: 'M2_YOY', unit: '%' },
     { pattern: /M1货币供应同比/, key: 'M1_YOY', unit: '%' },
     { pattern: /制造业PMI/, key: 'PMI_MFG', unit: '' },
+    // 2026-11-12 扩展：原 9 条只覆盖中国 37 条事件里的 6 条
+    { pattern: /工业增加值/, key: 'IVA_YOY', unit: '%' },
+    { pattern: /固定资产投资/, key: 'FAI_YOY', unit: '%' },
+    { pattern: /社会消费品零售/, key: 'RETAIL_YOY', unit: '%' },
+    { pattern: /出口.*同比|出口金额/, key: 'EXPORT_YOY', unit: '%' },
+    { pattern: /GDP.*同比/, key: 'GDP_YOY', unit: '%' },
+    { pattern: /贸易(帐|差额)/, key: 'TRADE_BALANCE', unit: '亿美元' },
+    // 美国
     { pattern: /ADP就业人数/, key: 'ADP', unit: '万人' },
+    { pattern: /非农就业/, key: 'NFP', unit: '万人' },
     { pattern: /首次申请失业救济/, key: 'JOBLESS', unit: '万人' },
+    { pattern: /失业率/, key: 'UNEMPLOYMENT', unit: '%' },
     { pattern: /ISM非制造业/, key: 'ISM_SERVICES', unit: '' },
+    { pattern: /(美联储|联邦基金).*(利率决议|利率|目标区间)/, key: 'FED_RATE', unit: '%' },
 ];
 
 const COUNTRY_PREFIX: Record<string, string> = {
