@@ -12,6 +12,7 @@ import {
     type CausalInputsDeps,
     type PricePoint,
 } from '../causalInputsService';
+import type { MacroExpectationView } from '../macroExpectationService';
 
 function klineRows(points: Array<[string, number]>): Record<string, unknown>[] {
     return points.map(([date, close]) => ({
@@ -23,6 +24,31 @@ function klineRows(points: Array<[string, number]>): Record<string, unknown>[] {
         成交量: 1000,
     }));
 }
+
+const MACRO_EXPECTATIONS: Record<string, MacroExpectationView> = {
+    CN_CPI_YOY: {
+        period: '2026-10',
+        previous: 0.5,
+        forecast: 0.8,
+        actual: 0.9,
+        gap: 0.1,
+        gapPct: 0.125,
+        basis: 'forecast',
+        importance: 5,
+        asOf: '2026-11-09T02:00:00.000Z',
+    },
+    US_ISM_SERVICES: {
+        period: '2026-10',
+        previous: 51.2,
+        forecast: null,
+        actual: 52.4,
+        gap: null,
+        gapPct: null,
+        basis: 'previous_only',
+        importance: 3,
+        asOf: '2026-11-09T02:00:00.000Z',
+    },
+};
 
 function makeDeps(overrides: Partial<CausalInputsDeps> = {}): CausalInputsDeps {
     return {
@@ -48,6 +74,7 @@ function makeDeps(overrides: Partial<CausalInputsDeps> = {}): CausalInputsDeps {
             forecast_eps: 1.23,
             forecast_eps_yoy: 12,
         }),
+        queryExpectations: async () => MACRO_EXPECTATIONS,
         ...overrides,
     };
 }
@@ -84,7 +111,7 @@ describe('sliceWindow', () => {
 });
 
 describe('buildCausalInputs', () => {
-    it('返回四类数据并标记完整度', async () => {
+    it('返回五类数据并标记完整度', async () => {
         const result = await buildCausalInputs(
             { tradeDate: '2026-11-04', window: { pre: 2, post: 1 }, symbols: ['000300.SH'] },
             makeDeps(),
@@ -97,12 +124,13 @@ describe('buildCausalInputs', () => {
         );
         assert.deepEqual(result.sectorReturns, { 半导体: 3.2, 光模块: -1.1 });
         assert.equal(result.flows?.['000300.SH'], 12345);
-        assert.equal(result.consensus?.['000300.SH']?.eps, 1.23);
+        assert.equal(result.forecastGuidance?.['000300.SH']?.eps, 1.23);
         assert.deepEqual(result.completeness, {
             prices: true,
             sector_returns: true,
             flows: true,
-            consensus: true,
+            forecast_guidance: true,
+            macro_expectations: true,
         });
     });
 
@@ -114,19 +142,51 @@ describe('buildCausalInputs', () => {
                 getMoneyflow: async () => null,
                 querySectorReturns: async () => ({}),
                 findConsensusAsOf: async () => null,
+                queryExpectations: async () => ({}),
             }),
         );
 
         assert.deepEqual(result.prices, {});
         assert.equal(result.sectorReturns, null);
         assert.equal(result.flows, null);
-        assert.equal(result.consensus, null);
+        assert.equal(result.forecastGuidance, null);
         assert.equal(result.completeness.prices, false);
-        assert.equal(result.completeness.consensus, false);
+        assert.equal(result.completeness.forecast_guidance, false);
+    });
+
+    it('有宏观预期时返回数据并标记完整度', async () => {
+        let seenAt: Date | undefined;
+        const result = await buildCausalInputs(
+            { tradeDate: '2026-11-04', symbols: ['000300.SH'] },
+            makeDeps({
+                queryExpectations: async (at) => {
+                    seenAt = at;
+                    return MACRO_EXPECTATIONS;
+                },
+            }),
+        );
+
+        // 宏观预期是全局口径，按当日收盘时刻回溯（15:05+08:00 = 07:05Z）
+        assert.equal(seenAt?.toISOString(), '2026-11-04T07:05:00.000Z');
+        assert.deepEqual(result.macroExpectations, MACRO_EXPECTATIONS);
+        assert.equal(result.macroExpectations?.CN_CPI_YOY.gap, 0.1);
+        assert.equal(result.macroExpectations?.US_ISM_SERVICES.basis, 'previous_only');
+        assert.equal(result.completeness.macro_expectations, true);
+    });
+
+    it('无宏观预期时返回 null 并标记不完整', async () => {
+        const result = await buildCausalInputs(
+            { tradeDate: '2026-11-04', symbols: ['000300.SH'] },
+            makeDeps({ queryExpectations: async () => ({}) }),
+        );
+
+        assert.equal(result.macroExpectations, null);
+        assert.equal(result.completeness.macro_expectations, false);
     });
 
     it('按 need 只取需要的类别', async () => {
         let consensusCalled = false;
+        let macroCalled = false;
         const result = await buildCausalInputs(
             { tradeDate: '2026-11-04', symbols: ['000300.SH'], need: ['prices'] },
             makeDeps({
@@ -134,12 +194,18 @@ describe('buildCausalInputs', () => {
                     consensusCalled = true;
                     return null;
                 },
+                queryExpectations: async () => {
+                    macroCalled = true;
+                    return {};
+                },
             }),
         );
 
         assert.ok(result.prices['000300.SH'].length > 0);
-        assert.equal(result.consensus, null);
+        assert.equal(result.forecastGuidance, null);
+        assert.equal(result.macroExpectations, null);
         assert.equal(consensusCalled, false);
+        assert.equal(macroCalled, false);
     });
 
     it('拒绝非法日期与空标的集', async () => {
