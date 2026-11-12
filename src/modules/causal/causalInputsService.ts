@@ -2,8 +2,8 @@
  * 归因输入聚合 —— MCRE M1 的批量数据出口。
  *
  * 职责：
- *   给定「交易日 + 标的集 + 窗口」，一次性返回四路检验器所需的全部输入：
- *   价格序列、板块收益、资金流、一致预期，以及各类数据的完整度。
+ *   给定「交易日 + 标的集 + 窗口」，一次性返回检验器所需的全部输入：
+ *   价格序列、板块收益、资金流、业绩预告、宏观预期，以及各类数据的完整度。
  *
  * 为什么要有这个接口：
  *   Python 侧禁止重复实现 A 股数据获取（见根 AGENTS.md）。四路检验器需要
@@ -13,17 +13,26 @@
  *   - 依赖全部可注入（CausalInputsDeps），单测不打真实网络
  *   - completeness 用布尔标记每类数据是否可用；缺失返回 null 而不是空对象，
  *     否则「没数据」会被投票逻辑误判为「无反应」
- *   - 一致预期按 as_of <= 当日收盘 回溯，避免用到事后修订的数据
+ *   - forecastGuidance 读的是 earnings_forecast_versions（公司自己披露的业绩预告），
+ *     不是卖方一致预期；M1 的预期差基数是 macroExpectations（宏观指标 forecast）
+ *   - 两类预期都按 as_of <= 当日收盘 回溯，避免用到事后修订的数据
  */
 
 import pool from '../../core/db';
 import { ForecastVersionStore } from '../monitor/ForecastVersionStore';
 import type { ForecastVersionRow } from '../monitor/ForecastVersionStore';
+import { queryExpectations } from './macroExpectationService';
+import type { MacroExpectationView } from './macroExpectationService';
 import { TencentKlineService } from '../quote/TencentKlineService';
 import type { KLineOptions } from '../quote/TencentKlineService';
 import { getSinaMoneyflow } from '../quote/SinaMoneyFlowService';
 
-export type CausalInputKind = 'prices' | 'sector_returns' | 'flows' | 'consensus';
+export type CausalInputKind =
+    | 'prices'
+    | 'sector_returns'
+    | 'flows'
+    | 'forecast_guidance'
+    | 'macro_expectations';
 
 export interface CausalInputsRequest {
     tradeDate: string;
@@ -44,7 +53,10 @@ export interface CausalInputsResult {
     prices: Record<string, PricePoint[]>;
     sectorReturns: Record<string, number> | null;
     flows: Record<string, number | null> | null;
-    consensus: Record<string, Record<string, unknown>> | null;
+    /** 业绩预告（公司披露），不是卖方一致预期 */
+    forecastGuidance: Record<string, Record<string, unknown>> | null;
+    /** 宏观预期快照，key 为归一化指标名（如 CN_CPI_YOY） */
+    macroExpectations: Record<string, MacroExpectationView> | null;
     completeness: Record<CausalInputKind, boolean>;
 }
 
@@ -52,10 +64,18 @@ export interface CausalInputsDeps {
     getKLine: (options: KLineOptions) => Promise<Record<string, unknown>[]>;
     getMoneyflow: (symbol: string) => Promise<Record<string, unknown> | null>;
     querySectorReturns: (tradeDate: string) => Promise<Record<string, number>>;
+    /** 读 earnings_forecast_versions：公司自己披露的业绩预告，不是卖方一致预期 */
     findConsensusAsOf: (symbol: string, at: string) => Promise<ForecastVersionRow | null>;
+    queryExpectations: (at: Date) => Promise<Record<string, MacroExpectationView>>;
 }
 
-const ALL_KINDS: CausalInputKind[] = ['prices', 'sector_returns', 'flows', 'consensus'];
+const ALL_KINDS: CausalInputKind[] = [
+    'prices',
+    'sector_returns',
+    'flows',
+    'forecast_guidance',
+    'macro_expectations',
+];
 
 export const defaultDeps: CausalInputsDeps = {
     getKLine: (options) => TencentKlineService.getKLine(options),
@@ -79,6 +99,7 @@ export const defaultDeps: CausalInputsDeps = {
         return returns;
     },
     findConsensusAsOf: (symbol, at) => ForecastVersionStore.findAsOf(symbol, at),
+    queryExpectations: (at) => queryExpectations(at),
 };
 
 function num(value: unknown): number | null {
@@ -139,7 +160,7 @@ export async function buildCausalInputs(
 
     const prices: Record<string, PricePoint[]> = {};
     const flows: Record<string, number | null> = {};
-    const consensus: Record<string, Record<string, unknown>> = {};
+    const forecastGuidance: Record<string, Record<string, unknown>> = {};
 
     for (const symbol of request.symbols) {
         if (need.has('prices')) {
@@ -159,10 +180,10 @@ export async function buildCausalInputs(
             // 下游会把「有字段但值为空」和「完全没数据」混为一谈
             if (mainNet !== null) flows[symbol] = mainNet;
         }
-        if (need.has('consensus')) {
+        if (need.has('forecast_guidance')) {
             const row = await deps.findConsensusAsOf(symbol, asOf);
             if (row) {
-                consensus[symbol] = {
+                forecastGuidance[symbol] = {
                     versionDate: row.version_date,
                     updateTime: row.update_time,
                     netprofitYoy: row.forecast_netprofit_yoy,
@@ -180,13 +201,21 @@ export async function buildCausalInputs(
         sectorReturns = Object.keys(result).length > 0 ? result : null;
     }
 
+    // 宏观预期是全局口径（不按 symbol 拆），只查一次
+    let macroExpectations: Record<string, MacroExpectationView> | null = null;
+    if (need.has('macro_expectations')) {
+        const expectations = await deps.queryExpectations(new Date(asOf));
+        macroExpectations = Object.keys(expectations).length > 0 ? expectations : null;
+    }
+
     const requestedCount = request.symbols.length;
     const completeness: Record<CausalInputKind, boolean> = {
         prices: Object.keys(prices).length === requestedCount,
         sector_returns: sectorReturns !== null,
         // 资金流对指数通常为空，缺省视为「部分可用」而非失败
         flows: Object.values(flows).some((value) => value !== null),
-        consensus: Object.keys(consensus).length > 0,
+        forecast_guidance: Object.keys(forecastGuidance).length > 0,
+        macro_expectations: macroExpectations !== null,
     };
 
     return {
@@ -194,7 +223,8 @@ export async function buildCausalInputs(
         prices,
         sectorReturns,
         flows: Object.keys(flows).length > 0 ? flows : null,
-        consensus: Object.keys(consensus).length > 0 ? consensus : null,
+        forecastGuidance: Object.keys(forecastGuidance).length > 0 ? forecastGuidance : null,
+        macroExpectations,
         completeness,
     };
 }

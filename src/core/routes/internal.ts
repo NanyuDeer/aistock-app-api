@@ -1127,8 +1127,17 @@ router.get('/industry/graph', async (_req: Request, res: Response) => {
  *
  * 返回的 completeness 用于投票的「弃权」判定：某类数据缺失时对应字段为 null，
  * 而不是空对象——否则「没数据」会被误判为「无反应」。
+ *
+ * forecast_guidance 是业绩预告（公司披露）；macro_expectations 是宏观预期快照，
+ * 两者语义不同，不可互相替代。
  */
-const CAUSAL_INPUT_KINDS = ['prices', 'sector_returns', 'flows', 'consensus'] as const
+const CAUSAL_INPUT_KINDS = [
+    'prices',
+    'sector_returns',
+    'flows',
+    'forecast_guidance',
+    'macro_expectations',
+] as const
 
 router.post('/market/causal-inputs', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>
