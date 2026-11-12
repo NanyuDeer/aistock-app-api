@@ -513,7 +513,8 @@ export class UserController {
         const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
         const unreadOnly = req.query.unread === 'true';
         try {
-            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor, unreadOnly));
+            const symbol = typeof req.query.symbol === 'string' ? req.query.symbol.trim() : undefined;
+            createResponse(res, 200, 'success', await NotificationService.list(auth.openid, limit, cursor, unreadOnly, symbol));
         } catch (error) {
             UserController.respondNotificationError(res, error, '通知读取失败');
         }
