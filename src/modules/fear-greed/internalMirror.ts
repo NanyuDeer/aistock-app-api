@@ -29,7 +29,9 @@ export async function fearGreedMirrorHandler(_req: Request, res: Response): Prom
             data: {
                 index: jq.composite,
                 label: jq.label ?? '',
-                indicators: (jq.indicators ?? []).map((i) => ({ key: i.key, name: i.name, score: i.score, label: i.label })),
+                // raw 为指标原始值（如 break_rate 的百分比）。节奏大师的退潮闸门需要它
+                // 判「炸板率 > 50%」，score 是 0-100 的归一分，无法反推百分比。
+                indicators: (jq.indicators ?? []).map((i) => ({ key: i.key, name: i.name, score: i.score, label: i.label, raw: i.raw })),
                 history: jq.history ?? { dates: [], scores: [] },
             },
         })
