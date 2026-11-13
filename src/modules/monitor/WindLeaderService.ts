@@ -19,6 +19,7 @@ import {
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 import { CacheService } from '../../shared/utils/CacheService';
 import { fetchBoardRealtime, getTodayBoardRanking, queryRotationDaily, type TodayBoardItem } from './RotationBoardStore';
+import { getBoardConstituents } from './WindLeaderAnalyzerService';
 
 // ==================== 类型定义 ====================
 
@@ -534,17 +535,36 @@ function mergePushRecord(existing: PushHistoryRecord | undefined, next: PushHist
 
 // ==================== 今日风口榜（榜单 + 龙头股，读时拼装） ====================
 
-/** 缓存 key 固定：整份 20 条榜单 + 龙头，读写共用 */
-const TODAY_HOT_SPOTS_CACHE_KEY = 'wind_leaders_today_v1';
+/** 缓存 key 固定：整份 20 条榜单 + 龙头，读写共用；v2 起 leader 含 change_pct */
+const TODAY_HOT_SPOTS_CACHE_KEY = 'wind_leaders_today_v2';
 /** 缓存固定存整份 20 条，返回时按 limit 切片（controller 已限制 1..20） */
 const TODAY_HOT_SPOTS_SIZE = 20;
 /** 盘中（当日榜）缓存 60 秒；收盘榜 600 秒 */
 const TODAY_HOT_SPOTS_LIVE_TTL = 60;
 const TODAY_HOT_SPOTS_CLOSE_TTL = 600;
+/** 今日板块详情缓存 300 秒（成分股抓取较慢，按 交易日+板块 缓存） */
+const TODAY_DETAIL_CACHE_TTL = 300;
+const TODAY_DETAIL_CACHE_KEY_PREFIX = 'wind_leaders_today_detail_v1';
+
+/** 今日风口榜龙头股（change_pct 供榜单第三列展示） */
+export interface TodayHotSpotStock {
+    code: string;
+    name: string;
+    change_pct: number | null;
+}
 
 /** 今日风口榜单项（在榜单基础上补龙头股） */
 export interface TodayHotSpotBoard extends TodayBoardItem {
-    leading_stock: { code: string; name: string } | null;
+    leading_stock: TodayHotSpotStock | null;
+}
+
+/** 今日板块详情：与 /cn/wind-leaders 的 hot_sectors 同构，供前端复用同一详情页 */
+export interface TodayHotSpotDetail {
+    trading_date: string;
+    is_live: boolean;
+    update_time: string;
+    source: TodayHotSpotsResult['source'];
+    sector: WindLeaderSector;
 }
 
 /** 今日风口榜（当日 mrpm 排名 + 实时涨跌幅 + 龙头股） */
@@ -560,12 +580,16 @@ export interface TodayHotSpotsResult {
 export interface HotSectorForLeader {
     name?: string;
     leading_stock?: string;
-    leading_stock_info?: { code?: string; name?: string } | null;
-    main_stocks?: { code?: string; name?: string }[];
+    leading_stock_info?: { code?: string; name?: string; change_pct?: number | null } | null;
+    main_stocks?: { code?: string; name?: string; change_pct?: number | null }[];
+}
+
+function toFiniteNumberOrNull(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 /** 解析单个板块的龙头股；匹配不到返回 null（不抓取、不抛错） */
-function resolveLeadingStock(sector: HotSectorForLeader): { code: string; name: string } | null {
+function resolveLeadingStock(sector: HotSectorForLeader): TodayHotSpotStock | null {
     const leadingName = String(sector.leading_stock ?? '').trim();
     if (!leadingName) return null;
     // 优先 leading_stock_info.code，但必须校验其股票名与 leading_stock 一致：
@@ -573,12 +597,12 @@ function resolveLeadingStock(sector: HotSectorForLeader): { code: string; name: 
     const info = sector.leading_stock_info;
     const infoCode = String(info?.code ?? '').trim();
     if (infoCode && String(info?.name ?? '').trim() === leadingName) {
-        return { code: infoCode, name: leadingName };
+        return { code: infoCode, name: leadingName, change_pct: toFiniteNumberOrNull(info?.change_pct) };
     }
     for (const stock of sector.main_stocks ?? []) {
         if (String(stock?.name ?? '').trim() !== leadingName) continue;
         const code = String(stock?.code ?? '').trim();
-        if (code) return { code, name: leadingName };
+        if (code) return { code, name: leadingName, change_pct: toFiniteNumberOrNull(stock?.change_pct) };
     }
     return null;
 }
@@ -777,16 +801,14 @@ export class WindLeaderService {
     }
 
     /**
-     * 今日风口榜（榜单 + 龙头股）。缓存命中直接切片返回；未命中回源计算后写缓存。
-     * 任何异常返回 null（控制器 404），不抛 500。
+     * 读取今日榜快照（整份 20 条）：缓存命中直接返回，未命中回源计算并写缓存。
+     * 列表与详情共用；失败返回 null（控制器 404），不抛 500。
      */
-    static async getTodayHotSpots(limit: number = 10): Promise<TodayHotSpotsResult | null> {
+    private static async readTodaySnapshot(): Promise<TodayHotSpotsResult | null> {
         try {
             const cached = await CacheService.get<string>(TODAY_HOT_SPOTS_CACHE_KEY);
             const parsed = cached ? JSON.parse(cached) as TodayHotSpotsResult : null;
-            if (parsed && Array.isArray(parsed.boards)) {
-                return { ...parsed, boards: parsed.boards.slice(0, limit) };
-            }
+            if (parsed && Array.isArray(parsed.boards)) return parsed;
         } catch {
             // 缓存解析失败忽略，回源重算
         }
@@ -794,10 +816,105 @@ export class WindLeaderService {
             const data = await this.buildTodayHotSpots();
             if (!data) return null;
             await this.cacheTodayHotSpots(data);
-            return { ...data, boards: data.boards.slice(0, limit) };
+            return data;
         } catch (err) {
-            console.warn('[WindLeaderService] getTodayHotSpots 失败:', (err as Error).message);
+            console.warn('[WindLeaderService] readTodaySnapshot 失败:', (err as Error).message);
             return null;
+        }
+    }
+
+    /**
+     * 今日风口榜（榜单 + 龙头股）。缓存命中直接切片返回；未命中回源计算后写缓存。
+     * 任何异常返回 null（控制器 404），不抛 500。
+     */
+    static async getTodayHotSpots(limit: number = 10): Promise<TodayHotSpotsResult | null> {
+        const data = await this.readTodaySnapshot();
+        if (!data) return null;
+        return { ...data, boards: data.boards.slice(0, limit) };
+    }
+
+    /**
+     * 今日板块详情：把今日快照组装成与 /cn/wind-leaders 的 hot_sectors 同构对象，
+     * 供前端复用同一个 sector-detail 页面。
+     * 成分股抓取失败只降级为空（页面隐藏个股区块），不影响概览与 K 线。
+     */
+    static async getTodayHotSpotDetail(code: string, name?: string): Promise<TodayHotSpotDetail | null> {
+        const snapshot = await this.readTodaySnapshot();
+        if (!snapshot) return null;
+
+        const board = snapshot.boards.find((item) => item.board_code === code)
+            ?? (name ? snapshot.boards.find((item) => item.board_name === name) : undefined);
+        if (!board) return null;
+
+        const cacheKey = `${TODAY_DETAIL_CACHE_KEY_PREFIX}:${snapshot.trading_date}:${board.board_code}`;
+        try {
+            const cached = await CacheService.get<string>(cacheKey);
+            const parsed = cached ? JSON.parse(cached) as TodayHotSpotDetail : null;
+            if (parsed && parsed.sector) return parsed;
+        } catch {
+            // 缓存解析失败忽略，继续组装
+        }
+
+        const mainStocks = await this.loadBoardConstituents(board.board_code);
+        const upCount = mainStocks.filter((stock) => (stock.change_pct ?? 0) > 0).length;
+        const downCount = mainStocks.filter((stock) => (stock.change_pct ?? 0) < 0).length;
+
+        const detail: TodayHotSpotDetail = {
+            trading_date: snapshot.trading_date,
+            is_live: snapshot.is_live,
+            update_time: snapshot.update_time,
+            source: snapshot.source,
+            sector: {
+                code: board.board_code,
+                name: board.board_name,
+                freq10: 0,
+                freq120: 0,
+                today_change: board.change_pct ?? null,
+                today_change_source: board.change_source,
+                today_change_date: snapshot.trading_date,
+                amount: board.amount ?? 0,
+                leading_stock: board.leading_stock?.name,
+                leading_change: board.leading_stock?.change_pct ?? undefined,
+                leading_stock_info: board.leading_stock
+                    ? {
+                        code: board.leading_stock.code,
+                        name: board.leading_stock.name,
+                        change_pct: board.leading_stock.change_pct,
+                        price: null,
+                    }
+                    : null,
+                main_stocks: mainStocks,
+                up_count: mainStocks.length ? upCount : undefined,
+                down_count: mainStocks.length ? downCount : undefined,
+            },
+        };
+
+        try {
+            await CacheService.put(cacheKey, JSON.stringify(detail), TODAY_DETAIL_CACHE_TTL);
+        } catch {
+            // 缓存写失败不影响本次返回
+        }
+        return detail;
+    }
+
+    /** 成分股（涨幅降序前 10）；失败返回空数组，绝不抛错阻塞详情 */
+    private static async loadBoardConstituents(boardCode: string): Promise<WindLeaderStock[]> {
+        if (!boardCode) return [];
+        try {
+            const rows = await getBoardConstituents(boardCode, 'concept', 100);
+            return rows
+                .map((row) => ({
+                    code: String(row.code ?? '').trim(),
+                    name: String(row.name ?? '').trim(),
+                    price: typeof row.price === 'number' ? row.price : null,
+                    change_pct: typeof row.change_pct === 'number' ? row.change_pct : null,
+                }))
+                .filter((row) => row.code && row.name)
+                .sort((a, b) => (b.change_pct ?? -999) - (a.change_pct ?? -999))
+                .slice(0, 10);
+        } catch (err) {
+            console.warn('[WindLeaderService] 今日板块成分股获取失败:', (err as Error).message);
+            return [];
         }
     }
 

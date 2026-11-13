@@ -21,6 +21,21 @@ type StockAnalysisModelDeltaHandler = (event: StockAnalysisModelDeltaEvent) => v
 interface StockAnalysisRow { symbol: string; stock_name: string | null; analysis_time: string; conclusion: AnalysisConclusion; core_logic: string; risk_warning: string; }
 interface StockAnalysisHistoryCountRow { total: number; }
 
+/**
+ * 个股分析大模型超时（毫秒）。
+ *
+ * 2026-11-12 周会任务 3 根因：原硬编码 45s 小于线上模型真实耗时（实测 ~51s），
+ * POST /analysis 必然 AbortError → 500，App 短线洞见卡一直停在生成中。
+ * 默认 120s，可用 STOCK_ANALYSIS_LLM_TIMEOUT_MS 覆盖；过小/非法值回落默认。
+ */
+export function resolveStockAnalysisLlmTimeoutMs(): number {
+    const DEFAULT_TIMEOUT_MS = 120_000;
+    const MIN_TIMEOUT_MS = 30_000;
+    const raw = Number(process.env.STOCK_ANALYSIS_LLM_TIMEOUT_MS);
+    if (!Number.isFinite(raw) || raw < MIN_TIMEOUT_MS) return DEFAULT_TIMEOUT_MS;
+    return raw;
+}
+
 export class StockAnalysisService {
     private static readonly NEWS_LIMIT = 5;
     private static readonly ALLOWED_CONCLUSIONS = new Set<AnalysisConclusion>(['重大利好', '利好', '中性', '利空', '重大利空']);
@@ -289,10 +304,15 @@ JSON 结构如下：
     }
 
     private static buildModelRequestBody(prompt: string, stream: boolean): Record<string, unknown> {
+        // Qwen3 默认开启 thinking，会先产出大量 reasoning token；自建 vLLM 上
+        // 单次个股分析实测 240s 仍未结束（2026-11-12）。分析只要求严格 JSON，
+        // 默认关闭 thinking，可用 QWEN_ENABLE_THINKING=true 重新开启。
+        const enableThinking = process.env.QWEN_ENABLE_THINKING === 'true';
         return {
             model: process.env.QWEN_MODEL,
             temperature: 0.2,
             ...(stream ? { stream: true } : {}),
+            chat_template_kwargs: { enable_thinking: enableThinking },
             messages: [{ role: 'system', content: this.ANALYSIS_SYSTEM_PROMPT }, { role: 'user', content: prompt }],
         };
     }
@@ -307,7 +327,7 @@ JSON 结构如下：
         if (!evaModel) throw new Error('缺少 QWEN_MODEL 配置');
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 45_000);
+        const timeout = setTimeout(() => controller.abort(), resolveStockAnalysisLlmTimeoutMs());
         try {
             const response = await sessionFetch(apiBaseUrl, {
                 method: 'POST',
@@ -333,7 +353,7 @@ JSON 结构如下：
         if (!evaModel) throw new Error('缺少 QWEN_MODEL 配置');
 
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 45_000);
+        const timeout = setTimeout(() => controller.abort(), resolveStockAnalysisLlmTimeoutMs());
         try {
             const response = await sessionFetch(apiBaseUrl, {
                 method: 'POST',

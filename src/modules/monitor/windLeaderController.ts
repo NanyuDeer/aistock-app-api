@@ -69,6 +69,35 @@ export class WindLeaderController {
     }
 
     /**
+     * GET /api/cn/wind-leaders/today/detail
+     * 今日板块详情（复用风口详情页的板块结构）
+     *
+     * Query params:
+     *   - code: 板块代码（优先按 code 命中，未命中按 name 兜底）
+     *   - name: 板块名称（可选）
+     */
+    static async getTodayHotSpotDetail(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        try {
+            const code = String(req.query.code || '').trim();
+            const name = typeof req.query.name === 'string' ? req.query.name.trim() : '';
+            if (!code && !name) {
+                createResponse(res, 400, 'code 与 name 至少提供一个');
+                return;
+            }
+            const data = await WindLeaderService.getTodayHotSpotDetail(code, name || undefined);
+            if (!data) {
+                createResponse(res, 404, '未找到该板块今日数据');
+                return;
+            }
+            createResponse(res, 200, 'success', data);
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error('[WindLeaderController] getTodayHotSpotDetail error:', errMsg);
+            createResponse(res, 500, errMsg);
+        }
+    }
+
+    /**
      * GET /api/cn/wind-leaders/board-kline
      * 板块日 K 线（近 N 日，默认 120）
      * Query params: code（必填，6 位同花顺板块代码）、days（可选，默认 120，上限 120）

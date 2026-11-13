@@ -48,3 +48,5 @@
 - K 线数据来自 Tushare
 - 所有行情接口均支持缓存，使用 CacheService
 - **行情缓存键必须按 level 区分前缀**（core/activity/fundamental 各自独立，见 `quoteCacheConfig`）。2026-08-20 曾因 `getCachedBatchQuotes` 固定用 `stock_quote:core:` 前缀，导致 `activity` 打点命中 core 缓存（缺"今开价"）→ `moveBps` 恒 null → 价格异动（午/尾盘）永不触发
+- **个股 AI 分析大模型超时默认 120s**（`STOCK_ANALYSIS_LLM_TIMEOUT_MS` 可覆盖，仅 ≥30000 生效，见 `StockAnalysisService.resolveStockAnalysisLlmTimeoutMs`）。2026-11-12 周会任务 3 曾因硬编码 45s 小于线上模型真实耗时（实测 ~51s），`POST /cn/stocks/:symbol/analysis` 恒定 45s 后 500，App「AI 资讯洞见」一直停在生成中；新增自选股无历史记录必走该 POST
+- **个股 AI 分析默认关闭 Qwen3 thinking**（`buildModelRequestBody` 固定传 `chat_template_kwargs.enable_thinking=false`，`QWEN_ENABLE_THINKING=true` 可恢复）。开启 thinking 时单次分析实测 240s 仍未结束，关闭后同一请求 88.1s 完成；分析只要求严格 JSON，reasoning token 无收益

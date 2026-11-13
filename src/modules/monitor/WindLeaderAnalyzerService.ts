@@ -892,7 +892,7 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
 }
 
 /** 获取板块成分股（优先使用Tushare ths_member + daily，回退到HTML爬虫） */
-async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<BoardConstituent[]> {
+export async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<BoardConstituent[]> {
     const cacheKey = `board_cons_${boardType}_${boardCode}`;
     const cached = await cacheGet<BoardConstituent[]>(cacheKey);
     if (cached) return cached;

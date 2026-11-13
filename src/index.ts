@@ -334,6 +334,7 @@ app.get('/api/cn/stock-info/latest', (req, res, next) => StockInfoJudgementContr
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
 app.get('/api/cn/wind-leaders', (req, res, next) => WindLeaderController.getWindLeaders(req, res, next));
 app.get('/api/cn/wind-leaders/today', (req, res, next) => WindLeaderController.getTodayHotSpots(req, res, next));
+app.get('/api/cn/wind-leaders/today/detail', (req, res, next) => WindLeaderController.getTodayHotSpotDetail(req, res, next));
 app.get('/api/cn/wind-leaders/board-kline', (req, res, next) => WindLeaderController.getBoardKline(req, res, next));
 app.post('/api/internal/wind-leaders', (req, res, next) => WindLeaderController.pushWindLeaders(req, res, next));
 app.post('/api/cn/hot-keywords/detect', (req, res, next) => WindLeaderController.detectHotKeywords(req, res, next));

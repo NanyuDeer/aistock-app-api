@@ -40,7 +40,7 @@ describe('attachLeadingStocks：按板块名匹配龙头股', () => {
             },
         ];
         const result = attachLeadingStocks([board('影视院线', 1)], sectors);
-        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒' });
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: null });
     });
 
     it('leading_stock_info 股票名与 leading_stock 不一致 → 回退 main_stocks 按名称找 code', () => {
@@ -54,7 +54,7 @@ describe('attachLeadingStocks：按板块名匹配龙头股', () => {
             },
         ];
         const result = attachLeadingStocks([board('影视院线', 1)], sectors);
-        assert.deepEqual(result[0].leading_stock, { code: '300027', name: '华谊兄弟' });
+        assert.deepEqual(result[0].leading_stock, { code: '300027', name: '华谊兄弟', change_pct: null });
     });
 
     it('main_stocks 中找不到该名称 → leading_stock 为 null', () => {
@@ -63,6 +63,24 @@ describe('attachLeadingStocks：按板块名匹配龙头股', () => {
         ];
         const result = attachLeadingStocks([board('影视院线', 1)], sectors);
         assert.equal(result[0].leading_stock, null);
+    });
+
+    it('保留领涨股当日涨幅（info 与 main_stocks 回退两条路径）', () => {
+        const sectors: HotSectorForLeader[] = [
+            {
+                name: '影视院线',
+                leading_stock: '光线传媒',
+                leading_stock_info: { code: '300251', name: '光线传媒', change_pct: 5.12 },
+            },
+            {
+                name: '半导体',
+                leading_stock: '中芯国际',
+                main_stocks: [{ code: '688981', name: '中芯国际', change_pct: -2.5 }],
+            },
+        ];
+        const result = attachLeadingStocks([board('影视院线', 1), board('半导体', 2)], sectors);
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: 5.12 });
+        assert.deepEqual(result[1].leading_stock, { code: '688981', name: '中芯国际', change_pct: -2.5 });
     });
 
     it('板块名无匹配 → leading_stock 为 null', () => {

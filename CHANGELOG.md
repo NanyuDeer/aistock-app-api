@@ -1,5 +1,29 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-13 — 今日风口榜详情接口 + 领涨股涨幅 + 个股 AI 分析超时 120s
+
+**开发者**: Aria
+
+### 新增
+
+- `GET /api/cn/wind-leaders/today/detail`：今日风口板块详情接口（`WindLeaderService.getTodayHotSpotDetail`，code 优先 / name 兜底，未命中 404），返回与 hot_sectors 同构的 sector 供详情页复用；成分股失败降级为空数组，Redis 缓存 300s（key = `wind_leaders_today_detail_v1:{交易日}:{板块}`）。
+- `WindLeaderAnalyzerService.getBoardConstituents` 改为导出（实现未改），供今日详情取板块成分股。
+
+### 改进
+
+- 今日榜领涨股补充当日涨幅 `change_pct`（`leading_stock_info` 与 `main_stocks` 两条回退路径均保留），缺失为 null。
+- 今日榜缓存 key `wind_leaders_today_v1` → `wind_leaders_today_v2`，避免读到不含新字段的旧缓存。
+
+### 修复
+
+- 个股 AI 分析大模型超时 45s → 默认 120s（`STOCK_ANALYSIS_LLM_TIMEOUT_MS` 可覆盖，仅接受 ≥30000），并关闭 Qwen3 thinking（`chat_template_kwargs.enable_thinking=false`）：线上真实分析请求实测 51s，原 45s 硬超时导致 `POST /api/cn/stocks/:symbol/analysis` 恒定 500、App「AI 资讯洞见」停在生成中。
+
+### 验证
+
+- `node --import tsx --test ...windLeaderTodayDetail.spec.ts ...windLeaderTodayHotSpots.spec.ts`：14 passed；`stockAnalysis.timeout.spec.ts`：3 passed；`npx tsc --noEmit` 通过。
+
+---
+
 ## [master] 2026-11-13 — 今日风口榜 + 风口实时性 + 龙头股准确性 + 个股情报按股票筛选
 
 **开发者**: Aria
