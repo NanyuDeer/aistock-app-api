@@ -75,6 +75,7 @@ function makeDeps(overrides: Partial<CausalInputsDeps> = {}): CausalInputsDeps {
             forecast_eps_yoy: 12,
         }),
         queryExpectations: async () => MACRO_EXPECTATIONS,
+        queryIndustryGuidance: async () => ({ 半导体: { medianYoy: 45.2, sample: 38 } }),
         ...overrides,
     };
 }
@@ -130,6 +131,7 @@ describe('buildCausalInputs', () => {
             sector_returns: true,
             flows: true,
             forecast_guidance: true,
+            forecast_guidance_by_industry: true,
             macro_expectations: true,
         });
     });
