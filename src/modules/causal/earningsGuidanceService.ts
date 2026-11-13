@@ -58,9 +58,15 @@ export async function queryIndustryGuidance(
 
     const output: Record<string, IndustryGuidance> = {};
     for (const row of result.rows) {
+        // 必须先判 null：Number(null) === 0，会让「没有中位数」被写成「同比 0%」，
+        // 下游会当成真实的零增长，而不是缺数据。
+        if (row.median_yoy === null || row.median_yoy === undefined) continue;
+        if (row.sample === null || row.sample === undefined) continue;
+
         const medianYoy = Number(row.median_yoy);
         const sample = Number(row.sample);
         if (!Number.isFinite(medianYoy) || !Number.isFinite(sample)) continue;
+
         output[String(row.industry)] = {
             medianYoy: Math.round(medianYoy * 100) / 100,
             sample,
