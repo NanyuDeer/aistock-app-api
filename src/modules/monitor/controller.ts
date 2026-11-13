@@ -120,6 +120,7 @@ export class StockMonitorController {
      * Query params:
      *   - cycle: 周期筛选 (all/short/mid/long)，默认 all
      *   - change_type: 信息类型(news/announcement)或影响级别
+     *   - stock_code: 可选，6 位股票代码，仅返回该股票资讯（非 6 位数字时忽略）
      *   - limit: 每页条数，默认 20
      *   - offset: 偏移量，默认 0
      */
@@ -134,12 +135,14 @@ export class StockMonitorController {
 
             const cycle = String(req.query.cycle || 'all');
             const change_type = req.query.change_type ? String(req.query.change_type) : undefined;
+            const stock_code = req.query.stock_code ? String(req.query.stock_code) : undefined;
             const limit = Math.min(Math.max(parseInt(String(req.query.limit || '20'), 10), 1), 100);
             const offset = Math.max(parseInt(String(req.query.offset || '0'), 10), 0);
 
             const result = await StockMonitorService.getEventsByUserFavorites(id, openid, {
                 cycle,
                 change_type,
+                stock_code,
                 limit,
                 offset,
             });

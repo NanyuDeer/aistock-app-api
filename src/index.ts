@@ -333,6 +333,7 @@ app.get('/api/cn/stock-info/latest', (req, res, next) => StockInfoJudgementContr
 // 风口龙头
 app.post('/api/cn/wind-leaders/refresh', (req, res, next) => WindLeaderController.refreshAnalysis(req, res, next));
 app.get('/api/cn/wind-leaders', (req, res, next) => WindLeaderController.getWindLeaders(req, res, next));
+app.get('/api/cn/wind-leaders/today', (req, res, next) => WindLeaderController.getTodayHotSpots(req, res, next));
 app.get('/api/cn/wind-leaders/board-kline', (req, res, next) => WindLeaderController.getBoardKline(req, res, next));
 app.post('/api/internal/wind-leaders', (req, res, next) => WindLeaderController.pushWindLeaders(req, res, next));
 app.post('/api/cn/hot-keywords/detect', (req, res, next) => WindLeaderController.detectHotKeywords(req, res, next));
@@ -967,6 +968,37 @@ cron.schedule('35 15 * * *', () => runIfTradingDay('rotation-board-sync', async 
         console.error('[RotationBoardCron] 同步失败:', err instanceof Error ? err.message : String(err));
     }
 }), { timezone: 'Asia/Shanghai' });
+
+// 今日风口榜预热：交易日盘中每小时（09:05~15:05）刷新 wind_leaders_today_v1 缓存，
+// 供 GET /api/cn/wind-leaders/today 读缓存（不落库，不改 15:35 轮动榜同步）。
+// 非交易日 / 午休 11:30-13:00 / 15:00 后由 isAShareTradingTime 统一挡掉（直接 return，不发请求）。
+let todayHotRefreshing = false;
+cron.schedule('5 9-15 * * 1-5', async () => {
+    const { isAShareTradingTime } = await import('./shared/utils/tradingTime');
+    if (!(await isAShareTradingTime())) return;
+    if (todayHotRefreshing) {
+        console.log('[TodayHot] previous refresh still running, skip');
+        return;
+    }
+    todayHotRefreshing = true;
+    try {
+        console.log('[TodayHot] refresh start');
+        let result = await WindLeaderService.warmTodayHotSpots();
+        if (!result) {
+            console.warn('[TodayHot] refresh failed, retry once');
+            result = await WindLeaderService.warmTodayHotSpots();
+        }
+        if (!result) {
+            console.warn('[TodayHot] refresh failed after retry, keep previous cache');
+            return;
+        }
+        console.log(`[TodayHot] refreshed at ${result.update_time}, trading_date=${result.trading_date}, live=${result.is_live}, count=${result.count}`);
+    } catch (err: unknown) {
+        console.warn('[TodayHot] refresh error:', err instanceof Error ? err.message : String(err));
+    } finally {
+        todayHotRefreshing = false;
+    }
+}, { timezone: 'Asia/Shanghai' });
 
 // 事件影响存活度：交易日 15:50 收盘后计算（判断已推送重大消息的影响是否仍在传递，如 10/1 摩根新闻）
 // 落表 event_impact_vitality_daily + 内部只读接口（GET /internal/event-vitality/:eventId）+ 经 /api/agent/event(list/:eventId) 标注给前端；

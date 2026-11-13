@@ -17,7 +17,8 @@ import {
     needsCloseSettlement,
 } from './pushHistorySettlement';
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
-import { fetchBoardRealtime } from './RotationBoardStore';
+import { CacheService } from '../../shared/utils/CacheService';
+import { fetchBoardRealtime, getTodayBoardRanking, queryRotationDaily, type TodayBoardItem } from './RotationBoardStore';
 
 // ==================== 类型定义 ====================
 
@@ -36,7 +37,11 @@ interface WindLeaderSector {
     freq10?: number;
     freq_delta?: number;
     avg_change?: number;
-    today_change?: number;
+    today_change?: number | null;
+    /** 今日涨跌幅来源：实时 / 最近收盘 / 不可用（前端据此区分「今日」与「昨收」） */
+    today_change_source?: 'realtime' | 'latest_close' | 'unavailable';
+    /** 今日涨跌幅对应的交易日 YYYY-MM-DD（unavailable 时 null） */
+    today_change_date?: string | null;
     amount?: number;       // 板块当日成交额（元，同花顺 bk_ 实时；净流入已下线）
     driver_type?: string;
     ma60_status?: string;
@@ -61,6 +66,9 @@ interface WindLeaderSector {
     long_leader?: WindLeaderStock | null;
 }
 
+/** 今日涨跌幅来源（与 RotationBoardStore 的 change_source 口径一致，收盘榜走 latest_close） */
+type TodayChangeSource = 'realtime' | 'latest_close' | 'unavailable';
+
 interface WindLeaderStock {
     code?: string;
     name?: string;
@@ -81,6 +89,8 @@ interface WindLeaderStock {
 
 interface WindLeaderLeadingStockInfo {
     code?: string;
+    /** 龙头股票名（用于校验 code 与 leading_stock 是否同一只股票，历史脏数据防护） */
+    name?: string;
     price?: number | null;
     change_pct?: number | null;
 }
@@ -522,6 +532,76 @@ function mergePushRecord(existing: PushHistoryRecord | undefined, next: PushHist
     });
 }
 
+// ==================== 今日风口榜（榜单 + 龙头股，读时拼装） ====================
+
+/** 缓存 key 固定：整份 20 条榜单 + 龙头，读写共用 */
+const TODAY_HOT_SPOTS_CACHE_KEY = 'wind_leaders_today_v1';
+/** 缓存固定存整份 20 条，返回时按 limit 切片（controller 已限制 1..20） */
+const TODAY_HOT_SPOTS_SIZE = 20;
+/** 盘中（当日榜）缓存 60 秒；收盘榜 600 秒 */
+const TODAY_HOT_SPOTS_LIVE_TTL = 60;
+const TODAY_HOT_SPOTS_CLOSE_TTL = 600;
+
+/** 今日风口榜单项（在榜单基础上补龙头股） */
+export interface TodayHotSpotBoard extends TodayBoardItem {
+    leading_stock: { code: string; name: string } | null;
+}
+
+/** 今日风口榜（当日 mrpm 排名 + 实时涨跌幅 + 龙头股） */
+export interface TodayHotSpotsResult {
+    trading_date: string;
+    is_live: boolean;
+    update_time: string;
+    source: 'ths_mrpm' | 'board_rotation_daily';
+    boards: TodayHotSpotBoard[];
+}
+
+/** hot_sectors 中与龙头匹配相关的最小结构（纯函数入参，便于单测） */
+export interface HotSectorForLeader {
+    name?: string;
+    leading_stock?: string;
+    leading_stock_info?: { code?: string; name?: string } | null;
+    main_stocks?: { code?: string; name?: string }[];
+}
+
+/** 解析单个板块的龙头股；匹配不到返回 null（不抓取、不抛错） */
+function resolveLeadingStock(sector: HotSectorForLeader): { code: string; name: string } | null {
+    const leadingName = String(sector.leading_stock ?? '').trim();
+    if (!leadingName) return null;
+    // 优先 leading_stock_info.code，但必须校验其股票名与 leading_stock 一致：
+    // 历史脏数据会把新闻标题/日期串写进 leading_stock，名称不符时宁可回退也不张冠李戴。
+    const info = sector.leading_stock_info;
+    const infoCode = String(info?.code ?? '').trim();
+    if (infoCode && String(info?.name ?? '').trim() === leadingName) {
+        return { code: infoCode, name: leadingName };
+    }
+    for (const stock of sector.main_stocks ?? []) {
+        if (String(stock?.name ?? '').trim() !== leadingName) continue;
+        const code = String(stock?.code ?? '').trim();
+        if (code) return { code, name: leadingName };
+    }
+    return null;
+}
+
+/**
+ * 按板块名给今日风口榜补龙头股（纯函数）。
+ * 精确匹配 `sector.name === board.board_name`；匹配不到 leading_stock 为 null。
+ */
+export function attachLeadingStocks(
+    boards: TodayBoardItem[],
+    hotSectors: readonly HotSectorForLeader[] | null | undefined,
+): TodayHotSpotBoard[] {
+    const byName = new Map<string, HotSectorForLeader>();
+    for (const sector of hotSectors ?? []) {
+        const name = String(sector?.name ?? '').trim();
+        if (name && !byName.has(name)) byName.set(name, sector);
+    }
+    return boards.map((board) => {
+        const sector = byName.get(String(board.board_name ?? '').trim());
+        return { ...board, leading_stock: sector ? resolveLeadingStock(sector) : null };
+    });
+}
+
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
@@ -544,7 +624,10 @@ export class WindLeaderService {
             freq10: sector.freq10,
             freq_delta: sector.freq_delta,
             avg_change: sector.avg_change,
-            today_change: sector.today_change,
+            today_change: sector.today_change ?? null,
+            // 默认按「不可用」输出，下面的实时/收盘增强会覆盖；保证每个板块都带来源与日期
+            today_change_source: 'unavailable' as TodayChangeSource,
+            today_change_date: null as string | null,
             amount: sector.amount || 0,
             driver_type: sector.driver_type,
             ma60_status: sector.ma60_status,
@@ -607,19 +690,56 @@ export class WindLeaderService {
                 }
             }
 
-            // 板块行情实时增强：净流入已下线，板块「今日涨幅」以同花顺 bk_ 实时为准（盘中即当日实时），
-            // 并填充当日成交额 amount（元）。实时盘口 30s 缓存由 RotationBoardStore 控制。
+            // 板块行情实时增强：净流入已下线，「今日涨幅」只接受 date === 当前交易日 的实时盘口；
+            // stale（today.js 仍返回上一交易日）不再冒充今日，改由下方「最近收盘」兜底。
             const uniqueBoardCodes = [...new Set(sectors.map(s => s.code).filter(Boolean))];
             if (uniqueBoardCodes.length > 0) {
                 const realtimeList = await Promise.all(uniqueBoardCodes.map(c => fetchBoardRealtime(c)));
                 const realtimeByCode = new Map<string, Awaited<ReturnType<typeof fetchBoardRealtime>>>();
                 uniqueBoardCodes.forEach((c, i) => realtimeByCode.set(c, realtimeList[i]));
+                const needFallback: typeof sectors = [];
                 for (const sector of sectors) {
                     if (!sector.code) continue;
                     const rt = realtimeByCode.get(sector.code);
-                    if (rt) {
-                        if (Number.isFinite(rt.change_pct)) sector.today_change = rt.change_pct;
-                        if (rt.amount > 0) sector.amount = rt.amount;
+                    if (rt && rt.source === 'realtime' && typeof rt.change_pct === 'number') {
+                        sector.today_change = rt.change_pct;
+                        sector.today_change_source = 'realtime';
+                        sector.today_change_date = `${rt.date.slice(0, 4)}-${rt.date.slice(4, 6)}-${rt.date.slice(6, 8)}`;
+                        if (rt.amount != null && rt.amount > 0) sector.amount = rt.amount;
+                    } else {
+                        needFallback.push(sector);
+                    }
+                }
+                // 未被实时覆盖的板块：用最近一个交易日收盘涨跌幅兜底（只查一次库，不按板块循环查）
+                if (needFallback.length > 0) {
+                    try {
+                        const rows = await queryRotationDaily(2);
+                        const latestDate = rows.reduce((max, r) => (r.trading_date > max ? r.trading_date : max), '');
+                        const pctByCode = new Map<string, number>();
+                        for (const r of rows) {
+                            if (r.trading_date !== latestDate) continue;
+                            const pct = Number(r.pct_change);
+                            if (Number.isFinite(pct)) pctByCode.set(r.board_code, pct);
+                        }
+                        for (const sector of needFallback) {
+                            const pct = pctByCode.get(sector.code);
+                            if (pct !== undefined) {
+                                sector.today_change = pct;
+                                sector.today_change_source = 'latest_close';
+                                sector.today_change_date = latestDate;
+                            } else {
+                                sector.today_change = null;
+                                sector.today_change_source = 'unavailable';
+                                sector.today_change_date = null;
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('[WindLeaderService] 板块收盘涨跌幅兜底失败:', (err as Error).message);
+                        for (const sector of needFallback) {
+                            sector.today_change = null;
+                            sector.today_change_source = 'unavailable';
+                            sector.today_change_date = null;
+                        }
                     }
                 }
             }
@@ -631,6 +751,80 @@ export class WindLeaderService {
             update_time: data.update_time || '',
             hot_sectors: sectors,
         };
+    }
+
+    /**
+     * 拉取当日榜（20 条）+ 按板块名挂龙头股，供缓存写入复用（不读缓存、不写缓存）。
+     * @returns null 表示两种榜单数据源都不可用
+     */
+    private static async buildTodayHotSpots(): Promise<TodayHotSpotsResult | null> {
+        const ranking = await getTodayBoardRanking(TODAY_HOT_SPOTS_SIZE);
+        if (!ranking) return null;
+        const hotSectors = loadData()?.hot_sectors ?? [];
+        return {
+            trading_date: ranking.trading_date,
+            is_live: ranking.is_live,
+            update_time: ranking.update_time,
+            source: ranking.source,
+            boards: attachLeadingStocks(ranking.boards, hotSectors),
+        };
+    }
+
+    /** 写今日风口缓存：键固定、内容固定整份 20 条；盘中 60s / 收盘 600s */
+    private static async cacheTodayHotSpots(data: TodayHotSpotsResult): Promise<void> {
+        const ttl = data.is_live ? TODAY_HOT_SPOTS_LIVE_TTL : TODAY_HOT_SPOTS_CLOSE_TTL;
+        await CacheService.put(TODAY_HOT_SPOTS_CACHE_KEY, JSON.stringify(data), ttl);
+    }
+
+    /**
+     * 今日风口榜（榜单 + 龙头股）。缓存命中直接切片返回；未命中回源计算后写缓存。
+     * 任何异常返回 null（控制器 404），不抛 500。
+     */
+    static async getTodayHotSpots(limit: number = 10): Promise<TodayHotSpotsResult | null> {
+        try {
+            const cached = await CacheService.get<string>(TODAY_HOT_SPOTS_CACHE_KEY);
+            const parsed = cached ? JSON.parse(cached) as TodayHotSpotsResult : null;
+            if (parsed && Array.isArray(parsed.boards)) {
+                return { ...parsed, boards: parsed.boards.slice(0, limit) };
+            }
+        } catch {
+            // 缓存解析失败忽略，回源重算
+        }
+        try {
+            const data = await this.buildTodayHotSpots();
+            if (!data) return null;
+            await this.cacheTodayHotSpots(data);
+            return { ...data, boards: data.boards.slice(0, limit) };
+        } catch (err) {
+            console.warn('[WindLeaderService] getTodayHotSpots 失败:', (err as Error).message);
+            return null;
+        }
+    }
+
+    /**
+     * 强制刷新今日风口缓存（忽略已有缓存），供每小时预热 cron 调用。
+     * @returns null 表示本次刷新失败（调用方决定重试/告警）
+     */
+    static async warmTodayHotSpots(): Promise<{
+        trading_date: string;
+        is_live: boolean;
+        count: number;
+        update_time: string;
+    } | null> {
+        try {
+            const data = await this.buildTodayHotSpots();
+            if (!data) return null;
+            await this.cacheTodayHotSpots(data);
+            return {
+                trading_date: data.trading_date,
+                is_live: data.is_live,
+                count: data.boards.length,
+                update_time: data.update_time,
+            };
+        } catch (err) {
+            console.warn('[WindLeaderService] warmTodayHotSpots 失败:', (err as Error).message);
+            return null;
+        }
     }
 
     static async saveData(data: WindLeaderData): Promise<void> {

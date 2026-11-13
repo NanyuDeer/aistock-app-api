@@ -19,6 +19,7 @@ import pool from '../../core/db';
 import { sessionFetch } from '../../shared/utils/httpAgent';
 import { getThsIndex } from '../quote/TushareService';
 import { CacheService } from '../../shared/utils/CacheService';
+import { shanghaiDateStr, shanghaiDateYyyymmdd, shanghaiDateTimeStr } from '../../shared/utils/shanghaiTime';
 
 // ==================== 常量 ====================
 
@@ -583,9 +584,10 @@ export async function fetchBoardKline(code: string, days = 120): Promise<BoardKl
 
 /** 板块实时盘口快照（同花顺 bk_ 板块指数当日实时今日行情） */
 export interface BoardRealtime {
-    date: string;        // 最新交易日期 'YYYYMMDD'
-    change_pct: number;  // 当日涨跌幅(%)：盘中=当日实时价涨跌幅
-    amount: number;      // 当日成交额（元，today.js 实时字段）
+    date: string;                 // today.js 的日期 'YYYYMMDD'
+    change_pct: number | null;    // stale 时为 null（不得把上一交易日涨跌幅冒充今日）
+    amount: number | null;        // 当日成交额（元）；stale 时为 null
+    source: 'realtime' | 'stale'; // date === 当前交易日 ? realtime : stale
 }
 
 /** 板块实时盘口内存缓存（TTL 30s，避免每次请求打爆同花顺上游） */
@@ -628,6 +630,36 @@ function parseTodayRealtime(jsonpText: string): { date: string; price: number; a
 }
 
 /**
+ * 由 today.js + last.js 原文构造实时盘口（纯函数，便于单测）。
+ *
+ * 为什么要显式判 stale：today.js 在盘前/非交易日仍会返回「上一交易日」的日期与价格，
+ * 旧实现把它直接当今日涨跌幅 → 前端把昨日涨幅冒充今日（如周末显示上周五的大涨）。
+ * 交易日不一致时只保留日期、涨跌幅与成交额置 null，由调用方降级到收盘数据。
+ *
+ * @param tradingDateCompact 当前交易日 'YYYYMMDD'（上海时区）
+ * @returns null 表示 today.js 解析失败，或无法算出昨收（保持原有降级）
+ */
+export function buildBoardRealtime(todayJsonp: string, dailyJsonp: string, tradingDateCompact: string): BoardRealtime | null {
+    const today = parseTodayRealtime(todayJsonp);
+    if (!today) return null;
+    if (today.date !== tradingDateCompact) {
+        return { date: today.date, change_pct: null, amount: null, source: 'stale' };
+    }
+    // 昨收口径：last.js 中日期严格早于今日的最后一根 bar 的收盘价
+    const klines = parseKlineFull(dailyJsonp);
+    const dates = [...klines.keys()].filter(d => d < today.date).sort();
+    const prevDate = dates[dates.length - 1];
+    const prev = prevDate ? klines.get(prevDate) : undefined;
+    if (!prev || !Number.isFinite(prev.close) || prev.close <= 0) return null;
+    return {
+        date: today.date,
+        change_pct: (today.price - prev.close) / prev.close * 100,
+        amount: today.amount,
+        source: 'realtime',
+    };
+}
+
+/**
  * 读取单板块当日实时行情（today.js）复用昨收（last.js）计算涨跌幅
  * @param code 6 位同花顺板块代码（881xxx 行业 / 885xxx 886xxx 概念）
  * @returns null 表示抓取/解析失败（如 time.js 无实时数据）
@@ -642,27 +674,10 @@ export async function fetchBoardRealtime(code: string): Promise<BoardRealtime | 
             sessionFetch(TODAY_URL(code), { headers: KLINE_HEADERS }),
         ]);
         if (!todayResp.ok) return null;
-        const today = parseTodayRealtime(await todayResp.text());
-        if (!today) return null;
-
-        // 昨收口径：取 last.js 中日期严格早于今日的所有 bar 的最后一条 close
-        let prevClose = Number.NaN;
-        if (dailyResp.ok) {
-            const klines = parseKlineFull(await dailyResp.text());
-            const dates = [...klines.keys()].filter(d => d < today.date).sort();
-            const prevDate = dates[dates.length - 1];
-            if (prevDate) {
-                const prev = klines.get(prevDate);
-                if (prev && Number.isFinite(prev.close) && prev.close > 0) prevClose = prev.close;
-            }
-        }
-        if (!Number.isFinite(prevClose) || prevClose <= 0) return null;
-
-        const data: BoardRealtime = {
-            date: today.date,
-            change_pct: (today.price - prevClose) / prevClose * 100,
-            amount: today.amount,
-        };
+        const todayText = await todayResp.text();
+        const dailyText = dailyResp.ok ? await dailyResp.text() : '';
+        const data = buildBoardRealtime(todayText, dailyText, shanghaiDateYyyymmdd());
+        if (!data) return null;
         boardRealtimeCache.set(code, { at: Date.now(), data });
         return data;
     } catch (err) {
@@ -674,4 +689,158 @@ export async function fetchBoardRealtime(code: string): Promise<BoardRealtime | 
 /** 清空板块实时盘口缓存（测试用） */
 export function clearBoardRealtimeCache(): void {
     boardRealtimeCache.clear();
+}
+
+// ==================== 今日风口榜（不落库，读时拼装） ====================
+
+/** 今日风口榜单项（涨跌幅来源显式标注，前端不猜测） */
+export interface TodayBoardItem {
+    board_code: string;
+    board_name: string;
+    rank: number;                    // 1~10
+    change_pct: number | null;       // 保留两位小数；不可用时 null
+    amount: number | null;           // 元；取不到为 null
+    change_source: 'realtime' | 'latest_close' | 'unavailable';
+}
+
+/** 今日风口榜（当日 mrpm 排名 + 实时/收盘涨跌幅） */
+export interface TodayBoardRanking {
+    trading_date: string;  // YYYY-MM-DD
+    is_live: boolean;      // true = 当日榜（mrpm 日期=今天）
+    update_time: string;   // 上海时间 YYYY-MM-DD HH:mm:ss
+    source: 'ths_mrpm' | 'board_rotation_daily';
+    boards: TodayBoardItem[];
+}
+
+/** mrpm 当日榜排名项（buildTodayRankingFromRealtime 的输入） */
+export interface MrpmTodayRankItem {
+    board_code: string;
+    board_name: string;
+    rank: number;
+}
+
+/**
+ * 取 mrpm 中指定交易日的涨幅榜前 10（不落库）。
+ * @returns null 表示 mrpm 不可用或缺少该交易日（调用方回退收盘榜）
+ */
+export async function fetchMrpmTodayRanking(tradingDate: string): Promise<MrpmTodayRankItem[] | null> {
+    try {
+        const { mrpm } = await fetchHotCirclePlate();
+        // mrpm 的 datetime 已是 YYYY-MM-DD；归一化后比较，避免上游带空格等格式差异导致误判缺数据
+        const day = mrpm.up.find(d => normalizeTradingDate(d.datetime) === tradingDate);
+        if (!day) return null;
+        // up.stocks 顺序即第1名→第10名
+        return day.stocks.slice(0, 10).map((s, i) => ({
+            board_code: s.stockcode,
+            board_name: s.stockname,
+            rank: i + 1,
+        }));
+    } catch (err) {
+        console.warn('[RotationBoardStore] fetchMrpmTodayRanking 失败:', (err as Error).message);
+        return null;
+    }
+}
+
+/**
+ * 当日榜 + 实时补全（纯函数）。
+ * 只有 source='realtime' 且涨跌幅有效的板块才标 realtime，其余标 unavailable
+ * ——stale 数据（上一交易日）绝不能冒充今日。
+ */
+export function buildTodayRankingFromRealtime(
+    tradingDate: string,
+    ranking: MrpmTodayRankItem[],
+    realtimeByCode: Map<string, BoardRealtime | null>,
+    limit: number,
+    updateTime: string,
+): TodayBoardRanking {
+    const round2 = (n: number) => Math.round(n * 100) / 100;
+    const boards: TodayBoardItem[] = ranking.slice(0, limit).map((item) => {
+        const rt = realtimeByCode.get(item.board_code);
+        if (rt && rt.source === 'realtime' && rt.change_pct != null) {
+            return {
+                board_code: item.board_code,
+                board_name: item.board_name,
+                rank: item.rank,
+                change_pct: round2(rt.change_pct),
+                amount: rt.amount,
+                change_source: 'realtime',
+            };
+        }
+        return {
+            board_code: item.board_code,
+            board_name: item.board_name,
+            rank: item.rank,
+            change_pct: null,
+            amount: null,
+            change_source: 'unavailable',
+        };
+    });
+    return { trading_date: tradingDate, is_live: true, update_time: updateTime, source: 'ths_mrpm', boards };
+}
+
+/**
+ * 收盘榜回退（纯函数）：只取涨幅榜（up_rank 非空），按 up_rank 升序取前 limit。
+ * 多日数据时只保留最大交易日那一组（queryRotationDaily(2) 可能跨日返回）。
+ */
+export function buildTodayRankingFromHistory(
+    rows: DailyRotationRow[],
+    limit: number,
+    updateTime: string,
+): TodayBoardRanking | null {
+    const ups = rows.filter(r => r.up_rank != null);
+    if (ups.length === 0) return null;
+    const latestDate = ups.reduce(
+        (max, r) => (normalizeTradingDate(r.trading_date) > max ? normalizeTradingDate(r.trading_date) : max),
+        '',
+    );
+    const boards: TodayBoardItem[] = ups
+        .filter(r => normalizeTradingDate(r.trading_date) === latestDate)
+        .sort((a, b) => (a.up_rank as number) - (b.up_rank as number))
+        .slice(0, limit)
+        .map(r => ({
+            board_code: r.board_code,
+            board_name: r.board_name,
+            rank: r.up_rank as number,
+            change_pct: Number(r.pct_change),
+            amount: null,
+            change_source: 'latest_close',
+        }));
+    return {
+        trading_date: latestDate,
+        is_live: false,
+        update_time: updateTime,
+        source: 'board_rotation_daily',
+        boards,
+    };
+}
+
+/**
+ * 今日风口榜：优先「mrpm 当日榜 + 实时涨跌幅」，缺失则回退最近收盘榜。
+ * 只读，**不写 board_rotation_daily**（写入仍由 15:35 syncRotationHistory 负责）。
+ * @returns null 表示两种数据源都不可用
+ */
+export async function getTodayBoardRanking(limit = 10): Promise<TodayBoardRanking | null> {
+    const today = shanghaiDateStr();
+    const updateTime = shanghaiDateTimeStr();
+
+    const ranking = await fetchMrpmTodayRanking(today);
+    if (ranking && ranking.length > 0) {
+        const codes = ranking.slice(0, limit).map(r => r.board_code);
+        const realtimeByCode = new Map<string, BoardRealtime | null>();
+        // 分片并发（上限 4）：mrpm 前 10 只板块，逐个打同花顺会被限流
+        for (let i = 0; i < codes.length; i += 4) {
+            const chunk = codes.slice(i, i + 4);
+            const results = await Promise.all(chunk.map(async (code) => ({ code, rt: await fetchBoardRealtime(code) })));
+            for (const { code, rt } of results) realtimeByCode.set(code, rt);
+        }
+        return buildTodayRankingFromRealtime(today, ranking, realtimeByCode, limit, updateTime);
+    }
+
+    try {
+        const rows = await queryRotationDaily(1);
+        return buildTodayRankingFromHistory(rows, limit, updateTime);
+    } catch (err) {
+        console.warn('[RotationBoardStore] getTodayBoardRanking 回退收盘榜失败:', (err as Error).message);
+        return null;
+    }
 }

@@ -1,5 +1,30 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-13 — 今日风口榜 + 风口实时性 + 龙头股准确性 + 个股情报按股票筛选
+
+**开发者**: Aria
+
+### 新增
+
+- `GET /api/cn/wind-leaders/today`：今日风口榜接口（`WindLeaderService.getTodayHotSpots` + `windLeaderController` + `index.ts` 路由），limit 默认 10、上限 20，无数据返回 404。
+- `RotationBoardStore.getTodayBoardRanking`：mrpm 当日榜优先，无当日数据回退 `board_rotation_daily` 最近交易日，只读不落库。
+- 交易日 9-15 点每小时 `warmTodayHotSpots()` 缓存预热（`5 9-15 * * 1-5`，交易时段守卫 + 单飞 + 失败重试 1 次，缓存 `wind_leaders_today_v1`）。
+
+### 修复
+
+- 板块实时涨跌幅在盘前/非交易日误用上一交易日 `today.js` 数据：改为日期校验，不一致标记 stale（涨跌幅/成交额置 null），不再把昨日涨幅冒充今日。
+- 龙头股准确性：候选必须命中板块成分，再按 涨停 → 连板 → 涨幅 → 成交额 → 流通市值 逐级排序；新增 `match_source`（`crawler` / `constituent_rank` / `fallback`）。
+
+### 改进
+
+- 自选股资讯接口支持 `stock_code` 过滤（6 位数字校验，非法值忽略）。
+
+### 验证
+
+- `npx tsc --noEmit` 通过；monitor 目录单测 114 passed（新增 24 例：今日榜 9 / 今日风口 6 / 龙头排序 9）。
+
+---
+
 ## [master] 2026-11-12 — 移除重复的宏观抓取定时任务
 
 **开发者**: NanyuDeer

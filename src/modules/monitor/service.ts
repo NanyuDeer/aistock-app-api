@@ -189,6 +189,7 @@ export class StockMonitorService {
     static async getEventsByUserFavorites(userId: string, openid: string, params?: {
         cycle?: string;
         change_type?: string;
+        stock_code?: string;
         limit?: number;
         offset?: number;
     }): Promise<{ total: number; events: MonitorEventItem[] }> {
@@ -213,6 +214,14 @@ export class StockMonitorService {
         // 按自选股symbol批量查询研判数据
         const conditions = ['symbol = ANY($1)'];
         const values: any[] = [symbols];
+
+        // 单只股票筛选：先限定自选股范围（ANY），再限定单只（symbol = $n）。
+        // 与 getEvents 一致：非法代码（去空格后非 6 位数字）忽略，视为不筛选。
+        const stockCode = String(params?.stock_code ?? '').trim();
+        if (/^\d{6}$/.test(stockCode)) {
+            values.push(stockCode);
+            conditions.push(`symbol = $${values.length}`);
+        }
 
         if (params?.change_type) {
             const impact = normalizeImpact(params.change_type);

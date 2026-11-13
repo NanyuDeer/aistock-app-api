@@ -3299,122 +3299,315 @@ interface LeadingStockInfo {
     reason_tag_class: string;
     related_industry: string;
     in_concept: boolean;
+    /** 龙头来源：crawler=概念页爬取命中成分股 / constituent_rank=成分榜兜底 / fallback=main_stocks 回退 */
+    match_source: 'crawler' | 'constituent_rank' | 'fallback';
 }
 
+/** Tushare 增强数据缓存（资金流/每日指标/日线/涨停），选股与龙头股共用 */
+interface TushareEnhancementCache {
+    moneyflowThsMap: Map<string, MoneyflowThsRow>;
+    dailyBasicMap: Map<string, DailyBasicFullRow>;
+    dailyHistMap: Map<string, DailyPriceRow[]>;
+    limitListMap: Map<string, LimitListThsRow>;
+    limitStepData: LimitStepRow[];
+}
+
+/** 龙头候选股（纯排序入参，字段按现有数据源可得性均为可选） */
+export interface LeadingStockCandidate {
+    code: string;
+    name: string;
+    change_pct?: number | null;
+    amount?: number | null;
+    float_market_cap?: number | null;
+    is_limit_up?: boolean;
+    board_count?: number | null;
+}
+
+/** 龙头候选内部结构：额外携带展示用价格 */
+interface EnrichedLeadingCandidate extends LeadingStockCandidate {
+    price?: number | null;
+}
+
+/** 数值归一：缺失/非法按 0 处理，某一维度缺数据不放大也不误伤其它维度 */
+function normalizeCandidateNumber(value: number | null | undefined): number {
+    return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+/** a 是否优于 b：涨停 → 连板数 → 涨幅 → 成交额 → 流通市值（市值仅兜底），全平手时保持原顺序 */
+function isBetterLeadingCandidate(a: LeadingStockCandidate, b: LeadingStockCandidate): boolean {
+    const aLimit = a.is_limit_up === true ? 1 : 0;
+    const bLimit = b.is_limit_up === true ? 1 : 0;
+    if (aLimit !== bLimit) return aLimit > bLimit;
+
+    const dims: Array<[number, number]> = [
+        [normalizeCandidateNumber(a.board_count), normalizeCandidateNumber(b.board_count)],
+        [normalizeCandidateNumber(a.change_pct), normalizeCandidateNumber(b.change_pct)],
+        [normalizeCandidateNumber(a.amount), normalizeCandidateNumber(b.amount)],
+        [normalizeCandidateNumber(a.float_market_cap), normalizeCandidateNumber(b.float_market_cap)],
+    ];
+    for (const [aValue, bValue] of dims) {
+        if (aValue !== bValue) return aValue > bValue;
+    }
+    return false;
+}
+
+/**
+ * 从候选中选出板块龙头。
+ * 先按板块成分集合剔除无关股（同花顺概念页上的无关链接曾让「园林股份」被误当龙头）；
+ * 成分集合为空时不做剔除（保持旧行为，避免成分数据缺失时误杀）。
+ * 再按 涨停 → 连板 → 涨幅 → 成交额 → 流通市值 逐级排序取第 1；全部被剔除时返回 null。
+ */
+export function rankLeadingStockCandidates(
+    candidates: LeadingStockCandidate[],
+    constituentCodes: Set<string>,
+): LeadingStockCandidate | null {
+    if (!Array.isArray(candidates) || candidates.length === 0) return null;
+    const hasConstituents = constituentCodes instanceof Set && constituentCodes.size > 0;
+    const pool = hasConstituents ? candidates.filter(c => constituentCodes.has(c.code)) : candidates;
+    if (pool.length === 0) return null;
+
+    let best = pool[0];
+    for (let i = 1; i < pool.length; i++) {
+        if (isBetterLeadingCandidate(pool[i], best)) best = pool[i];
+    }
+    return best;
+}
+
+/**
+ * 涨停近似判定（limit_list_ths 无该股记录时的兜底）：
+ * 主板 ±10%、创业板/科创板（300/301/688/689 开头）±20%、北交所（43/83/87/92 开头）±30%；
+ * 阈值各留 0.2% 余量，避免除权除息/收盘价四舍五入导致漏判。
+ */
+function isApproxLimitUp(code: string, changePct: number): boolean {
+    if (!(changePct > 0)) return false;
+    if (/^(300|301|688|689)/.test(code)) return changePct >= 19.8;
+    if (/^(43|83|87|92)/.test(code)) return changePct >= 29.8;
+    return changePct >= 9.8;
+}
+
+/** 解析涨停状态里的连板数："4天4板" → 4、"首板" → 1、无数据 → 0 */
+function parseBoardCount(statusStr: string | undefined): number {
+    if (!statusStr) return 0;
+    const matched = statusStr.match(/(\d+)天(\d+)板/);
+    if (matched) return parseInt(matched[2], 10) || 0;
+    return statusStr.includes('首板') ? 1 : 0;
+}
+
+/**
+ * 为龙头候选补齐排序维度与展示价格：涨幅取腾讯行情（缺失回退成分榜涨幅/日线），
+ * 成交额取近 20 日线最近一日，涨停/连板/流通市值取 Tushare 增强数据；取不到按 0。
+ * 行情接口并发上限 4，避免对腾讯行情造成压力。
+ */
+async function enrichLeadingCandidates(
+    stocks: Array<{ code: string; name: string; change_pct?: number | null }>,
+    enhancement: TushareEnhancementCache | undefined,
+    cache: Map<string, EnrichedLeadingCandidate>,
+): Promise<EnrichedLeadingCandidate[]> {
+    const result: EnrichedLeadingCandidate[] = [];
+    const pending: Array<{ code: string; name: string; change_pct?: number | null }> = [];
+    for (const stock of stocks) {
+        const cached = cache.get(stock.code);
+        if (cached) result.push(cached);
+        else pending.push(stock);
+    }
+
+    const concurrency = 4;
+    for (let i = 0; i < pending.length; i += concurrency) {
+        const batch = pending.slice(i, i + concurrency);
+        const enriched = await Promise.all(batch.map(async (stock): Promise<EnrichedLeadingCandidate> => {
+            const tsCode = toTsCodeFromEm(stock.code);
+            const dbData = tsCode ? enhancement?.dailyBasicMap.get(tsCode) : undefined;
+            const limitData = tsCode ? enhancement?.limitListMap.get(tsCode) : undefined;
+            const histData = tsCode ? enhancement?.dailyHistMap.get(tsCode) : undefined;
+            const quote = await fetchQuoteWithRetry(stock.code);
+
+            // dailyHistMap 按交易日降序存放，[0] 为最近交易日
+            const latestDaily = histData?.[0];
+            const changePct = quote.changePct ?? stock.change_pct ?? latestDaily?.pct_chg ?? 0;
+            return {
+                code: stock.code,
+                name: stock.name,
+                change_pct: changePct,
+                amount: latestDaily?.amount ?? 0,
+                float_market_cap: dbData?.circ_mv ?? 0,
+                is_limit_up: limitData != null || isApproxLimitUp(stock.code, changePct),
+                board_count: parseBoardCount(limitData?.status),
+                price: quote.price,
+            };
+        }));
+        for (const item of enriched) {
+            cache.set(item.code, item);
+            result.push(item);
+        }
+    }
+    return result;
+}
+
+/** 用选中的龙头股组装展示信息（选股理由/标签逻辑与 main_stocks 龙头股一致） */
+async function buildLeadingStockInfo(params: {
+    code: string;
+    name: string;
+    price: number | null;
+    changePct: number | null;
+    industry: string;
+    conceptName: string;
+    enhancement: TushareEnhancementCache | undefined;
+    matchSource: 'crawler' | 'constituent_rank';
+    inConcept: boolean;
+}): Promise<LeadingStockInfo> {
+    const { code, name, price, changePct, industry, conceptName, enhancement, matchSource, inConcept } = params;
+
+    // 从Tushare增强数据生成选股理由和标签（与mainStocks中龙头股逻辑一致）
+    const tsCode = toTsCodeFromEm(code);
+    const limitData = tsCode ? enhancement?.limitListMap.get(tsCode) : undefined;
+    const mfThsData = tsCode ? enhancement?.moneyflowThsMap.get(tsCode) : undefined;
+    const dbData = tsCode ? enhancement?.dailyBasicMap.get(tsCode) : undefined;
+    const histData = tsCode ? enhancement?.dailyHistMap.get(tsCode) : undefined;
+
+    // 北交所股票Tushare不支持limit_list_ths，用涨幅近似涨停（见 isApproxLimitUp）
+    const isBJ = isBJStock(code);
+    const approxLimitUp = isApproxLimitUp(code, changePct || 0);
+    const isLimitUp = limitData != null || approxLimitUp;
+    const statusStr = limitData?.status || (approxLimitUp ? '涨停' : '');
+    const limitTimes = parseBoardCount(statusStr);
+    const mf5day = mfThsData?.mf_5day || 0;
+    const turnover = dbData?.turnover_rate || 0;
+    const consecutiveUpDays = histData ? calcConsecutiveUpDays(histData) : 0;
+    const limitReason = limitData?.lu_desc || '';
+
+    // 生成选股理由：优先用涨停原因，缺失时回退到公司简介（截断30字）
+    let reason = limitReason || '';
+    // 北交所股票Tushare不支持limit_list_ths，对涨幅较大的BJ股补充默认原因
+    if (!reason && isBJ && approxLimitUp) {
+        reason = '北交所个股涨停，资金关注度提升';
+    }
+    if (!reason && tsCode) {
+        try {
+            const companyData = await getStockCompany(tsCode);
+            if (companyData) {
+                reason = extractLeaderDescription(companyData.introduction || '', companyData.main_business || '');
+            }
+        } catch { /* ignore */ }
+    }
+
+    // 生成理由标签：只保留有特殊信号的标签，无信号则留空
+    let reasonTag = '';
+    let reasonTagClass = '';
+    if (isLimitUp && limitTimes >= 2) {
+        reasonTag = `${limitTimes}连板`;
+        reasonTagClass = 'tag-bullish';
+    } else if (isLimitUp) {
+        reasonTag = '昨日涨停';
+        reasonTagClass = 'tag-bullish';
+    } else if (consecutiveUpDays >= 5 && mf5day > 0) {
+        reasonTag = '强势连阳';
+        reasonTagClass = 'tag-trend';
+    } else if (consecutiveUpDays >= 3 && mf5day > 0) {
+        reasonTag = '资金连阳';
+        reasonTagClass = 'tag-trend';
+    } else if ((changePct || 0) > 5 && turnover > 5) {
+        reasonTag = '量价齐升';
+        reasonTagClass = 'tag-trend';
+    }
+
+    return {
+        name,
+        code,
+        industry,
+        price,
+        change_pct: changePct,
+        reason,
+        reason_tag: reasonTag,
+        reason_tag_class: reasonTagClass,
+        related_industry: conceptName,
+        in_concept: inConcept,
+        match_source: matchSource,
+    };
+}
+
+/**
+ * 提取板块龙头股。
+ * 1. 概念页爬取候选（最多 30 只）必须命中板块成分集合，防止无关股（如园林股份）成为龙头；
+ * 2. 行业板块（881xxx）成分集合取行业成分股，成分榜兜底用 getBoardTopStocks(code)；
+ * 3. 候选全部被剔除 → 成分榜同规则取第 1（constituent_rank）→ 仍无 → main_stocks 评分最高（fallback）。
+ * 排序规则见 rankLeadingStockCandidates。
+ */
 async function extractLeadingStock(
     conceptName: string,
     concept: HotConcept,
     mainStocks: SelectedStock[],
     conceptCode: string,
-    enhancement?: {
-        moneyflowThsMap: Map<string, MoneyflowThsRow>;
-        dailyBasicMap: Map<string, DailyBasicFullRow>;
-        dailyHistMap: Map<string, DailyPriceRow[]>;
-        limitListMap: Map<string, LimitListThsRow>;
-        limitStepData: LimitStepRow[];
-    },
+    enhancement?: TushareEnhancementCache,
+    knownConstituentCodes?: Set<string>,
 ): Promise<LeadingStockInfo> {
-    // 优先从同花顺概念板块页面爬取龙头股
-    const conceptLeadingStocks = await fetchConceptLeadingStocks(conceptCode);
-    if (conceptLeadingStocks.length > 0) {
-        // 批量查询龙头股的实际行业板块
-        const leadingIndustryMap = await getStocksIndustryMap(conceptLeadingStocks.map(s => s.code));
-        // 按市值排序，取市值最大的龙头股
-        let selectedStock = conceptLeadingStocks[0];
-        let maxMarketCap = 0;
+    const boardType: 'concept' | 'industry' = isIndustryBoardCode(conceptCode) ? 'industry' : 'concept';
 
-        for (const stock of conceptLeadingStocks) {
-            const tsCode = toTsCodeFromEm(stock.code);
-            const dbData = tsCode ? enhancement?.dailyBasicMap.get(tsCode) : undefined;
-            const circMv = dbData?.circ_mv || 0; // 流通市值（万元）
+    // 成分榜（按涨幅降序）：行业板块无概念页龙头结构，直接用它兜底；概念板块优先复用调用方已抓取的完整成分集合
+    let constituentTop: BoardTopStock[] | null = null;
+    const loadConstituentTop = async (): Promise<BoardTopStock[]> => {
+        if (!constituentTop) constituentTop = await getBoardTopStocks(conceptCode, 20, boardType);
+        return constituentTop;
+    };
 
-            if (circMv > maxMarketCap) {
-                maxMarketCap = circMv;
-                selectedStock = stock;
-            }
+    let constituentCodes: Set<string>;
+    if (boardType === 'industry') {
+        // 行业板块用完整成分股集合做成员校验（成分榜 top20 会漏掉排行靠后的爬取候选）
+        const members = await getBoardConstituents(conceptCode, 'industry', 200);
+        constituentCodes = new Set(members.map(s => s.code));
+        if (constituentCodes.size === 0) {
+            constituentCodes = new Set((await loadConstituentTop()).map(s => s.code));
         }
-
-        const stock = selectedStock;
-        let price: number | null = null;
-        let changePct: number | null = null;
-        if (stock.code) {
-            const result = await fetchQuoteWithRetry(stock.code);
-            price = result.price;
-            changePct = result.changePct;
-        }
-
-        // 从Tushare增强数据生成选股理由和标签（与mainStocks中龙头股逻辑一致）
-        const tsCode = toTsCodeFromEm(stock.code);
-        const limitData = tsCode ? enhancement?.limitListMap.get(tsCode) : undefined;
-        const mfThsData = tsCode ? enhancement?.moneyflowThsMap.get(tsCode) : undefined;
-        const dbData = tsCode ? enhancement?.dailyBasicMap.get(tsCode) : undefined;
-        const histData = tsCode ? enhancement?.dailyHistMap.get(tsCode) : undefined;
-
-        // 北交所股票Tushare不支持limit_list_ths，用涨幅判断涨停
-        const isBJ = isBJStock(stock.code);
-        const isLimitUp = limitData != null || (isBJ && (changePct || 0) >= 9.5);
-        const statusStr = limitData?.status || (isBJ && (changePct || 0) >= 9.5 ? '涨停' : '');
-        const limitTimes = statusStr.match(/(\d+)天(\d+)板/)?.[2]
-            ? parseInt(statusStr.match(/(\d+)天(\d+)板/)![2])
-            : (statusStr.includes('首板') ? 1 : 0);
-        const mf5day = mfThsData?.mf_5day || 0;
-        const turnover = dbData?.turnover_rate || 0;
-        const consecutiveUpDays = histData ? calcConsecutiveUpDays(histData) : 0;
-        const fcRatio = limitData?.limit_up_suc_rate || 0;
-        const limitReason = limitData?.lu_desc || '';
-
-        // 生成选股理由：优先用涨停原因，缺失时回退到公司简介（截断30字）
-        let reason = limitReason || '';
-        // 北交所股票Tushare不支持limit_list_ths，对涨幅较大的BJ股补充默认原因
-        if (!reason && isBJStock(stock.code) && (changePct || 0) >= 9.5) {
-            reason = '北交所个股涨停，资金关注度提升';
-        }
-        if (!reason && tsCode) {
-            try {
-                const companyData = await getStockCompany(tsCode);
-                if (companyData) {
-                    reason = extractLeaderDescription(companyData.introduction || '', companyData.main_business || '');
-                }
-            } catch { /* ignore */ }
-        }
-
-        // 生成理由标签：只保留有特殊信号的标签，无信号则留空
-        let reasonTag = '';
-        let reasonTagClass = '';
-        if (isLimitUp && limitTimes >= 2) {
-            reasonTag = `${limitTimes}连板`;
-            reasonTagClass = 'tag-bullish';
-        } else if (isLimitUp) {
-            reasonTag = '昨日涨停';
-            reasonTagClass = 'tag-bullish';
-        } else if (consecutiveUpDays >= 5 && mf5day > 0) {
-            reasonTag = '强势连阳';
-            reasonTagClass = 'tag-trend';
-        } else if (consecutiveUpDays >= 3 && mf5day > 0) {
-            reasonTag = '资金连阳';
-            reasonTagClass = 'tag-trend';
-        } else if ((changePct || 0) > 5 && turnover > 5) {
-            reasonTag = '量价齐升';
-            reasonTagClass = 'tag-trend';
-        }
-
-        return {
-            name: stock.name,
-            code: stock.code,
-            industry: leadingIndustryMap.get(stock.code) || conceptName,
-            price,
-            change_pct: changePct,
-            reason,
-            reason_tag: reasonTag,
-            reason_tag_class: reasonTagClass,
-            related_industry: conceptName,
-            in_concept: true,
-        };
+    } else if (knownConstituentCodes && knownConstituentCodes.size > 0) {
+        constituentCodes = knownConstituentCodes;
+    } else {
+        constituentCodes = new Set((await loadConstituentTop()).map(s => s.code));
     }
 
-    // 同花顺页面爬取失败时，回退到 main_stocks 中评分最高的股票作为龙头股（保证有 code/价格/涨幅，行业板块 881xxx 无概念页结构时必走此分支）
+    // 概念页爬取候选：最多取 30 只，代码需通过 A 股代码校验（防新闻链接日期被误当代码）
+    const crawledStocks = (await fetchConceptLeadingStocks(conceptCode))
+        .filter(s => s.code && isValidStockCode(s.code))
+        .slice(0, 30);
+
+    const candidateCache = new Map<string, EnrichedLeadingCandidate>();
+    const crawlerCandidates = await enrichLeadingCandidates(
+        crawledStocks.map(s => ({ code: s.code, name: s.name })),
+        enhancement,
+        candidateCache,
+    );
+
+    let matchSource: 'crawler' | 'constituent_rank' | 'fallback' = 'crawler';
+    let selected: EnrichedLeadingCandidate | null = rankLeadingStockCandidates(crawlerCandidates, constituentCodes);
+
+    if (!selected) {
+        // 爬取候选全部被成分校验剔除（或页面未爬到）：从成分榜按同一规则取第 1
+        const constituentCandidates = await enrichLeadingCandidates(
+            (await loadConstituentTop()).map(s => ({ code: s.code, name: s.name, change_pct: s.change_pct })),
+            enhancement,
+            candidateCache,
+        );
+        selected = rankLeadingStockCandidates(constituentCandidates, constituentCodes);
+        matchSource = 'constituent_rank';
+        console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})爬取龙头股均不在板块成分内，改用成分股榜单: ${selected ? selected.name : '无'}`);
+    }
+
+    if (selected) {
+        const industryMap = await getStocksIndustryMap([selected.code]);
+        return buildLeadingStockInfo({
+            code: selected.code,
+            name: selected.name,
+            price: selected.price ?? null,
+            changePct: selected.change_pct ?? null,
+            industry: industryMap.get(selected.code) || conceptName,
+            conceptName,
+            enhancement,
+            matchSource: matchSource === 'crawler' ? 'crawler' : 'constituent_rank',
+            inConcept: true,
+        });
+    }
+
+    // 概念页与成分榜均无可用数据时，回退到 main_stocks 中评分最高的股票（保证有 code/价格/涨幅）
     const fallbackStock = [...mainStocks].sort((a, b) => (b.score || 0) - (a.score || 0)).find(s => s.code);
-    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})同花顺页面未爬取到龙头股，回退到评分最高核心股: ${fallbackStock ? fallbackStock.name : '无'}`);
+    console.warn(`[HotSectorAnalyzer] 概念${conceptCode}(${conceptName})无可用龙头股，回退到评分最高核心股: ${fallbackStock ? fallbackStock.name : '无'}`);
     return {
         name: fallbackStock?.name || (concept.leading_stock !== '--' ? concept.leading_stock : ''),
         code: fallbackStock?.code || '',
@@ -3426,6 +3619,7 @@ async function extractLeadingStock(
         reason_tag_class: fallbackStock?.reason_tag_class || '',
         related_industry: fallbackStock?.related_industry || conceptName,
         in_concept: fallbackStock?.in_concept ?? false,
+        match_source: 'fallback',
     };
 }
 
@@ -3937,7 +4131,7 @@ export class WindLeaderAnalyzerService {
 
             // 9. 提取龙头股信息
             const leadingStockInfo = await extractLeadingStock(
-                concept.name, concept, finalMainStocks, concept.code, enhancement,
+                concept.name, concept, finalMainStocks, concept.code, enhancement, conceptCodes,
             );
 
             // 10. 长期趋势龙头：板块成分股中 trend_scores 评分最高者（长线榜展示用）
@@ -3971,8 +4165,9 @@ export class WindLeaderAnalyzerService {
                 freq_delta: concept.freq_delta,
                 avg_change: concept.avg_change,
                 today_change: concept.today_change,
-                leading_stock: concept.leading_stock,
-                leading_change: concept.leading_change,
+                // legacy 字段与最终选中龙头保持一致（成分校验后的 name / change_pct）
+                leading_stock: leadingStockInfo.name || concept.leading_stock,
+                leading_change: leadingStockInfo.change_pct ?? concept.leading_change,
                 up_count: concept.up_count,
                 down_count: concept.down_count,
                 driver_type: concept.driver_type,

@@ -46,6 +46,29 @@ export class WindLeaderController {
     }
 
     /**
+     * GET /api/cn/wind-leaders/today
+     * 今日风口榜（当日板块榜 + 涨跌幅来源 + 龙头股）
+     *
+     * Query params:
+     *   - limit: 返回板块数量，默认10，范围 1..20
+     */
+    static async getTodayHotSpots(req: Request, res: Response, _next: NextFunction): Promise<void> {
+        try {
+            const limit = Math.min(Math.max(parseInt(String(req.query.limit || '10'), 10) || 10, 1), 20);
+            const data = await WindLeaderService.getTodayHotSpots(limit);
+            if (!data) {
+                createResponse(res, 404, '暂无今日风口数据');
+                return;
+            }
+            createResponse(res, 200, 'success', data);
+        } catch (err: unknown) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            console.error('[WindLeaderController] getTodayHotSpots error:', errMsg);
+            createResponse(res, 500, errMsg);
+        }
+    }
+
+    /**
      * GET /api/cn/wind-leaders/board-kline
      * 板块日 K 线（近 N 日，默认 120）
      * Query params: code（必填，6 位同花顺板块代码）、days（可选，默认 120，上限 120）

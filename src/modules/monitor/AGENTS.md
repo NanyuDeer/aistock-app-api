@@ -8,6 +8,7 @@
 - `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
 - `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
+- `GET /api/cn/wind-leaders/today` — 今日风口榜（当日板块榜 + 涨跌幅来源 + 龙头股；读缓存 `wind_leaders_today_v1`，limit 1..20 默认 10，无数据 404）
 - `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
@@ -53,7 +54,7 @@
   - AI prompt 明确：881xxx 为二级行业、884xxx 为三级细分，严禁把并列/细分-父级/服务外包当上下游
 - 风口龙头分析使用 `WindLeaderAnalyzerService`，每天凌晨 3 点定时执行（全行业覆盖，不再筛选AI板块）；轮动窗口 120 天（`LONG_WINDOW`），数据源为 `RotationBoardStore` 落库的板块轮动榜（每日涨/跌前10 落库供"板块轮动表"展示；**上榜次数 freq120（近120交易日）/freq10（近10交易日）只统计涨幅榜**，跌幅榜不计入，对齐同花顺网页口径），板块区分 cycle=short（短线）/long（长线，月线多头排列且同比环比向上确认）；轮动榜每日 15:35 收盘后增量同步、启动时自动回填；**近30日以 hotCirclePlate 的 mrpm 为准**（官网同款完整榜，修复 last.js 当日 bar 缺失导致的当日榜残缺）
 - 风口榜单会出现行业板块（881xxx）：行业板块不走"概念→行业"映射（`mapConceptToIndustries`），改走 `mapIndustryToChain` 直接从知识图谱取行业上下游（`getUpstreamDownstreamByName`，失败返回空不阻塞）；前端 WindLeaderPanel 流向图支持无 related 节点的行业板块布局
-- 龙头股爬取必须经 `isValidStockCode`/`isValidStockName`/`extractStockCodeFromHref` 校验：同花顺概念页新闻链接（`news.10jqka.com.cn/20260805/...`）URL 中日期 `202608` 会被旧正则 `/(\d{6})/` 误当股票代码、新闻标题被当股票名（曾污染 leading_stock 如"概念细分|玻璃基板…"）；`extractLeadingStock` 爬取失败时回退 main_stocks 评分最高者补全 code/价格（行业板块 881xxx 无概念页龙头结构）
+- 龙头股爬取必须经 `isValidStockCode`/`isValidStockName`/`extractStockCodeFromHref` 校验：同花顺概念页新闻链接（`news.10jqka.com.cn/20260805/...`）URL 中日期 `202608` 会被旧正则 `/(\d{6})/` 误当股票代码、新闻标题被当股票名（曾污染 leading_stock 如"概念细分|玻璃基板…"）；爬取候选必须命中板块成分集合（`rankLeadingStockCandidates`），未命中一律剔除（曾使无关股「园林股份」成为龙头）；排序规则为 涨停 → 连板数 → 涨幅 → 成交额 → 流通市值，`leading_stock_info.match_source` 标识来源（crawler/constituent_rank/fallback）；爬取失败时回退成分榜第 1，仍无则回退 main_stocks 评分最高者补全 code/价格（行业板块 881xxx 无概念页龙头结构）
 - 长线风口榜龙头展示用 `long_leader` 字段（趋势龙头，非爬虫龙头）：`queryTopTrendScore` 查 `trend_scores` 最新评分日中成分股集合内 score 最高、非 D 评级且未被 60 日线剔除的股票；行业板块（881xxx）用 `getBoardTopStocks(20,'industry')` 成分股代码、概念板块用概念成分股代码；无命中回退 main_stocks 评分最高者
 - 推送历史在交易日 15:30 后执行收盘结算，并通过启动补偿和历史接口读取检测修复漏跑任务。
 - 机构调研推荐使用 `HotBurstService`，交易日多次检测
