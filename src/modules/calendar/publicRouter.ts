@@ -195,7 +195,7 @@ rhythmMasterPublicRouter.get('/rhythm-master/:date', async (req: Request, res: R
     const result = await pool.query(
       `SELECT report_type, report_date, user_id, content, created_at
        FROM agent_analysis_reports
-       WHERE report_type = 'rhythm_master' AND report_date = $1 AND user_id IN ('after_close','morning','midday')
+       WHERE report_type = 'rhythm_master' AND report_date = $1 AND user_id IN ('after_close','morning','midday','tail')
        ORDER BY created_at DESC`,
       [date],
     )
