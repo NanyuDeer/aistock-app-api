@@ -23,6 +23,8 @@ import { ForecastVersionStore } from '../monitor/ForecastVersionStore';
 import type { ForecastVersionRow } from '../monitor/ForecastVersionStore';
 import { queryExpectations } from './macroExpectationService';
 import type { MacroExpectationView } from './macroExpectationService';
+import { queryIndustryGuidance } from './earningsGuidanceService';
+import type { IndustryGuidance } from './earningsGuidanceService';
 import { TencentKlineService } from '../quote/TencentKlineService';
 import type { KLineOptions } from '../quote/TencentKlineService';
 import { getSinaMoneyflow } from '../quote/SinaMoneyFlowService';
@@ -32,6 +34,7 @@ export type CausalInputKind =
     | 'sector_returns'
     | 'flows'
     | 'forecast_guidance'
+    | 'forecast_guidance_by_industry'
     | 'macro_expectations';
 
 export interface CausalInputsRequest {
@@ -55,6 +58,11 @@ export interface CausalInputsResult {
     flows: Record<string, number | null> | null;
     /** 业绩预告（公司披露），不是卖方一致预期 */
     forecastGuidance: Record<string, Record<string, unknown>> | null;
+    /**
+     * 业绩预告按行业聚合的净利润同比中位数。
+     * ⚠ 这是公司披露口径，不是卖方一致预期，不能用于算预期差。
+     */
+    forecastGuidanceByIndustry: Record<string, IndustryGuidance> | null;
     /** 宏观预期快照，key 为归一化指标名（如 CN_CPI_YOY） */
     macroExpectations: Record<string, MacroExpectationView> | null;
     completeness: Record<CausalInputKind, boolean>;
@@ -67,6 +75,8 @@ export interface CausalInputsDeps {
     /** 读 earnings_forecast_versions：公司自己披露的业绩预告，不是卖方一致预期 */
     findConsensusAsOf: (symbol: string, at: string) => Promise<ForecastVersionRow | null>;
     queryExpectations: (at: Date) => Promise<Record<string, MacroExpectationView>>;
+    /** 按行业聚合业绩预告（非一致预期） */
+    queryIndustryGuidance: () => Promise<Record<string, IndustryGuidance>>;
 }
 
 const ALL_KINDS: CausalInputKind[] = [
@@ -74,6 +84,7 @@ const ALL_KINDS: CausalInputKind[] = [
     'sector_returns',
     'flows',
     'forecast_guidance',
+    'forecast_guidance_by_industry',
     'macro_expectations',
 ];
 
@@ -100,6 +111,7 @@ export const defaultDeps: CausalInputsDeps = {
     },
     findConsensusAsOf: (symbol, at) => ForecastVersionStore.findAsOf(symbol, at),
     queryExpectations: (at) => queryExpectations(at),
+    queryIndustryGuidance: () => queryIndustryGuidance(),
 };
 
 function num(value: unknown): number | null {
@@ -208,6 +220,13 @@ export async function buildCausalInputs(
         macroExpectations = Object.keys(expectations).length > 0 ? expectations : null;
     }
 
+    // 行业级业绩预告同样是一次全表聚合，不按 symbol 拆
+    let forecastGuidanceByIndustry: Record<string, IndustryGuidance> | null = null;
+    if (need.has('forecast_guidance_by_industry')) {
+        const byIndustry = await deps.queryIndustryGuidance();
+        forecastGuidanceByIndustry = Object.keys(byIndustry).length > 0 ? byIndustry : null;
+    }
+
     const requestedCount = request.symbols.length;
     const completeness: Record<CausalInputKind, boolean> = {
         prices: Object.keys(prices).length === requestedCount,
@@ -215,6 +234,7 @@ export async function buildCausalInputs(
         // 资金流对指数通常为空，缺省视为「部分可用」而非失败
         flows: Object.values(flows).some((value) => value !== null),
         forecast_guidance: Object.keys(forecastGuidance).length > 0,
+        forecast_guidance_by_industry: forecastGuidanceByIndustry !== null,
         macro_expectations: macroExpectations !== null,
     };
 
@@ -224,6 +244,7 @@ export async function buildCausalInputs(
         sectorReturns,
         flows: Object.keys(flows).length > 0 ? flows : null,
         forecastGuidance: Object.keys(forecastGuidance).length > 0 ? forecastGuidance : null,
+        forecastGuidanceByIndustry,
         macroExpectations,
         completeness,
     };

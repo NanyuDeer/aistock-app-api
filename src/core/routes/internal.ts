@@ -1137,6 +1137,7 @@ const CAUSAL_INPUT_KINDS = [
     'sector_returns',
     'flows',
     'forecast_guidance',
+    'forecast_guidance_by_industry',
     'macro_expectations',
 ] as const
 
