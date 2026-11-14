@@ -15,10 +15,11 @@ import { describe, it } from 'node:test';
 import {
     attachLeadingStocks,
     fillLeadingStocksFromTopGainers,
+    resolveStaleBoardClose,
     type HotSectorForLeader,
     type TodayHotSpotBoard,
 } from '../WindLeaderService';
-import type { TodayBoardItem } from '../RotationBoardStore';
+import type { BoardRealtime, TodayBoardItem } from '../RotationBoardStore';
 
 function board(board_name: string, rank: number): TodayBoardItem {
     return {
@@ -143,5 +144,57 @@ describe('fillLeadingStocksFromTopGainers：成分股补领涨股', () => {
         const result = fillLeadingStocksFromTopGainers(boards, new Map());
         assert.equal(result[0].leading_stock, null);
         assert.equal(boards[0].leading_stock, null, '入参保持不变');
+    });
+});
+
+describe('resolveStaleBoardClose：其他板块「今日涨幅/成交额」收盘兜底', () => {
+    const latestDate = '2026-11-13';
+
+    function stale(overrides: Partial<BoardRealtime> = {}): BoardRealtime {
+        return {
+            date: '20261113',
+            change_pct: null,
+            amount: null,
+            latest_amount: 231757200000,
+            latest_change_pct: -3.3351,
+            source: 'stale',
+            ...overrides,
+        };
+    }
+
+    it('stale 且盘口日期 === 最近交易日 → 返回四舍五入涨跌幅与成交额', () => {
+        assert.deepEqual(resolveStaleBoardClose(stale(), latestDate), {
+            change_pct: -3.34,
+            amount: 231757200000,
+            date: '2026-11-13',
+        });
+    });
+
+    it('盘口日期与最近交易日不一致 → null（不跨日冒充）', () => {
+        assert.equal(resolveStaleBoardClose(stale({ date: '20261112' }), latestDate), null);
+    });
+
+    it('实时盘口或盘口缺失 → null（实时路径已单独覆盖，不重复兜底）', () => {
+        assert.equal(resolveStaleBoardClose(null, latestDate), null);
+        assert.equal(resolveStaleBoardClose(undefined, latestDate), null);
+        assert.equal(
+            resolveStaleBoardClose(
+                { date: '20261113', change_pct: 1.2, amount: 100, source: 'realtime' },
+                latestDate,
+            ),
+            null,
+        );
+    });
+
+    it('涨跌幅/成交额缺失 → 对应字段为 null，日期仍返回', () => {
+        assert.deepEqual(
+            resolveStaleBoardClose(stale({ latest_change_pct: null, latest_amount: null }), latestDate),
+            { change_pct: null, amount: null, date: '2026-11-13' },
+        );
+    });
+
+    it('涨跌幅 0（平盘）是有效值，不得当缺失', () => {
+        const result = resolveStaleBoardClose(stale({ latest_change_pct: 0 }), latestDate);
+        assert.equal(result?.change_pct, 0);
     });
 });

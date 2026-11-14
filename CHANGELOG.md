@@ -1,5 +1,25 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-14 — 风口龙头「其他板块」今日涨幅/成交额缺失修复
+
+**开发者**: Aria
+
+### 修复
+
+- `GET /api/cn/wind-leaders` 的 `hot_sectors` 中多数板块 `today_change=null`、`amount=0`（波段/长线档显示 `--`）：收盘兜底此前只查 `board_rotation_daily`，而该表仅落每日涨/跌前 10，其余板块查不到。
+- `BoardRealtime` 新增 `latest_change_pct`：stale 盘口（today.js 日期 ≠ 当前交易日）仍按 last.js 昨收算出最近交易日涨跌幅，仅用于收盘兜底，`change_pct/amount` 语义不变（stale 时仍为 null，不冒充今日）。
+- `getAnalysis` 收盘兜底：轮动榜查不到时，若盘口日期 === 最近交易日，则用 `resolveStaleBoardClose` 返回的最近收盘涨跌幅（保留两位小数）与成交额补全，来源仍标 `latest_close` + 实际日期；盘口日期不一致时保持 `unavailable`，不跨日冒充。
+
+### 测试
+
+- `RotationBoardStore.today.spec.ts`：stale 用例新增 `latest_change_pct` 断言 + 无昨收用例；`windLeaderTodayHotSpots.spec.ts` 新增 `resolveStaleBoardClose` 5 用例。两文件共 28 passed；`npx tsc --noEmit` 通过。
+
+### 验证
+
+- 生产 `GET /api/cn/wind-leaders?limit=20`：修复前 14 个板块中 8 个 `today_change=null`、14 个 `amount=0`（如半导体/存储芯片/游戏/燃气）；修复后待部署验证。
+
+---
+
 ## [master] 2026-11-14 — 今日风口成交额/领涨股大面积缺失修复
 
 **开发者**: Aria

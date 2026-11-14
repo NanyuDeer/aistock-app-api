@@ -80,3 +80,9 @@
 
 - 收盘回退榜 `buildTodayRankingFromHistory` 的 `amount` 恒为 null（榜行本身不含成交额）：`getTodayBoardRanking` 现对榜单板块拉 `today.js`，用 `applyLatestAmounts` 仅在**盘口日期 === 榜单交易日**时补 `amount`；`BoardRealtime.latest_amount` 专供此补全，`stale` 时 `change_pct/amount` 仍为 null（不跨日冒充）。
 - 领涨股原先只按板块名精确匹配 `hot_sectors`（仅十几个板块），榜单前 10 大多命中不到：`buildTodayHotSpots` 在 `attachLeadingStocks` 后调用 `fillMissingLeadingStocks`，对仍为 null 的板块取成分股当日涨幅第一（`fillLeadingStocksFromTopGainers` 纯函数，已有龙头不覆盖）。**安全前置**：`WindLeaderAnalyzerService.getLatestDailyTradeDate(榜单日)` 必须返回与榜单交易日相同的日期（Tushare 日线为 EOD，盘中仍停上一交易日）才补，否则保持 null，避免「昨日涨幅第一」冒充今日领涨股。
+
+### 2026-11-14 修复：风口龙头「其他板块」今日涨幅 / 成交额缺失
+
+- `GET /api/cn/wind-leaders` 的 hot_sectors 多数板块 `today_change=null`、`amount=0`：原收盘兜底只查 `board_rotation_daily`（每日仅涨/跌前 10），榜单外板块查不到。
+- `BoardRealtime` 新增 `latest_change_pct`：stale 盘口（today.js 日期 ≠ 当前交易日）仍按 last.js 昨收计算最近交易日涨跌幅，但 `change_pct/amount` 保持 null（不冒充今日），仅供收盘兜底。
+- `WindLeaderService.getAnalysis` 兜底顺序：轮动榜 `pct_change` 优先 → `resolveStaleBoardClose`（**盘口日期必须 === 最近交易日**）补最近收盘涨跌幅 + 成交额 → 否则 `unavailable`。来源标 `latest_close`，日期为实际盘口日，不跨日冒充。

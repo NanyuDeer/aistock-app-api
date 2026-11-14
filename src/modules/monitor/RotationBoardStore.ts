@@ -588,6 +588,7 @@ export interface BoardRealtime {
     change_pct: number | null;    // stale 时为 null（不得把上一交易日涨跌幅冒充今日）
     amount: number | null;        // 当日成交额（元）；stale 时为 null
     latest_amount?: number | null; // stale 时保留 today.js 的最近交易日成交额，仅供收盘榜补全
+    latest_change_pct?: number | null; // stale 时按 last.js 昨收算出的最近交易日涨跌幅，仅供收盘兜底
     source: 'realtime' | 'stale'; // date === 当前交易日 ? realtime : stale
 }
 
@@ -643,18 +644,28 @@ function parseTodayRealtime(jsonpText: string): { date: string; price: number; a
 export function buildBoardRealtime(todayJsonp: string, dailyJsonp: string, tradingDateCompact: string): BoardRealtime | null {
     const today = parseTodayRealtime(todayJsonp);
     if (!today) return null;
-    if (today.date !== tradingDateCompact) {
-        return { date: today.date, change_pct: null, amount: null, latest_amount: today.amount, source: 'stale' };
-    }
-    // 昨收口径：last.js 中日期严格早于今日的最后一根 bar 的收盘价
+    // 昨收口径：last.js 中日期严格早于盘口日期的最后一根 bar 的收盘价
     const klines = parseKlineFull(dailyJsonp);
     const dates = [...klines.keys()].filter(d => d < today.date).sort();
     const prevDate = dates[dates.length - 1];
     const prev = prevDate ? klines.get(prevDate) : undefined;
-    if (!prev || !Number.isFinite(prev.close) || prev.close <= 0) return null;
+    const changePct = prev && Number.isFinite(prev.close) && prev.close > 0
+        ? (today.price - prev.close) / prev.close * 100
+        : null;
+    if (today.date !== tradingDateCompact) {
+        return {
+            date: today.date,
+            change_pct: null,
+            amount: null,
+            latest_amount: today.amount,
+            latest_change_pct: changePct,
+            source: 'stale',
+        };
+    }
+    if (changePct == null) return null;
     return {
         date: today.date,
-        change_pct: (today.price - prev.close) / prev.close * 100,
+        change_pct: changePct,
         amount: today.amount,
         source: 'realtime',
     };

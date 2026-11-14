@@ -18,7 +18,7 @@ import {
 } from './pushHistorySettlement';
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 import { CacheService } from '../../shared/utils/CacheService';
-import { fetchBoardRealtime, getTodayBoardRanking, queryRotationDaily, type TodayBoardItem } from './RotationBoardStore';
+import { fetchBoardRealtime, getTodayBoardRanking, queryRotationDaily, type BoardRealtime, type TodayBoardItem } from './RotationBoardStore';
 import { getBoardConstituents, getLatestDailyTradeDate } from './WindLeaderAnalyzerService';
 
 // ==================== 类型定义 ====================
@@ -641,6 +641,37 @@ export function fillLeadingStocksFromTopGainers(
     });
 }
 
+/** stale 盘口可用的最近收盘兜底值（涨跌幅/成交额各自可能缺失） */
+export interface StaleBoardClose {
+    change_pct: number | null;
+    amount: number | null;
+    date: string;
+}
+
+/**
+ * stale 盘口 → 最近交易日收盘兜底值（纯函数）。
+ *
+ * 背景：`board_rotation_daily` 只落每日涨/跌前 10，风口榜里绝大多数板块不在其中，
+ * 导致「今日涨幅/成交额」恒为 null。盘口 today.js 在非交易日会返回最近交易日的
+ * 价格与成交额（source=stale），但**只有盘口日期 === 最近交易日**才允许作为收盘兜底，
+ * 避免拿更早的数据冒充最近收盘。
+ */
+export function resolveStaleBoardClose(
+    realtime: BoardRealtime | null | undefined,
+    latestDate: string,
+): StaleBoardClose | null {
+    if (!realtime || realtime.source !== 'stale') return null;
+    const date = `${realtime.date.slice(0, 4)}-${realtime.date.slice(4, 6)}-${realtime.date.slice(6, 8)}`;
+    if (date !== latestDate) return null;
+    const pct = realtime.latest_change_pct;
+    const amount = realtime.latest_amount;
+    return {
+        change_pct: typeof pct === 'number' && Number.isFinite(pct) ? Math.round(pct * 100) / 100 : null,
+        amount: typeof amount === 'number' && Number.isFinite(amount) && amount > 0 ? amount : null,
+        date,
+    };
+}
+
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
@@ -762,15 +793,23 @@ export class WindLeaderService {
                         }
                         for (const sector of needFallback) {
                             const pct = pctByCode.get(sector.code);
+                            // 轮动榜只含每日涨/跌前 10，多数板块查不到 → 用 stale 盘口的最近收盘兜底
+                            const staleClose = resolveStaleBoardClose(realtimeByCode.get(sector.code), latestDate);
                             if (pct !== undefined) {
                                 sector.today_change = pct;
                                 sector.today_change_source = 'latest_close';
                                 sector.today_change_date = latestDate;
+                            } else if (staleClose?.change_pct != null) {
+                                sector.today_change = staleClose.change_pct;
+                                sector.today_change_source = 'latest_close';
+                                sector.today_change_date = staleClose.date;
                             } else {
                                 sector.today_change = null;
                                 sector.today_change_source = 'unavailable';
                                 sector.today_change_date = null;
                             }
+                            // 成交额同源兜底：数据文件里的 amount 常为 0，盘口与最近交易日同日才补
+                            if (staleClose?.amount != null) sector.amount = staleClose.amount;
                         }
                     } catch (err) {
                         console.warn('[WindLeaderService] 板块收盘涨跌幅兜底失败:', (err as Error).message);

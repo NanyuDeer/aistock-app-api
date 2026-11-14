@@ -50,7 +50,7 @@ describe('buildBoardRealtime：实时涨跌幅 + stale 判定', () => {
         assert.equal(rt.latest_amount, undefined, '实时路径 amount 已是最新，无需 latest_amount');
     });
 
-    it('today.js 日期=前一交易日（stale）：不冒充今日，change_pct/amount 置 null，但保留 latest_amount 供收盘榜补全', () => {
+    it('today.js 日期=前一交易日（stale）：不冒充今日，change_pct/amount 置 null，但保留 latest_amount/latest_change_pct 供收盘兜底', () => {
         const rt = buildBoardRealtime(
             todayJsonp('20261111', 110, 500),
             lastJsonp([['20261110', 100]]),
@@ -62,6 +62,22 @@ describe('buildBoardRealtime：实时涨跌幅 + stale 判定', () => {
         assert.equal(rt.change_pct, null);
         assert.equal(rt.amount, null);
         assert.equal(rt.latest_amount, 500, 'stale 时仍保留最近交易日成交额');
+        const latestPct = rt.latest_change_pct;
+        assert.ok(typeof latestPct === 'number', 'stale 时保留最近交易日涨跌幅');
+        // 昨收 100、最新价 110 → 最近交易日涨跌幅 10%
+        assert.ok(Math.abs(latestPct - 10) < 1e-9, `stale 涨跌幅应约为 10，实际 ${latestPct}`);
+    });
+
+    it('stale 且 last.js 无昨收：latest_change_pct 为 null，但盘口仍返回并保留成交额', () => {
+        const rt = buildBoardRealtime(
+            todayJsonp('20261111', 110, 500),
+            lastJsonp([['20261111', 100]]),
+            '20261112',
+        );
+        assert.ok(rt);
+        assert.equal(rt.source, 'stale');
+        assert.equal(rt.latest_change_pct, null);
+        assert.equal(rt.latest_amount, 500);
     });
 
     it('last.js 缺失/无法解析 → 返回 null（保持原有降级）', () => {
