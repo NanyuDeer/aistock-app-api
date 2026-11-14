@@ -50,3 +50,4 @@
 - **行情缓存键必须按 level 区分前缀**（core/activity/fundamental 各自独立，见 `quoteCacheConfig`）。2026-08-20 曾因 `getCachedBatchQuotes` 固定用 `stock_quote:core:` 前缀，导致 `activity` 打点命中 core 缓存（缺"今开价"）→ `moveBps` 恒 null → 价格异动（午/尾盘）永不触发
 - **个股 AI 分析大模型超时默认 120s**（`STOCK_ANALYSIS_LLM_TIMEOUT_MS` 可覆盖，仅 ≥30000 生效，见 `StockAnalysisService.resolveStockAnalysisLlmTimeoutMs`）。2026-11-12 周会任务 3 曾因硬编码 45s 小于线上模型真实耗时（实测 ~51s），`POST /cn/stocks/:symbol/analysis` 恒定 45s 后 500，App「AI 资讯洞见」一直停在生成中；新增自选股无历史记录必走该 POST
 - **个股 AI 分析默认关闭 Qwen3 thinking**（`buildModelRequestBody` 固定传 `chat_template_kwargs.enable_thinking=false`，`QWEN_ENABLE_THINKING=true` 可恢复）。开启 thinking 时单次分析实测 240s 仍未结束，关闭后同一请求 88.1s 完成；分析只要求严格 JSON，reasoning token 无收益
+- **个股 AI 分析非流式客户端内部也走流式**（`generateStockAnalysis` 统一调用 `requestModelStream`，流式失败回退 `requestModel`）。2026-11-15 07:19 线上 `POST /cn/stocks/601899/analysis` 63.5s 后 500，同服务直调 40.7s 成功；原因是上游大模型网关对非流式长生成约 60s 空闲断开，流式路径可持续到 88s
