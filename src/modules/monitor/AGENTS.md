@@ -75,3 +75,8 @@
 
 - `RotationBoardStore.computePctMap` 输出日期键统一为 `YYYY-MM-DD`（原为 K 线原始 `YYYYMMDD`）：`buildRowsFromMrpm` 传入的是 `normalizeTradingDate` 后的连字符日期，键口径不一致使 `pctMap.get(code)?.get(date)` 恒 miss，`?? 0` 把 mrpm 覆盖的近 30 个交易日 `pct_change` 全部写成 0（实测 159 日 / 3181 行中 602 行为 0，且集中在最近 30 日）。历史行由日线推导、口径本已一致，无需改动。
 - `shared/utils/stock.ts` 的 `getStockIdentity` 补 `605` 段（沪市主板，2019 年起启用）：此前落入 `unknown`，`toTsCode` 生成 `605xxx.UNKNOWN` 导致 Tushare 日线返回空、趋势股技术面 NaN（实测 9 只 605 股票 96 行全部 NaN）。
+
+### 2026-11-14 修复：今日风口成交额 / 领涨股大面积缺失
+
+- 收盘回退榜 `buildTodayRankingFromHistory` 的 `amount` 恒为 null（榜行本身不含成交额）：`getTodayBoardRanking` 现对榜单板块拉 `today.js`，用 `applyLatestAmounts` 仅在**盘口日期 === 榜单交易日**时补 `amount`；`BoardRealtime.latest_amount` 专供此补全，`stale` 时 `change_pct/amount` 仍为 null（不跨日冒充）。
+- 领涨股原先只按板块名精确匹配 `hot_sectors`（仅十几个板块），榜单前 10 大多命中不到：`buildTodayHotSpots` 在 `attachLeadingStocks` 后调用 `fillMissingLeadingStocks`，对仍为 null 的板块取成分股当日涨幅第一（`fillLeadingStocksFromTopGainers` 纯函数，已有龙头不覆盖）。**安全前置**：`WindLeaderAnalyzerService.getLatestDailyTradeDate(榜单日)` 必须返回与榜单交易日相同的日期（Tushare 日线为 EOD，盘中仍停上一交易日）才补，否则保持 null，避免「昨日涨幅第一」冒充今日领涨股。

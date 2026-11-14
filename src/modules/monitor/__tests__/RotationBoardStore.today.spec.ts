@@ -12,12 +12,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+    applyLatestAmounts,
     buildBoardRealtime,
     buildTodayRankingFromHistory,
     buildTodayRankingFromRealtime,
     type BoardRealtime,
     type DailyRotationRow,
     type MrpmTodayRankItem,
+    type TodayBoardRanking,
 } from '../RotationBoardStore';
 
 /** 构造同花顺 today.js（quotebridge JSONP）：1=日期, 11=现价, 19=成交额 */
@@ -45,9 +47,10 @@ describe('buildBoardRealtime：实时涨跌幅 + stale 判定', () => {
         // 昨收 100、现价 110 → 10%
         assert.ok(Math.abs(rt.change_pct - 10) < 1e-9, `涨跌幅应约为 10，实际 ${rt.change_pct}`);
         assert.equal(rt.amount, 12345678);
+        assert.equal(rt.latest_amount, undefined, '实时路径 amount 已是最新，无需 latest_amount');
     });
 
-    it('today.js 日期=前一交易日（stale）：不冒充今日，change_pct/amount 置 null', () => {
+    it('today.js 日期=前一交易日（stale）：不冒充今日，change_pct/amount 置 null，但保留 latest_amount 供收盘榜补全', () => {
         const rt = buildBoardRealtime(
             todayJsonp('20261111', 110, 500),
             lastJsonp([['20261110', 100]]),
@@ -58,6 +61,7 @@ describe('buildBoardRealtime：实时涨跌幅 + stale 判定', () => {
         assert.equal(rt.source, 'stale');
         assert.equal(rt.change_pct, null);
         assert.equal(rt.amount, null);
+        assert.equal(rt.latest_amount, 500, 'stale 时仍保留最近交易日成交额');
     });
 
     it('last.js 缺失/无法解析 → 返回 null（保持原有降级）', () => {
@@ -157,5 +161,48 @@ describe('buildTodayRankingFromHistory：收盘榜回退', () => {
             '2026-11-12 09:30:00',
         );
         assert.equal(result, null);
+    });
+});
+
+describe('applyLatestAmounts：收盘榜补全成交额', () => {
+    const ranking: TodayBoardRanking = {
+        trading_date: '2026-11-13',
+        is_live: false,
+        update_time: '2026-11-14 22:47:34',
+        source: 'board_rotation_daily',
+        boards: [
+            { board_code: '881274', board_name: '影视院线', rank: 1, change_pct: 4.37, amount: null, change_source: 'latest_close' },
+            { board_code: '885573', board_name: '猪肉', rank: 2, change_pct: 2.15, amount: null, change_source: 'latest_close' },
+            { board_code: '881155', board_name: '银行', rank: 3, change_pct: 1.2, amount: null, change_source: 'latest_close' },
+        ],
+    };
+
+    it('盘口日期 === 榜单交易日 → 用 latest_amount 补 amount', () => {
+        const realtimeByCode = new Map<string, BoardRealtime | null>([
+            ['881274', { date: '20261113', change_pct: null, amount: null, latest_amount: 10311844200, source: 'stale' }],
+            ['885573', { date: '20261113', change_pct: null, amount: null, latest_amount: 5000, source: 'stale' }],
+        ]);
+        const result = applyLatestAmounts(ranking, realtimeByCode);
+        assert.deepEqual(result.boards.map(b => b.amount), [10311844200, 5000, null], '未取到的板块保持 null');
+        assert.deepEqual(result.boards.map(b => b.change_pct), [4.37, 2.15, 1.2], '涨跌幅不受影响');
+        assert.equal(result.trading_date, '2026-11-13');
+    });
+
+    it('盘口日期与榜单交易日不一致 → 不跨日冒充，保持 null', () => {
+        const realtimeByCode = new Map<string, BoardRealtime | null>([
+            ['881274', { date: '20261112', change_pct: null, amount: null, latest_amount: 999, source: 'stale' }],
+        ]);
+        const result = applyLatestAmounts(ranking, realtimeByCode);
+        assert.equal(result.boards[0].amount, null);
+    });
+
+    it('无 latest_amount / 盘口缺失 → 保持 null，且不修改入参', () => {
+        const realtimeByCode = new Map<string, BoardRealtime | null>([
+            ['881274', { date: '20261113', change_pct: null, amount: null, source: 'stale' }],
+            ['885573', null],
+        ]);
+        const result = applyLatestAmounts(ranking, realtimeByCode);
+        assert.deepEqual(result.boards.map(b => b.amount), [null, null, null]);
+        assert.equal(ranking.boards[0].amount, null, '入参保持不变');
     });
 });

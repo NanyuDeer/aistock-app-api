@@ -587,6 +587,7 @@ export interface BoardRealtime {
     date: string;                 // today.js 的日期 'YYYYMMDD'
     change_pct: number | null;    // stale 时为 null（不得把上一交易日涨跌幅冒充今日）
     amount: number | null;        // 当日成交额（元）；stale 时为 null
+    latest_amount?: number | null; // stale 时保留 today.js 的最近交易日成交额，仅供收盘榜补全
     source: 'realtime' | 'stale'; // date === 当前交易日 ? realtime : stale
 }
 
@@ -643,7 +644,7 @@ export function buildBoardRealtime(todayJsonp: string, dailyJsonp: string, tradi
     const today = parseTodayRealtime(todayJsonp);
     if (!today) return null;
     if (today.date !== tradingDateCompact) {
-        return { date: today.date, change_pct: null, amount: null, source: 'stale' };
+        return { date: today.date, change_pct: null, amount: null, latest_amount: today.amount, source: 'stale' };
     }
     // 昨收口径：last.js 中日期严格早于今日的最后一根 bar 的收盘价
     const klines = parseKlineFull(dailyJsonp);
@@ -815,6 +816,27 @@ export function buildTodayRankingFromHistory(
 }
 
 /**
+ * 收盘榜补全成交额（纯函数）：仅当盘口日期 === 榜单交易日时采用 latest_amount，
+ * 否则保持 null（不跨日、不拿上一交易日成交额冒充）。
+ */
+export function applyLatestAmounts(
+    ranking: TodayBoardRanking,
+    realtimeByCode: ReadonlyMap<string, BoardRealtime | null>,
+): TodayBoardRanking {
+    const compact = ranking.trading_date.replace(/-/g, '');
+    return {
+        ...ranking,
+        boards: ranking.boards.map((board) => {
+            const rt = realtimeByCode.get(board.board_code);
+            if (!rt || rt.date !== compact || typeof rt.latest_amount !== 'number' || !Number.isFinite(rt.latest_amount)) {
+                return board;
+            }
+            return { ...board, amount: rt.latest_amount };
+        }),
+    };
+}
+
+/**
  * 今日风口榜：优先「mrpm 当日榜 + 实时涨跌幅」，缺失则回退最近收盘榜。
  * 只读，**不写 board_rotation_daily**（写入仍由 15:35 syncRotationHistory 负责）。
  * @returns null 表示两种数据源都不可用
@@ -826,21 +848,30 @@ export async function getTodayBoardRanking(limit = 10): Promise<TodayBoardRankin
     const ranking = await fetchMrpmTodayRanking(today);
     if (ranking && ranking.length > 0) {
         const codes = ranking.slice(0, limit).map(r => r.board_code);
-        const realtimeByCode = new Map<string, BoardRealtime | null>();
-        // 分片并发（上限 4）：mrpm 前 10 只板块，逐个打同花顺会被限流
-        for (let i = 0; i < codes.length; i += 4) {
-            const chunk = codes.slice(i, i + 4);
-            const results = await Promise.all(chunk.map(async (code) => ({ code, rt: await fetchBoardRealtime(code) })));
-            for (const { code, rt } of results) realtimeByCode.set(code, rt);
-        }
+        const realtimeByCode = await fetchRealtimeMap(codes);
         return buildTodayRankingFromRealtime(today, ranking, realtimeByCode, limit, updateTime);
     }
 
     try {
         const rows = await queryRotationDaily(1);
-        return buildTodayRankingFromHistory(rows, limit, updateTime);
+        const history = buildTodayRankingFromHistory(rows, limit, updateTime);
+        if (!history) return null;
+        // 收盘榜本身不带成交额；非交易日 today.js 停留的正是榜单那个交易日，可安全补全
+        const realtimeByCode = await fetchRealtimeMap(history.boards.map(b => b.board_code));
+        return applyLatestAmounts(history, realtimeByCode);
     } catch (err) {
         console.warn('[RotationBoardStore] getTodayBoardRanking 回退收盘榜失败:', (err as Error).message);
         return null;
     }
+}
+
+/** 分片并发拉取板块盘口（每片 4 个，避免同花顺限流） */
+async function fetchRealtimeMap(codes: string[]): Promise<Map<string, BoardRealtime | null>> {
+    const realtimeByCode = new Map<string, BoardRealtime | null>();
+    for (let i = 0; i < codes.length; i += 4) {
+        const chunk = codes.slice(i, i + 4);
+        const results = await Promise.all(chunk.map(async (code) => ({ code, rt: await fetchBoardRealtime(code) })));
+        for (const { code, rt } of results) realtimeByCode.set(code, rt);
+    }
+    return realtimeByCode;
 }

@@ -14,7 +14,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
     attachLeadingStocks,
+    fillLeadingStocksFromTopGainers,
     type HotSectorForLeader,
+    type TodayHotSpotBoard,
 } from '../WindLeaderService';
 import type { TodayBoardItem } from '../RotationBoardStore';
 
@@ -104,5 +106,42 @@ describe('attachLeadingStocks：按板块名匹配龙头股', () => {
         const result = attachLeadingStocks([board('影视院线', 1), board('半导体', 2), board('未知板块', 3)], sectors);
         assert.deepEqual(result.map(b => b.board_name), ['影视院线', '半导体', '未知板块']);
         assert.deepEqual(result.map(b => b.leading_stock?.code ?? null), ['300251', '688981', null]);
+    });
+});
+
+describe('fillLeadingStocksFromTopGainers：成分股补领涨股', () => {
+    function hotspot(board_name: string, rank: number, leading: TodayHotSpotBoard['leading_stock'] = null): TodayHotSpotBoard {
+        return { ...board(board_name, rank), leading_stock: leading };
+    }
+
+    it('只为 leading_stock 为 null 的板块补，且不改动其他字段', () => {
+        const boards = [hotspot('影视院线', 1), hotspot('猪肉', 2)];
+        const topByCode = new Map([
+            ['881001', { code: '300251', name: '光线传媒', change_pct: 9.98 }],
+            ['881002', { code: '000895', name: '双汇发展', change_pct: 4.21 }],
+        ]);
+        const result = fillLeadingStocksFromTopGainers(boards, topByCode);
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: 9.98 });
+        assert.deepEqual(result[1].leading_stock, { code: '000895', name: '双汇发展', change_pct: 4.21 });
+        assert.deepEqual(
+            result.map(b => ({ code: b.board_code, name: b.board_name, rank: b.rank, pct: b.change_pct, amount: b.amount })),
+            boards.map(b => ({ code: b.board_code, name: b.board_name, rank: b.rank, pct: b.change_pct, amount: b.amount })),
+        );
+    });
+
+    it('已有龙头（hot_sectors 命中）不被覆盖', () => {
+        const boards = [hotspot('银行', 1, { code: '600036', name: '招商银行', change_pct: 1.2 })];
+        const topByCode = new Map([
+            ['881001', { code: '601398', name: '工商银行', change_pct: 2.0 }],
+        ]);
+        const result = fillLeadingStocksFromTopGainers(boards, topByCode);
+        assert.deepEqual(result[0].leading_stock, { code: '600036', name: '招商银行', change_pct: 1.2 });
+    });
+
+    it('成分股缺失 → 保持 null，且不修改入参', () => {
+        const boards = [hotspot('保险', 1)];
+        const result = fillLeadingStocksFromTopGainers(boards, new Map());
+        assert.equal(result[0].leading_stock, null);
+        assert.equal(boards[0].leading_stock, null, '入参保持不变');
     });
 });

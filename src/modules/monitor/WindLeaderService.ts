@@ -19,7 +19,7 @@ import {
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime';
 import { CacheService } from '../../shared/utils/CacheService';
 import { fetchBoardRealtime, getTodayBoardRanking, queryRotationDaily, type TodayBoardItem } from './RotationBoardStore';
-import { getBoardConstituents } from './WindLeaderAnalyzerService';
+import { getBoardConstituents, getLatestDailyTradeDate } from './WindLeaderAnalyzerService';
 
 // ==================== 类型定义 ====================
 
@@ -626,6 +626,21 @@ export function attachLeadingStocks(
     });
 }
 
+/**
+ * 用成分股当日涨幅第一补缺失的领涨股（纯函数）。
+ * 只填 `leading_stock` 为空的板块：hot_sectors 精确匹配到的龙头优先，不覆盖。
+ */
+export function fillLeadingStocksFromTopGainers(
+    boards: TodayHotSpotBoard[],
+    topByCode: ReadonlyMap<string, TodayHotSpotStock | null>,
+): TodayHotSpotBoard[] {
+    return boards.map((board) => {
+        if (board.leading_stock != null) return board;
+        const top = topByCode.get(board.board_code);
+        return top ? { ...board, leading_stock: top } : board;
+    });
+}
+
 export class WindLeaderService {
     static async getAnalysis(limit: number = 8): Promise<{
         update_time: string;
@@ -785,13 +800,48 @@ export class WindLeaderService {
         const ranking = await getTodayBoardRanking(TODAY_HOT_SPOTS_SIZE);
         if (!ranking) return null;
         const hotSectors = loadData()?.hot_sectors ?? [];
+        const boards = await this.fillMissingLeadingStocks(
+            attachLeadingStocks(ranking.boards, hotSectors),
+            ranking.trading_date,
+        );
         return {
             trading_date: ranking.trading_date,
             is_live: ranking.is_live,
             update_time: ranking.update_time,
             source: ranking.source,
-            boards: attachLeadingStocks(ranking.boards, hotSectors),
+            boards,
         };
+    }
+
+    /**
+     * 补领涨股：hot_sectors 只覆盖少量板块，榜单前 10 大多不命中，故对缺失板块
+     * 取成分股当日涨幅第一。
+     * 成分股涨幅来自 Tushare 日线（EOD）：只有日线交易日 === 榜单交易日才补；
+     * 盘中日线仍停在上一交易日时必须保持 null，不能拿昨日涨幅冒充今日领涨股。
+     */
+    private static async fillMissingLeadingStocks(
+        boards: TodayHotSpotBoard[],
+        tradingDate: string,
+    ): Promise<TodayHotSpotBoard[]> {
+        const missing = [...new Set(
+            boards.filter((board) => board.leading_stock == null).map((board) => board.board_code),
+        )];
+        if (missing.length === 0) return boards;
+        const compactDate = tradingDate.replace(/-/g, '');
+        const dailyDate = await getLatestDailyTradeDate(compactDate);
+        if (dailyDate !== compactDate) return boards;
+        const topByCode = new Map<string, TodayHotSpotStock | null>();
+        // 每片 4 个并发：成分股可能回源 Tushare，20 个板块全并发易触发限流
+        for (let i = 0; i < missing.length; i += 4) {
+            await Promise.all(missing.slice(i, i + 4).map(async (code) => {
+                const stocks = await this.loadBoardConstituents(code);
+                const top = stocks.find((stock) => stock.change_pct != null && !!stock.code && !!stock.name);
+                topByCode.set(code, top && top.code && top.name
+                    ? { code: top.code, name: top.name, change_pct: top.change_pct ?? null }
+                    : null);
+            }));
+        }
+        return fillLeadingStocksFromTopGainers(boards, topByCode);
     }
 
     /** 写今日风口缓存：键固定、内容固定整份 20 条；盘中 60s / 收盘 600s */

@@ -891,6 +891,26 @@ async function getLatestDailyMap(): Promise<{ date: string; data: Map<string, Da
     return { date: '', data: new Map() };
 }
 
+/**
+ * 最近一个有全市场日线数据的交易日（`YYYYMMDD`），取不到返回 `''`。
+ *
+ * `notBefore`：调用方已知的榜单交易日。收盘后 Tushare 日线已入库、但内存缓存仍停在
+ * 上一交易日时，用它主动探测该日，避免把「昨日涨幅第一」当成今日领涨股。
+ */
+export async function getLatestDailyTradeDate(notBefore?: string): Promise<string> {
+    try {
+        const cached = dailyByDateCache;
+        if (!notBefore || !cached || cached.date >= notBefore) {
+            return (await getLatestDailyMap()).date;
+        }
+        const probed = await getDailyByDateCached(notBefore);
+        return probed.size > 0 ? notBefore : cached.date;
+    } catch (err) {
+        console.warn('[HotSectorAnalyzer] 获取最近交易日失败:', (err as Error).message);
+        return '';
+    }
+}
+
 /** 获取板块成分股（优先使用Tushare ths_member + daily，回退到HTML爬虫） */
 export async function getBoardConstituents(boardCode: string, boardType: 'concept' | 'industry' = 'concept', pageSize: number = 100): Promise<BoardConstituent[]> {
     const cacheKey = `board_cons_${boardType}_${boardCode}`;

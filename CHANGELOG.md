@@ -1,5 +1,24 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-14 — 今日风口成交额/领涨股大面积缺失修复
+
+**开发者**: Aria
+
+### 修复
+
+- 收盘榜（`source=board_rotation_daily`）成交额全为 null：`buildTodayRankingFromHistory` 本身不产出成交额，现由 `getTodayBoardRanking` 对榜单板块拉取 `today.js`，经新增纯函数 `applyLatestAmounts` 仅当盘口日期 === 榜单交易日时补 `amount`（不跨日冒充）。
+- 领涨股 7/10 缺失：`hot_sectors` 仅覆盖少量板块，榜首前 10 大多按名匹配不到。现 `buildTodayHotSpots` 在 `attachLeadingStocks` 之后调用 `fillMissingLeadingStocks`，对仍缺失的板块取成分股当日涨幅第一（纯函数 `fillLeadingStocksFromTopGainers`，已有龙头不覆盖）；并由新增 `WindLeaderAnalyzerService.getLatestDailyTradeDate(notBefore)` 保证「日线交易日 === 榜单交易日」才补，盘中日线停在上一交易日时保持 null。
+
+### 测试
+
+- 新增 `applyLatestAmounts` 3 用例、`fillLeadingStocksFromTopGainers` 3 用例；`RotationBoardStore.today.spec.ts` + `windLeaderTodayHotSpots.spec.ts` 共 22 passed；`npx tsc --noEmit` 通过。
+
+### 验证
+
+- 生产 `GET /api/cn/wind-leaders/today`：修复前 amount 全 null、leading_stock 7/10 null（trading_date=2026-11-13，收盘回退榜）。
+
+---
+
 ## [master] 2026-11-13 — 今日风口榜详情接口 + 领涨股涨幅 + 个股 AI 分析超时 120s
 
 **开发者**: Aria
