@@ -1,5 +1,21 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-15 — 今日风口领涨股取到大幅下跌股票修复
+
+**开发者**: Aria
+
+### 修复
+
+- 现象：影视院线板块当日 +4.37%，领涨股却显示华策影视 -13.97%（hot_sectors 旧快照/爬虫龙头）。
+- `WindLeaderService.fillMissingLeadingStocks` 候选条件由「`leading_stock == null`」扩为「缺失 / `change_pct == null` / `< 0`」，负值龙头也进入成分股核对流程。
+- `fillLeadingStocksFromTopGainers` 对负涨幅或涨幅缺失的龙头改用成分股当日涨幅第一，仅当涨幅更高才替换；成分股缺失时保留原值，不制造空数据。
+
+### 测试
+
+- `windLeaderTodayHotSpots.spec.ts` 新增负值替换 / 涨幅缺失补全 / 成分股缺失保留原值 3 条用例，全绿；`npx tsc --noEmit` 通过。
+
+---
+
 ## [master] 2026-11-14 — 风口龙头「其他板块」今日涨幅/成交额缺失修复
 
 **开发者**: Aria

@@ -627,17 +627,28 @@ export function attachLeadingStocks(
 }
 
 /**
- * 用成分股当日涨幅第一补缺失的领涨股（纯函数）。
- * 只填 `leading_stock` 为空的板块：hot_sectors 精确匹配到的龙头优先，不覆盖。
+ * 用成分股当日涨幅第一修正/补全领涨股（纯函数）。
+ * 规则：
+ *  - leading_stock 为空 → 用成分股第一补；
+ *  - 龙头当日涨跌幅缺失或为负（多为 hot_sectors 旧快照，与板块当日上涨矛盾）
+ *    → 仅当成分股第一涨幅更高时替换，避免「板块大涨、领涨股却大跌」；
+ *  - 其余情况保留 hot_sectors 精确匹配到的龙头，不覆盖；成分股缺失时保留原值。
  */
 export function fillLeadingStocksFromTopGainers(
     boards: TodayHotSpotBoard[],
     topByCode: ReadonlyMap<string, TodayHotSpotStock | null>,
 ): TodayHotSpotBoard[] {
     return boards.map((board) => {
-        if (board.leading_stock != null) return board;
+        const current = board.leading_stock;
+        // 已有且当日上涨/平盘的龙头优先，保持 hot_sectors 的权威匹配
+        if (current != null && current.change_pct != null && current.change_pct >= 0) return board;
         const top = topByCode.get(board.board_code);
-        return top ? { ...board, leading_stock: top } : board;
+        if (!top) return board;
+        // 原龙头跌幅更小或成分股第一无涨幅时，没有更优解，保留原值
+        if (current?.change_pct != null && (top.change_pct == null || top.change_pct <= current.change_pct)) {
+            return board;
+        }
+        return { ...board, leading_stock: top };
     });
 }
 
@@ -854,17 +865,19 @@ export class WindLeaderService {
 
     /**
      * 补领涨股：hot_sectors 只覆盖少量板块，榜单前 10 大多不命中，故对缺失板块
-     * 取成分股当日涨幅第一。
+     * 取成分股当日涨幅第一；已有龙头但当日涨跌幅缺失/为负（旧快照）的也一并核对替换。
      * 成分股涨幅来自 Tushare 日线（EOD）：只有日线交易日 === 榜单交易日才补；
-     * 盘中日线仍停在上一交易日时必须保持 null，不能拿昨日涨幅冒充今日领涨股。
+     * 盘中日线仍停在上一交易日时必须保持原值，不能拿昨日涨幅冒充今日领涨股。
      */
     private static async fillMissingLeadingStocks(
         boards: TodayHotSpotBoard[],
         tradingDate: string,
     ): Promise<TodayHotSpotBoard[]> {
-        const missing = [...new Set(
-            boards.filter((board) => board.leading_stock == null).map((board) => board.board_code),
-        )];
+        const needingLeader = boards.filter((board) => {
+            const leader = board.leading_stock;
+            return leader == null || leader.change_pct == null || leader.change_pct < 0;
+        });
+        const missing = [...new Set(needingLeader.map((board) => board.board_code))];
         if (missing.length === 0) return boards;
         const compactDate = tradingDate.replace(/-/g, '');
         const dailyDate = await getLatestDailyTradeDate(compactDate);

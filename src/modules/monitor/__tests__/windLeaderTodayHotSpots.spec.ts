@@ -139,6 +139,30 @@ describe('fillLeadingStocksFromTopGainers：成分股补领涨股', () => {
         assert.deepEqual(result[0].leading_stock, { code: '600036', name: '招商银行', change_pct: 1.2 });
     });
 
+    it('已有龙头当日下跌（旧快照）→ 用成分股涨幅第一替换', () => {
+        const boards = [hotspot('影视院线', 1, { code: '300133', name: '华策影视', change_pct: -13.97 })];
+        const topByCode = new Map([
+            ['881001', { code: '300251', name: '光线传媒', change_pct: 6.5 }],
+        ]);
+        const result = fillLeadingStocksFromTopGainers(boards, topByCode);
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: 6.5 });
+    });
+
+    it('已有龙头涨跌幅缺失 → 用成分股涨幅第一补全', () => {
+        const boards = [hotspot('影视院线', 1, { code: '300133', name: '华策影视', change_pct: null })];
+        const topByCode = new Map([
+            ['881001', { code: '300251', name: '光线传媒', change_pct: 6.5 }],
+        ]);
+        const result = fillLeadingStocksFromTopGainers(boards, topByCode);
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: 6.5 });
+    });
+
+    it('负涨幅龙头但成分股缺失 → 保留原龙头，不置空', () => {
+        const boards = [hotspot('影视院线', 1, { code: '300133', name: '华策影视', change_pct: -13.97 })];
+        const result = fillLeadingStocksFromTopGainers(boards, new Map());
+        assert.deepEqual(result[0].leading_stock, { code: '300133', name: '华策影视', change_pct: -13.97 });
+    });
+
     it('成分股缺失 → 保持 null，且不修改入参', () => {
         const boards = [hotspot('保险', 1)];
         const result = fillLeadingStocksFromTopGainers(boards, new Map());

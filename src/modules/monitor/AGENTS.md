@@ -76,6 +76,11 @@
 - `RotationBoardStore.computePctMap` 输出日期键统一为 `YYYY-MM-DD`（原为 K 线原始 `YYYYMMDD`）：`buildRowsFromMrpm` 传入的是 `normalizeTradingDate` 后的连字符日期，键口径不一致使 `pctMap.get(code)?.get(date)` 恒 miss，`?? 0` 把 mrpm 覆盖的近 30 个交易日 `pct_change` 全部写成 0（实测 159 日 / 3181 行中 602 行为 0，且集中在最近 30 日）。历史行由日线推导、口径本已一致，无需改动。
 - `shared/utils/stock.ts` 的 `getStockIdentity` 补 `605` 段（沪市主板，2019 年起启用）：此前落入 `unknown`，`toTsCode` 生成 `605xxx.UNKNOWN` 导致 Tushare 日线返回空、趋势股技术面 NaN（实测 9 只 605 股票 96 行全部 NaN）。
 
+### 2026-11-15 修复：今日风口领涨股取到大幅下跌股票
+
+- 现象：影视院线板块当日 +4.37%，领涨股却显示华策影视 -13.97%（hot_sectors 里的旧快照/爬虫龙头）。
+- 修复：`fillMissingLeadingStocks` 的候选条件由「`leading_stock == null`」扩展为「缺失 / `change_pct == null` / `< 0`」；`fillLeadingStocksFromTopGainers` 对已有龙头当日涨跌幅为负或缺失的板块，用成分股当日涨幅第一替换（仅当涨幅更高才替换，成分股缺失时保留原值，不制造空数据）。成分股日线日期仍必须 === 榜单交易日，避免拿昨日数据冒充。
+
 ### 2026-11-14 修复：今日风口成交额 / 领涨股大面积缺失
 
 - 收盘回退榜 `buildTodayRankingFromHistory` 的 `amount` 恒为 null（榜行本身不含成交额）：`getTodayBoardRanking` 现对榜单板块拉 `today.js`，用 `applyLatestAmounts` 仅在**盘口日期 === 榜单交易日**时补 `amount`；`BoardRealtime.latest_amount` 专供此补全，`stale` 时 `change_pct/amount` 仍为 null（不跨日冒充）。
