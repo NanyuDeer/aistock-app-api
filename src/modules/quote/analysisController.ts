@@ -110,6 +110,7 @@ export class StockAnalysisController {
                 createResponse(res, 200, 'success', data);
             } catch (error: any) {
                 const message = error instanceof Error ? error.message : 'Internal Server Error';
+                console.error('[StockAnalysis] POST 失败', { symbol, message });
                 if (message.includes('股票代码不存在')) {
                     createResponse(res, 404, message);
                     return;

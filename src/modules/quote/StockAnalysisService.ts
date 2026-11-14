@@ -439,15 +439,15 @@ JSON 结构如下：
             const correction = attempt === 1 ? '' : `\n\n【上次输出问题】\n${lastError}\n请严格修正并仅输出 JSON。`;
             const prompt = this.buildPrompt(newsText, forecastData, tradingData, today) + correction;
             let raw: string;
-            if (onModelDelta) {
-                try { raw = await this.requestModelStream(prompt, attempt, onModelDelta); }
-                catch (streamError: unknown) {
-                    const reason = this.getErrorMessage(streamError, '模型流式请求失败');
-                    this.emitProgress(onProgress, 'model.stream_fallback', '模型流式转发失败，已自动降级为非流式请求', { attempt, reason });
-                    raw = await this.requestModel(prompt);
-                    try { onModelDelta({ attempt, content: raw }); } catch {}
-                }
-            } else { raw = await this.requestModel(prompt); }
+            // 非流式客户端也走流式请求：上游网关对长时间无数据的非流式响应约 60s 断开，
+            // 而流式响应持续有数据，可稳定支撑 90s 级的生成（2026-11-15 线上 63.5s 500 回归）。
+            try { raw = await this.requestModelStream(prompt, attempt, onModelDelta || (() => {})); }
+            catch (streamError: unknown) {
+                const reason = this.getErrorMessage(streamError, '模型流式请求失败');
+                this.emitProgress(onProgress, 'model.stream_fallback', '模型流式转发失败，已自动降级为非流式请求', { attempt, reason });
+                raw = await this.requestModel(prompt);
+                try { onModelDelta?.({ attempt, content: raw }); } catch {}
+            }
             this.emitProgress(onProgress, 'model.responded', `模型返回完成（第 ${attempt} 次）`, { attempt, contentLength: raw.length });
             const parsed = this.parseModelResult(raw);
             if (!parsed) {
