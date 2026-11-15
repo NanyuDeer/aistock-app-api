@@ -16,6 +16,7 @@ import { PerformanceAiScoreVersionStore } from './PerformanceAiScoreVersionStore
 interface ReportRow {
     symbol: string;
     stock_name: string;
+    pinyin: string | null;
     report_type: string;
     ann_date: string;
     end_date: string;
@@ -108,7 +109,7 @@ async function getDisplayReportPeriods(): Promise<string[]> {
 
 const LATEST_REPORT_CTE = `
     WITH latest AS (
-        SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+        SELECT p.symbol, p.stock_name, st.pinyin, p.report_type, p.ann_date, p.end_date,
                p.forecast_eps, p.rating, p.org_name, p.summary,
                p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at, p.ai_tag,
                s.total_score AS ai_score,
@@ -123,6 +124,7 @@ const LATEST_REPORT_CTE = `
                     ELSE NULL END AS profit_yoy
         FROM performance_reports p
         LEFT JOIN stock_ai_scores s ON p.symbol = s.symbol
+        LEFT JOIN stocks st ON p.symbol = st.symbol
         INNER JOIN (
             SELECT symbol, report_type, MAX(ann_date) AS latest_ann_date
             FROM performance_reports
@@ -325,6 +327,7 @@ export class PerformanceReportController {
         return {
             '股票代码': row.symbol,
             '股票名称': row.stock_name || '',
+            '拼音首字母': row.pinyin || '',
             '报告类型': row.report_type === 'express' ? '快报/预告' : row.report_type === 'formal' ? '正式报告' : '研报评级',
             '报告发出时间': row.ann_date,
             '报告期': row.end_date || '',
@@ -498,7 +501,7 @@ export class PerformanceReportController {
             const countQuery = `${LATEST_REPORT_CTE}
                 SELECT COUNT(*) AS total
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
+                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1 OR COALESCE(l.pinyin, '') LIKE $1)
                   AND 1=1${reportTypeFilter}${endYearFilter}`;
             const countResult = await pool.query(countQuery, [keywordPattern]);
             const total = Number(countResult.rows[0]?.total) || 0;
@@ -507,7 +510,7 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
+                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1 OR COALESCE(l.pinyin, '') LIKE $1)
                   AND 1=1${reportTypeFilter}${endYearFilter}
                 ORDER BY ${orderBy}
                 LIMIT $2 OFFSET $3`;
@@ -697,7 +700,7 @@ export class PerformanceReportController {
             // 取该报告期内每只股票的最新报告 + 去年同期报告（用于同比）+ 上一期报告（用于加速度）
             const query = `
                 WITH latest AS (
-                    SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+                    SELECT p.symbol, p.stock_name, st.pinyin, p.report_type, p.ann_date, p.end_date,
                            p.total_revenue, p.n_income_attr_p, p.created_at, p.ai_tag,
                            i.grossprofit_margin, i.netprofit_margin, i.roe,
                            ROW_NUMBER() OVER (
@@ -705,6 +708,7 @@ export class PerformanceReportController {
                                ORDER BY p.report_type = 'formal' DESC, p.ann_date DESC
                            ) AS rn
                     FROM performance_reports p
+                    LEFT JOIN stocks st ON p.symbol = st.symbol
                     LEFT JOIN LATERAL (
                         SELECT grossprofit_margin, netprofit_margin, roe
                         FROM performance_reports
@@ -751,7 +755,7 @@ export class PerformanceReportController {
                 ) prev_period_same ON true
                 WHERE l.rn = 1
                   AND ($2 = 'all' OR l.report_type = $2)
-                  AND ($3 = '' OR l.symbol LIKE $3 OR l.stock_name LIKE $3)`;
+                  AND ($3 = '' OR l.symbol LIKE $3 OR l.stock_name LIKE $3 OR COALESCE(l.pinyin, '') LIKE $3)`;
 
             const result = await pool.query(query, [reportPeriod, reportTypeRaw, keyword ? `%${keyword}%` : '']);
             const rows = result.rows as any[];
