@@ -21,11 +21,14 @@ export const EMBEDDING_DIM = 1024;
 /**
  * 当前使用的 embedding 模型。
  *
- * 可通过 EMBEDDING_MODEL 覆盖——不同中转站对同一模型的标识不同
- * （有的叫 bge-large-zh-v1.5，有的叫 BAAI/bge-large-zh-v1.5）。
- * 填错会 404，但不影响维度校验（zh / en 版都是 1024 维）。
+ * 可通过 EMBEDDING_MODEL 覆盖——不同中转站对同一模型的标识不同。
+ *
+ * 2026-11-17 实测：选定的 bge-large-zh-v1.5 在 TokenHub 的 auto 分组下**无可用渠道**
+ * （返回 503 model_not_found），实际可用的 1024 维中文模型是 bge-m3。
+ * 两者维度相同，换模型不需要改表结构，但**必须重灌全量向量**——
+ * 不同模型的向量空间完全不通用。
  */
-export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'bge-large-zh-v1.5';
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'bge-m3';
 
 export interface IndustryVector {
     name: string;
