@@ -18,8 +18,14 @@ import pool from '../../core/db';
 /** bge-large-zh-v1.5 的输出维度。换模型必须同步改这里 + 重灌全量。 */
 export const EMBEDDING_DIM = 1024;
 
-/** 当前使用的 embedding 模型。与库里的 model 不一致即需重灌。 */
-export const EMBEDDING_MODEL = 'bge-large-zh-v1.5';
+/**
+ * 当前使用的 embedding 模型。
+ *
+ * 可通过 EMBEDDING_MODEL 覆盖——不同中转站对同一模型的标识不同
+ * （有的叫 bge-large-zh-v1.5，有的叫 BAAI/bge-large-zh-v1.5）。
+ * 填错会 404，但不影响维度校验（zh / en 版都是 1024 维）。
+ */
+export const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'bge-large-zh-v1.5';
 
 export interface IndustryVector {
     name: string;
@@ -34,7 +40,7 @@ export interface EmbeddingDeps {
     embed: (texts: string[]) => Promise<number[][]>;
 }
 
-/** 调 embedding 中转站生成向量。 */
+/** 调 embedding 中转站生成向量（OpenAI 兼容接口）。 */
 async function callEmbeddingApi(texts: string[]): Promise<number[][]> {
     const baseUrl = process.env.EMBEDDING_BASE_URL;
     const apiKey = process.env.EMBEDDING_API_KEY;
@@ -42,8 +48,13 @@ async function callEmbeddingApi(texts: string[]): Promise<number[][]> {
         throw new Error('EMBEDDING_BASE_URL / EMBEDDING_API_KEY 未配置');
     }
 
+    // 中转站给的 baseURL 通常已含 /v1（如 https://api.102465.xyz/v1），
+    // 直接拼 /v1/embeddings 会变成 /v1/v1/embeddings。两种情况都兼容。
+    const root = baseUrl.replace(/\/+$/, '');
+    const endpoint = root.endsWith('/v1') ? `${root}/embeddings` : `${root}/v1/embeddings`;
+
     const response = await axios.post(
-        `${baseUrl.replace(/\/$/, '')}/v1/embeddings`,
+        endpoint,
         { model: EMBEDDING_MODEL, input: texts },
         {
             headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
