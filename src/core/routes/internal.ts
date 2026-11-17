@@ -22,6 +22,10 @@ import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { buildCausalInputs } from '../../modules/causal/causalInputsService'
 import { getMappings, upsertMappings } from '../../modules/causal/eventNodeMappingService'
+import {
+    EMBEDDING_DIM,
+    semanticSearchIndustries,
+} from '../../modules/causal/industryEmbeddingService'
 import { HotBurstService } from '../../modules/monitor/HotBurstService'
 import {
     getEventVitality,
@@ -1243,6 +1247,34 @@ router.get('/event-node-mappings', async (req: Request, res: Response) => {
 })
 
 /**
+ * GET /internal/event-entities?limit=&offset=
+ *
+ * 列出可映射的事件（有标题的）。供事件→节点映射回填脚本分页拉取。
+ *
+ * 注意：不要用 stock_trace_events —— 那是股价异动事件，没有文本标题，
+ * 映射不出任何节点。真正的语义事件在 event_entities。
+ */
+router.get('/event-entities', async (req: Request, res: Response) => {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500)
+    const offset = Math.max(Number(req.query.offset) || 0, 0)
+
+    try {
+        const result = await pool.query(
+            `SELECT event_id, title
+               FROM event_entities
+              WHERE title IS NOT NULL AND title <> ''
+           ORDER BY publish_time DESC NULLS LAST
+              LIMIT $1 OFFSET $2`,
+            [limit, offset],
+        )
+        res.json({ code: 200, data: { items: result.rows, limit, offset } })
+    } catch (err: unknown) {
+        console.error('[Internal] event-entities error:', errMsg(err))
+        res.status(500).json({ code: -1, message: errMsg(err) })
+    }
+})
+
+/**
  * GET /internal/institution-research/history
  * 机构调研推荐热门股历史记录（从数据库查询，分页）
  *
@@ -1958,31 +1990,18 @@ router.post('/industries/semantic-search', async (req: Request, res: Response) =
     if (!embedding || !Array.isArray(embedding)) {
         return res.status(400).json({ code: 400, message: 'embedding 必须为浮点数组' })
     }
-    if (embedding.length !== 1536) {
-        return res.status(400).json({ code: 400, message: `embedding 必须为 1536 维浮点数组，当前 ${embedding.length} 维` })
+    if (embedding.length !== EMBEDDING_DIM) {
+        return res.status(400).json({
+            code: 400,
+            message: `embedding 必须为 ${EMBEDDING_DIM} 维浮点数组，当前 ${embedding.length} 维`,
+        })
     }
 
     try {
-        // pgvector cosine similarity: 1 - (a <=> b)，<=> 为余弦距离运算符
-        const vectorStr = `[${embedding.join(',')}]`
-        const result = await pool.query(
-            `SELECT
-               industry_code AS code,
-               industry_name AS name,
-               1 - (embedding <=> $1::vector) AS similarity
-             FROM industry_embeddings
-             WHERE 1 - (embedding <=> $1::vector) > $2
-             ORDER BY similarity DESC
-             LIMIT $3`,
-            [vectorStr, threshold, limit]
-        )
-
-        res.json({
-            code: 200,
-            data: {
-                industries: result.rows,
-            },
-        })
+        // 2026-11-17 改造：原实现用 pgvector 的 <=> 运算符，但 pg 镜像不含该扩展，
+        // 表也不存在，接口一直是坏的。改为普通列 + 应用层余弦（110 个向量，微秒级）。
+        const industries = await semanticSearchIndustries(embedding, Number(threshold), Number(limit))
+        res.json({ code: 200, data: { industries } })
     } catch (err: unknown) {
         console.error('[Internal] industries/semantic-search error:', errMsg(err))
         res.status(500).json({ code: 500, message: errMsg(err) })
