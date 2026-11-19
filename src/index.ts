@@ -714,11 +714,28 @@ if (BACKGROUND_JOBS_ENABLED) {
 // - 资讯爬虫 '0 8'/'0 15'：注释已注明"包括节假日"，本就应每日运行。
 // ========================================================
 
-// Persist all four methods after the daily market feed is complete; second slot retries missing/failed runs.
-cron.schedule('30 16,19 * * 1-5', () => runIfTradingDay('stock-selection-after-close', async () => {
-    try { console.log('[StockSelection] after-close:', await triggerStockSelection()); }
-    catch (e) { console.error('[StockSelection] after-close failed:', e); }
-}), { timezone: 'Asia/Shanghai' });
+// Same-day data starts at 16:00; later slots fill vendor gaps, including late-evening rows.
+const AFTER_CLOSE_RETRY_DELAYS_MS = [3_000, 10_000, 30_000];
+const runAfterCloseSelection = async (slot: string): Promise<void> => {
+    for (let attempt = 0; attempt <= AFTER_CLOSE_RETRY_DELAYS_MS.length; attempt++) {
+        try {
+            console.log(`[StockSelection] after-close(${slot}) attempt=${attempt + 1}:`, await triggerStockSelection());
+            return;
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            if (attempt === AFTER_CLOSE_RETRY_DELAYS_MS.length) {
+                console.error(`[StockSelection] after-close(${slot}) failed after ${attempt + 1} attempts: ${message}`);
+                return;
+            }
+            console.warn(`[StockSelection] after-close(${slot}) attempt=${attempt + 1} failed: ${message}; retry in ${AFTER_CLOSE_RETRY_DELAYS_MS[attempt]}ms`);
+            await new Promise(resolve => setTimeout(resolve, AFTER_CLOSE_RETRY_DELAYS_MS[attempt]));
+        }
+    }
+};
+for (const [expression, slot] of [
+    ['0 16 * * 1-5', '16:00'], ['30 16 * * 1-5', '16:30'], ['0 17 * * 1-5', '17:00'],
+    ['30 18 * * 1-5', '18:30'], ['30 20 * * 1-5', '20:30'],
+]) cron.schedule(expression, () => runIfTradingDay(`stock-selection-after-close-${slot}`, () => runAfterCloseSelection(slot)), { timezone: 'Asia/Shanghai' });
 
 // 交易日历刷新：每日 00:30（与维护类 cron 同簇）
 cron.schedule('30 0 * * *', async () => {
@@ -815,7 +832,7 @@ const runInstitutionResearchDetect = async (label: string) => {
 };
 cron.schedule('30 9 * * 1-5', () => runIfTradingDay('inst-research-开盘', () => runInstitutionResearchDetect('开盘')), { timezone: 'Asia/Shanghai' });
 // 机构热门股 09:30 检测完成后再生成，确保综合选股使用同一交易日的最新共振数据。
-cron.schedule('40 9 * * 1-5', () => runIfTradingDay('ai-stock-selection', async () => {
+for (const expression of ['40 9 * * 1-5', '50 9 * * 1-5', '0 10 * * 1-5']) cron.schedule(expression, () => runIfTradingDay('ai-stock-selection', async () => {
     try {
         const result = await triggerAiStockSelection('schedule');
         console.log(`[AiStockSelectionCron] task started: run=${result.runId}`);

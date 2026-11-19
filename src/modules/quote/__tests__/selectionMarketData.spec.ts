@@ -47,3 +47,18 @@ test('成交量手转股、成交额千元转元，按日期和股票匹配因�
         assert.equal(day.bars['600000'].factor, 2);
     } finally { hook.mock.restore(); }
 });
+
+test('AI实际涨跌停价只接收目标日期，缺失下限保留未知', async () => {
+    const { selectionPriceLimits } = await import('../SelectionMarketData');
+    const query = mock.method(deps, 'request', async () => [
+        { ts_code: '600001.SH', trade_date: '20261120', up_limit: '12', down_limit: '8' },
+        { ts_code: '600002.SH', trade_date: '20261119', up_limit: '11', down_limit: '9' },
+        { ts_code: '600003.SH', trade_date: '20261120', up_limit: null, down_limit: null },
+    ]);
+    try {
+        const limits = await selectionPriceLimits('2026-11-20');
+        assert.deepEqual(limits.get('600001'), { upper: 12, lower: 8 });
+        assert.equal(limits.has('600002'), false);
+        assert.deepEqual(limits.get('600003'), { upper: null, lower: null });
+    } finally { query.mock.restore(); }
+});
