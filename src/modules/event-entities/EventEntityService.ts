@@ -179,7 +179,7 @@ export async function upsertEventEntity(input: EventEntityInput): Promise<Upsert
             time_confidence = EXCLUDED.time_confidence,
             event_status = EXCLUDED.event_status,
             source_type = EXCLUDED.source_type,
-            source_event_id = COALESCE(EXCLUDED.source_event_id, event_entities.source_event_id),
+            source_event_id = COALESCE(event_entities.source_event_id, EXCLUDED.source_event_id),
             impact_sectors = CASE WHEN $13::jsonb IS NULL
                 THEN event_entities.impact_sectors ELSE $13::jsonb END,
             updated_at = now()

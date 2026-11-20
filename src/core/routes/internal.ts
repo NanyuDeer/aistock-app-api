@@ -51,6 +51,7 @@ import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 import { EmailService } from '../email/EmailService'
 import { ProfileMiningService } from '../../modules/profile-mining/ProfileMiningService'
+import { createKnowledgeRouter } from '../../modules/knowledge/controller'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -206,6 +207,11 @@ router.get('/health', (_req: Request, res: Response) => {
 })
 
 router.use(verifyInternalToken)
+router.use('/knowledge', createKnowledgeRouter({ authorityReader: async (id, client) => {
+    const result = await client.query<{ event_id: string; source_event_id: string | null }>(
+        'SELECT event_id,source_event_id FROM event_entities WHERE event_id=$1 FOR SHARE', [id])
+    return result.rows[0] ?? null
+} }))
 
 // GET /internal/fear-greed 只读镜像（恐贪指数；契约：无数据 → 200 + 空字段）
 router.use('/fear-greed', fearGreedInternalRouter)
