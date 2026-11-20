@@ -68,7 +68,8 @@ export function addEarningsRevisions(batch: Batch, stocks: Stock[], raw: Map<str
 
 export function addEventCatalysts(batch: Batch, stocks: Stock[], raw: Map<string, Bar[]>, dates: string[], forecasts?: CompanyForecast[]): void {
     const tradeDate = dates[dates.length - 1];
-    const earliest = dates[dates.length - 4];
+    // 观察最近 5 个可反应交易日，且排除选股日当天公告。
+    const earliest = dates[dates.length - 6];
     // Keyed by stock and report period: a revision only supersedes the first announcement of its own period.
     const byPeriod = new Map<string, Map<string, CompanyForecast[]>>();
     for (const event of forecasts || []) {

@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import pool from '../../../core/db';
@@ -7,7 +8,7 @@ import { Batch } from '../types';
 test('持久化任务：整批发布、会话锁释放、同日幂等、失败后记录状态', async () => {
     let locked = true, ready = false, released = 0;
     const statements: Array<{ sql: string; values?: unknown[] }> = [];
-    const client = {
+    const client = Object.assign(new EventEmitter(), {
         query: async (sql: string, values?: unknown[]) => {
             statements.push({ sql, values });
             if (sql.includes('pg_try_advisory_lock')) return { rows: [{ locked }] };
@@ -16,8 +17,8 @@ test('持久化任务：整批发布、会话锁释放、同日幂等、失败�
             return { rows: [] };
         },
         release: () => { released++; },
-    };
-    const query = mock.method(pool, 'query', (async () => ({ rows: [] })) as unknown as typeof pool.query);
+    });
+    const query = mock.method(pool, 'query', (async (sql: string, values?: unknown[]) => { statements.push({ sql, values }); return { rows: [] }; }) as unknown as typeof pool.query);
     const connect = mock.method(pool, 'connect', (async () => client) as unknown as typeof pool.connect);
     try {
         const store = new PostgresSelectionStore();

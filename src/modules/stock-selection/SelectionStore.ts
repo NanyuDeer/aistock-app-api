@@ -1,3 +1,4 @@
+import { SelectionSession } from './SelectionSession';
 import pool from '../../core/db';
 import { Batch, MarketDay, RULE_VERSION } from './types';
 
@@ -10,6 +11,7 @@ export type RefreshInputs = (used: NonNullable<Batch['inputs']>['snapshots'] | n
 export interface SelectionStore {
     ensureSchema(): Promise<void>;
     snapshot(date: string): Promise<MarketDay | null>;
+    snapshotBars?(date: string, symbols: string[]): Promise<MarketDay | null>;
     saveSnapshot(day: MarketDay): Promise<void>;
     latest(date?: string): Promise<Run | null>;
     previousPublished?(before: string): Promise<Array<{ tradeDate: string; batch: Batch }>>;
@@ -41,6 +43,13 @@ export class PostgresSelectionStore implements SelectionStore {
         const r = await pool.query('SELECT payload FROM stock_selection_market_days WHERE trade_date=$1::date', [date]);
         return r.rows[0]?.payload || null;
     }
+    async snapshotBars(date: string, symbols: string[]): Promise<MarketDay | null> {
+        const r = await pool.query(`SELECT trade_date::text AS date, fetched_at::text AS "fetchedAt",
+            COALESCE((SELECT jsonb_object_agg(symbol, payload->'bars'->symbol)
+                FROM unnest($2::text[]) AS symbol WHERE payload->'bars' ? symbol), '{}'::jsonb) AS bars
+            FROM stock_selection_market_days WHERE trade_date=$1::date`, [date, symbols]);
+        return r.rows[0] || null;
+    }
     async saveSnapshot(day: MarketDay): Promise<void> {
         await pool.query(`INSERT INTO stock_selection_market_days(trade_date,payload,fetched_at) VALUES($1::date,$2::jsonb,$3::timestamptz)
             ON CONFLICT(trade_date) DO UPDATE SET fetched_at=EXCLUDED.fetched_at,
@@ -49,7 +58,7 @@ export class PostgresSelectionStore implements SelectionStore {
     }
     async latest(date?: string): Promise<Run | null> {
         const r = await pool.query(`SELECT id::text, trade_date::text, status, rule_version, generated_at::text, data_as_of::text, batch, started_at
-            FROM stock_selection_runs WHERE (rule_version=$1 OR (rule_version IN ('after-close.v1','after-close.v2','after-close.v3','after-close.v4','after-close.v5','after-close.v6','after-close.v7','after-close.v8') AND status='ready')) ${date ? 'AND trade_date=$2::date' : ''}
+            FROM stock_selection_runs WHERE (rule_version=$1 OR (rule_version IN ('after-close.v1','after-close.v2','after-close.v3','after-close.v4','after-close.v5','after-close.v6','after-close.v7','after-close.v8','after-close.v9') AND status='ready')) ${date ? 'AND trade_date=$2::date' : ''}
             ORDER BY (status='ready' AND batch IS NOT NULL) DESC, trade_date DESC, id DESC LIMIT 1`, date ? [RULE_VERSION, date] : [RULE_VERSION]);
         const row = r.rows[0];
         if (!row) return null;
@@ -63,7 +72,7 @@ export class PostgresSelectionStore implements SelectionStore {
             SELECT DISTINCT ON (trade_date) trade_date::text AS "tradeDate", batch
             FROM stock_selection_runs
             WHERE trade_date < $1::date AND status='ready' AND batch IS NOT NULL
-              AND rule_version IN ($2, 'after-close.v1', 'after-close.v2', 'after-close.v3', 'after-close.v4', 'after-close.v5', 'after-close.v6', 'after-close.v7', 'after-close.v8')
+              AND rule_version IN ($2, 'after-close.v1', 'after-close.v2', 'after-close.v3', 'after-close.v4', 'after-close.v5', 'after-close.v6', 'after-close.v7', 'after-close.v8', 'after-close.v9')
             ORDER BY trade_date DESC, id DESC LIMIT $3
         `, [before, RULE_VERSION, limit]);
         return result.rows;
@@ -71,6 +80,7 @@ export class PostgresSelectionStore implements SelectionStore {
     async run(date: string, build: () => Promise<Batch>, refresh?: RefreshInputs): Promise<{ status: string; runId?: string }> {
         await this.ensureSchema();
         const client = await pool.connect();
+        const session = new SelectionSession(client);
         let locked = false, runId: string | undefined;
         try {
             const lock = await client.query('SELECT pg_try_advisory_lock(73140921) AS locked');
@@ -82,8 +92,7 @@ export class PostgresSelectionStore implements SelectionStore {
             const existing = await client.query(`SELECT id::text, batch->'inputs'->'snapshots' AS snapshots FROM stock_selection_runs WHERE trade_date=$1::date AND rule_version=$2 AND status='ready'
                 AND NOT EXISTS (
                     SELECT 1 FROM jsonb_each(batch->'methodStats') AS method(code, stats)
-                    WHERE code IN ('limit_up_breakout', 'quality_growth', 'garp', 'stable_dividend', 'earnings_revision', 'event_catalyst')
-                      AND (stats->>'unavailable')::int * 4 > (stats->>'pass')::int + (stats->>'fail')::int
+                    WHERE (stats->>'unavailable')::int * 4 > (stats->>'pass')::int + (stats->>'fail')::int
                 )
                 ORDER BY id DESC LIMIT 1`, [date, RULE_VERSION]);
             if (existing.rows.length) {
@@ -91,21 +100,22 @@ export class PostgresSelectionStore implements SelectionStore {
                     console.warn('[StockSelection] 快照补全失败，沿用已就绪批次:', error instanceof Error ? error.message : String(error));
                     return false;
                 });
+                session.assertUsable();
                 if (!changed) return { status: 'ready', runId: existing.rows[0].id };
             }
             const r = await client.query(`INSERT INTO stock_selection_runs(trade_date,rule_version,status,data_as_of)
                 VALUES($1::date,$2,'generating',$3::timestamptz) RETURNING id::text`, [date, RULE_VERSION, `${date}T15:00:00+08:00`]);
             runId = r.rows[0].id;
             const batch = await build();
+            session.assertUsable();
             // A single UPDATE publishes the complete batch atomically.
             await client.query(`UPDATE stock_selection_runs SET batch=$2::jsonb,status='ready',generated_at=NOW() WHERE id=$1`, [runId, JSON.stringify(batch)]);
             return { status: 'ready', runId };
         } catch (error) {
-            if (runId) await client.query(`UPDATE stock_selection_runs SET status='failed',error_message=$2 WHERE id=$1`, [runId, error instanceof Error ? error.message : String(error)]);
+            if (runId) await pool.query(`UPDATE stock_selection_runs SET status='failed',error_message=$2 WHERE id=$1 AND status='generating'`, [runId, error instanceof Error ? error.message : String(error)]).catch(() => {});
             throw error;
         } finally {
-            try { if (locked) await client.query('SELECT pg_advisory_unlock(73140921)'); }
-            finally { client.release(); }
+            await session.release(locked ? 73140921 : undefined);
         }
     }
 }

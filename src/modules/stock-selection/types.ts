@@ -12,7 +12,7 @@ export const METHOD_NAMES: Record<Method, string> = {
     trend_following: '趋势跟随', pullback_stabilization: '回踩企稳', industry_strength: '行业强势', earnings_revision: '盈利预期上修',
     quality_growth: '优质成长', garp: '合理估值成长', stable_dividend: '红利稳健',
 };
-export const RULE_VERSION = 'after-close.v9';
+export const RULE_VERSION = 'after-close.v10';
 export const FUSION_VERSION = 'intersection-rank-max-second-0.1.v2';
 export const HISTORY_DAYS = 90;
 export interface Stock { symbol: string; name: string; industry: string; listDate: string }
