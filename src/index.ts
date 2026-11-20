@@ -831,8 +831,8 @@ const runInstitutionResearchDetect = async (label: string) => {
     }
 };
 cron.schedule('30 9 * * 1-5', () => runIfTradingDay('inst-research-开盘', () => runInstitutionResearchDetect('开盘')), { timezone: 'Asia/Shanghai' });
-// 机构热门股 09:30 检测完成后再生成，确保综合选股使用同一交易日的最新共振数据。
-for (const expression of ['40 9 * * 1-5', '50 9 * * 1-5', '0 10 * * 1-5']) cron.schedule(expression, () => runIfTradingDay('ai-stock-selection', async () => {
+// 综合选股 08:40 首次生成；08:50、09:00、09:40 检查并补跑未成功调用模型的批次。
+for (const expression of ['40 8 * * 1-5', '50 8 * * 1-5', '0 9 * * 1-5', '40 9 * * 1-5']) cron.schedule(expression, () => runIfTradingDay('ai-stock-selection', async () => {
     try {
         const result = await triggerAiStockSelection('schedule');
         console.log(`[AiStockSelectionCron] task started: run=${result.runId}`);
