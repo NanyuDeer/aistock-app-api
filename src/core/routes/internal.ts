@@ -26,7 +26,7 @@ import {
     EMBEDDING_DIM,
     semanticSearchIndustries,
 } from '../../modules/causal/industryEmbeddingService'
-import { HotBurstService } from '../../modules/monitor/HotBurstService'
+import { HotBurstService, HotBurstHistoryError } from '../../modules/monitor/HotBurstService'
 import {
     getEventVitality,
     getLatestVitality,
@@ -1298,12 +1298,14 @@ router.get('/institution-research/history', async (req: Request, res: Response) 
             minResonanceOnly: queryStr(req, 'min_resonance_only') !== 'false',
             days: queryInt(req, 'days', 30),
             minResonance,
-            tradingDays,
+            tradingDays: queryStr(req, 'all') === 'true' ? Number(rawTradingDays) : tradingDays,
+            all: queryStr(req, 'all') === 'true',
         })
         res.json({ code: 200, data })
     } catch (err: unknown) {
         console.error('[Internal] institution-research/history error:', errMsg(err))
-        res.status(502).json({ code: 502, message: errMsg(err) })
+        const status = err instanceof HotBurstHistoryError ? err.statusCode : 502
+        res.status(status).json({ code: status, message: errMsg(err) })
     }
 })
 

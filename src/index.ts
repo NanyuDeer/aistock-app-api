@@ -1302,7 +1302,7 @@ async function start() {
         await pool.query(`
             CREATE TABLE IF NOT EXISTS institution_research_history (
                 id SERIAL PRIMARY KEY,
-                detected_at TIMESTAMP NOT NULL,
+                detected_at TIMESTAMP NOT NULL, -- UTC墙上时间；读写显式转换，见HotBurstService
                 symbol VARCHAR(20) NOT NULL,
                 stock_name VARCHAR(50) NOT NULL,
                 resonance_score INT NOT NULL,
@@ -1317,7 +1317,7 @@ async function start() {
             )
         `);
         await pool.query('CREATE INDEX IF NOT EXISTS idx_institution_research_history_time ON institution_research_history(detected_at DESC)');
-        // 迁移：添加 resonance_count 列（记录通过的共振数量 0-3）
+        // 迁移：添加 resonance_count 列（记录通过的共振数量 0-4）
         await pool.query(`
             ALTER TABLE institution_research_history
             ADD COLUMN IF NOT EXISTS resonance_count INT DEFAULT 0

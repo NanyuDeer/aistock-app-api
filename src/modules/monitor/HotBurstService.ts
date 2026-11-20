@@ -21,6 +21,11 @@ import { findResearchReportMessagesForStock } from '../crawler/FeishuResearchRep
 import { TencentQuoteService } from '../quote/TencentQuoteService';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 
+/** 完整历史窗口的参数错误与依赖不可用分别映射为400、503。 */
+export class HotBurstHistoryError extends Error {
+    constructor(message: string, public readonly statusCode: 400 | 503) { super(message); }
+}
+
 /**
  * 「近 N 个交易日」→ 查询起点 ISO 字符串（最近 N 个交易日中最早那天的上海 00:00）。
  * 非法入参（缺失 / 非正整数 / >60）或日历不可用 → 返回 null（回落自然日 `days` 语义，保证零回归）。
@@ -219,7 +224,8 @@ async function getStockSectors(symbols: string[]): Promise<Map<string, string[]>
             if (sectors.length < 20) sectors.push(row.sector_name);
             sectorsByStock.set(row.symbol, sectors);
         }
-    } catch {
+    } catch (err) {
+        console.warn('[HotBurst] 板块映射查询失败，本次同花顺验证降级:', err instanceof Error ? err.message : String(err));
         // 板块验证失败时保留空映射，其他三个信号源仍可正常参与共振。
     }
     return sectorsByStock;
@@ -323,7 +329,8 @@ async function getFeishuMessages(hours: number = 6): Promise<FeishuMessageRow[]>
         }));
         // 回退：当 stock_codes 为空时从文本提取
         return enrichFeishuStockCodes(rows);
-    } catch {
+    } catch (err) {
+        console.warn('[HotBurst] 群消息查询失败，本次消息标签降级:', err instanceof Error ? err.message : String(err));
         return [];
     }
 }
@@ -462,6 +469,9 @@ export class HotBurstService {
                     const existing = reportStockSet.get(code);
                     if (existing) {
                         existing.count++;
+                        if (new Date(row.received_at).getTime() > new Date(existing.latestTime).getTime()) {
+                            existing.latestTime = row.received_at;
+                        }
                     } else {
                         reportStockSet.set(code, { count: 1, latestTime: row.received_at });
                     }
@@ -670,12 +680,12 @@ export class HotBurstService {
             hot_concepts: hotConcepts,
         };
 
+        // 历史发布成功后才能替换上次成功结果；写入失败继续保留旧缓存。
+        await HotBurstService.saveHistory(result);
+
         // 更新缓存
         HotBurstService.lastDetectResult = result;
         HotBurstService.lastDetectTime = Date.now();
-
-        // 保存到历史表（不阻塞返回）
-        HotBurstService.saveHistory(result).catch(() => {});
 
         return result;
     }
@@ -689,6 +699,8 @@ export class HotBurstService {
             return;
         }
         try {
+            // legacy detected_at 是无时区列，历史写入使用 ISO UTC。
+            // 显式落为 UTC 墙上时间；读取转回 timestamptz，不能按主机本地时区解释。
             const detectedAt = result.update_time;
             const rows = qualifiedSignals.map(s => [
                 detectedAt, s.symbol, s.stockName || s.symbol,
@@ -699,7 +711,7 @@ export class HotBurstService {
                 s.resonanceCount,
             ]);
             const placeholders = rows.map((_, i) =>
-                `($${i * 13 + 1}, $${i * 13 + 2}, $${i * 13 + 3}, $${i * 13 + 4}, $${i * 13 + 5}, $${i * 13 + 6}, $${i * 13 + 7}, $${i * 13 + 8}, $${i * 13 + 9}, $${i * 13 + 10}, $${i * 13 + 11}, $${i * 13 + 12}, $${i * 13 + 13})`
+                `(($${i * 13 + 1}::timestamptz AT TIME ZONE 'UTC'), $${i * 13 + 2}, $${i * 13 + 3}, $${i * 13 + 4}, $${i * 13 + 5}, $${i * 13 + 6}, $${i * 13 + 7}, $${i * 13 + 8}, $${i * 13 + 9}, $${i * 13 + 10}, $${i * 13 + 11}, $${i * 13 + 12}, $${i * 13 + 13})`
             ).join(', ');
             const values = rows.flat();
             await pool.query(
@@ -710,13 +722,15 @@ export class HotBurstService {
             console.log(`[HotBurst] 保存 ${rows.length} 条二源及以上共振历史记录（总信号 ${result.outbreaks.length} 条）`);
         } catch (err) {
             console.error('[HotBurst] 保存历史记录失败:', (err as Error).message);
+            throw err;
         }
     }
 
     /**
      * 查询历史机构调研推荐热门股记录
-     * @param minResonanceOnly 旧参数：true 时仅返回三源及以上，false 时不过滤
+     * @param minResonanceOnly 旧参数：true 时仅返回二源及以上，false 时不过滤
      * @param minResonance 新参数：显式传入时覆盖 minResonanceOnly
+     * @param all 单条SELECT取全1至3交易日窗口，忽略limit/offset；参数错误400、无法确定窗口503
      */
     static async getHistory(
         limit: number = 50,
@@ -725,29 +739,51 @@ export class HotBurstService {
         days: number = 30,
         minResonance?: number,
         tradingDays?: number,
+        all: boolean = false,
     ): Promise<{ total: number; records: any[] }> {
         let total: number;
         let records: any[];
         const safeDays = Math.min(Math.max(days, 1), 365);
         const isoStart = resolveTradingDaysStart(tradingDays, new Date());
 
-        if (minResonance !== undefined) {
-            const safeMinResonance = Math.min(Math.max(minResonance, 2), 3);
+        if (all) {
+            if (!Number.isInteger(tradingDays) || tradingDays! < 1 || tradingDays! > 3) {
+                throw new HotBurstHistoryError('完整窗口查询仅支持1至3个交易日', 400);
+            }
+            if (!isoStart) throw new HotBurstHistoryError('交易日历不可用，无法确定完整窗口', 503);
+            const minimum = minResonance === undefined
+                ? (minResonanceOnly ? 2 : 0)
+                : Math.min(Math.max(minResonance, 2), 4);
+            // 单条SELECT使用同一MVCC快照，无跨页offset移动和count/select不一致。
+            const result = await pool.query(
+                `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name,
+                        resonance_score, resonance_level, price, change_pct, sector_info, keywords,
+                        news_count, feishu_count, ths_verified, resonance_count
+                 FROM institution_research_history
+                 WHERE resonance_count >= $1
+                   AND detected_at >= ($2::timestamptz AT TIME ZONE 'UTC')
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC`,
+                [minimum, isoStart],
+            );
+            records = result.rows;
+            total = records.length;
+        } else if (minResonance !== undefined) {
+            const safeMinResonance = Math.min(Math.max(minResonance, 2), 4);
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= $1
-                   AND ${isoStart ? 'detected_at >= $2::timestamptz' : "detected_at >= NOW() - ($2::text || ' days')::interval"}`,
+                   AND ${isoStart ? "detected_at >= ($2::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($2::text || ' days')::interval"}`,
                 isoStart ? [safeMinResonance, isoStart] : [safeMinResonance, safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
             const result = await pool.query(
-                `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
+                `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= $3
-                   AND ${isoStart ? 'detected_at >= $4::timestamptz' : "detected_at >= NOW() - ($4::text || ' days')::interval"}
-                 ORDER BY detected_at DESC, resonance_score DESC
+                   AND ${isoStart ? "detected_at >= ($4::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($4::text || ' days')::interval"}
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, safeMinResonance, isoStart] : [limit, offset, safeMinResonance, safeDays]
             );
@@ -758,18 +794,18 @@ export class HotBurstService {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
                  WHERE resonance_count >= 2
-                   AND ${isoStart ? 'detected_at >= $1::timestamptz' : "detected_at >= NOW() - ($1::text || ' days')::interval"}`,
+                   AND ${isoStart ? "detected_at >= ($1::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($1::text || ' days')::interval"}`,
                 isoStart ? [isoStart] : [safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
             const result = await pool.query(
-                `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
+                `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= 2
-                   AND ${isoStart ? 'detected_at >= $3::timestamptz' : "detected_at >= NOW() - ($3::text || ' days')::interval"}
-                 ORDER BY detected_at DESC, resonance_score DESC
+                   AND ${isoStart ? "detected_at >= ($3::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($3::text || ' days')::interval"}
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
@@ -777,17 +813,17 @@ export class HotBurstService {
         } else {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
-                 WHERE ${isoStart ? 'detected_at >= $1::timestamptz' : "detected_at >= NOW() - ($1::text || ' days')::interval"}`,
+                 WHERE ${isoStart ? "detected_at >= ($1::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($1::text || ' days')::interval"}`,
                 isoStart ? [isoStart] : [safeDays]
             );
             total = countResult.rows[0]?.total || 0;
 
             const result = await pool.query(
-                `SELECT id, detected_at, symbol, stock_name, resonance_score, resonance_level,
+                `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE ${isoStart ? 'detected_at >= $3::timestamptz' : "detected_at >= NOW() - ($3::text || ' days')::interval"}
-                 ORDER BY detected_at DESC, resonance_score DESC
+                 WHERE ${isoStart ? "detected_at >= ($3::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($3::text || ' days')::interval"}
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
@@ -796,10 +832,11 @@ export class HotBurstService {
 
         // 刷新行情数据
         try {
-            const symbols = records.map((r: any) => r.symbol);
+            const symbols: string[] = [...new Set<string>(records.map(r => r.symbol))];
             const quotes = await TencentQuoteService.getCachedBatchQuotes(symbols, 'core');
+            const bySymbol = new Map(symbols.map((symbol, i) => [symbol, quotes[i]]));
             for (let i = 0; i < records.length; i++) {
-                const q = quotes[i];
+                const q = bySymbol.get(records[i].symbol);
                 if (q && !('错误' in q)) {
                     const price = q['最新价'];
                     const changePct = q['涨跌幅'];
@@ -836,6 +873,7 @@ export class HotBurstService {
                         s => s.resonanceCount >= minResonanceCount
                     ),
                 };
+                cachedResult.resonance_count = cachedResult.outbreaks.length;
                 return cachedResult.outbreaks.length
                     ? cachedResult
                     : await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
@@ -863,6 +901,7 @@ export class HotBurstService {
                         s => s.resonanceCount >= minResonanceCount
                     ),
                 };
+                filteredResult.resonance_count = filteredResult.outbreaks.length;
                 return filteredResult.outbreaks.length
                     ? filteredResult
                     : await HotBurstService.fallbackFromDB(safeHours, minResonanceCount);
@@ -871,7 +910,9 @@ export class HotBurstService {
         } catch (err) {
             console.error('[HotBurst] getRecentBursts 检测失败，尝试旧缓存:', (err as Error).message);
             if (HotBurstService.lastDetectResult) {
-                return HotBurstService.lastDetectResult;
+                const previous = HotBurstService.lastDetectResult;
+                const outbreaks = previous.outbreaks.filter(s => s.resonanceCount >= minResonanceCount);
+                return { ...previous, outbreaks, resonance_count: outbreaks.length };
             }
             // 内存缓存为空（如服务器刚重启），从 DB 历史表兜底
             console.log('[HotBurst] 内存缓存为空，从 DB 历史表恢复...');
@@ -883,14 +924,14 @@ export class HotBurstService {
     private static async fallbackFromDB(hours: number, minResonanceCount: number): Promise<HotBurstResult | null> {
         try {
             const dbResult = await pool.query(
-                `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
+                `SELECT (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
-                 WHERE resonance_count >= 2
-                   AND detected_at >= NOW() - ($1::text || ' hours')::interval
-                 ORDER BY detected_at DESC, resonance_score DESC
+                 WHERE resonance_count >= $2
+                   AND detected_at >= (NOW() AT TIME ZONE 'UTC') - ($1::text || ' hours')::interval
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT 50`,
-                [hours]
+                [hours, Math.min(Math.max(minResonanceCount, 2), 4)]
             );
             if (dbResult.rows.length > 0) {
                 const records = dbResult.rows;
@@ -908,7 +949,7 @@ export class HotBurstService {
                     resonanceScore: r.resonance_score,
                     resonanceLevel: r.resonance_level,
                     price: r.price && Number(r.price) > 0 ? Number(r.price) : null,
-                    changePct: r.change_pct && Number(r.change_pct) !== 0 ? Number(r.change_pct) : null,
+                    changePct: r.change_pct !== null && r.change_pct !== undefined ? Number(r.change_pct) : null,
                     sectorInfo: r.sector_info || '',
                     conceptResonance: null,
                     articles: [],
@@ -930,16 +971,12 @@ export class HotBurstService {
                 };
                 // 刷新行情数据
                 await HotBurstService.refreshOutbreaksQuotes(outbreaks);
-                HotBurstService.lastDetectResult = fallbackResult;
-                HotBurstService.lastDetectTime = Date.now();
+                // 历史兜底受hours/minResonanceCount约束，不能冒充全局当前检测快照。
+                // 否则后续不同窗口/门槛请求会复用本次历史子集。
                 console.log(`[HotBurst] 从 DB 恢复 ${outbreaks.length} 条二源及以上共振记录`);
                 if (minResonanceCount > 0) {
-                    return {
-                        ...fallbackResult,
-                        outbreaks: fallbackResult.outbreaks.filter(
-                            s => s.resonanceCount >= minResonanceCount
-                        ),
-                    };
+                    const outbreaks = fallbackResult.outbreaks.filter(s => s.resonanceCount >= minResonanceCount);
+                    return { ...fallbackResult, outbreaks, resonance_count: outbreaks.length };
                 }
                 return fallbackResult;
             }
@@ -956,11 +993,11 @@ export class HotBurstService {
     static async getLatestFromDB(limit: number = 5): Promise<HotBurstResult | null> {
         try {
             const result = await pool.query(
-                `SELECT detected_at, symbol, stock_name, resonance_score, resonance_level,
+                `SELECT (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
                         price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
                  FROM institution_research_history
                  WHERE resonance_count >= 2
-                 ORDER BY detected_at DESC, resonance_score DESC
+                 ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT $1`,
                 [limit]
             );
@@ -982,7 +1019,7 @@ export class HotBurstService {
                 resonanceScore: r.resonance_score,
                 resonanceLevel: r.resonance_level,
                 price: r.price && Number(r.price) > 0 ? Number(r.price) : null,
-                changePct: r.change_pct && Number(r.change_pct) !== 0 ? Number(r.change_pct) : null,
+                changePct: r.change_pct !== null && r.change_pct !== undefined ? Number(r.change_pct) : null,
                 sectorInfo: r.sector_info || '',
                 conceptResonance: null,
                 articles: [],
@@ -1038,10 +1075,8 @@ export class HotBurstService {
         const result = await this.getRecentBursts(query.hours ?? 6, query.minResonanceCount ?? 0);
         if (!result) return null;
         const safeLimit = Math.min(Math.max(query.limit ?? 20, 1), 100);
-        return {
-            ...result,
-            outbreaks: result.outbreaks.slice(0, safeLimit),
-        };
+        const outbreaks = result.outbreaks.slice(0, safeLimit);
+        return { ...result, outbreaks, resonance_count: outbreaks.length };
     }
 
     /**
@@ -1055,6 +1090,7 @@ export class HotBurstService {
         days?: number;
         minResonance?: number;
         tradingDays?: number;
+        all?: boolean;
     }): Promise<{ total: number; records: unknown[] }> {
         return this.getHistory(
             query.limit ?? 50,
@@ -1063,6 +1099,7 @@ export class HotBurstService {
             query.days ?? 30,
             query.minResonance,
             query.tradingDays,
+            query.all ?? false,
         );
     }
 }
