@@ -16,6 +16,7 @@ import { PerformanceAiScoreVersionStore } from './PerformanceAiScoreVersionStore
 interface ReportRow {
     symbol: string;
     stock_name: string;
+    pinyin: string | null;
     report_type: string;
     ann_date: string;
     end_date: string;
@@ -106,13 +107,16 @@ async function getDisplayReportPeriods(): Promise<string[]> {
     return [latest.period, previous.period];
 }
 
+/**
+ * 构建列表/搜索用的最新报告 CTE（全量取最新一期，不支持按年份筛选）
+ */
 const LATEST_REPORT_CTE = `
     WITH latest AS (
-        SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+        SELECT p.symbol, p.stock_name, st.pinyin, p.report_type, p.ann_date, p.end_date,
                p.forecast_eps, p.rating, p.org_name, p.summary,
                p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at, p.ai_tag,
                s.total_score AS ai_score,
-               -- 同比：相对上一期（end_date 更早的最近一份报告）
+               -- 同比：相对去年同期（同一报告期，end_date 减 1 年）
                CASE WHEN p.total_revenue IS NOT NULL
                          AND prev.total_revenue IS NOT NULL AND prev.total_revenue <> 0
                     THEN ((p.total_revenue - prev.total_revenue) / ABS(prev.total_revenue) * 100)::float8
@@ -123,6 +127,7 @@ const LATEST_REPORT_CTE = `
                     ELSE NULL END AS profit_yoy
         FROM performance_reports p
         LEFT JOIN stock_ai_scores s ON p.symbol = s.symbol
+        LEFT JOIN stocks st ON p.symbol = st.symbol
         INNER JOIN (
             SELECT symbol, report_type, MAX(ann_date) AS latest_ann_date
             FROM performance_reports
@@ -133,9 +138,9 @@ const LATEST_REPORT_CTE = `
             FROM performance_reports
             WHERE symbol = p.symbol
               AND report_type IN ('formal', 'express')
-              AND end_date IS NOT NULL AND end_date != ''
-              AND end_date < p.end_date
-            ORDER BY end_date DESC, report_type DESC
+              AND end_date = CASE WHEN p.end_date ~ '^[0-9]{8}$'
+                                  THEN ((p.end_date::int - 10000))::text END
+            ORDER BY report_type = 'formal' DESC
             LIMIT 1
         ) prev ON true
     )
@@ -297,6 +302,15 @@ export class PerformanceReportController {
     }
 
     /**
+     * 校验 reportType 参数，非法值不再静默降级
+     */
+    private static parseReportType(raw: string): { value: string } | { error: string } {
+        if (!raw) return { value: '' };
+        if (raw !== 'formal' && raw !== 'express') return { error: 'Invalid reportType - 仅支持 formal 或 express' };
+        return { value: raw };
+    }
+
+    /**
      * 构建报告类型筛选条件
      * - formal：默认展示报告期（最新一期；新期不足 30 条时并含上一期）的正式报告
      * - express：同上报告期的快报，且排除同报告期已出正式报告的股票
@@ -325,6 +339,7 @@ export class PerformanceReportController {
         return {
             '股票代码': row.symbol,
             '股票名称': row.stock_name || '',
+            '拼音首字母': row.pinyin || '',
             '报告类型': row.report_type === 'express' ? '快报/预告' : row.report_type === 'formal' ? '正式报告' : '研报评级',
             '报告发出时间': row.ann_date,
             '报告期': row.end_date || '',
@@ -425,13 +440,16 @@ export class PerformanceReportController {
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
 
         // 筛选条件
-        const reportType = url.searchParams.get('reportType') || '';
+        const reportTypeParsed = this.parseReportType(url.searchParams.get('reportType') || '');
+        if ('error' in reportTypeParsed) {
+            createResponse(res, 400, reportTypeParsed.error);
+            return;
+        }
+        const reportType = reportTypeParsed.value;
         const reportTypeFilter = await this.buildReportTypeFilter(reportType);
-        const endYear = url.searchParams.get('endYear') || '';
-        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
         try {
-            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}${endYearFilter}`;
+            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}`;
             const countResult = await pool.query(countQuery);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -439,7 +457,7 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE 1=1${reportTypeFilter}${endYearFilter}
+                WHERE 1=1${reportTypeFilter}
                 ORDER BY ${orderBy}
                 LIMIT $1 OFFSET $2`;
             const dataResult = await pool.query(dataQuery, [pageSize, offset]);
@@ -487,19 +505,24 @@ export class PerformanceReportController {
         const { page, pageSize, sortBy, sortOrder } = parsed;
         const offset = (page - 1) * pageSize;
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
-        const keywordPattern = `%${keyword}%`;
+        // 转义 LIKE 通配符，避免 % / _ 被当作模式匹配
+        const keywordPattern = `%${keyword.replace(/[!%_]/g, m => `!${m}`)}%`;
 
-        const reportType = url.searchParams.get('reportType') || '';
+        const reportTypeParsed = this.parseReportType(url.searchParams.get('reportType') || '');
+        if ('error' in reportTypeParsed) {
+            createResponse(res, 400, reportTypeParsed.error);
+            return;
+        }
+        const reportType = reportTypeParsed.value;
         const reportTypeFilter = await this.buildReportTypeFilter(reportType);
-        const endYear = url.searchParams.get('endYear') || '';
-        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
+        const keywordFilter = `(l.symbol LIKE $1 ESCAPE '!' OR l.stock_name LIKE $1 ESCAPE '!' OR LOWER(COALESCE(l.pinyin, '')) LIKE LOWER($1) ESCAPE '!')`;
 
         try {
             const countQuery = `${LATEST_REPORT_CTE}
                 SELECT COUNT(*) AS total
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
-                  AND 1=1${reportTypeFilter}${endYearFilter}`;
+                WHERE ${keywordFilter}
+                  AND 1=1${reportTypeFilter}`;
             const countResult = await pool.query(countQuery, [keywordPattern]);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -507,8 +530,8 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1)
-                  AND 1=1${reportTypeFilter}${endYearFilter}
+                WHERE ${keywordFilter}
+                  AND 1=1${reportTypeFilter}
                 ORDER BY ${orderBy}
                 LIMIT $2 OFFSET $3`;
             const dataResult = await pool.query(dataQuery, [keywordPattern, pageSize, offset]);
@@ -697,7 +720,7 @@ export class PerformanceReportController {
             // 取该报告期内每只股票的最新报告 + 去年同期报告（用于同比）+ 上一期报告（用于加速度）
             const query = `
                 WITH latest AS (
-                    SELECT p.symbol, p.stock_name, p.report_type, p.ann_date, p.end_date,
+                    SELECT p.symbol, p.stock_name, st.pinyin, p.report_type, p.ann_date, p.end_date,
                            p.total_revenue, p.n_income_attr_p, p.created_at, p.ai_tag,
                            i.grossprofit_margin, i.netprofit_margin, i.roe,
                            ROW_NUMBER() OVER (
@@ -705,6 +728,7 @@ export class PerformanceReportController {
                                ORDER BY p.report_type = 'formal' DESC, p.ann_date DESC
                            ) AS rn
                     FROM performance_reports p
+                    LEFT JOIN stocks st ON p.symbol = st.symbol
                     LEFT JOIN LATERAL (
                         SELECT grossprofit_margin, netprofit_margin, roe
                         FROM performance_reports
@@ -751,7 +775,7 @@ export class PerformanceReportController {
                 ) prev_period_same ON true
                 WHERE l.rn = 1
                   AND ($2 = 'all' OR l.report_type = $2)
-                  AND ($3 = '' OR l.symbol LIKE $3 OR l.stock_name LIKE $3)`;
+                  AND ($3 = '' OR l.symbol LIKE $3 OR l.stock_name LIKE $3 OR COALESCE(l.pinyin, '') LIKE $3)`;
 
             const result = await pool.query(query, [reportPeriod, reportTypeRaw, keyword ? `%${keyword}%` : '']);
             const rows = result.rows as any[];

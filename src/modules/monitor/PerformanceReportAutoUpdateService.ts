@@ -234,6 +234,12 @@ export class PerformanceReportAutoUpdateService {
                     }
                     const stockName = nameCache.get(symbol) || '';
 
+                    const endDate = String(row.end_date || '').replace(/-/g, '');
+                    // express_vip 部分记录以「万元」返回净利润，入库前统一校正为「元」
+                    const netIncome = await PerformanceReportAutoUpdateService.normalizeExpressAmount(
+                        symbol, endDate, row.n_income ?? null, row.revenue ?? null,
+                    );
+
                     await pool.query(
                         `INSERT INTO performance_reports
                          (symbol, stock_name, report_type, ann_date, end_date,
@@ -244,11 +250,11 @@ export class PerformanceReportAutoUpdateService {
                             symbol,
                             stockName,
                             annDate,
-                            String(row.end_date || '').replace(/-/g, ''),
+                            endDate,
                             row.revenue ?? null,
-                            row.n_income ?? null,
+                            netIncome,
                             // express_vip 无归母净利润字段，用净利润近似
-                            row.n_income ?? null,
+                            netIncome,
                             row.diluted_eps ?? null,
                             row.perf_summary || '',
                         ]
@@ -270,6 +276,56 @@ export class PerformanceReportAutoUpdateService {
         }
 
         return { updated, skipped, errors };
+    }
+
+    /**
+     * 业绩快报净利润单位校正
+     * express_vip 部分记录以「万元」返回，与库内「元」口径相差 1 万倍。
+     * 判定优先级：
+     *   1. 营收可用 → 看净利率量级（<0.1% 且放大后落在合理区间）
+     *   2. 否则与去年同期 / 最近一期正式报告净利做量级比对
+     */
+    private static async normalizeExpressAmount(
+        symbol: string,
+        endDate: string,
+        netIncome: number | null,
+        revenue: number | null,
+    ): Promise<number | null> {
+        if (netIncome == null || netIncome === 0) return netIncome;
+
+        if (revenue != null && revenue !== 0) {
+            const margin = Math.abs(netIncome / revenue);
+            if (margin < 1e-3 && Math.abs((netIncome * 10000) / revenue) <= 1) {
+                return netIncome * 10000;
+            }
+            return netIncome;
+        }
+
+        try {
+            const lastYear = /^\d{8}$/.test(endDate)
+                ? `${Number(endDate.slice(0, 4)) - 1}${endDate.slice(4)}`
+                : '';
+            const ref = await pool.query(
+                `SELECT n_income_attr_p
+                 FROM performance_reports
+                 WHERE symbol = $1
+                   AND report_type = 'formal'
+                   AND n_income_attr_p IS NOT NULL
+                 ORDER BY (end_date = $2) DESC, end_date DESC
+                 LIMIT 1`,
+                [symbol, lastYear],
+            );
+            const refNp = ref.rows[0]?.n_income_attr_p;
+            if (refNp == null) return netIncome;
+            const ratio = Math.abs(Number(netIncome) / Number(refNp));
+            const fixedRatio = ratio * 10000;
+            if (ratio < 1e-3 && fixedRatio >= 0.01 && fixedRatio <= 100) {
+                return netIncome * 10000;
+            }
+            return netIncome;
+        } catch {
+            return netIncome;
+        }
     }
 
     /** 统一的入库通知封装（不抛错，失败仅告警，不中断主流程） */
