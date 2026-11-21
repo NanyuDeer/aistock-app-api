@@ -17,18 +17,18 @@ test('盘后边界使用上海时区和权威交易日历，周末/假期回退�
     const refresh = mock.method(TradingCalendarRefreshService, 'refresh', async () => ({ fetched: 0, upserted: 0, minDate: null, maxDate: null }));
     try {
         await tradingCalendarStore.load();
-        assert.equal(selectionContext(new Date('2026-09-18T08:29:00Z')).tradeDate, '2026-09-17');
-        assert.equal(selectionContext(new Date('2026-09-18T08:30:00Z')).tradeDate, '2026-09-18');
+        assert.equal(selectionContext(new Date('2026-09-18T07:59:00Z')).tradeDate, '2026-09-17');
+        assert.equal(selectionContext(new Date('2026-09-18T08:00:00Z')).tradeDate, '2026-09-18');
         assert.equal(selectionContext(new Date('2026-09-20T08:30:00Z')).tradeDate, '2026-09-18');
         assert.equal(selectionContext(new Date('2026-09-21T02:00:00Z')).dates.length, 90);
         // An unrelated caller requesting an uncovered future date must not poison a valid local window.
         tradingCalendarStore.isTradingDay('2028-01-01');
         assert.equal(tradingCalendarStore.getHealth().degraded, true);
-        assert.equal(selectionContext(new Date('2026-09-18T08:30:00Z')).tradeDate, '2026-09-18');
+        assert.equal(selectionContext(new Date('2026-09-18T08:00:00Z')).tradeDate, '2026-09-18');
         // A hole inside min/max coverage must not be accepted via weekday fallback.
         rows.splice(rows.findIndex(r => r.cal_date === '2026-09-17'), 1);
         await tradingCalendarStore.load();
-        assert.throws(() => selectionContext(new Date('2026-09-18T08:29:00Z')), /日历/);
+        assert.throws(() => selectionContext(new Date('2026-09-18T07:59:00Z')), /日历/);
     } finally { query.mock.restore(); refresh.mock.restore(); tradingCalendarStore.__resetForTest(); }
 });
 

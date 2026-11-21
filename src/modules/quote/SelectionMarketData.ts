@@ -167,10 +167,10 @@ export async function selectionDailyRatios(date: string) {
         }));
 }
 
-export async function selectionDividends(date: string, symbols: string[]) {
+export async function selectionDividends(date: string, symbols: string[], onProgress?: (completed: number, total: number) => void) {
     const byStock = new Map<string, Array<{ year: number; exDate: string; cash: number }>>();
     const fiscalYear = Number(date.slice(0, 4)) - (date.slice(5) > '08-31' ? 1 : 2);
-    let cursor = 0;
+    let cursor = 0, completed = 0;
     await Promise.all(Array.from({ length: Math.min(symbols.length, 8) }, async () => {
         while (cursor < symbols.length) {
             const symbol = symbols[cursor++];
@@ -197,7 +197,7 @@ export async function selectionDividends(date: string, symbols: string[]) {
                 byStock.set(symbol, [...events.values()]);
             } catch (error) {
                 console.warn('[StockSelection] 分红记录读取失败', symbol, error instanceof Error ? error.message : String(error));
-            }
+            } finally { onProgress?.(++completed, symbols.length); }
         }
     }));
     return byStock;
@@ -238,4 +238,14 @@ export async function selectionCompanyForecasts(start: string, end: string) {
         }
     }
     return forecasts;
+}
+
+/** Official bounds for this date. Missing rows or missing bounds remain unknown, never inferred from changePct. */
+export async function selectionPriceLimits(date: string) {
+    const rows = await selectionPages('stk_limit', { trade_date: date.replace(/-/g, '') }, 'ts_code,trade_date,up_limit,down_limit');
+    return new Map(rows.filter(row => iso(row.trade_date) === date && /^\d{6}\.(SH|SZ|BJ)$/.test(String(row.ts_code)))
+        .map(row => [String(row.ts_code).split('.')[0], {
+            upper: Number.isFinite(numeric(row.up_limit)) && numeric(row.up_limit) > 0 ? numeric(row.up_limit) : null,
+            lower: Number.isFinite(numeric(row.down_limit)) && numeric(row.down_limit) > 0 ? numeric(row.down_limit) : null,
+        }] as const));
 }

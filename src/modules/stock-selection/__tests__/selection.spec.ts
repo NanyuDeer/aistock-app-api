@@ -140,6 +140,14 @@ test('事件催化要求首发利好和公告后量价，后续修正使旧事�
         { ...event, announced: dates[88], period: '2026-09-30', firstAnnouncement: dates[70], type: '预减', growth: -40 }]);
     assert.equal(otherPeriod.methodStats.event_catalyst.pass, 1);
 
+    // The reaction window is the five prior trading sessions, still excluding the signal day itself.
+    const inWindow = evaluate();
+    addEventCatalysts(inWindow, stocks, raw, dates, [{ ...event, announced: dates[84], firstAnnouncement: dates[84] }]);
+    assert.equal(inWindow.methodStats.event_catalyst.pass, 1);
+    const outOfWindow = evaluate();
+    addEventCatalysts(outOfWindow, stocks, raw, dates, [{ ...event, announced: dates[83], firstAnnouncement: dates[83] }]);
+    assert.equal(outOfWindow.methodStats.event_catalyst.notApplicable, 6);
+
     // Pre-market release: +18% on the announcement day then +3%. The full reaction exceeds the 15% cap.
     const jumped = bars();
     Object.assign(jumped[87], { open: 118, high: 121, low: 117, close: 120, amount: 300_000_000 });
@@ -345,6 +353,20 @@ test('批量生成→持久化→单/多选读取；失败和过期不泄露旧�
     assert.equal(store.current!.status, 'failed');
 });
 
+test('事件催化取数窗口覆盖规则使用的五个可反应交易日', async () => {
+    const store = new MemoryStore();
+    const universe = Array.from({ length: 1000 }, (_, i) => ({ ...stocks[0], symbol: String(600000 + i) }));
+    let window: [string, string] | undefined;
+    const source: SelectionSource = {
+        context: () => ({ tradeDate: dates[89], dates }), stocks: async () => universe, benchmark: async () => benchmark,
+        day: async date => ({ date, fetchedAt: new Date().toISOString(), bars: Object.fromEntries(universe.map(s => [s.symbol, bars()[dates.indexOf(date)]])) }),
+        companyForecasts: async (start, end) => { window = [start, end]; return []; },
+    };
+    await new SelectionService(store, source).generate();
+    // 规则从 dates[84] 起扫描，取数起点必须一致，否则最旧两个交易日的公告永远拿不到。
+    assert.deepEqual(window, [dates[84], dates[89]]);
+});
+
 test('读取不依赖交易日历，历史窗口不可用不阻断已保存结果；无缺失的空名单不是数据不可用', async () => {
     const store = new MemoryStore();
     const batch = evaluate();
@@ -536,4 +558,24 @@ test('连续入选按请求条数回溯：昨日第12名今日进前10，查询�
     assert.deepEqual([0, 1, 2, 3, 9].map(i => top10[universe[i].symbol]), [1, 1, 1, 2, 2]);
     const top15 = await sessions('15');
     assert.equal(top15[universe[0].symbol], 2);
+});
+
+test('连续入选只提取展示股票行情；相同批次/方法/条数复用计算，条数变化不复用', async () => {
+    const store = new MemoryStore();
+    const batch = evaluate();
+    store.current = { id: 'cache-1', tradeDate: dates[89], status: 'ready', generatedAt: null, dataAsOf: dates[89], batch };
+    let reads = 0;
+    Object.assign(store, { snapshotBars: async (date: string, symbols: string[]) => {
+        reads++;
+        assert.deepEqual(symbols.slice().sort(), stocks.map(s => s.symbol).sort());
+        return { date, fetchedAt: date, bars: Object.fromEntries(symbols.map(symbol => [symbol, bars()[89]])) };
+    } });
+    const source: SelectionSource = { context: () => { throw new Error('read should not generate'); },
+        stocks: async () => [], day: async () => { throw new Error('no collection'); }, benchmark: async () => [] };
+    const service = new SelectionService(store, source);
+    const query = parseQuery({ horizon: 'swing', methods: 'trend_following', limit: 15 });
+    await service.results(query); const firstReads = reads;
+    assert.ok(firstReads > 0);
+    await service.results(query); assert.equal(reads, firstReads);
+    await service.results({ ...query, limit: 10 }); assert.ok(reads > firstReads);
 });

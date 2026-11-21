@@ -1,3 +1,4 @@
+import { SelectionCache, selectionProgress } from './SelectionSupport';
 import { addDividendMethod, DailyRatios, DividendPayment } from './dividendRules';
 import { addEarningsRevisions, addEventCatalysts, CompanyForecast, ResearchForecast } from './announcementRules';
 import { addFinancialMethods, AnnualFinancials } from './financialRules';
@@ -60,9 +61,11 @@ interface Universe {
 const DAY_MS = 86_400_000;
 
 export class SelectionService {
+    private entriesCache = new SelectionCache<Awaited<ReturnType<SelectionService['trackEntries']>>>();
     constructor(private store: SelectionStore, private source: SelectionSource) {}
     async generate() {
         const context = this.source.context();
+        this.entriesCache.clear();
         let universe: Promise<Universe> | undefined;
         const load = () => universe ??= this.universe(context.dates);
         return this.store.run(context.tradeDate, async () => this.build(context, await load()), async used => {
@@ -93,6 +96,8 @@ export class SelectionService {
     }
     private async build(context: { tradeDate: string; dates: string[] }, universe: Universe): Promise<Batch> {
         const { tradeDate, dates } = context;
+        const progress = selectionProgress(`StockSelection:${tradeDate}`);
+        progress('market-days', 0, dates.length);
         if (dates.length !== HISTORY_DAYS || dates[dates.length - 1] !== tradeDate) throw new Error('历史窗口不完整');
         const { stocks, fetchedAt: universeFetchedAt } = universe;
         const raw = new Map<string, Bar[]>();
@@ -100,11 +105,13 @@ export class SelectionService {
         for (const date of dates) {
             const day = (await this.marketDay(date, universe, false)).day!;
             snapshots.push({ date, fetchedAt: day.fetchedAt, bars: Object.keys(day.bars).length });
+            progress('market-days', snapshots.length, dates.length);
             for (const stock of stocks) {
                 const b = day.bars[stock.symbol];
                 if (b) { const rows = raw.get(stock.symbol) || []; rows.push(b); raw.set(stock.symbol, rows); }
             }
         }
+        progress('benchmark-and-limits');
         const benchmark = await this.source.benchmark(dates[0], tradeDate);
         const upperLimits = await this.source.upperLimits?.(tradeDate).catch(error => {
             console.warn('[StockSelection] 涨停价读取失败:', error instanceof Error ? error.message : String(error));
@@ -122,17 +129,20 @@ export class SelectionService {
             try { return await data; }
             catch (error) { console.warn(`[StockSelection] ${name}读取失败:`, error); return undefined; }
         };
+        progress('fundamentals-and-announcements');
         const [financials, ratios, research, forecasts] = await Promise.all([
             optional('批量年报', this.source.financials?.(tradeDate)),
             optional('日度估值和股息率', this.source.ratios?.(tradeDate)),
             optional('研报预测', this.source.research?.(tradeDate)),
-            optional('业绩预告', this.source.companyForecasts?.(dates[dates.length - 4], tradeDate)),
+            optional('业绩预告', this.source.companyForecasts?.(dates[dates.length - 6], tradeDate)),
         ]);
         const valuations = ratios && new Map([...ratios].map(([symbol, row]) => [symbol, row.pe]));
         addFinancialMethods(batch, stocks, raw, dates, financials, valuations);
         addEarningsRevisions(batch, stocks, raw, dates, research);
         addEventCatalysts(batch, stocks, raw, dates, forecasts);
+        progress('dividends');
         await addDividendMethod(batch, stocks, raw, dates, financials, ratios, this.source.dividends);
+        progress('complete', stocks.length, stocks.length);
         return batch;
     }
     /**
@@ -201,7 +211,7 @@ export class SelectionService {
             before = history[history.length - 1].tradeDate;
         }
         const dates = new Set([run.tradeDate, ...[...entries.values()].map(entry => entry.date)]);
-        const snapshots = new Map(await Promise.all([...dates].map(async date => [date, await this.store.snapshot(date)] as const)));
+        const snapshots = new Map(await Promise.all([...dates].map(async date => [date, await (this.store.snapshotBars?.(date, [...entries.keys()]) ?? this.store.snapshot(date))] as const)));
         return new Map([...entries].map(([symbol, entry]) => {
             const first = snapshots.get(entry.date)?.bars[symbol];
             const latest = snapshots.get(run.tradeDate)?.bars[symbol];
@@ -228,7 +238,9 @@ export class SelectionService {
         const unavailable = query.methods.filter(method => !methodAvailable(run.batch!, method));
         if (unavailable.length) return { ...base, status: 'unavailable', unavailableMethods: unavailable, stocks: [] };
         const stocks = combine(run.batch.stocks, query.methods, query.limit);
-        const entries = stocks.length ? await this.trackEntries({ tradeDate: run.tradeDate, batch: run.batch }, query.methods, query.limit) : new Map();
+        const cacheKey = JSON.stringify([run.id, run.generatedAt, query.methods, query.limit]);
+        const entries = stocks.length ? this.entriesCache.get(cacheKey)
+            ?? this.entriesCache.set(cacheKey, await this.trackEntries({ tradeDate: run.tradeDate, batch: run.batch }, query.methods, query.limit)) : new Map();
         return { ...base, status: 'ready', nextQuoteTradeDate: this.source.nextTradingDate?.(run.tradeDate) ?? null, candidateCount: run.batch.stocks.filter(c => matchesAllMethods(c, query.methods)).length,
             stocks: stocks.map(stock => ({ ...stock, entry: entries.get(stock.symbol) })) };
     }

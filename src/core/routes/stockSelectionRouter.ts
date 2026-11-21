@@ -20,8 +20,8 @@ export function selectionTradeDate(now = new Date()): string {
     const today = shanghaiDateStr(now);
     if (!tradingCalendarStore.hasDate(today)) throw new CalendarUnavailableError('权威交易日历尚未就绪');
     const clock = shanghaiHourMinute(now);
-    // Daily is published 15:00–16:00. Leave a buffer; before 16:30 use the preceding session.
-    const reference = clock.hour * 60 + clock.minute < 990 ? new Date(`${today}T14:00:00+08:00`) : now;
+    // From 16:00 target today; incomplete or wrong-date feeds fail without replacing the published batch.
+    const reference = clock.hour * 60 + clock.minute < 960 ? new Date(`${today}T14:00:00+08:00`) : now;
     try {
         const tradeDate = shanghaiDateStr(TradingCalendarService.getRecentTradingDay(reference));
         assertCalendarRange(tradeDate, today);
@@ -59,7 +59,10 @@ export function previousQuoteTradeDate(date: string): string | null {
 
 const store = new PostgresSelectionStore();
 export const stockSelectionService = new SelectionService(store, {
-    context: () => selectionContext(), nextTradingDate: nextQuoteTradeDate, previousTradingDate: previousQuoteTradeDate, stocks: selectionStocks, day: selectionMarketDay, upperLimits: selectionUpperLimits, financials: selectionAnnualFinancials, ratios: selectionDailyRatios, dividends: selectionDividends,
+    context: () => selectionContext(), nextTradingDate: nextQuoteTradeDate, previousTradingDate: previousQuoteTradeDate, stocks: selectionStocks, day: selectionMarketDay, upperLimits: selectionUpperLimits, financials: selectionAnnualFinancials, ratios: selectionDailyRatios, dividends: (date, symbols) => {
+        const started = Date.now();
+        return selectionDividends(date, symbols, (completed, total) => console.info('[StockSelection] progress', { stage: 'dividends', completed, total, elapsedMs: Date.now() - started }));
+    },
     research: selectionResearch, companyForecasts: selectionCompanyForecasts, benchmark: selectionBenchmark, suspensions: selectionSuspensions,
 });
 export const ensureStockSelectionSchema = () => store.ensureSchema();
