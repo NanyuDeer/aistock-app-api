@@ -81,6 +81,13 @@
 - 现象：影视院线板块当日 +4.37%，领涨股却显示华策影视 -13.97%（hot_sectors 里的旧快照/爬虫龙头）。
 - 修复：`fillMissingLeadingStocks` 的候选条件由「`leading_stock == null`」扩展为「缺失 / `change_pct == null` / `< 0`」；`fillLeadingStocksFromTopGainers` 对已有龙头当日涨跌幅为负或缺失的板块，用成分股当日涨幅第一替换（仅当涨幅更高才替换，成分股缺失时保留原值，不制造空数据）。成分股日线日期仍必须 === 榜单交易日，避免拿昨日数据冒充。
 
+### 2026-11-22 修复：盘前风口领涨股沿用上一交易日正涨幅
+
+- 现象：2026-11-20 盘前（03:00 后）`wind-leaders/today` 的 `trading_date=2026-11-20`，但 3/4 领涨股涨跌幅精确等于 **11-19** 涨幅（如华能蒙电 +4.81%，11-20 实际 -0.71%）。
+- 根因：`hot_sectors` 快照在盘前用上一交易日收盘数据生成（`update_time` 早于当日 09:30），`fillMissingLeadingStocks` 只替换「缺失 / 为空 / 为负」，旧快照的**正数**涨幅被原样保留。
+- 修复：`buildTodayHotSpots` 在 `attachLeadingStocks` 后增加 stale 守卫——`isHotSectorsSnapshotStale(update_time, trading_date)` 判定「无法解析 / 早于交易日 / 同日 <09:30」为 stale，stale 时 `clearStaleLeaderChangePct` 仅清空 `leading_stock.change_pct`（保留 code/name），再由 `fillMissingLeadingStocks` 用**当日**成分股涨幅第一补位；次日凌晨或收盘后快照视为 fresh。
+- 约束：不得把「快照日期」与「榜单交易日」不一致的正涨幅直接展示；宁可为 `null`，不可跨日冒充。
+
 ### 2026-11-21 修复：今日风口榜展示下跌板块
 
 - 现象：今日风口榜第 5-10 名为负涨幅板块（-0.66% ~ -1.32%），用户反馈「下跌的也上榜了」。
