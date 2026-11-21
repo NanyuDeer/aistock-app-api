@@ -791,6 +791,23 @@ export function buildTodayRankingFromRealtime(
 }
 
 /**
+ * 过滤当日下跌/平盘板块（纯函数），供「今日风口榜」展示用。
+ *
+ * 背景：up_rank / mrpm 的 up 是**相对涨幅排名**，大盘普跌时前 10 名里会含负涨幅板块
+ * （实测 2026-11-20 全市场大跌，涨幅榜第 5-10 名为 -0.66% ~ -1.32%，跌幅榜 -6% ~ -7.8%），
+ * 直接展示会让用户看到「下跌的也上榜」。今日风口榜语义是上涨风口，故按当日涨跌幅过滤。
+ *
+ * 涨跌幅未知（实时取数失败）的板块保留：宁可显示 "--"，也不因取数失败误删真实龙头。
+ * 排名本身按涨跌幅降序，过滤后仍是从第 1 名起的连续前缀，无需重排。
+ */
+export function dropNonRisingBoards(ranking: TodayBoardRanking): TodayBoardRanking {
+    return {
+        ...ranking,
+        boards: ranking.boards.filter((board) => board.change_pct == null || board.change_pct > 0),
+    };
+}
+
+/**
  * 收盘榜回退（纯函数）：只取涨幅榜（up_rank 非空），按 up_rank 升序取前 limit。
  * 多日数据时只保留最大交易日那一组（queryRotationDaily(2) 可能跨日返回）。
  */
@@ -860,7 +877,7 @@ export async function getTodayBoardRanking(limit = 10): Promise<TodayBoardRankin
     if (ranking && ranking.length > 0) {
         const codes = ranking.slice(0, limit).map(r => r.board_code);
         const realtimeByCode = await fetchRealtimeMap(codes);
-        return buildTodayRankingFromRealtime(today, ranking, realtimeByCode, limit, updateTime);
+        return dropNonRisingBoards(buildTodayRankingFromRealtime(today, ranking, realtimeByCode, limit, updateTime));
     }
 
     try {
@@ -869,7 +886,7 @@ export async function getTodayBoardRanking(limit = 10): Promise<TodayBoardRankin
         if (!history) return null;
         // 收盘榜本身不带成交额；非交易日 today.js 停留的正是榜单那个交易日，可安全补全
         const realtimeByCode = await fetchRealtimeMap(history.boards.map(b => b.board_code));
-        return applyLatestAmounts(history, realtimeByCode);
+        return dropNonRisingBoards(applyLatestAmounts(history, realtimeByCode));
     } catch (err) {
         console.warn('[RotationBoardStore] getTodayBoardRanking 回退收盘榜失败:', (err as Error).message);
         return null;

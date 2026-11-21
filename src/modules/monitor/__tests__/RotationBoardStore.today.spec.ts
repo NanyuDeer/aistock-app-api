@@ -16,6 +16,7 @@ import {
     buildBoardRealtime,
     buildTodayRankingFromHistory,
     buildTodayRankingFromRealtime,
+    dropNonRisingBoards,
     type BoardRealtime,
     type DailyRotationRow,
     type MrpmTodayRankItem,
@@ -220,5 +221,59 @@ describe('applyLatestAmounts：收盘榜补全成交额', () => {
         const result = applyLatestAmounts(ranking, realtimeByCode);
         assert.deepEqual(result.boards.map(b => b.amount), [null, null, null]);
         assert.equal(ranking.boards[0].amount, null, '入参保持不变');
+    });
+});
+
+describe('dropNonRisingBoards：今日风口榜只保留上涨板块', () => {
+    it('大盘普跌日：涨幅榜前 10 含负涨幅板块，展示时应剔除', () => {
+        const ranking: TodayBoardRanking = {
+            trading_date: '2026-11-20',
+            is_live: false,
+            update_time: '2026-11-21 10:00:00',
+            source: 'board_rotation_daily',
+            boards: [
+                { board_code: '885663', board_name: '证金持股', rank: 1, change_pct: 0.69, amount: null, change_source: 'latest_close' },
+                { board_code: '881156', board_name: '保险', rank: 2, change_pct: 0.39, amount: null, change_source: 'latest_close' },
+                { board_code: '886045', board_name: '同花顺中特估100', rank: 5, change_pct: -0.66, amount: null, change_source: 'latest_close' },
+                { board_code: '881157', board_name: '证券', rank: 10, change_pct: -1.32, amount: null, change_source: 'latest_close' },
+            ],
+        };
+        const result = dropNonRisingBoards(ranking);
+        assert.deepEqual(result.boards.map(b => b.board_code), ['885663', '881156']);
+        assert.deepEqual(result.boards.map(b => b.change_pct), [0.69, 0.39]);
+        assert.equal(result.trading_date, '2026-11-20', '其余字段保持不变');
+        assert.equal(ranking.boards.length, 4, '不修改入参');
+    });
+
+    it('涨跌幅未知（实时缺失）的板块保留，避免因取数失败误删', () => {
+        const ranking: TodayBoardRanking = {
+            trading_date: '2026-11-21',
+            is_live: true,
+            update_time: '2026-11-21 10:00:00',
+            source: 'ths_mrpm',
+            boards: [
+                { board_code: '881156', board_name: '保险', rank: 1, change_pct: null, amount: null, change_source: 'unavailable' },
+                { board_code: '881157', board_name: '证券', rank: 2, change_pct: -1.32, amount: null, change_source: 'realtime' },
+            ],
+        };
+        const result = dropNonRisingBoards(ranking);
+        assert.deepEqual(result.boards.map(b => b.board_code), ['881156']);
+    });
+
+    it('全部下跌 → 返回空榜单（保留榜单元信息供前端展示空态）', () => {
+        const ranking: TodayBoardRanking = {
+            trading_date: '2026-11-20',
+            is_live: false,
+            update_time: '2026-11-21 10:00:00',
+            source: 'board_rotation_daily',
+            boards: [
+                { board_code: '881157', board_name: '证券', rank: 1, change_pct: -0.5, amount: null, change_source: 'latest_close' },
+                { board_code: '881270', board_name: '元件', rank: 2, change_pct: -0.82, amount: null, change_source: 'latest_close' },
+            ],
+        };
+        const result = dropNonRisingBoards(ranking);
+        assert.equal(result.boards.length, 0);
+        assert.equal(result.source, 'board_rotation_daily');
+        assert.equal(result.is_live, false);
     });
 });

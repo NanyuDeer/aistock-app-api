@@ -8,7 +8,7 @@
 - `GET /api/cn/stock-monitors/events/:stockCode` — 指定股票异动事件
 - `GET /api/cn/stock-monitors/stats` — 个股异动统计
 - `GET /api/cn/wind-leaders` — 风口龙头
-- `GET /api/cn/wind-leaders/today` — 今日风口榜（当日板块榜 + 涨跌幅来源 + 龙头股；读缓存 `wind_leaders_today_v1`，limit 1..20 默认 10，无数据 404）
+- `GET /api/cn/wind-leaders/today` — 今日风口榜（当日板块榜 + 涨跌幅来源 + 龙头股；读缓存 `wind_leaders_today_v2`，limit 1..20 默认 10，无数据 404）
 - `GET /api/cn/wind-leaders/board-kline` — 板块日 K 线（同花顺 bk_ 源，近 N 日默认 120）
 - `POST /api/cn/hot-keywords/detect` — 热词检测
 - `GET /api/news/*` — 新闻接口
@@ -80,6 +80,12 @@
 
 - 现象：影视院线板块当日 +4.37%，领涨股却显示华策影视 -13.97%（hot_sectors 里的旧快照/爬虫龙头）。
 - 修复：`fillMissingLeadingStocks` 的候选条件由「`leading_stock == null`」扩展为「缺失 / `change_pct == null` / `< 0`」；`fillLeadingStocksFromTopGainers` 对已有龙头当日涨跌幅为负或缺失的板块，用成分股当日涨幅第一替换（仅当涨幅更高才替换，成分股缺失时保留原值，不制造空数据）。成分股日线日期仍必须 === 榜单交易日，避免拿昨日数据冒充。
+
+### 2026-11-21 修复：今日风口榜展示下跌板块
+
+- 现象：今日风口榜第 5-10 名为负涨幅板块（-0.66% ~ -1.32%），用户反馈「下跌的也上榜了」。
+- 根因：`up_rank` / mrpm `up` 是**相对涨幅排名**（每日按涨跌幅降序取前 10），不是「上涨板块」；`buildTodayRankingFromHistory` 只筛 `up_rank != null`，未校验 `pct_change > 0`。2026-11-20 全市场大跌（跌幅榜 -6% ~ -7.8%），涨幅榜前 4 名 +0.69%~+0.07%，第 5-10 名本身即为负值。
+- 修复：`getTodayBoardRanking` 的两条路径（mrpm 当日榜 / `board_rotation_daily` 收盘回退）统一经 `dropNonRisingBoards` 过滤 `change_pct <= 0`；涨跌幅未知（实时取数失败）的板块保留，避免误删真实龙头；过滤后为空时返回空数组（前端展示空态），不伪造数据。落库的 `up_rank`/`down_rank` 口径不变（板块轮动表仍为相对排名，freq 统计不受影响）。
 
 ### 2026-11-14 修复：今日风口成交额 / 领涨股大面积缺失
 
