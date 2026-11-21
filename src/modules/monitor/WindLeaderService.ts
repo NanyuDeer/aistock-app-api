@@ -652,6 +652,41 @@ export function fillLeadingStocksFromTopGainers(
     });
 }
 
+/**
+ * 判断 hot-sectors 快照是否早于榜单交易日（盘前旧快照）。
+ *
+ * hot-sectors.json 每日 03:00 盘前生成，此时 leading_stock_info.change_pct 仍是
+ * 上一交易日涨幅；若把它当当日涨幅展示，会出现「板块大涨、领涨股却显示昨日涨幅」。
+ * 规则：
+ *  - 无法解析 update_time → 视为 stale（宁可不用旧值，也不冒充当日）；
+ *  - 快照日期早于交易日期 → stale；
+ *  - 同一交易日但生成时间早于 09:30 → stale（盘前生成，pct 必为上一交易日）；
+ *  - 其余（含次日凌晨生成，覆盖前一交易日收盘）→ fresh。
+ */
+export function isHotSectorsSnapshotStale(updateTime: unknown, tradingDate: string): boolean {
+    const text = cleanText(updateTime, 40);
+    const match = text.match(/(\d{4})[/-](\d{1,2})[/-](\d{1,2})(?:[ T](\d{1,2}):(\d{2}))?/);
+    if (!match) return true;
+    const snapshotDate = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    if (snapshotDate !== tradingDate) return snapshotDate < tradingDate;
+    const hour = match[4] != null ? Number(match[4]) : 0;
+    const minute = match[5] != null ? Number(match[5]) : 0;
+    return hour * 60 + minute < 9 * 60 + 30;
+}
+
+/**
+ * 旧快照的领涨股涨幅不可信：只清空 change_pct，保留 name/code，
+ * 让 fillMissingLeadingStocks 用当日成分股涨幅第一替换；
+ * 盘中日线未更新时则显示「涨幅未知」，不展示上一交易日涨幅。
+ */
+export function clearStaleLeaderChangePct(boards: TodayHotSpotBoard[]): TodayHotSpotBoard[] {
+    return boards.map((board) => (
+        board.leading_stock?.change_pct == null
+            ? board
+            : { ...board, leading_stock: { ...board.leading_stock, change_pct: null } }
+    ));
+}
+
 /** stale 盘口可用的最近收盘兜底值（涨跌幅/成交额各自可能缺失） */
 export interface StaleBoardClose {
     change_pct: number | null;
@@ -849,11 +884,13 @@ export class WindLeaderService {
     private static async buildTodayHotSpots(): Promise<TodayHotSpotsResult | null> {
         const ranking = await getTodayBoardRanking(TODAY_HOT_SPOTS_SIZE);
         if (!ranking) return null;
-        const hotSectors = loadData()?.hot_sectors ?? [];
-        const boards = await this.fillMissingLeadingStocks(
-            attachLeadingStocks(ranking.boards, hotSectors),
-            ranking.trading_date,
-        );
+        const snapshot = loadData();
+        const hotSectors = snapshot?.hot_sectors ?? [];
+        const attached = attachLeadingStocks(ranking.boards, hotSectors);
+        const guarded = isHotSectorsSnapshotStale(snapshot?.update_time, ranking.trading_date)
+            ? clearStaleLeaderChangePct(attached)
+            : attached;
+        const boards = await this.fillMissingLeadingStocks(guarded, ranking.trading_date);
         return {
             trading_date: ranking.trading_date,
             is_live: ranking.is_live,

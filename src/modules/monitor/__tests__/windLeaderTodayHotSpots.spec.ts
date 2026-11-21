@@ -14,7 +14,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
     attachLeadingStocks,
+    clearStaleLeaderChangePct,
     fillLeadingStocksFromTopGainers,
+    isHotSectorsSnapshotStale,
     resolveStaleBoardClose,
     type HotSectorForLeader,
     type TodayHotSpotBoard,
@@ -220,5 +222,56 @@ describe('resolveStaleBoardClose：其他板块「今日涨幅/成交额」收�
     it('涨跌幅 0（平盘）是有效值，不得当缺失', () => {
         const result = resolveStaleBoardClose(stale({ latest_change_pct: 0 }), latestDate);
         assert.equal(result?.change_pct, 0);
+    });
+});
+
+describe('isHotSectorsSnapshotStale：盘前 03:00 快照识别', () => {
+    it('同一交易日 03:00 生成 → stale', () => {
+        assert.equal(isHotSectorsSnapshotStale('2026-11-20 03:00:34', '2026-11-20'), true);
+    });
+
+    it('快照日期早于交易日期 → stale', () => {
+        assert.equal(isHotSectorsSnapshotStale('2026-11-19 03:00:34', '2026-11-20'), true);
+    });
+
+    it('次日凌晨生成（覆盖前一交易日收盘）→ fresh', () => {
+        assert.equal(isHotSectorsSnapshotStale('2026-11-21 03:00:00', '2026-11-20'), false);
+    });
+
+    it('同一交易日收盘后生成 → fresh', () => {
+        assert.equal(isHotSectorsSnapshotStale('2026-11-20 16:10:00', '2026-11-20'), false);
+    });
+
+    it('update_time 缺失/非法 → stale', () => {
+        assert.equal(isHotSectorsSnapshotStale('', '2026-11-20'), true);
+        assert.equal(isHotSectorsSnapshotStale(undefined, '2026-11-20'), true);
+    });
+});
+
+describe('clearStaleLeaderChangePct：旧快照只清涨幅', () => {
+    it('清空 change_pct，保留 code/name 与其他字段', () => {
+        const boards: TodayHotSpotBoard[] = [
+            { ...board('影视院线', 1), leading_stock: { code: '300133', name: '华策影视', change_pct: 3.2 } },
+        ];
+        const result = clearStaleLeaderChangePct(boards);
+        assert.deepEqual(result[0].leading_stock, { code: '300133', name: '华策影视', change_pct: null });
+        assert.equal(result[0].board_name, '影视院线');
+    });
+
+    it('无龙头 → 原对象返回', () => {
+        const item: TodayHotSpotBoard = { ...board('银行', 1), leading_stock: null };
+        assert.equal(clearStaleLeaderChangePct([item])[0], item);
+    });
+
+    it('清空后交给 fillLeadingStocksFromTopGainers → 用当日成分股第一替换', () => {
+        const item = board('影视院线', 1);
+        const boards = clearStaleLeaderChangePct([
+            { ...item, leading_stock: { code: '300133', name: '华策影视', change_pct: 3.2 } },
+        ]);
+        const topByCode = new Map([
+            [item.board_code, { code: '300251', name: '光线传媒', change_pct: 6.5 }],
+        ]);
+        const result = fillLeadingStocksFromTopGainers(boards, topByCode);
+        assert.deepEqual(result[0].leading_stock, { code: '300251', name: '光线传媒', change_pct: 6.5 });
     });
 });
