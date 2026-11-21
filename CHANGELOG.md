@@ -1,5 +1,58 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-22 — briefing.v1 晚报 extras 与统一出口
+
+**开发者**: Aria
+
+### 新增
+
+- `GET /api/agent/briefing/:slot/:date` 的晚报信封新增 `evening_extras`：由 `review` 报告只读投影异象判定、归因结论、指数、涨跌家数与板块排行；晨报/午报恒为 `null`。
+
+### 改进
+
+- `buildBriefEnvelope` 支持 `review` 输入；`post` 并行读取 review，不改变现有生成链路。
+- `tests/briefingEnvelope.test.ts` 增补晚报投影、brief 降级、review 缺失兜底与晨/午报空值用例。
+
+### 验证
+
+- `npx tsc --noEmit` 通过；`node --import tsx --test tests/briefingEnvelope.test.ts` 6/6 通过。
+
+---
+
+## [master] 2026-11-22 — 今日风口领涨股跨日修复
+
+**开发者**: Aria
+
+### 修复
+
+- `hot-sectors.json` 每日 03:00 盘前生成，`leading_stock_info.change_pct` 为上一交易日涨幅，旧逻辑只替换空/负值，正数旧涨幅被保留。
+- 新增 `isHotSectorsSnapshotStale`（同日 <09:30 或早于交易日判 stale）与 `clearStaleLeaderChangePct`（stale 时只清空涨幅，保留名称），`buildTodayHotSpots` 接线后再交给 `fillMissingLeadingStocks` 用当日成分股第一替换。
+- 新增 `windLeaderTodayHotSpots.spec.ts` 8 个用例：盘前旧快照判定、收盘后/次日凌晨 fresh、缺失 update_time、清涨幅保名称、清空后由 top gainer 替换。
+
+---
+
+## [master] 2026-11-21 — 今日风口榜过滤下跌板块
+
+**开发者**: Aria
+
+### 修复
+
+- `getTodayBoardRanking` 两条路径（mrpm 当日榜 / 收盘榜回退）统一经 `dropNonRisingBoards` 过滤 `change_pct <= 0`。根因：`up_rank` / mrpm `up` 为相对涨幅排名，大跌日（2026-11-20）前 10 名本身含负值。涨跌幅未知（实时取数失败）保留；过滤后为空返回空数组。
+- 新增 `RotationBoardStore.today.spec.ts` 3 个用例：混合涨跌剔除、涨跌幅未知保留、全部下跌返回空榜。
+
+---
+
+## [master] 2026-11-15 — 个股分析非流式分支改走流式
+
+**开发者**: Aria
+
+### 修复
+
+- `StockAnalysisService.generateStockAnalysis` 非流式分支内部改走 `requestModelStream` 并保留回退，规避上游大模型网关约 60s 空闲超时；`analysisController` POST 失败增加 `[StockAnalysis] POST 失败` 错误日志。
+- 新增 `src/modules/quote/__tests__/stockAnalysis.nonStreamUsesStream.spec.ts`，覆盖非流式分支走流式与流式失败回退。
+
+---
+
 ## [master] 2026-11-15 — 今日风口领涨股取到大幅下跌股票修复
 
 **开发者**: Aria

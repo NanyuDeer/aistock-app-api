@@ -22,6 +22,7 @@ import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { buildCausalInputs } from '../../modules/causal/causalInputsService'
 import { getMappings, upsertMappings } from '../../modules/causal/eventNodeMappingService'
+import { buildBriefEnvelope, buildMiddayEnvelope } from './briefingEnvelope'
 import {
     EMBEDDING_DIM,
     semanticSearchIndustries,
@@ -2446,6 +2447,16 @@ function isInternalBroadcastReadyForAudio(
     return isValidatedBroadcastReport(value, briefType, reportType, date, sourceBrief, null)
 }
 
+function isMiddayReport(
+    value: unknown,
+): value is { content: Record<string, unknown>; created_at?: string | null } {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const row = value as Record<string, unknown>
+    if (!row.content || typeof row.content !== 'object' || Array.isArray(row.content)) return false
+    const display = (row.content as Record<string, unknown>).display_report
+    return !!display && typeof display === 'object' && !Array.isArray(display)
+}
+
 async function serveBrief(req: Request, res: Response): Promise<void> {
     const briefType = param(req, 'briefType')
     const date = param(req, 'date')
@@ -2500,6 +2511,83 @@ publicRouter.get('/broadcast/:briefType/:date', async (req: Request, res: Respon
         })
     } catch (err: unknown) {
         console.error('[Public] broadcast artifact GET error:', errMsg(err))
+        res.status(500).json({ code: -1, message: 'Internal server error' })
+    }
+})
+
+/**
+ * GET /api/agent/briefing/:slot/:date
+ * 早/午/晚报统一出口（只读投影，briefing.v1）。
+ *
+ * slot: pre（早报）/ mid（午报）/ post（晚报）
+ * 返回统一信封，前端按 slot 选择展示块；不改变现有 /brief、/broadcast、/report 路由。
+ */
+publicRouter.get('/briefing/:slot/:date', async (req: Request, res: Response) => {
+    const slot = param(req, 'slot')
+    const date = param(req, 'date')
+    if (slot !== 'pre' && slot !== 'mid' && slot !== 'post') {
+        res.status(400).json({ code: -1, message: `Invalid slot: ${slot}` })
+        return
+    }
+    if (!isCalendarDate(date)) {
+        res.status(400).json({ code: -1, message: `Invalid date format: ${date}` })
+        return
+    }
+    try {
+        if (slot === 'mid') {
+            const report = await getAnalysisReport('midday', date)
+            res.json({
+                code: 0,
+                data: isMiddayReport(report)
+                    ? buildMiddayEnvelope({
+                        date,
+                        report: {
+                            content: report.content,
+                            created_at: typeof report.created_at === 'string' ? report.created_at : null,
+                        },
+                    })
+                    : null,
+            })
+            return
+        }
+
+        const briefType = slot === 'pre' ? 'morning' : 'evening'
+        const [brief, broadcast, review] = await Promise.all([
+            getAnalysisReport(BRIEF_REPORT_TYPES[briefType], date),
+            getAnalysisReport(BROADCAST_REPORT_TYPES[briefType], date),
+            slot === 'post' ? getAnalysisReport('review', date) : Promise.resolve(null),
+        ])
+        if (!isPublicBriefReport(brief, briefType, BRIEF_REPORT_TYPES[briefType], date)) {
+            res.json({ code: 0, data: null })
+            return
+        }
+        const broadcastRow: unknown = broadcast
+        const validBroadcast = isValidatedBroadcastReport(
+            broadcastRow, briefType, BROADCAST_REPORT_TYPES[briefType], date, brief,
+            `/api/agent/audio/broadcast-${briefType}-${date}.mp3`,
+        )
+        res.json({
+            code: 0,
+            data: buildBriefEnvelope({
+                // 晚报 extras：review 报告只读投影（异象结论 + 指数/涨跌家数/板块）。
+                review: slot === 'post' && review && typeof review === 'object'
+                    ? {
+                        content: (review as { content: Record<string, unknown> }).content,
+                        status: typeof (review as { status?: unknown }).status === 'string'
+                            ? (review as { status: string }).status
+                            : null,
+                    }
+                    : null,
+                slot,
+                date,
+                brief: { content: brief.content },
+                broadcast: validBroadcast
+                    ? { content: (broadcastRow as { content: Record<string, unknown> }).content }
+                    : null,
+            }),
+        })
+    } catch (err: unknown) {
+        console.error('[Public] briefing GET error:', errMsg(err))
         res.status(500).json({ code: -1, message: 'Internal server error' })
     }
 })

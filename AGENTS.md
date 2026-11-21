@@ -260,6 +260,7 @@ Python Agent 服务通过以下接口获取 A 股数据（需携带 `X-Internal-
 | 接口 | 方法 | 说明 |
 |------|------|------|
 | `/api/agent/report/:intent/:date` | GET | 查询分析报告（intent: morning/wind_leader/hot_burst/broadcast/stock/alert/review/iterate，date: YYYY-MM-DD） |
+| `/api/agent/briefing/:slot/:date` | GET | **早/午/晚报统一出口 `briefing.v1`**（2026-11-22，只读投影）：`slot ∈ pre/mid/post`；pre=读 `brief_morning`+`broadcast_morning`，mid=读 `midday` 报告，post=读 `brief_evening`+`broadcast_evening`+`review`（`evening_extras` 投影异象结论/指数/涨跌家数/板块排行）；查无 → `{code:0,data:null}`；纯函数见 `src/core/routes/briefingEnvelope.ts`；须在 createAgentProxy 之前挂载 |
 | `/api/agent/audio/:filename` | GET | 音频文件流服务（防路径遍历，默认目录 `AGENT_AUDIO_DIR` 或 `/home/aistock/aistock-agent-py/data/audio`） |
 | `/api/agent/event/list` | GET | 事件传导报告列表（分页，page/pageSize；每项含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
 | `/api/agent/event/:eventId` | GET | 事件传导报告详情（完整 analysis_reports；顶层含 `chain_summary` 字段 + `impactVitality` 存活度标注） |
