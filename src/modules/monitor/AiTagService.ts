@@ -50,15 +50,26 @@ export class AiTagService {
         // 无利润数据 → 无法判定
         if (currentProfit == null) return '';
 
-        const prev = await this.getPreviousFormal(symbol, endDate, 0);
-        const prevProfit = prev?.n_income_attr_p ?? null;
-        const prevRevenue = prev?.total_revenue ?? null;
+        // 同比基准：去年同期（同一报告期）
+        const base = await this.getSamePeriodLastYear(symbol, endDate);
+        const baseProfit = base?.n_income_attr_p ?? null;
+        const baseRevenue = base?.total_revenue ?? null;
 
-        // 获取上上期利润数据，用于计算"上期净利同比"（修复判定需要）
-        const prevPrev = await this.getPreviousFormal(symbol, endDate, 1);
-        const prevPrevProfit = prevPrev?.n_income_attr_p ?? null;
+        // 「修复」判定需要上一报告期及其同比
+        const prevPeriod = await this.getPreviousFormal(symbol, endDate, 0);
+        const prevPeriodBase = prevPeriod
+            ? await this.getSamePeriodLastYear(symbol, prevPeriod.end_date)
+            : null;
+        const prevPeriodYoy = this.calcYoy(
+            prevPeriod?.n_income_attr_p ?? null,
+            prevPeriodBase?.n_income_attr_p ?? null,
+        );
 
-        return this.judgeFormal(currentRevenue, currentProfit, prevRevenue, prevProfit, prevPrevProfit);
+        return this.judgeFormal(
+            currentRevenue, currentProfit,
+            baseRevenue, baseProfit,
+            prevPeriod?.n_income_attr_p ?? null, prevPeriodYoy,
+        );
     }
 
     /**
@@ -71,10 +82,8 @@ export class AiTagService {
     ): Promise<AiTag> {
         if (currentProfit == null) return '';
 
-        const prev = await this.getPreviousFormal(symbol, endDate);
-        const prevProfit = prev?.n_income_attr_p ?? null;
-
-        return this.judgeProfitOnly(currentProfit, prevProfit);
+        const base = await this.getSamePeriodLastYear(symbol, endDate);
+        return this.judgeProfitOnly(currentProfit, base?.n_income_attr_p ?? null);
     }
 
     /**
@@ -95,24 +104,24 @@ export class AiTagService {
     private static judgeFormal(
         currRev: number | null,
         currProfit: number | null,
-        prevRev: number | null,
-        prevProfit: number | null,
-        prevPrevProfit: number | null,
+        baseRev: number | null,
+        baseProfit: number | null,
+        prevPeriodProfit: number | null,
+        prevPeriodYoy: number | null,
     ): AiTag {
         // 1. 转亏：上期净利>0 且 本期净利<0
-        if (prevProfit != null && currProfit != null) {
-            if (prevProfit > 0 && currProfit < 0) return '转亏';
+        if (prevPeriodProfit != null && currProfit != null) {
+            if (prevPeriodProfit > 0 && currProfit < 0) return '转亏';
         }
 
         // 2. 扭盈：上期净利<0 且 本期净利>0
-        if (prevProfit != null && currProfit != null) {
-            if (prevProfit < 0 && currProfit > 0) return '扭盈';
+        if (prevPeriodProfit != null && currProfit != null) {
+            if (prevPeriodProfit < 0 && currProfit > 0) return '扭盈';
         }
 
-        // 计算同比
-        const revYoy = this.calcYoy(currRev, prevRev);
-        const profitYoy = this.calcYoy(currProfit, prevProfit);
-        const prevProfitYoy = this.calcYoy(prevProfit, prevPrevProfit);
+        // 计算同比（基准为去年同期）
+        const revYoy = this.calcYoy(currRev, baseRev);
+        const profitYoy = this.calcYoy(currProfit, baseProfit);
 
         // 3. 高增：营收同比>=20% 且 净利同比>=20%
         if (revYoy != null && profitYoy != null) {
@@ -120,8 +129,8 @@ export class AiTagService {
         }
 
         // 4. 修复：上期净利同比<0 且 本期净利同比>0（从下滑中恢复）
-        if (prevProfitYoy != null && profitYoy != null) {
-            if (prevProfitYoy < 0 && profitYoy > 0) return '修复';
+        if (prevPeriodYoy != null && profitYoy != null) {
+            if (prevPeriodYoy < 0 && profitYoy > 0) return '修复';
         }
 
         // 5. 疲弱：营收同比<0 且 净利同比<-30%
@@ -202,10 +211,10 @@ export class AiTagService {
         symbol: string,
         currentEndDate: string,
         offset: number = 0,
-    ): Promise<{ total_revenue: number | null; n_income_attr_p: number | null } | null> {
+    ): Promise<{ end_date: string; total_revenue: number | null; n_income_attr_p: number | null } | null> {
         try {
             const result = await pool.query(
-                `SELECT total_revenue, n_income_attr_p
+                `SELECT end_date, total_revenue, n_income_attr_p
                  FROM performance_reports
                  WHERE symbol = $1
                    AND report_type = 'formal'
@@ -213,6 +222,34 @@ export class AiTagService {
                  ORDER BY end_date DESC
                  LIMIT 1 OFFSET $3`,
                 [symbol, currentEndDate, offset],
+            );
+            if (result.rows.length === 0) return null;
+            return result.rows[0];
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * 获取去年同报告期的正式报告数据（同比基准）
+     * 例如 20260930 → 20250930
+     */
+    private static async getSamePeriodLastYear(
+        symbol: string,
+        endDate: string,
+    ): Promise<{ total_revenue: number | null; n_income_attr_p: number | null } | null> {
+        if (!/^\d{8}$/.test(endDate)) return null;
+        const lastYear = `${Number(endDate.slice(0, 4)) - 1}${endDate.slice(4)}`;
+        try {
+            const result = await pool.query(
+                `SELECT total_revenue, n_income_attr_p
+                 FROM performance_reports
+                 WHERE symbol = $1
+                   AND report_type = 'formal'
+                   AND end_date = $2
+                 ORDER BY ann_date DESC
+                 LIMIT 1`,
+                [symbol, lastYear],
             );
             if (result.rows.length === 0) return null;
             return result.rows[0];

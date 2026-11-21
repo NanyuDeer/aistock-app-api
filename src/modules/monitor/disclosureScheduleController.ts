@@ -146,15 +146,34 @@ export class DisclosureScheduleController {
      */
     static async getDisclosureSchedule(req: Request, res: Response, _next: NextFunction): Promise<void> {
         try {
-            const rawSymbols = String(req.query.symbols || '');
-            const symbols = [...new Set(rawSymbols.split(',').map((s) => normalizeStockSymbol(s)).filter(Boolean))].slice(0, MAX_SYMBOLS);
-            if (symbols.length === 0) {
-                createResponse(res, 200, 'success', { items: [] });
+            const rawSymbols = String(req.query.symbols || '').trim();
+            if (!rawSymbols) {
+                createResponse(res, 400, '缺少 symbols 参数');
                 return;
             }
 
-            const daysRaw = parseInt(String(req.query.days || DEFAULT_DAYS), 10);
-            const days = Math.min(Math.max(Number.isFinite(daysRaw) ? daysRaw : DEFAULT_DAYS, 1), MAX_DAYS);
+            const requested = rawSymbols.split(',').map((s) => s.trim()).filter(Boolean);
+            const invalid = requested.filter((s) => !normalizeStockSymbol(s));
+            if (invalid.length > 0) {
+                createResponse(res, 400, `Invalid symbols - 无法识别：${invalid.slice(0, 5).join(', ')}${invalid.length > 5 ? ' 等' : ''}`);
+                return;
+            }
+
+            const symbols = [...new Set(requested.map((s) => normalizeStockSymbol(s)).filter(Boolean))];
+            if (symbols.length > MAX_SYMBOLS) {
+                createResponse(res, 400, `Invalid symbols - 单次最多 ${MAX_SYMBOLS} 只股票，当前 ${symbols.length} 只`);
+                return;
+            }
+
+            let days = DEFAULT_DAYS;
+            if (req.query.days !== undefined) {
+                const daysRaw = Number(String(req.query.days).trim());
+                if (!Number.isInteger(daysRaw) || daysRaw < 1 || daysRaw > MAX_DAYS) {
+                    createResponse(res, 400, `Invalid days - days 必须是 1-${MAX_DAYS} 的整数`);
+                    return;
+                }
+                days = daysRaw;
+            }
 
             const today = shanghaiDateStr();
             const windowEnd = addDaysIso(today, days);

@@ -107,13 +107,16 @@ async function getDisplayReportPeriods(): Promise<string[]> {
     return [latest.period, previous.period];
 }
 
+/**
+ * 构建列表/搜索用的最新报告 CTE（全量取最新一期，不支持按年份筛选）
+ */
 const LATEST_REPORT_CTE = `
     WITH latest AS (
         SELECT p.symbol, p.stock_name, st.pinyin, p.report_type, p.ann_date, p.end_date,
                p.forecast_eps, p.rating, p.org_name, p.summary,
                p.total_revenue, p.n_income, p.n_income_attr_p, p.basic_eps, p.created_at, p.ai_tag,
                s.total_score AS ai_score,
-               -- 同比：相对上一期（end_date 更早的最近一份报告）
+               -- 同比：相对去年同期（同一报告期，end_date 减 1 年）
                CASE WHEN p.total_revenue IS NOT NULL
                          AND prev.total_revenue IS NOT NULL AND prev.total_revenue <> 0
                     THEN ((p.total_revenue - prev.total_revenue) / ABS(prev.total_revenue) * 100)::float8
@@ -135,9 +138,9 @@ const LATEST_REPORT_CTE = `
             FROM performance_reports
             WHERE symbol = p.symbol
               AND report_type IN ('formal', 'express')
-              AND end_date IS NOT NULL AND end_date != ''
-              AND end_date < p.end_date
-            ORDER BY end_date DESC, report_type DESC
+              AND end_date = CASE WHEN p.end_date ~ '^[0-9]{8}$'
+                                  THEN ((p.end_date::int - 10000))::text END
+            ORDER BY report_type = 'formal' DESC
             LIMIT 1
         ) prev ON true
     )
@@ -299,6 +302,15 @@ export class PerformanceReportController {
     }
 
     /**
+     * 校验 reportType 参数，非法值不再静默降级
+     */
+    private static parseReportType(raw: string): { value: string } | { error: string } {
+        if (!raw) return { value: '' };
+        if (raw !== 'formal' && raw !== 'express') return { error: 'Invalid reportType - 仅支持 formal 或 express' };
+        return { value: raw };
+    }
+
+    /**
      * 构建报告类型筛选条件
      * - formal：默认展示报告期（最新一期；新期不足 30 条时并含上一期）的正式报告
      * - express：同上报告期的快报，且排除同报告期已出正式报告的股票
@@ -428,13 +440,16 @@ export class PerformanceReportController {
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
 
         // 筛选条件
-        const reportType = url.searchParams.get('reportType') || '';
+        const reportTypeParsed = this.parseReportType(url.searchParams.get('reportType') || '');
+        if ('error' in reportTypeParsed) {
+            createResponse(res, 400, reportTypeParsed.error);
+            return;
+        }
+        const reportType = reportTypeParsed.value;
         const reportTypeFilter = await this.buildReportTypeFilter(reportType);
-        const endYear = url.searchParams.get('endYear') || '';
-        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
 
         try {
-            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}${endYearFilter}`;
+            const countQuery = `${LATEST_REPORT_CTE} SELECT COUNT(*) AS total FROM latest l WHERE 1=1${reportTypeFilter}`;
             const countResult = await pool.query(countQuery);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -442,7 +457,7 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE 1=1${reportTypeFilter}${endYearFilter}
+                WHERE 1=1${reportTypeFilter}
                 ORDER BY ${orderBy}
                 LIMIT $1 OFFSET $2`;
             const dataResult = await pool.query(dataQuery, [pageSize, offset]);
@@ -490,19 +505,24 @@ export class PerformanceReportController {
         const { page, pageSize, sortBy, sortOrder } = parsed;
         const offset = (page - 1) * pageSize;
         const orderBy = this.buildOrderBy(sortBy, sortOrder);
-        const keywordPattern = `%${keyword}%`;
+        // 转义 LIKE 通配符，避免 % / _ 被当作模式匹配
+        const keywordPattern = `%${keyword.replace(/[!%_]/g, m => `!${m}`)}%`;
 
-        const reportType = url.searchParams.get('reportType') || '';
+        const reportTypeParsed = this.parseReportType(url.searchParams.get('reportType') || '');
+        if ('error' in reportTypeParsed) {
+            createResponse(res, 400, reportTypeParsed.error);
+            return;
+        }
+        const reportType = reportTypeParsed.value;
         const reportTypeFilter = await this.buildReportTypeFilter(reportType);
-        const endYear = url.searchParams.get('endYear') || '';
-        const endYearFilter = endYear ? ` AND l.end_date LIKE '${endYear}%'` : '';
+        const keywordFilter = `(l.symbol LIKE $1 ESCAPE '!' OR l.stock_name LIKE $1 ESCAPE '!' OR LOWER(COALESCE(l.pinyin, '')) LIKE LOWER($1) ESCAPE '!')`;
 
         try {
             const countQuery = `${LATEST_REPORT_CTE}
                 SELECT COUNT(*) AS total
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1 OR COALESCE(l.pinyin, '') LIKE $1)
-                  AND 1=1${reportTypeFilter}${endYearFilter}`;
+                WHERE ${keywordFilter}
+                  AND 1=1${reportTypeFilter}`;
             const countResult = await pool.query(countQuery, [keywordPattern]);
             const total = Number(countResult.rows[0]?.total) || 0;
             const totalPages = Math.ceil(total / pageSize);
@@ -510,8 +530,8 @@ export class PerformanceReportController {
             const dataQuery = `${LATEST_REPORT_CTE}
                 SELECT l.*
                 FROM latest l
-                WHERE (l.symbol LIKE $1 OR l.stock_name LIKE $1 OR COALESCE(l.pinyin, '') LIKE $1)
-                  AND 1=1${reportTypeFilter}${endYearFilter}
+                WHERE ${keywordFilter}
+                  AND 1=1${reportTypeFilter}
                 ORDER BY ${orderBy}
                 LIMIT $2 OFFSET $3`;
             const dataResult = await pool.query(dataQuery, [keywordPattern, pageSize, offset]);

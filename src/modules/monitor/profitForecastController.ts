@@ -35,7 +35,7 @@ interface ParsedSummary {
     netProfitGrowth: string;
 }
 
-type ForecastSortBy = 'symbol' | 'forecast_netprofit_yoy' | 'update_time' | 'net_profit_forecast' | 'eps_forecast' | 'net_profit_growth' | 'eps_growth';
+type ForecastSortBy = 'symbol' | 'update_time' | 'net_profit_forecast' | 'eps_forecast' | 'net_profit_growth' | 'eps_growth';
 type ForecastSortOrder = 'asc' | 'desc';
 
 interface CommonListParams {
@@ -69,8 +69,9 @@ const LATEST_FORECAST_CTE = `
 export class ProfitForecastController {
     private static readonly DEFAULT_PAGE_SIZE = 50;
     private static readonly MAX_PAGE_SIZE = 500;
-    private static readonly DEFAULT_SORT_BY: ForecastSortBy = 'forecast_netprofit_yoy';
-    private static readonly ALLOWED_SORT_BY = new Set<ForecastSortBy>(['symbol', 'forecast_netprofit_yoy', 'update_time', 'net_profit_forecast', 'eps_forecast', 'net_profit_growth', 'eps_growth']);
+    private static readonly DEFAULT_SORT_BY: ForecastSortBy = 'net_profit_growth';
+    private static readonly MAX_SYMBOLS = 200;
+    private static readonly ALLOWED_SORT_BY = new Set<ForecastSortBy>(['symbol', 'update_time', 'net_profit_forecast', 'eps_forecast', 'net_profit_growth', 'eps_growth']);
     private static readonly ALLOWED_SORT_ORDER = new Set<ForecastSortOrder>(['asc', 'desc']);
 
     private static formatToChinaTimeWithMs(timestamp: number): string {
@@ -137,14 +138,22 @@ export class ProfitForecastController {
             pageSize = parsed;
         }
 
-        if (!ProfitForecastController.ALLOWED_SORT_BY.has(sortByRaw as ForecastSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol / forecast_netprofit_yoy / update_time / net_profit_growth / eps_growth' };
+        if (!ProfitForecastController.ALLOWED_SORT_BY.has(sortByRaw as ForecastSortBy)) return { error: 'Invalid sortBy - 仅支持 symbol / update_time / net_profit_forecast / eps_forecast / net_profit_growth / eps_growth' };
         const sortBy = sortByRaw as ForecastSortBy;
 
         const defaultOrder: ForecastSortOrder = sortBy === 'symbol' ? 'asc' : 'desc';
         const finalSortOrder = (sortOrderRaw || defaultOrder) as ForecastSortOrder;
         if (!ProfitForecastController.ALLOWED_SORT_ORDER.has(finalSortOrder)) return { error: 'Invalid sortOrder - 仅支持 asc 或 desc' };
 
-        return { page, pageSize, sortBy, sortOrder: finalSortOrder, symbols: parseForecastSymbols(url.searchParams.get('symbols')) };
+        const rawSymbols = url.searchParams.get('symbols');
+        if (rawSymbols !== null) {
+            const requested = rawSymbols.split(',').map(s => s.trim()).filter(Boolean);
+            if (requested.length > ProfitForecastController.MAX_SYMBOLS) {
+                return { error: `Invalid symbols - 单次最多 ${ProfitForecastController.MAX_SYMBOLS} 只股票，当前 ${requested.length} 只` };
+            }
+        }
+
+        return { page, pageSize, sortBy, sortOrder: finalSortOrder, symbols: parseForecastSymbols(rawSymbols) };
     }
 
     private static buildOrderBy(sortBy: ForecastSortBy, sortOrder: ForecastSortOrder): string {
@@ -154,7 +163,7 @@ export class ProfitForecastController {
         if (sortBy === 'net_profit_forecast') return `l.forecast_netprofit IS NULL ASC, l.forecast_netprofit ${order}, l.symbol ASC`;
         if (sortBy === 'eps_forecast') return `l.forecast_eps IS NULL ASC, l.forecast_eps ${order}, l.symbol ASC`;
         if (sortBy === 'eps_growth') return `l.forecast_eps_yoy IS NULL ASC, l.forecast_eps_yoy ${order}, l.symbol ASC`;
-        // net_profit_growth 或默认
+        // net_profit_growth
         return `l.forecast_netprofit_yoy IS NULL ASC, l.forecast_netprofit_yoy ${order}, l.symbol ASC`;
     }
 
