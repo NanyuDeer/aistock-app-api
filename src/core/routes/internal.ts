@@ -21,7 +21,7 @@ import { StockMonitorService } from '../../modules/monitor/service'
 import { TrendScoreService } from '../../modules/monitor/TrendScoreService'
 import { IndustryKGService, INDUSTRY_GRAPH_VERSION } from '../../modules/monitor/IndustryKGService'
 import { buildCausalInputs } from '../../modules/causal/causalInputsService'
-import { getMappings, upsertMappings } from '../../modules/causal/eventNodeMappingService'
+import { getMappings, getMappingsByDate, isValidDateParam, upsertMappings } from '../../modules/causal/eventNodeMappingService'
 import { buildBriefEnvelope, buildMiddayEnvelope } from './briefingEnvelope'
 import {
     EMBEDDING_DIM,
@@ -1227,12 +1227,40 @@ router.post('/event-node-mappings/upsert', async (req: Request, res: Response) =
 
 /**
  * GET /internal/event-node-mappings?eventId=xxx
+ * GET /internal/event-node-mappings?date=YYYY-MM-DD
  *
  * 读取映射缓存。cached=false 表示从未计算过；cached=true 但 mappings 为空
  * 表示算过但全部被过滤——两者不可混用，否则每次回放都会重跑 embedding。
+ *
+ * date 分支（spec 2026-11-22-l2-trigger-source-design §5.1）：按 event_start_time
+ * 落在当日（Asia/Shanghai）批量取「有映射」的事件，供 L2 候选生成的事件路使用。
+ * 两个参数互斥，同时给会 400——语义不同（单个事件回放 vs 当日批量），混用无法解释。
  */
 router.get('/event-node-mappings', async (req: Request, res: Response) => {
     const eventId = String(req.query.eventId ?? '')
+    const date = String(req.query.date ?? '')
+
+    if (eventId && date) {
+        res.status(400).json({ code: -1, message: 'eventId and date are mutually exclusive' })
+        return
+    }
+
+    if (date) {
+        if (!isValidDateParam(date)) {
+            res.status(400).json({ code: -1, message: 'invalid date (expected YYYY-MM-DD)' })
+            return
+        }
+
+        try {
+            const data = await getMappingsByDate(date)
+            res.json({ code: 200, data: { date, events: data.events, total: data.total } })
+        } catch (err: unknown) {
+            console.error('[Internal] event-node-mappings?date error:', errMsg(err))
+            res.status(500).json({ code: -1, message: errMsg(err) })
+        }
+        return
+    }
+
     if (!eventId) {
         res.status(400).json({ code: -1, message: 'eventId is required' })
         return
