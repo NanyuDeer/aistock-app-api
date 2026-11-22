@@ -8,6 +8,8 @@ import { describe, it } from 'node:test';
 
 import {
     getMappings,
+    getMappingsByDate,
+    isValidDateParam,
     upsertMappings,
     type MappingDeps,
 } from '../eventNodeMappingService';
@@ -136,5 +138,102 @@ describe('getMappings', () => {
     it('eventId 为空报错', async () => {
         const { deps } = makeDeps();
         await assert.rejects(getMappings('', deps), /eventId must not be empty/);
+    });
+});
+
+describe('isValidDateParam', () => {
+    it('接受合法日历日', () => {
+        assert.equal(isValidDateParam('2026-11-19'), true);
+        assert.equal(isValidDateParam('2024-02-29'), true); // 闰年
+    });
+
+    it('拒绝格式错误', () => {
+        for (const bad of ['2026-11-9', '26-11-19', '2026/11/19', '2026-11-19T00:00', '', 'abcd-ef-gh']) {
+            assert.equal(isValidDateParam(bad), false, `should reject ${bad}`);
+        }
+    });
+
+    it('拒绝格式对但日历上不存在的日期（否则 Postgres 会抛错变 500）', () => {
+        assert.equal(isValidDateParam('2026-02-31'), false);
+        assert.equal(isValidDateParam('2026-13-01'), false);
+        assert.equal(isValidDateParam('2025-02-29'), false); // 平年
+    });
+});
+
+describe('getMappingsByDate', () => {
+    it('按事件分组：一个事件多个节点 → 一个 event，多个 mappings', async () => {
+        const { deps, calls } = makeDeps({
+            rows: [
+                {
+                    event_id: 'EVT-a',
+                    title: '央行隔夜逆回购 7675 亿',
+                    event_start_time: '2026-11-18T16:00:00.000Z',
+                    node_id: 'DR007',
+                    reason: 'direct_factor|macro:逆回购',
+                },
+                {
+                    event_id: 'EVT-a',
+                    title: '央行隔夜逆回购 7675 亿',
+                    event_start_time: '2026-11-18T16:00:00.000Z',
+                    node_id: 'LIQUIDITY',
+                    reason: 'direct_factor|macro:逆回购',
+                },
+                {
+                    event_id: 'EVT-b',
+                    title: '台湾加权指数收跌 4.4%',
+                    event_start_time: '2026-11-18T16:00:00.000Z',
+                    node_id: 'SEC_SEMI',
+                    reason: 'direct_sector|overseas:台积电',
+                },
+            ],
+        });
+
+        const result = await getMappingsByDate('2026-11-19', deps);
+
+        assert.equal(result.total, 2);
+        assert.equal(result.events.length, 2);
+        assert.equal(result.events[0].eventId, 'EVT-a');
+        assert.deepEqual(result.events[0].mappings.map((m) => m.nodeId), ['DR007', 'LIQUIDITY']);
+        assert.equal(result.events[0].mappings[0].matchedBy, 'direct_factor|macro:逆回购');
+        assert.equal(result.events[0].eventStartTime, '2026-11-18T16:00:00.000Z');
+        assert.equal(result.events[1].mappings.length, 1);
+        assert.equal(result.events[1].mappings[0].nodeId, 'SEC_SEMI');
+
+        // 参数只传 date，且时区口径写死在 SQL 里
+        assert.deepEqual(calls[0].params, ['2026-11-19']);
+        assert.match(calls[0].sql, /AT TIME ZONE 'Asia\/Shanghai'/);
+    });
+
+    it('当日无映射事件 → 空数组且 total=0（不是异常）', async () => {
+        const { deps } = makeDeps({ rows: [] });
+        const result = await getMappingsByDate('2026-11-19', deps);
+
+        assert.deepEqual(result.events, []);
+        assert.equal(result.total, 0);
+    });
+
+    it('reason 为 null 时 matchedBy 输出 null（不缺键）', async () => {
+        const { deps } = makeDeps({
+            rows: [
+                {
+                    event_id: 'EVT-c',
+                    title: 't',
+                    event_start_time: '2026-11-18T16:00:00.000Z',
+                    node_id: 'SEC_SEMI',
+                    reason: null,
+                },
+            ],
+        });
+
+        const result = await getMappingsByDate('2026-11-19', deps);
+
+        assert.ok(Object.prototype.hasOwnProperty.call(result.events[0].mappings[0], 'matchedBy'));
+        assert.equal(result.events[0].mappings[0].matchedBy, null);
+    });
+
+    it('日期非法直接报错且不查库', async () => {
+        const { deps, calls } = makeDeps();
+        await assert.rejects(getMappingsByDate('2026-02-31', deps), /real calendar date/);
+        assert.equal(calls.length, 0);
     });
 });
