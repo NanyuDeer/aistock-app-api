@@ -1,9 +1,10 @@
+import { mediaSources, unknownSources, rankedHotSectors, type SourceDetails } from './hotBurstSources';
 /**
  * 机构调研推荐热门股整合服务
  *
  * 整合四个独立信号源：
- * 1. 财联社快讯（clsVerified）：该股票所属概念在财联社被提及
- * 2. 格隆汇快讯（glhVerified）：该股票所属概念在格隆汇被提及
+ * 1. 财联社快讯（clsVerified）：该股票被财联社合格概念新闻直接提及
+ * 2. 格隆汇快讯（glhVerified）：该股票被格隆汇合格概念新闻直接提及
  * 3. 同花顺热点掘金（thsVerified）：股票所属板块在同花顺热榜 Top10
  * 4. 研报验证（reportVerified）：24h 内有研报提及该股票
  *
@@ -15,7 +16,7 @@ import {
     getAiKeywordsForStock,
     type FeishuAiAnalysis,
 } from './FeishuMessageAiService';
-import { HotKeywordDetectorService, extractStockCodes, type HotConceptResult } from './HotKeywordDetectorService';
+import { HotKeywordDetectorService, fetchDetectionNews, extractStockCodes, type HotConceptResult } from './HotKeywordDetectorService';
 import { getThsHot, type ThsHotRow } from '../quote/TushareService';
 import { findResearchReportMessagesForStock } from '../crawler/FeishuResearchReportService';
 import { TencentQuoteService } from '../quote/TencentQuoteService';
@@ -66,6 +67,7 @@ export interface FeishuMessageRow {
 
 /** 个股共振信号（个股代码为主维度，关键词为辅助解释） */
 interface StockResonanceSignal {
+    source_details?: SourceDetails;
     /** 股票代码，如 "300308" */
     symbol: string;
     /** 股票名称 */
@@ -104,8 +106,8 @@ interface StockResonanceSignal {
     /** 检测时间 */
     detectedAt: string;
     /** 四信号源共振状态 */
-    clsVerified: boolean;           // 财联社信号：该股票所属概念在财联社被提及
-    glhVerified: boolean;           // 格隆汇信号：该股票所属概念在格隆汇被提及
+    clsVerified: boolean;           // 财联社信号：该股票被财联社合格概念新闻直接提及
+    glhVerified: boolean;           // 格隆汇信号：该股票被格隆汇合格概念新闻直接提及
     reportVerified: boolean;        // 研报信号：24h内有研报提及
     /** 共振信号数量（1-4，至少2才展示） */
     resonanceCount: number;
@@ -131,9 +133,11 @@ interface HotBurstResult {
     hot_concepts: HotConceptResult[];
 }
 
+export const __hotBurstDependencies = { getThsHot };
+
 // ==================== 同花顺热点掘金验证 ====================
 
-async function fetchThsHotSectors(): Promise<{ name: string; rank: number; change_pct: number }[]> {
+async function fetchThsHotSectors(): Promise<{ code: string; name: string; rank: number; change_pct: number }[]> {
     const today = new Date();
     const dateStrs = [0, 1, 2].map(offset => {
         const d = new Date(today);
@@ -144,7 +148,7 @@ async function fetchThsHotSectors(): Promise<{ name: string; rank: number; chang
     const results = await Promise.all(dateStrs.map(async dateStr => {
         try {
             const hotData = await withTimeout<ThsHotRow[]>(
-                getThsHot(dateStr, '概念板块'),
+                __hotBurstDependencies.getThsHot(dateStr, '概念板块'),
                 10000,
                 [],
                 `同花顺热榜 date=${dateStr}`,
@@ -160,11 +164,7 @@ async function fetchThsHotSectors(): Promise<{ name: string; rank: number; chang
     const latestAvailable = results.find(result => result.hotData.length > 0);
     if (latestAvailable) {
         console.log(`[HotBurst] 同花顺热榜使用日期 ${latestAvailable.dateStr}`);
-        return latestAvailable.hotData.slice(0, 10).map((row, idx) => ({
-            name: row.ts_name || '',
-            rank: idx + 1,
-            change_pct: Number(row.pct_change) || 0,
-        }));
+        return rankedHotSectors(latestAvailable.hotData);
     }
 
     console.warn(`[HotBurst] 同花顺热榜最近 ${dateStrs.length} 天均无可用数据: ${dateStrs.join(',')}`);
@@ -207,24 +207,26 @@ async function getStockName(symbol: string): Promise<string> {
 }
 
 /** 批量查询个股所属板块（通过 stock_concept_mapping 表） */
-async function getStockSectors(symbols: string[]): Promise<Map<string, string[]>> {
-    const sectorsByStock = new Map<string, string[]>();
+async function getStockSectors(symbols: string[]): Promise<Map<string, string[]> & { available?: boolean; codes?: Map<string, string> }> {
+    const sectorsByStock = Object.assign(new Map<string, string[]>(), { available: true, codes: new Map<string, string>() });
     if (symbols.length === 0) return sectorsByStock;
 
     try {
         const result = await pool.query(
-            `SELECT symbol, sector_name
+            `SELECT symbol, sector_name, sector_code
              FROM stock_concept_mapping
              WHERE symbol = ANY($1::text[])
-             GROUP BY symbol, sector_name`,
+             GROUP BY symbol, sector_name, sector_code`,
             [symbols]
         );
         for (const row of result.rows) {
+            if (row.sector_code) sectorsByStock.codes.set(`${row.symbol}|${row.sector_name}`, row.sector_code);
             const sectors = sectorsByStock.get(row.symbol) || [];
-            if (sectors.length < 20) sectors.push(row.sector_name);
+            sectors.push(row.sector_name);
             sectorsByStock.set(row.symbol, sectors);
         }
     } catch (err) {
+        sectorsByStock.available = false;
         console.warn('[HotBurst] 板块映射查询失败，本次同花顺验证降级:', err instanceof Error ? err.message : String(err));
         // 板块验证失败时保留空映射，其他三个信号源仍可正常参与共振。
     }
@@ -369,16 +371,20 @@ export class HotBurstService {
         console.log('[HotBurst] 开始机构调研推荐热门股检测（三源候选池）...');
 
         const now = new Date().toISOString();
+        let news: ReturnType<typeof fetchDetectionNews> | undefined;
+        const loadNews = () => news ??= withTimeout(fetchDetectionNews(), 15000, {
+            clsArticles: [], glhArticles: [], sourceAvailability: { cls: false, glh: false },
+        }, '新闻源获取');
 
         // ===== Step 1: 个股爆发检测（代码提取替代关键词匹配） =====
         const hotStocks = await withTimeout(
-            HotKeywordDetectorService.detectHotStocks(), 30000, [], 'Step1:个股爆发检测'
+            HotKeywordDetectorService.detectHotStocks(loadNews), 30000, [], 'Step1:个股爆发检测'
         );
         console.log(`[HotBurst] Step1: 检测到 ${hotStocks.length} 只爆发个股`);
 
         // ===== Step 1.5: 细分概念爆发检测（共振一：交叉验证） =====
         const hotConcepts = await withTimeout(
-            HotKeywordDetectorService.detectHotConcepts(), 20000, [], 'Step1.5:概念爆发检测'
+            HotKeywordDetectorService.detectHotConcepts(loadNews).catch(err => { console.warn('[HotBurst] 概念检测失败', err); return Object.assign([], { sourceAvailability: { cls: false, glh: false } }); }), 20000, Object.assign([], { sourceAvailability: { cls: false, glh: false } }), 'Step1.5:概念爆发检测'
         );
         console.log(`[HotBurst] Step1.5: 检测到 ${hotConcepts.length} 个爆发细分概念`);
 
@@ -393,7 +399,10 @@ export class HotBurstService {
         }
 
         // 对爆发个股，同步匹配关键词作为"原因标签"
-        const keywordResults = await HotKeywordDetectorService.detectHotKeywords();
+        const keywordResults = await withTimeout(
+            HotKeywordDetectorService.detectHotKeywords(loadNews).catch(err => { console.warn('[HotBurst] 关键词降级:', err); return []; }),
+            15000, [], '关键词标签',
+        );
 
         // 构建：每个股票代码 → 与其相关的关键词列表（通过 articleIds 交叉匹配）
         const stockKeywordsMap = new Map<string, string[]>();
@@ -456,29 +465,32 @@ export class HotBurstService {
 
         // ===== Step 2.5: 预加载研报数据（批量，避免逐个查询） =====
         // QQ 已接替原飞书研报群：QQ 群内带股票代码的消息均作为研报信号。
-        const reportStockSet = new Map<string, { count: number; latestTime: string }>();
+        let reportsAvailable = true;
+        const reportStockSet = new Map<string, { count: number; latestTime: string; ids: Set<number> }>();
         try {
             const reportMessages = await pool.query(
-                `SELECT stock_codes, received_at FROM feishu_messages
+                `SELECT id, stock_codes, received_at FROM feishu_messages
                  WHERE received_at > NOW() - INTERVAL '24 hours'
                    AND (source = 'qq' OR chat_name LIKE '%研报%')
                    AND array_length(stock_codes, 1) IS NOT NULL`
             );
             for (const row of reportMessages.rows) {
-                for (const code of row.stock_codes || []) {
+                for (const code of new Set<string>(row.stock_codes || [])) {
                     const existing = reportStockSet.get(code);
                     if (existing) {
-                        existing.count++;
+                        existing.ids.add(row.id);
+                        existing.count = existing.ids.size;
                         if (new Date(row.received_at).getTime() > new Date(existing.latestTime).getTime()) {
                             existing.latestTime = row.received_at;
                         }
                     } else {
-                        reportStockSet.set(code, { count: 1, latestTime: row.received_at });
+                        reportStockSet.set(code, { count: 1, latestTime: row.received_at, ids: new Set([row.id]) });
                     }
                 }
             }
             console.log(`[HotBurst] Step2.5: 预加载研报数据，覆盖 ${reportStockSet.size} 只股票`);
         } catch (err) {
+            reportsAvailable = false;
             console.warn('[HotBurst] Step2.5: 研报预加载失败:', (err as Error).message);
         }
 
@@ -503,8 +515,6 @@ export class HotBurstService {
         );
         console.log(`[HotBurst] Step3: 同花顺热榜 ${thsHotSectors.length} 个板块`);
 
-        const thsSectorNameSet = new Set(thsHotSectors.map(s => s.name));
-        const thsSectorRankMap = new Map(thsHotSectors.map(s => [s.name, s.rank]));
         const stockSectorsMap = await getStockSectors(Array.from(candidateStocks.keys()));
 
         // ===== 整合：对候选池统一计算四类信号 =====
@@ -521,30 +531,18 @@ export class HotBurstService {
             let thsSectorRank = 0;
 
             const stockSectors = stockSectorsMap.get(symbol) || [];
-            // 精确匹配
-            for (const sector of stockSectors) {
-                if (thsSectorNameSet.has(sector)) {
-                    thsVerified = true;
-                    thsSectorName = sector;
-                    thsSectorRank = thsSectorRankMap.get(sector) || 0;
-                    break;
-                }
+            const matchedSectors = stockSectors.flatMap(sector => {
+                const code = stockSectorsMap.codes?.get(`${symbol}|${sector}`);
+                const hot = thsHotSectors.find(s => code
+                    ? s.code.split('.')[0] === code.split('.')[0]
+                    : s.name === sector);
+                return hot ? [{ code: hot.code, name: hot.name, rank: hot.rank }] : [];
+            }).sort((a, b) => a.rank - b.rank);
+            if (matchedSectors.length) {
+                thsVerified = true;
+                thsSectorName = matchedSectors[0].name;
+                thsSectorRank = matchedSectors[0].rank;
             }
-
-            // 模糊匹配：热榜板块名包含在股票板块中或反之
-            if (!thsVerified) {
-                outer: for (const sector of stockSectors) {
-                    for (const thsName of thsSectorNameSet) {
-                        if (sector.includes(thsName) || thsName.includes(sector)) {
-                            thsVerified = true;
-                            thsSectorName = thsName;
-                            thsSectorRank = thsSectorRankMap.get(thsName) || 0;
-                            break outer;
-                        }
-                    }
-                }
-            }
-
             const stockName = hotStock?.stockName || candidateName || await getStockName(symbol);
 
             // 构建触发标签：概念名 + 板块名 + 维度关键词
@@ -561,6 +559,7 @@ export class HotBurstService {
 
             outbreaks.push({
                 symbol,
+                source_details: { ...unknownSources(), ths: { status: thsVerified ? 'passed' : 'not_passed', matched_sectors: matchedSectors } },
                 stockName,
                 newsCount: hotStock?.currentCount || 0,
                 newsSurgeRatio: hotStock?.surgeRatio || 0,
@@ -594,9 +593,11 @@ export class HotBurstService {
         // 补充共振状态
         for (const signal of outbreaks) {
             // 财联社信号：所属概念在财联社被提及
-            signal.clsVerified = (signal.conceptResonance?.clsCount ?? 0) > 0;
+            const matchedSectors = signal.source_details?.ths.matched_sectors ?? [];
+            signal.source_details = mediaSources(signal.symbol, hotConcepts, hotConcepts.sourceAvailability ?? { cls: true, glh: true });
+            signal.clsVerified = signal.source_details.cls.status === 'passed';
             // 格隆汇信号：所属概念在格隆汇被提及
-            signal.glhVerified = (signal.conceptResonance?.glhCount ?? 0) > 0;
+            signal.glhVerified = signal.source_details.glh.status === 'passed';
 
             // 概念详情
             if (signal.conceptResonance) {
@@ -617,6 +618,15 @@ export class HotBurstService {
                 };
             }
 
+            signal.source_details.qq = {
+                status: !reportsAvailable ? 'unavailable' : signal.reportVerified ? 'passed' : 'not_passed',
+                stock_mention_count: reportData?.count ?? 0,
+                evidence_message_ids: [...(reportData?.ids ?? [])].sort((a, b) => a - b),
+            };
+            signal.source_details.ths = {
+                status: !thsHotSectors.length || !stockSectorsMap.available ? 'unavailable' : signal.thsVerified ? 'passed' : 'not_passed',
+                matched_sectors: matchedSectors,
+            };
             // 计算共振数量（四个信号源）：CLS、格隆汇、同花顺、研报/QQ 
             signal.resonanceCount = countResonanceSources(
                 signal.clsVerified,
@@ -708,14 +718,14 @@ export class HotBurstService {
                 s.price, s.changePct, s.sectorInfo,
                 s.triggerTags.join('、'),
                 s.newsCount, s.feishuMessageCount, s.thsVerified,
-                s.resonanceCount,
+                s.resonanceCount, JSON.stringify(s.source_details ?? unknownSources()),
             ]);
             const placeholders = rows.map((_, i) =>
-                `(($${i * 13 + 1}::timestamptz AT TIME ZONE 'UTC'), $${i * 13 + 2}, $${i * 13 + 3}, $${i * 13 + 4}, $${i * 13 + 5}, $${i * 13 + 6}, $${i * 13 + 7}, $${i * 13 + 8}, $${i * 13 + 9}, $${i * 13 + 10}, $${i * 13 + 11}, $${i * 13 + 12}, $${i * 13 + 13})`
+                `(($${i * 14 + 1}::timestamptz AT TIME ZONE 'UTC'), $${i * 14 + 2}, $${i * 14 + 3}, $${i * 14 + 4}, $${i * 14 + 5}, $${i * 14 + 6}, $${i * 14 + 7}, $${i * 14 + 8}, $${i * 14 + 9}, $${i * 14 + 10}, $${i * 14 + 11}, $${i * 14 + 12}, $${i * 14 + 13}, $${i * 14 + 14}::jsonb)`
             ).join(', ');
             const values = rows.flat();
             await pool.query(
-                `INSERT INTO institution_research_history (detected_at, symbol, stock_name, resonance_score, resonance_level, price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count)
+                `INSERT INTO institution_research_history (detected_at, symbol, stock_name, resonance_score, resonance_level, price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details)
                  VALUES ${placeholders}`,
                 values
             );
@@ -758,14 +768,14 @@ export class HotBurstService {
             const result = await pool.query(
                 `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name,
                         resonance_score, resonance_level, price, change_pct, sector_info, keywords,
-                        news_count, feishu_count, ths_verified, resonance_count
+                        news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE resonance_count >= $1
                    AND detected_at >= ($2::timestamptz AT TIME ZONE 'UTC')
                  ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC`,
                 [minimum, isoStart],
             );
-            records = result.rows;
+            records = result.rows.map(r => ({ ...r, source_details: r.source_details ?? unknownSources() }));
             total = records.length;
         } else if (minResonance !== undefined) {
             const safeMinResonance = Math.min(Math.max(minResonance, 2), 4);
@@ -779,7 +789,7 @@ export class HotBurstService {
 
             const result = await pool.query(
                 `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
-                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE resonance_count >= $3
                    AND ${isoStart ? "detected_at >= ($4::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($4::text || ' days')::interval"}
@@ -787,7 +797,7 @@ export class HotBurstService {
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, safeMinResonance, isoStart] : [limit, offset, safeMinResonance, safeDays]
             );
-            records = result.rows;
+            records = result.rows.map(r => ({ ...r, source_details: r.source_details ?? unknownSources() }));
         } else
 
         if (minResonanceOnly) {
@@ -801,7 +811,7 @@ export class HotBurstService {
 
             const result = await pool.query(
                 `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
-                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE resonance_count >= 2
                    AND ${isoStart ? "detected_at >= ($3::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($3::text || ' days')::interval"}
@@ -809,7 +819,7 @@ export class HotBurstService {
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
-            records = result.rows;
+            records = result.rows.map(r => ({ ...r, source_details: r.source_details ?? unknownSources() }));
         } else {
             const countResult = await pool.query(
                 `SELECT COUNT(*)::int AS total FROM institution_research_history
@@ -820,14 +830,14 @@ export class HotBurstService {
 
             const result = await pool.query(
                 `SELECT id, (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
-                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE ${isoStart ? "detected_at >= ($3::timestamptz AT TIME ZONE 'UTC')" : "detected_at >= (NOW() AT TIME ZONE 'UTC') - ($3::text || ' days')::interval"}
                  ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
                  LIMIT $1 OFFSET $2`,
                 isoStart ? [limit, offset, isoStart] : [limit, offset, safeDays]
             );
-            records = result.rows;
+            records = result.rows.map(r => ({ ...r, source_details: r.source_details ?? unknownSources() }));
         }
 
         // 刷新行情数据
@@ -925,7 +935,7 @@ export class HotBurstService {
         try {
             const dbResult = await pool.query(
                 `SELECT (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
-                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE resonance_count >= $2
                    AND detected_at >= (NOW() AT TIME ZONE 'UTC') - ($1::text || ' hours')::interval
@@ -954,10 +964,11 @@ export class HotBurstService {
                     conceptResonance: null,
                     articles: [],
                     detectedAt: r.detected_at,
-                    clsVerified: false,
-                    glhVerified: false,
-                    reportVerified: false,
+                    clsVerified: r.source_details?.cls?.status === 'passed',
+                    glhVerified: r.source_details?.glh?.status === 'passed',
+                    reportVerified: r.source_details?.qq?.status === 'passed',
                     resonanceCount: r.resonance_count,
+                    source_details: r.source_details ?? unknownSources(),
                     conceptDetail: null,
                     reportDetail: null,
                 }));
@@ -994,7 +1005,7 @@ export class HotBurstService {
         try {
             const result = await pool.query(
                 `SELECT (detected_at AT TIME ZONE 'UTC') AS detected_at, symbol, stock_name, resonance_score, resonance_level,
-                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count
+                        price, change_pct, sector_info, keywords, news_count, feishu_count, ths_verified, resonance_count, source_details
                  FROM institution_research_history
                  WHERE resonance_count >= 2
                  ORDER BY institution_research_history.detected_at DESC, resonance_score DESC, id DESC
@@ -1004,7 +1015,7 @@ export class HotBurstService {
             if (result.rows.length === 0) {
                 return null;
             }
-            const records = result.rows;
+            const records = result.rows.map(r => ({ ...r, source_details: r.source_details ?? unknownSources() }));
             const latestTime = records[0].detected_at;
             const outbreaks: StockResonanceSignal[] = records.map((r: any) => ({
                 symbol: r.symbol,
@@ -1024,10 +1035,11 @@ export class HotBurstService {
                 conceptResonance: null,
                 articles: [],
                 detectedAt: r.detected_at,
-                clsVerified: false,
-                glhVerified: false,
-                reportVerified: false,
+                clsVerified: r.source_details?.cls?.status === 'passed',
+                glhVerified: r.source_details?.glh?.status === 'passed',
+                reportVerified: r.source_details?.qq?.status === 'passed',
                 resonanceCount: r.resonance_count,
+                    source_details: r.source_details ?? unknownSources(),
                 conceptDetail: null,
                 reportDetail: null,
             }));

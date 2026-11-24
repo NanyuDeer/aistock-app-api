@@ -1,3 +1,4 @@
+import { rankedHotSectors } from './hotBurstSources';
 import { HotKeywordDetectorService, type HotConceptResult } from './HotKeywordDetectorService';
 import { isParentIndustryHot } from './ConceptIndustryMap';
 import { findResearchReportMessagesForStock, type ResearchReportStock } from '../crawler/FeishuResearchReportService';
@@ -46,11 +47,7 @@ export async function fetchThsHotSectors(): Promise<{ name: string; rank: number
 
       const hotData: ThsHotRow[] = await getThsHot(dateStr, '概念板块');
       if (hotData.length > 0) {
-        return hotData.slice(0, 10).map((row, idx) => ({
-          name: row.ts_name || '',
-          rank: idx + 1,
-          changePct: Number(row.pct_change) || 0,
-        }));
+        return rankedHotSectors(hotData).map(row => ({ name: row.name, rank: row.rank, changePct: row.change_pct }));
       }
     }
   } catch (err) {
@@ -75,8 +72,9 @@ export async function evaluateStockResonance(
   for (const concept of hotConcepts) {
     if (!concept.stockCodes.some(s => s.symbol === symbol)) continue;
 
-    if (concept.clsCount > 0) clsVerified = true;
-    if (concept.glhCount > 0) glhVerified = true;
+    const stock = concept.stockCodes.find(s => s.symbol === symbol)!;
+    if (stock.source === 'cls' || stock.source === 'both') clsVerified = true;
+    if (stock.source === 'glh' || stock.source === 'both') glhVerified = true;
 
     relatedConcepts.push({
       conceptName: concept.conceptName,

@@ -1261,6 +1261,7 @@ async function start() {
                 UNIQUE(symbol, sector_name)
             )
         `);
+        await pool.query('ALTER TABLE stock_concept_mapping ADD COLUMN IF NOT EXISTS sector_code TEXT');
         console.log('[DB] stock_concept_mapping table ready');
     } catch (err: unknown) {
         console.warn('[DB] stock_concept_mapping table check:', err instanceof Error ? err.message : String(err));
@@ -1322,6 +1323,7 @@ async function start() {
             ALTER TABLE institution_research_history
             ADD COLUMN IF NOT EXISTS resonance_count INT DEFAULT 0
         `);
+        await pool.query('ALTER TABLE institution_research_history ADD COLUMN IF NOT EXISTS source_details JSONB');
         console.log('[DB] institution_research_history table ready');
     } catch (err: unknown) {
         console.warn('[DB] institution_research_history table check:', err instanceof Error ? err.message : String(err));
