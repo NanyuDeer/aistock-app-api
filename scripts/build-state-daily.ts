@@ -708,6 +708,23 @@ async function main(): Promise<void> {
         return;
     }
 
+    // 覆盖度守卫：算出来的天数必须等于区间内 stock_daily 的实际交易日数。
+    // 为什么需要：writeRows 是 upsert，只覆盖它算出的那些日期，
+    // 其余日期会保留旧值。一旦 stock_daily 只回填了一部分（本地开发库常见），
+    // 就会得到"一半新、一半旧"的表，而且没有任何报错 —— 这是最难查的那种错。
+    const expect = await pool.query(
+        `SELECT count(DISTINCT trade_date)::int AS n FROM stock_daily
+          WHERE trade_date >= $1::date AND trade_date <= $2::date`,
+        [start, end],
+    );
+    const expected = Number(expect.rows[0].n);
+    if (rows.length !== expected) {
+        throw new Error(
+            `状态行数 ${rows.length} 与 stock_daily 区间内交易日数 ${expected} 不一致。` +
+            '这通常意味着 stock_daily 只回填了一部分，继续写会把其余日期留成旧值。',
+        );
+    }
+
     const n = await writeRows(rows);
     console.log(`写库完成 ${n} 行`);
     await verify();
