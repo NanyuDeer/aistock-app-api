@@ -6,6 +6,22 @@ import { __aiSelectionDependencies as deps, triggerAiStockSelection, aiEntryPerf
 import { tradingCalendarStore, __tradingCalendarStoreDependencies } from '../../../shared/utils/tradingCalendarStore';
 import { TradingCalendarRefreshService } from '../../../modules/market/TradingCalendarRefreshService';
 
+test('机构候选同分按真实时间排序，Date与带偏移字符串归一为ISO，保留最新10只', async t => {
+    const rows = Array.from({ length: 11 }, (_, i) => ({
+        symbol: `600${String(i).padStart(3, '0')}`, name: '测试', resonance_score: 40,
+        detected_at: i % 2 ? new Date(Date.UTC(2026, 10, i + 1)) : `2026-11-${String(i + 1).padStart(2, '0')}T08:00:00+08:00`,
+    }));
+    const query = mock.method(pool, 'query', (async (sql: string) => ({ rows: sql.includes('FROM institution_research_history') ? rows : [] })) as never);
+    t.after(() => query.mock.restore());
+    const candidates = await loadCandidates('2026-11-20');
+    assert.equal(candidates.length, 10);
+    assert.equal(candidates.some(c => c.symbol === '600000'), false);
+    const newest = candidates.find(c => c.symbol === '600010')!;
+    assert.equal(newest.sourceRanks.institutionRank, 1);
+    assert.equal(newest.institution.detectedAt, '2026-11-11T00:00:00.000Z');
+    assert.equal(candidates.find(c => c.symbol === '600009')!.institution.detectedAt, '2026-11-10T00:00:00.000Z');
+});
+
 test('AI持锁到执行结束；成功同日复用，降级重试，force重跑；获取锁后清理遗留任务', async () => {
     const queries: string[] = [];
     let locked = true, ready = false, nextId = 1;

@@ -142,7 +142,8 @@ async function getOutbreakData(): Promise<{ feishu: OutbreakStock[]; wechat: Out
         };
     } catch (err: any) {
         console.error('[MessagePush] 获取机构调研推荐热门股数据失败:', err?.message || err, err?.stack || '');
-        return { feishu: [], wechat: [] };
+        // 检测或历史发布失败不能当成正常空榜；交由手动接口/调度器记录失败。
+        throw err;
     }
 }
 

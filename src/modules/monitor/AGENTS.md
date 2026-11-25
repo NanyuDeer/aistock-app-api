@@ -104,3 +104,13 @@
 - `GET /api/cn/wind-leaders` 的 hot_sectors 多数板块 `today_change=null`、`amount=0`：原收盘兜底只查 `board_rotation_daily`（每日仅涨/跌前 10），榜单外板块查不到。
 - `BoardRealtime` 新增 `latest_change_pct`：stale 盘口（today.js 日期 ≠ 当前交易日）仍按 last.js 昨收计算最近交易日涨跌幅，但 `change_pct/amount` 保持 null（不冒充今日），仅供收盘兜底。
 - `WindLeaderService.getAnalysis` 兜底顺序：轮动榜 `pct_change` 优先 → `resolveStaleBoardClose`（**盘口日期必须 === 最近交易日**）补最近收盘涨跌幅 + 成交额 → 否则 `unavailable`。来源标 `latest_close`，日期为实际盘口日，不跨日冒充。
+
+### 2026-11-24 机构热门股来源修正
+
+- 财联社/格隆汇继续共用热门概念次数与爆发筛选，但个股票只来自本来源直接提股的合格概念新闻；合并同股全部概念，不再继承概念双源票。QQ仍按近24小时消息入候选，同花顺仅验证候选所属Top10板块，至少两票发布。
+- 同批个股/概念/关键词检测复用新闻抓取结果；新闻窗口与100/50条上限不变，不宣称窗口全量覆盖。
+- 榜单历史新增source_details JSONB，仅有cls/glh(status, matched_concepts)、qq(status, stock_mention_count, evidence_message_ids)、ths(status, matched_sectors[{code,name,rank}])。状态passed/not_passed/unavailable/unknown。新记录共振数等于passed数量；旧记录NULL读为unknown，保留原共振数。查询、latest和DB兜底均透传明细。
+- 概念成分完整获取成功后事务替换映射，移除过时成员；任一获取失败保留旧映射。板块按代码优先、无代码时精确名称匹配，取消子串匹配。
+- 仅统计提及，正负情绪/机构推荐性质留待后续；不保存媒体新闻ID或全文，不能仅靠明细回查原文。QQ证据ID引用feishu_messages主键。
+
+- 复核补修：两个新闻源分别限时，单源超时保留健康源；新闻按来源内ID去重；HTTP成功但新闻结构不可解析视为不可用。概念词库加载失败不缓存为空，后续允许重试；关键词标签失败不阻断来源检测。热榜按供应商rank筛选1..10，不依赖返回顺序，板块代码比较兼容.TI后缀；历史兜底的旧布尔字段由保存的来源明细还原。

@@ -72,6 +72,11 @@ const numberOrNull = (value: unknown): number | null => {
 };
 
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
+function institutionDetectedAt(value: unknown): string | null {
+    const date = value instanceof Date ? value : typeof value === 'string' ? new Date(value) : null;
+    return date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+}
+
 const newRanks = (): SourceRanks => ({ shortTermRank: null, trendRank: null, institutionRank: null, netProfitForecastRank: null, epsForecastRank: null, netProfitGrowthRank: null, epsGrowthRank: null });
 
 const truncate = (value: unknown, max: number): string => {
@@ -222,10 +227,10 @@ export async function loadCandidates(tradeDate: string): Promise<Candidate[]> {
             ORDER BY t.score DESC, t.symbol ASC LIMIT $1`, [TOP_PER_SOURCE]),
         pool.query(`
             SELECT DISTINCT ON (h.symbol) h.symbol, h.stock_name AS name, COALESCE(s.industry, '') AS industry,
-              h.resonance_score, h.resonance_level, h.resonance_count, h.detected_at,
+              h.resonance_score, h.resonance_level, h.resonance_count, (h.detected_at AT TIME ZONE 'UTC') AS detected_at,
               h.sector_info, h.keywords, h.news_count, h.feishu_count
             FROM institution_research_history h LEFT JOIN stocks s ON s.symbol = h.symbol
-            WHERE h.resonance_count >= 2 AND h.detected_at >= NOW() - INTERVAL '3 days'
+            WHERE h.resonance_count >= 2 AND h.detected_at >= (NOW() AT TIME ZONE 'UTC') - INTERVAL '3 days'
             ORDER BY h.symbol, h.detected_at DESC, h.resonance_score DESC`),
         pool.query(`${latestForecast} WHERE forecast_netprofit IS NOT NULL ORDER BY forecast_netprofit DESC NULLS LAST, symbol ASC LIMIT $1`, [TOP_PER_SOURCE]),
         pool.query(`${latestForecast} WHERE forecast_eps IS NOT NULL ORDER BY forecast_eps DESC NULLS LAST, symbol ASC LIMIT $1`, [TOP_PER_SOURCE]),
@@ -248,13 +253,15 @@ export async function loadCandidates(tradeDate: string): Promise<Candidate[]> {
         candidate.trend = { score: numberOrNull(row.score), label: text(row.label) || null, scoreDate: text(row.score_date) || null };
     });
     const hotTop = [...institutionRows.rows].sort((a, b) => Number(b.resonance_score || 0) - Number(a.resonance_score || 0)
-        || String(b.detected_at).localeCompare(String(a.detected_at))).slice(0, TOP_PER_SOURCE);
+        || Date.parse(institutionDetectedAt(b.detected_at) ?? '1970-01-01T00:00:00Z')
+            - Date.parse(institutionDetectedAt(a.detected_at) ?? '1970-01-01T00:00:00Z')
+        || text(a.symbol).localeCompare(text(b.symbol))).slice(0, TOP_PER_SOURCE);
     hotTop.forEach((row: Record<string, unknown>, index: number) => {
         const candidate = ensureCandidate(candidates, row); if (!candidate) return;
         setRank(candidate, 'institutionRank', index + 1);
         candidate.institution = {
             resonanceScore: numberOrNull(row.resonance_score), resonanceLevel: text(row.resonance_level) || null,
-            resonanceCount: numberOrNull(row.resonance_count), detectedAt: text(row.detected_at) || null,
+            resonanceCount: numberOrNull(row.resonance_count), detectedAt: institutionDetectedAt(row.detected_at),
             themes: [text(row.sector_info), ...text(row.keywords).split(/[、,，|]/)].filter(Boolean).slice(0, 5),
             newsCount: numberOrNull(row.news_count), feishuCount: numberOrNull(row.feishu_count),
         };

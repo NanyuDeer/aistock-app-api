@@ -98,24 +98,26 @@ export async function getConceptVocabulary(): Promise<ConceptEntry[]> {
             await new Promise(r => setTimeout(r, 1000));
             if (conceptVocabularyLoaded) return conceptVocabulary;
         }
-        return conceptVocabulary;
+        throw new Error('概念词库加载未完成');
     }
 
     conceptVocabularyLoading = true;
     try {
         console.log('[HotKeywordDetector] 开始加载概念词库...');
-        const rows = await getThsIndex('N', 'A');
+        const rows = await __hotKeywordDependencies.getThsIndex('N', 'A');
         // 过滤有效名称，按长度降序排列
         conceptVocabulary = rows
             .filter(r => r.name && r.name.length >= 2)
             .map(r => ({ tsCode: r.ts_code, name: r.name }))
             .sort((a, b) => b.name.length - a.name.length);
 
+        if (!conceptVocabulary.length) throw new Error('概念词库为空');
         conceptVocabularyLoaded = true;
         console.log(`[HotKeywordDetector] 概念词库加载完成: ${conceptVocabulary.length} 个概念`);
     } catch (err) {
         console.warn('[HotKeywordDetector] 概念词库加载失败，使用空词库:', (err as Error).message);
-        conceptVocabularyLoaded = true; // 标记已加载，避免反复重试
+        conceptVocabularyLoaded = false;
+        throw err;
     } finally {
         conceptVocabularyLoading = false;
     }
@@ -297,13 +299,14 @@ async function fetchClsTelegraph(lastTime: number = 0, limit: number = 100, sinc
     if (!response.ok) throw new Error(`财联社电报请求失败: ${response.status}`);
 
     let rawData: any = null;
-    try { rawData = await response.json(); } catch { return []; }
-    if (typeof rawData?.errno === 'number' && rawData.errno !== 0) return [];
+    try { rawData = await response.json(); } catch { throw new Error('财联社响应无法解析'); }
+    if (typeof rawData?.errno === 'number' && rawData.errno !== 0) throw new Error('财联社业务错误');
 
     // 时间过滤下限（sinceHours=0 表示不过滤）
     const minTimestamp = sinceHours > 0 ? Math.floor(Date.now() / 1000) - sinceHours * 3600 : 0;
 
-    const entries = rawData?.data?.list || rawData?.list || [];
+    const entries = rawData?.data?.list ?? rawData?.list;
+    if (!Array.isArray(entries)) throw new Error('财联社响应缺少新闻列表');
     const items: TelegraphItem[] = [];
 
     for (const entry of entries) {
@@ -431,11 +434,12 @@ async function fetchGelonghuiNews(limit: number = 50, sinceHours: number = 0): P
 
         if (!response.ok) {
             console.warn(`[HotKeywordDetector] 格隆汇网页请求失败: HTTP ${response.status}`);
-            return [];
+            throw new Error(`格隆汇请求失败: ${response.status}`);
         }
 
         const html = await response.text();
         const entries = parseGelonghuiNuxtData(html);
+        if (!entries.length) throw new Error('格隆汇页面未解析到新闻，无法确认数据可用');
 
         const items: TelegraphItem[] = [];
         // 时间过滤下限（sinceHours=0 表示不过滤）
@@ -462,9 +466,43 @@ async function fetchGelonghuiNews(limit: number = 50, sinceHours: number = 0): P
         return items;
     } catch (err) {
         console.warn('[HotKeywordDetector] 格隆汇快讯获取失败:', (err as Error).message);
-        return [];
+        throw err;
     }
 }
+
+export const __hotKeywordDependencies = { getThsIndex, fetchClsTelegraph, fetchGelonghuiNews };
+async function sourceWithTimeout<T>(request: Promise<T>, timeoutMs: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([request, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('新闻源超时')), timeoutMs);
+        })]);
+    } finally { if (timer) clearTimeout(timer); }
+}
+export async function fetchDetectionNews(timeoutMs = 12000) {
+    const hours = TradingCalendarService.getDynamicWindowHours();
+    const [cls, glh] = await Promise.allSettled([
+        sourceWithTimeout(__hotKeywordDependencies.fetchClsTelegraph(0, 100, hours), timeoutMs),
+        sourceWithTimeout(__hotKeywordDependencies.fetchGelonghuiNews(50, hours), timeoutMs),
+    ]);
+    for (const result of [cls, glh]) {
+        if (result.status === 'rejected') console.warn('[HotKeywordDetector] 新闻源不可用:', result.reason);
+    }
+    const dedupe = (items: TelegraphItem[]) => {
+        const seen = new Set<string>();
+        return items.filter(item => {
+            const key = item.id || `${item.timestamp}|${item.title}|${item.content}`;
+            if (seen.has(key)) return false;
+            seen.add(key); return true;
+        });
+    };
+    return {
+        clsArticles: cls.status === 'fulfilled' ? dedupe(cls.value) : [],
+        glhArticles: glh.status === 'fulfilled' ? dedupe(glh.value) : [],
+        sourceAvailability: { cls: cls.status === 'fulfilled', glh: glh.status === 'fulfilled' },
+    };
+}
+type NewsLoader = () => ReturnType<typeof fetchDetectionNews>;
 
 // ==================== 关键词匹配与爆发检测 ====================
 
@@ -839,22 +877,11 @@ export class HotKeywordDetectorService {
      * 3. 与历史频次对比，检测爆发信号
      * 4. 返回爆发关键词列表
      */
-    static async detectHotKeywords(): Promise<HotKeywordResult[]> {
+    static async detectHotKeywords(loadNews: NewsLoader = fetchDetectionNews): Promise<HotKeywordResult[]> {
         console.log('[HotKeywordDetector] 开始关键词爆发检测...');
 
         // 1. 爬取快讯
-        const windowHours = TradingCalendarService.getDynamicWindowHours();
-        console.log(`[HotKeywordDetector] detectHotKeywords 时间窗口: ${windowHours}h`);
-        const [clsArticles, glhArticles] = await Promise.all([
-            fetchClsTelegraph(0, 100, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 财联社电报获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-            fetchGelonghuiNews(50, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 格隆汇快讯获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-        ]);
+        const { clsArticles, glhArticles, sourceAvailability } = await loadNews();
 
         console.log(`[HotKeywordDetector] 获取快讯: 财联社=${clsArticles.length}, 格隆汇=${glhArticles.length}`);
 
@@ -944,25 +971,14 @@ export class HotKeywordDetectorService {
      * 3. 与历史频次对比，检测爆发信号
      * 4. 返回爆发个股列表
      */
-    static async detectHotStocks(): Promise<HotStockResult[]> {
+    static async detectHotStocks(loadNews: NewsLoader = fetchDetectionNews): Promise<HotStockResult[]> {
         console.log('[HotKeywordDetector] 开始个股爆发检测...');
 
         // 0. 预加载 A 股名称映射（用于公司名称→代码匹配，幂等调用）
         await loadStockNameMap();
 
         // 1. 爬取快讯
-        const windowHours = TradingCalendarService.getDynamicWindowHours();
-        console.log(`[HotKeywordDetector] detectHotStocks 时间窗口: ${windowHours}h`);
-        const [clsArticles, glhArticles] = await Promise.all([
-            fetchClsTelegraph(0, 100, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 财联社电报获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-            fetchGelonghuiNews(50, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 格隆汇快讯获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-        ]);
+        const { clsArticles, glhArticles, sourceAvailability } = await loadNews();
 
         // 2. 提取个股
         const clsStocks = analyzeStockMentions(clsArticles, '财联社');
@@ -1080,25 +1096,14 @@ export class HotKeywordDetectorService {
     // ==================== 细分概念爆发检测 ====================
 
     /** 概念爆发检测结果 */
-    static async detectHotConcepts(): Promise<HotConceptResult[]> {
+    static async detectHotConcepts(loadNews: NewsLoader = fetchDetectionNews): Promise<HotConceptResult[] & { sourceAvailability?: { cls: boolean; glh: boolean } }> {
         console.log('[HotKeywordDetector] 开始细分概念爆发检测...');
 
         // 0. 预加载 A 股名称映射（用于概念关联个股的代码提取，幂等调用）
         await loadStockNameMap();
 
         // 1. 爬取快讯
-        const windowHours = TradingCalendarService.getDynamicWindowHours();
-        console.log(`[HotKeywordDetector] detectHotConcepts 时间窗口: ${windowHours}h`);
-        const [clsArticles, glhArticles] = await Promise.all([
-            fetchClsTelegraph(0, 100, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 财联社电报获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-            fetchGelonghuiNews(50, windowHours).catch(err => {
-                console.warn('[HotKeywordDetector] 格隆汇快讯获取失败:', err.message);
-                return [] as TelegraphItem[];
-            }),
-        ]);
+        const { clsArticles, glhArticles, sourceAvailability } = await loadNews();
 
         console.log(`[HotKeywordDetector] 概念检测获取快讯: 财联社=${clsArticles.length}, 格隆汇=${glhArticles.length}`);
 
@@ -1201,8 +1206,9 @@ export class HotKeywordDetectorService {
                     stockCodes: Array.from(data.stockCodes.entries()).map(([symbol, name]) => ({
                         symbol,
                         name,
-                        source: (data.clsArticles.some(a => a.id !== '') && data.glhArticles.some(a => a.id !== '')) ? 'both' as const
-                            : data.clsArticles.length > 0 ? 'cls' as const : 'glh' as const,
+                        source: clsConcepts.get(conceptName)?.stockCodes.has(symbol)
+                            ? (glhConcepts.get(conceptName)?.stockCodes.has(symbol) ? 'both' as const : 'cls' as const)
+                            : 'glh' as const,
                     })),
                     articles: allArticles.map(a => ({
                         id: a.id,
@@ -1219,6 +1225,6 @@ export class HotKeywordDetectorService {
         hotConcepts.sort((a, b) => b.surgeRatio - a.surgeRatio);
 
         console.log(`[HotKeywordDetector] 检测到 ${hotConcepts.length} 个爆发细分概念`);
-        return hotConcepts;
+        return Object.assign(hotConcepts, { sourceAvailability });
     }
 }

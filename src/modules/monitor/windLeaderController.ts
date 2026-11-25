@@ -7,7 +7,7 @@ import { createResponse } from '../../shared/utils/response';
 import { WindLeaderService } from './WindLeaderService';
 import { WindLeaderAnalyzerService } from './WindLeaderAnalyzerService';
 import { HotKeywordDetectorService } from './HotKeywordDetectorService';
-import { HotBurstService } from './HotBurstService';
+import { HotBurstService, HotBurstHistoryError } from './HotBurstService';
 import { fetchBoardKline } from './RotationBoardStore';
 
 const INTERNAL_TOKEN = process.env.INTERNAL_API_TOKEN || process.env.INTERNAL_TOKEN || 'crawler-int-2026-token';
@@ -312,13 +312,14 @@ export class WindLeaderController {
                 minResonanceOnly,
                 days,
                 minResonance,
-                tradingDays,
+                String(req.query.all) === 'true' ? Number(rawTradingDays) : tradingDays,
+                String(req.query.all) === 'true',
             );
             createResponse(res, 200, 'success', result);
         } catch (err: any) {
             const errMsg = err instanceof Error ? err.message : String(err);
             console.error('[WindLeaderController] getHotBurstHistory error:', errMsg);
-            createResponse(res, 500, errMsg);
+            createResponse(res, err instanceof HotBurstHistoryError ? err.statusCode : 500, errMsg);
         }
     }
 }

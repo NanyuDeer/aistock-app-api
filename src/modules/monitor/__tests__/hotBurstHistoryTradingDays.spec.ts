@@ -62,12 +62,12 @@ test('getHistory 传 tradingDays → SQL 用 $2::timestamptz 起点，不再用 
     await HotBurstService.getHistory(50, 0, true, 30, 2, 3);
 
     const countCall = calls[0];
-    assert.ok(countCall.sql.includes('detected_at >= $2::timestamptz'), 'count 起点应用 $2 参数');
+    assert.ok(countCall.sql.includes("detected_at >= ($2::timestamptz AT TIME ZONE 'UTC')"), 'count 起点应用 $2 参数');
     assert.equal(countCall.sql.includes('INTERVAL'), false, 'trading_days 分支不得再用 INTERVAL');
     assert.equal(typeof countCall.params[1], 'string');
     assert.ok(String(countCall.params[1]).endsWith('T00:00:00+08:00'));
     const selectCall = calls[1];
-    assert.ok(selectCall.sql.includes('detected_at >= $4::timestamptz'), 'select 起点应用 $4 参数');
+    assert.ok(selectCall.sql.includes("detected_at >= ($4::timestamptz AT TIME ZONE 'UTC')"), 'select 起点应用 $4 参数');
 });
 
 test('getHistory 不传 tradingDays → 行为与改动前完全一致（自然日 days + INTERVAL）', async (t) => {

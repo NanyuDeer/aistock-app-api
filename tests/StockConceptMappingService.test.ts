@@ -84,7 +84,7 @@ async function main(): Promise<void> {
         assert.equal(pairs[0].symbol, '300308');
     });
 
-    await runAsyncTest('continues on member fetch error for single concept', async () => {
+    await runAsyncTest('rejects partial member fetch so stale mappings are not replaced', async () => {
         const concepts = [
             { tsCode: '885001.TI', name: '正常概念' },
             { tsCode: '885002.TI', name: '错误概念' },
@@ -94,9 +94,7 @@ async function main(): Promise<void> {
             return [{ conCode: '300308.SZ', conName: '中际旭创' }];
         };
 
-        const pairs = await buildStockConceptPairs(concepts, mockGetMembers);
-        assert.equal(pairs.length, 1);
-        assert.equal(pairs[0].sectorName, '正常概念');
+        await assert.rejects(buildStockConceptPairs(concepts, mockGetMembers), /保留上次完整映射/);
     });
 
     console.log('\n所有测试通过');
