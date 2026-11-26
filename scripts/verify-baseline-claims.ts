@@ -24,7 +24,8 @@ const hasFlag = (n: string): boolean => process.argv.includes(`--${n}`);
 
 interface PendingClaim {
     claimId: string;
-    sourceRef: string;
+    /** null = 存量 claim 没有出处（本闭环跳过并计数） */
+    sourceRef: string | null;
     asOf: string;
     horizonDays: number;
     claimHorizon: string;
@@ -53,26 +54,27 @@ async function loadCaliberReturns(caliber: string): Promise<Map<string, number>>
 }
 
 async function loadPending(): Promise<PendingClaim[]> {
+    // 不在 SQL 里 `source_ref LIKE 'frd:%'`：那样存量 claim（source_ref 为 null）
+    // 会被静默过滤掉，"跳过了多少条"就永远看不见。跳过必须在计数里体现。
     const r = await pool.query(
         `SELECT c.claim_id, c.source_ref, c.as_of::date::text AS as_of,
                 c.horizon_days, c.horizon
            FROM claim_ledger c
            LEFT JOIN claim_verification v ON v.claim_id = c.claim_id
           WHERE v.claim_id IS NULL
-            AND c.source_ref LIKE 'frd:%'
             AND c.horizon_days IS NOT NULL
           ORDER BY c.as_of`,
     );
     return r.rows.map((x) => ({
         claimId: x.claim_id,
-        sourceRef: x.source_ref,
+        sourceRef: x.source_ref === null ? null : String(x.source_ref),
         asOf: x.as_of,
         horizonDays: Number(x.horizon_days),
         claimHorizon: x.horizon,
     }));
 }
 
-async function loadCell(sourceRef: string): Promise<Cell | null> {
+async function loadCell(sourceRef: string | null): Promise<Cell | null> {
     const ref = parseSourceRef(sourceRef);
     if (!ref) return null;
     const r = await pool.query(
