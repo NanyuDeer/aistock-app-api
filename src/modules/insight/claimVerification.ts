@@ -45,3 +45,48 @@ export function judge(actualRet: number, p25: number, p75: number): { isUp: bool
         inIqr: actualRet >= p25 && actualRet <= p75,
     };
 }
+
+/**
+ * as_of 之后第 horizonDays 个交易日的下标。
+ * 返回 null 表示**未到期或数据不足** —— 调用方必须据此跳过，不做部分窗口的"提前验证"。
+ */
+export function dueIndex(dates: string[], asOf: string, horizonDays: number): number | null {
+    const start = dates.indexOf(asOf);
+    if (start < 0 || horizonDays <= 0) return null;
+    const due = start + horizonDays;
+    return due < dates.length ? due : null;
+}
+
+/**
+ * as_of 收盘 → as_of+days 收盘 的区间收益，用净值复利。
+ * 窗口内出现非有限值就整段作废（不插值、不跳过）—— 补出来的收益会污染命中率。
+ */
+export function forwardReturn(returns: number[], asOfIdx: number, days: number): number | null {
+    if (asOfIdx < 0 || days <= 0) return null;
+    if (asOfIdx + days >= returns.length) return null;
+    let acc = 1;
+    for (let k = 1; k <= days; k += 1) {
+        const r = returns[asOfIdx + k];
+        if (!Number.isFinite(r)) return null;
+        acc *= 1 + r;
+    }
+    return acc - 1;
+}
+
+/**
+ * 去重叠抽样：按 as_of 升序，贪心取第一条，然后跳过所有与它窗口重叠的。
+ *
+ * 为什么要这一步：连续两天的 20 日窗口几乎完全重叠，把它们当两次独立验证
+ * 会让命中率虚高或虚低。这跟 n_eff 是同一个坑，只是从"样本量"挪到了"验证"。
+ */
+export function selectNonOverlapping<T extends { asOfIdx: number; horizonDays: number }>(rows: T[]): T[] {
+    const sorted = [...rows].sort((a, b) => a.asOfIdx - b.asOfIdx);
+    const kept: T[] = [];
+    let nextFree = -1;
+    for (const row of sorted) {
+        if (row.asOfIdx < nextFree) continue;
+        kept.push(row);
+        nextFree = row.asOfIdx + row.horizonDays;
+    }
+    return kept;
+}
