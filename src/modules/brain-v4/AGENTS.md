@@ -53,7 +53,7 @@
 | `BrainV4ArchiveService.ts` | `archiveRun`（强制 `is_shadow=true`）、`getRun`、`listRuns({feature,profile,date})`、`getComparison`、`archiveComparison`（两个 run 的 snapshot SHA 必须一致）；可注入 `SqlExecutor`，测试不依赖真实 PG |
 | `internalRouter.ts` | 本地 `verifyInternalToken`（`X-Internal-Token`）；`POST /archive`、`GET /runs`、`GET /runs/:v4RunId`、`GET /comparisons/:comparisonId`；统一 `{code,data,message}`；导出 default router |
 | `__tests__/internalRouter.spec.ts` | 假 SQL 执行器 + 注入 Service：401/403、归档强制影子、读取只查影子表、快照 SHA 不一致 409 |
-| `src/db/migrations/031_brain_v4_shadow.sql` | `brain_v4_runs` / `brain_v4_comparisons`，`CHECK (is_shadow = TRUE)` 与 profile/subject/as_of/run_id 索引 |
+| `src/db/migrations/037_brain_v4_shadow.sql` | `brain_v4_runs` / `brain_v4_comparisons`，`CHECK (is_shadow = TRUE)` 与 profile/subject/as_of/run_id 索引 |
 
 ### 归档接口表
 
