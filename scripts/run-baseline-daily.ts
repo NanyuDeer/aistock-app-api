@@ -5,7 +5,7 @@
  * `scripts/` 不进 `dist`。挂在 `src/index.ts` 的 cron 在生产跑不起来。
  * 定案是用系统 crontab 调本脚本（见 S5 spec §8）。
  *
- * 顺序不能换：补数 → 状态 → 罕见度 → 前瞻分布 → claim。
+ * 顺序不能换：补数 → 状态 → 罕见度 → 前瞻分布 → claim → 验证（了结到期 claim）。
  *
  * 【第 0 步为什么必须有】
  *   `stock_daily` 只有 `backfill-market-history.ts` 一个写入方，**没有任何每日自动更新**。
@@ -104,6 +104,8 @@ async function main(): Promise<void> {
         { name: '罕见度', script: 'build-state-rarity.ts', extra: [] },
         { name: '前瞻分布', script: 'build-forward-dist.ts', extra: ['--quiet'] },
         { name: '账本', script: 'emit-daily-baseline-claim.ts', extra: date ? ['--date', date] : [] },
+        // 账本之后：先写今天的新 claim，再了结到期的旧 claim
+        { name: '验证', script: 'verify-baseline-claims.ts', extra: [] },
     ];
 
     const t0 = Date.now();
