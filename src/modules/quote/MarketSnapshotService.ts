@@ -28,6 +28,7 @@ import {
     type CompleteDailyResult,
     type DailyCoverageReason,
 } from './TushareService';
+import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { shanghaiDateYyyymmdd, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
 
@@ -102,6 +103,22 @@ export interface QuickSnapshotDataAvailability {
     main_force: QuickDataAvailability;
 }
 
+/**
+ * 现象罕见度：当日幅度在近 750 自然日（不含当日）的分位。
+ *
+ * 来源 state_rarity_daily（033）。用途是给 Python 侧的"现象闸门"提供频率维度：
+ * 绝对阈值无法区分"常见"与"极端"（`limit_up >= 50` 在 59.8% 的交易日成立），
+ * 分位可以。缺数据时整块为 null，Python 侧据此退回旧行为。
+ */
+export interface StateRarityFact {
+    breadth_rank: number;
+    decline_rank: number;
+    style_rank: number;
+    limit_rank: number;
+    /** 窗口内实际交易日数；< 250 表示预热期，Python 侧视为不可用 */
+    window_days: number;
+}
+
 /** 当日 A 股大盘收盘事实快照。 */
 export interface CloseMarketSnapshot {
     schema_version: '1.0';
@@ -139,16 +156,21 @@ export interface CloseMarketSnapshot {
         large_and_extra_large_net_yuan: number;
         source: 'tushare:moneyflow_ths';
     };
-    coverage: {
+    coverage?: {
         current_daily: DailyCoverageSummary;
         previous_daily: DailyCoverageSummary;
     };
+    /**
+     * 现象罕见度。可能为 null：表未回填 / 当日尚未计算 / 查询失败。
+     * 刻意不阻断快照 —— 罕见度是增强项，缺了只是退回绝对阈值。
+     */
+    state_rarity?: StateRarityFact | null;
 }
 
 /** 15:30 后腾讯 quick snapshot 的专用事实契约。 */
 export interface QuickCloseMarketSnapshot extends Omit<
     CloseMarketSnapshot,
-    'breadth' | 'turnover' | 'limits' | 'main_force'
+    'breadth' | 'turnover' | 'limits' | 'main_force' | 'state_rarity'
 > {
     snapshot_kind: 'quick';
     breadth: {
@@ -242,11 +264,42 @@ export interface MarketSnapshotDeps {
      * 用于快照 sectors 概念板块（cnt_ths）之外的行业板块净流入补漏。 */
     getMoneyflowIndDc: typeof getMoneyflowIndDc;
     getMoneyflowThsByDate: typeof getMoneyflowThsByDate;
+    /** 当日现象罕见度（state_rarity_daily）。缺失/失败返回 null。 */
+    getStateRarity: typeof getStateRarity;
     /**
      * 当前时刻工厂。生产环境默认返回 new Date()；测试可注入固定时间，
      * 让内部路由测试不依赖真实当前时刻。
      */
     now: () => Date;
+}
+
+/**
+ * 读当日现象罕见度。
+ *
+ * 任何异常都降级为 null —— 罕见度缺失只意味着 Python 侧退回绝对阈值，
+ * 不应该让整份收盘快照失败（那是归因链路的唯一输入）。
+ */
+async function getStateRarity(date: string): Promise<StateRarityFact | null> {
+    try {
+        const { rows } = await pool.query(
+            `SELECT breadth_rank::float8 AS breadth_rank,
+                    decline_rank::float8 AS decline_rank,
+                    style_rank::float8   AS style_rank,
+                    limit_rank::float8   AS limit_rank,
+                    window_days
+               FROM state_rarity_daily
+              WHERE trade_date = $1::date`,
+            [date],
+        );
+        if (rows.length === 0) return null;
+        return rows[0] as StateRarityFact;
+    } catch (err) {
+        console.warn(
+            '[MarketSnapshot] state_rarity 查询失败，按缺失处理:',
+            err instanceof Error ? err.message : String(err),
+        );
+        return null;
+    }
 }
 
 export const __marketSnapshotDependencies: MarketSnapshotDeps = {
@@ -257,6 +310,7 @@ export const __marketSnapshotDependencies: MarketSnapshotDeps = {
     getMoneyflowCntThs,
     getMoneyflowIndDc,
     getMoneyflowThsByDate,
+    getStateRarity,
     now: () => new Date(),
 };
 
@@ -781,5 +835,6 @@ export async function getTodayCloseSnapshot(nowOverride?: Date): Promise<CloseMa
             current_daily: toCoverageSummary(currentDaily),
             previous_daily: toCoverageSummary(previousDaily),
         },
+        state_rarity: await deps.getStateRarity(currentTradeDate),
     };
 }

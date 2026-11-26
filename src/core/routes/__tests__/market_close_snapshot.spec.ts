@@ -186,6 +186,7 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
         getMoneyflowCntThs: deps.getMoneyflowCntThs,
         getMoneyflowIndDc: deps.getMoneyflowIndDc,
         getMoneyflowThsByDate: deps.getMoneyflowThsByDate,
+        getStateRarity: deps.getStateRarity,
         now: deps.now,
     };
     const shRows: IndexDailyRow[] = [
@@ -209,6 +210,8 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
     deps.getMoneyflowCntThs = (async () => []) as typeof orig.getMoneyflowCntThs;
     deps.getMoneyflowIndDc = (async () => []) as typeof orig.getMoneyflowIndDc;
     deps.getMoneyflowThsByDate = (async () => []) as typeof orig.getMoneyflowThsByDate;
+    // 罕见度一律给 null：这条链路在单测里不允许碰 PG（快照本身要用真实 DB 就失去隔离）
+    deps.getStateRarity = (async () => null) as typeof orig.getStateRarity;
     deps.now = fixture.now;
 
     return () => {
@@ -219,6 +222,7 @@ function applyCloseMocks(fixture: CloseFixture): () => void {
         deps.getMoneyflowCntThs = orig.getMoneyflowCntThs;
         deps.getMoneyflowIndDc = orig.getMoneyflowIndDc;
         deps.getMoneyflowThsByDate = orig.getMoneyflowThsByDate;
+        deps.getStateRarity = orig.getStateRarity;
         deps.now = orig.now;
     };
 }
