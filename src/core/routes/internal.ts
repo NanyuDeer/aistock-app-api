@@ -52,6 +52,7 @@ import { getIndexMap, resolveBoardName, getBoardDailyRange } from '../../modules
 import { fearGreedInternalRouter } from '../../modules/fear-greed/internalMirror'
 import { EmailService } from '../email/EmailService'
 import { ProfileMiningService } from '../../modules/profile-mining/ProfileMiningService'
+import { snapshotHandlers } from '../../modules/brain-v4/snapshotController'
 
 // Agent 报告类型枚举
 export const VALID_REPORT_TYPES = [
@@ -3646,5 +3647,19 @@ router.post('/mail/notify', async (req: Request, res: Response) => {
         res.status(502).json({ code: 502, message: errMsg(err) })
     }
 })
+
+/**
+ * POST /internal/brain-v4/snapshots
+ * 录制 V4 冻结快照：body `{as_of, snapshot_id?, requests:[{request_id, tool, params}]}`。
+ * 返回 `{code:0, data:{snapshot_id, as_of, sha256, manifest}, message:''}`。
+ * 快照存于进程内 Map（持久化留待 Task 7），GET 回放不触达上游。
+ */
+router.post('/brain-v4/snapshots', json(), snapshotHandlers.record)
+
+/**
+ * GET /internal/brain-v4/snapshots/:snapshotId
+ * 读取/回放已录制快照；不存在返回 404。
+ */
+router.get('/brain-v4/snapshots/:snapshotId', snapshotHandlers.get)
 
 export default router
