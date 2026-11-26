@@ -25,6 +25,7 @@
  */
 
 import pool from '../src/core/db';
+import { buildSourceRef } from '../src/modules/insight/claimVerification';
 
 // ---------------------------------------------------------------------------
 // 配置：这一版只接一个格子
@@ -278,15 +279,25 @@ async function writeClaim(state: StateRow, frd: FrdRow, evidenceId: string): Pro
         `左尾较厚：约四分之一的情形亏损超过 ${pctAbs(frd.p25, 2)}`,
     ].join('；') + '。';
 
+    const sourceRef = buildSourceRef({
+        dim: TARGET.dim,
+        bucket: TARGET.bucket,
+        horizon: TARGET.horizon,
+        segment: TARGET.segment,
+        caliber: TARGET.caliber,
+        specVersion: state.specVersion,
+    });
+
     const res = await pool.query(
         `INSERT INTO claim_ledger
             (claim_id, subject_type, subject_code, kind, capability, statement,
              evidence_ids, confidence, invalidated_by, produced_by, as_of,
-             horizon, horizon_days)
+             horizon, horizon_days, source_ref)
          VALUES ($1, 'market', 'ALL', 'trend', 'trend', $2, ARRAY[$3]::text[], $4, '{}', $5,
-                 $6::timestamptz, $7, $8)
+                 $6::timestamptz, $7, $8, $9)
          ON CONFLICT (claim_id) DO NOTHING`,
-        [id, statement, evidenceId, confidence, PRODUCER, `${state.d}T15:00:00+08:00`, HORIZON_KEY, TARGET.horizon],
+        [id, statement, evidenceId, confidence, PRODUCER, `${state.d}T15:00:00+08:00`,
+         HORIZON_KEY, TARGET.horizon, sourceRef],
     );
     if (res.rowCount === 0) {
         console.log(`[S5] ${id} 已存在，跳过（append-only，要改结论请换序号）`);
