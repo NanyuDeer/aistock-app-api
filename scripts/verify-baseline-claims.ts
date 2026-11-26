@@ -17,6 +17,7 @@ import {
     forwardReturn,
     judge,
     parseSourceRef,
+    selectNonOverlapping,
 } from '../src/modules/insight/claimVerification';
 
 const hasFlag = (n: string): boolean => process.argv.includes(`--${n}`);
@@ -136,9 +137,71 @@ async function runVerification(): Promise<{ verified: number; pending: number; s
     return { verified, pending, skipped };
 }
 
-/** 占位：Task 6 替换为真正的汇总输出（本任务是脚本骨架，先保证写库路径正确）。 */
+interface VerifiedRow {
+    claimId: string;
+    asOf: string;
+    asOfIdx: number;
+    horizonDays: number;
+    actual: number;
+    isUp: boolean;
+    inIqr: boolean;
+    probUp: number;
+    p50: number;
+}
+
+function summarize(rows: VerifiedRow[]): string {
+    const n = rows.length;
+    if (n === 0) return '  （无已了结样本）';
+    const up = rows.filter((r) => r.isUp).length;
+    const iqr = rows.filter((r) => r.inIqr).length;
+    const median = [...rows.map((r) => r.actual)].sort((a, b) => a - b)[Math.floor(n / 2)];
+    const claimed = rows[0].p50;
+    const claimedUp = rows[0].probUp;
+    return [
+        `  方向 ${up}/${n} = ${((up / n) * 100).toFixed(1)}%   声称 ${(claimedUp * 100).toFixed(1)}%`,
+        `  区间 ${iqr}/${n} = ${((iqr / n) * 100).toFixed(1)}%   理论 50%`,
+        `  幅度 实际中位数 ${(median * 100).toFixed(2)}%   声称 ${(claimed * 100).toFixed(2)}%`,
+    ].join('\n');
+}
+
 async function report(): Promise<void> {
-    throw new Error('not implemented');
+    const dates = await loadTradingDates();
+    const idx = new Map(dates.map((d, i) => [d, i]));
+    const r = await pool.query(
+        `SELECT v.claim_id, v.actual_ret, v.is_up, v.in_iqr, v.claimed_p50, v.claimed_prob_up,
+                v.horizon_days, c.as_of::date::text AS as_of
+           FROM claim_verification v JOIN claim_ledger c ON c.claim_id = v.claim_id
+          ORDER BY c.as_of`,
+    );
+    const rows: VerifiedRow[] = r.rows.map((x) => ({
+        claimId: x.claim_id,
+        asOf: x.as_of,
+        asOfIdx: idx.get(x.as_of) ?? -1,
+        horizonDays: Number(x.horizon_days),
+        actual: Number(x.actual_ret),
+        isUp: Boolean(x.is_up),
+        inIqr: Boolean(x.in_iqr),
+        probUp: Number(x.claimed_prob_up),
+        p50: Number(x.claimed_p50),
+    }));
+
+    console.log(`已了结 ${rows.length} 条`);
+    console.log('原始（全部已了结）：');
+    console.log(summarize(rows));
+
+    const flat = selectNonOverlapping(rows.filter((x) => x.asOfIdx >= 0));
+    console.log(`去重叠后（按窗口分期取首条）：${flat.length} 条`);
+    console.log(summarize(flat));
+
+    // 样本量守则（spec §8）：< 10 条不下任何结论
+    if (rows.length < 10) {
+        console.log('\n样本不足 10 条，不给任何结论。逐条明细：');
+        for (const x of rows) {
+            console.log(`  ${x.asOf}  实际 ${(x.actual * 100).toFixed(2)}%  方向${x.isUp ? '✓' : '✗'}  区间${x.inIqr ? '✓' : '✗'}`);
+        }
+    } else {
+        console.log('\n（≥10 条：可在报告对外时引用命中率，但须同时标注条数与置信区间）');
+    }
 }
 
 async function main(): Promise<void> {
