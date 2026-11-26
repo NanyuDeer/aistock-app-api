@@ -112,6 +112,8 @@ import { rhythmMasterPublicRouter } from './modules/calendar/publicRouter';
 import { DDL_MARKET_CALENDAR_EVENTS } from './modules/calendar/MarketCalendarEventService';
 import { eventEntityInternalRouter } from './modules/event-entities/EventEntityInternalRouter';
 import { eventTimelinePublicRouter } from './modules/event-entities/EventTimelinePublicRouter';
+// V4 影子归档与只读对比（Task 7）：独立路由文件，不往 core/routes/internal.ts 追加
+import brainV4InternalRouter from './modules/brain-v4/internalRouter';
 
 // fear-greed 恐贪指数模块（controller 曾漏挂路由，见 fearGreedRouter 注释）
 import { fearGreedRouter } from './modules/fear-greed/controller';
@@ -685,6 +687,9 @@ app.use('/internal/predictions', predictionInternalRouter);
 app.use('/internal/calendar', calendarInternalRouter); // 节奏大师：事件日历读写 + 披露密度
 
 app.use('/internal/event-entities', eventEntityInternalRouter); // 重大事件时间线 Event Entity（2026-09-15）
+
+// V4 影子归档：必须挂在既有 /internal 之后，保证 /internal/brain-v4/snapshots 仍先命中 Task 3 路由
+app.use('/internal/brain-v4', brainV4InternalRouter);
 
 // 注：原 app.use('/internal/stock-info', stockInfoInternalRouter) 已随 crawler 情报 forecast 回写端点一并移除（2026-09-13）
 app.use('/api/predictions', predictionPublicRouter); // B2.1 历史预测跟踪：公开查询（无需 X-Internal-Token）

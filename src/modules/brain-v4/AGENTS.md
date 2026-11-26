@@ -43,3 +43,35 @@
 - 运行：`node --import tsx --test src/modules/brain-v4/__tests__/snapshot.spec.ts`
 - 类型检查：`npx tsc --noEmit`
 - 仓库惯例：node:test；纯函数直测，假 req/res 直测 handler，禁止触碰真实数据库/上游。
+
+## 影子归档与只读对比（Task 7 / V4-07-P01）
+
+独立于快照模块的 V4 影子数据层，**不写入也不查询已删除的 `brain_run_archives`**。
+
+| 文件 | 职责 |
+| ---- | ---- |
+| `BrainV4ArchiveService.ts` | `archiveRun`（强制 `is_shadow=true`）、`getRun`、`listRuns({feature,profile,date})`、`getComparison`、`archiveComparison`（两个 run 的 snapshot SHA 必须一致）；可注入 `SqlExecutor`，测试不依赖真实 PG |
+| `internalRouter.ts` | 本地 `verifyInternalToken`（`X-Internal-Token`）；`POST /archive`、`GET /runs`、`GET /runs/:v4RunId`、`GET /comparisons/:comparisonId`；统一 `{code,data,message}`；导出 default router |
+| `__tests__/internalRouter.spec.ts` | 假 SQL 执行器 + 注入 Service：401/403、归档强制影子、读取只查影子表、快照 SHA 不一致 409 |
+| `src/db/migrations/031_brain_v4_shadow.sql` | `brain_v4_runs` / `brain_v4_comparisons`，`CHECK (is_shadow = TRUE)` 与 profile/subject/as_of/run_id 索引 |
+
+### 归档接口表
+
+| 接口 | 方法 | 鉴权 | 说明 |
+| ---- | ---- | ---- | ---- |
+| `/internal/brain-v4/archive` | POST | X-Internal-Token | body 含 `v4_run_id` → 归档运行（强制 `is_shadow=true`）；含 `comparison_id` → 归档对比（快照 SHA 不一致 409） |
+| `/internal/brain-v4/runs` | GET | X-Internal-Token | 只读影子运行，query `feature/profile/date`；仅查 `brain_v4_runs` 且 `is_shadow = TRUE` |
+| `/internal/brain-v4/runs/:v4RunId` | GET | X-Internal-Token | 单条影子运行；不存在 404 |
+| `/internal/brain-v4/comparisons/:comparisonId` | GET | X-Internal-Token | 只读对比；仅查 `brain_v4_comparisons` 且 `is_shadow = TRUE` |
+
+### 挂载顺序
+
+`src/index.ts` 中 `app.use('/internal/brain-v4', brainV4InternalRouter)` 必须位于
+`app.use('/internal', internalRouter)` **之后**，保证 Task 3 的
+`/internal/brain-v4/snapshots` 仍先命中既有路由；`core/routes/internal.ts` 不新增归档路由。
+
+### 测试
+
+- 运行：`node --import tsx --test src/modules/brain-v4/__tests__/internalRouter.spec.ts`
+- 类型检查：`pnpm build`；测试用假 `SqlExecutor`，不要求真实 PostgreSQL。
+
