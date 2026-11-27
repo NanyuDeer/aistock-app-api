@@ -118,6 +118,29 @@ describe('GET /internal/market/sectors', () => {
         assert.strictEqual(body.data.availability.state, 'available');
     });
 
+    it('skips full-market breadth when include_breadth=false', async () => {
+        // 宽度要逐股批量拉全市场（实测 ~31.7s）；V4 午报只消费 indexes/gainers/losers。
+        let breadthCalls = 0;
+        TencentSnapshotService.fetchIndexes = async () =>
+            ([{ ts_code: '000001.SH', name: '上证指数', trade_date: '', close: 3400, pct_chg: 0.35, amount: 1e8, source: 'tushare:index_daily' }] satisfies CloseIndexFact[]);
+        TencentSnapshotService.fetchMarketBreadth = async () => {
+            breadthCalls += 1;
+            throw new Error('fetchMarketBreadth must not be called when include_breadth=false');
+        };
+        TencentSnapshotService.fetchTencentBoardRank = async (_boardType, direct) =>
+            ([{ code: 'BK001', name: '半导体', zdf: '3.2', zljlr: '12.3', lzg: { name: '中芯' } }]);
+
+        const app = buildApp();
+        const res = await call(app, '/internal/market/sectors?include_breadth=false');
+
+        assert.strictEqual(res.status, 200);
+        const body = res.json as { code: number; data: { breadth: unknown; availability: { state: string } } };
+        assert.strictEqual(body.code, 200);
+        assert.strictEqual(breadthCalls, 0);
+        assert.strictEqual(body.data.breadth, null); // 未请求 ≠ 0 家上涨
+        assert.strictEqual(body.data.availability.state, 'available'); // 只统计实际请求的 3 个源
+    });
+
     it('emits close: null when the upstream index fact has no close', async () => {
         // 上游缺字段时不得用 pct_chg 反推，也不得缺键
         TencentSnapshotService.fetchIndexes = async () =>

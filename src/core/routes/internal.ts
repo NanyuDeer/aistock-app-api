@@ -1426,14 +1426,22 @@ router.get('/market/last-close-snapshot', async (_req: Request, res: Response) =
  * 仅供 Python Agent 午间 12:05 调用；不触碰东方财富。
  * - 200：{ code: 200, data: { captured_at, indexes, breadth, gainers, losers, availability } }
  * - 502：路由级异常
+ *
+ * `include_breadth=false`（或 0/no）：跳过全市场宽度。宽度要对全市场逐股批量拉
+ * 腾讯行情（实测稳定 ~31.7s），V4 午报只消费 indexes/gainers/losers，可显式关闭；
+ * 默认仍返回宽度，兼容 legacy 午报与节奏大师的宽度判定。
  */
-router.get('/market/sectors', async (_req: Request, res: Response) => {
+router.get('/market/sectors', async (req: Request, res: Response) => {
     try {
         const { TencentSnapshotService } = await import('../../modules/quote/TencentSnapshotService')
+        const breadthFlag = req.query.include_breadth
+        const includeBreadth = !(
+            breadthFlag === '0' || breadthFlag === 'false' || breadthFlag === 'no'
+        )
         // 全部走腾讯源；任一失败降级为 partial，不整端 502
         const [indexes, breadth, gainers, losers] = await Promise.allSettled([
             TencentSnapshotService.fetchIndexes(),
-            TencentSnapshotService.fetchMarketBreadth(),
+            includeBreadth ? TencentSnapshotService.fetchMarketBreadth() : Promise.resolve(null),
             TencentSnapshotService.fetchTencentBoardRank('gn', 'down', 20),
             TencentSnapshotService.fetchTencentBoardRank('gn', 'up', 20),
         ])
@@ -1447,19 +1455,27 @@ router.get('/market/sectors', async (_req: Request, res: Response) => {
               }))
             : []
         // MarketBreadth 只有 advance_count/total_count，在此现算 advance_ratio（防除零）
-        const breadthRaw = breadth.status === 'fulfilled' && breadth.value && typeof breadth.value === 'object'
-            ? ((breadth.value as { breadth?: { advance_count?: number; total_count?: number; avg_change_pct?: number } }).breadth ?? {})
-            : {}
-        const advanceN = Number(breadthRaw.advance_count ?? 0)
-        const totalN = Number(breadthRaw.total_count ?? 0)
-        const breadthData = {
-            advance_ratio: totalN > 0 ? advanceN / totalN : null,
-            avg_change_pct: breadthRaw.avg_change_pct ?? null,
+        // 关闭宽度时显式返回 null，不伪造「0 家上涨」。
+        let breadthData: { advance_ratio: number | null; avg_change_pct: number | null } | null = null
+        if (includeBreadth) {
+            const breadthRaw = breadth.status === 'fulfilled' && breadth.value && typeof breadth.value === 'object'
+                ? ((breadth.value as { breadth?: { advance_count?: number; total_count?: number; avg_change_pct?: number } }).breadth ?? {})
+                : {}
+            const advanceN = Number(breadthRaw.advance_count ?? 0)
+            const totalN = Number(breadthRaw.total_count ?? 0)
+            breadthData = {
+                advance_ratio: totalN > 0 ? advanceN / totalN : null,
+                avg_change_pct: breadthRaw.avg_change_pct ?? null,
+            }
         }
         const gainerRows = gainers.status === 'fulfilled' ? gainers.value.map(TencentSnapshotService.toSectorFact) : []
         const loserRows = losers.status === 'fulfilled' ? losers.value.map(TencentSnapshotService.toSectorFact) : []
-        const okCount = [indexes.status, breadth.status, gainers.status, losers.status].filter((s) => s === 'fulfilled').length
-        const availability = okCount === 4
+        // availability 只统计本次实际请求的源；关闭宽度后不应因少一个源恒为 partial。
+        const requestedStates = includeBreadth
+            ? [indexes.status, breadth.status, gainers.status, losers.status]
+            : [indexes.status, gainers.status, losers.status]
+        const okCount = requestedStates.filter((s) => s === 'fulfilled').length
+        const availability = okCount === requestedStates.length
             ? { state: 'available' }
             : okCount > 0
                 ? { state: 'partial', reason: 'some upstream sources failed' }
