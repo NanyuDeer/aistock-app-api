@@ -30,6 +30,7 @@ export interface BrainV4RouterService {
     listRuns(filter: RunFilter): Promise<ArchiveRow[]>
     getComparison(comparisonId: string): Promise<ArchiveRow | null>
     archiveComparison(record: ArchiveComparisonRecord): Promise<ArchiveRow>
+    getBriefing(date: string, slot: string): Promise<ArchiveRow | null>
 }
 
 export interface BrainV4RouterDeps {
@@ -91,6 +92,9 @@ function isComparisonBody(body: Record<string, unknown>): boolean {
     return typeof body['comparison_id'] === 'string' && body['comparison_id'].trim() !== ''
 }
 
+/** 只读简报时段；`midday` 为既有 `mid` 的兼容别名。 */
+const BRIEFING_SLOTS = new Set(['pre', 'mid', 'midday', 'post'])
+
 export function createBrainV4InternalRouter(deps: BrainV4RouterDeps = {}): Router {
     const service = deps.service ?? brainV4ArchiveService
     const router = Router()
@@ -118,8 +122,30 @@ export function createBrainV4InternalRouter(deps: BrainV4RouterDeps = {}): Route
         }
     })
 
-    router.get('/runs', async (req: Request, res: Response) => {
-        const filter: RunFilter = {
+    router.get('/briefings', async (req: Request, res: Response) => {
+        const date = queryString(req, 'date')
+        if (!date) {
+            res.status(400).json({ code: 400, message: 'date 必填' })
+            return
+        }
+        const slot = queryString(req, 'slot')
+        if (!slot || !BRIEFING_SLOTS.has(slot)) {
+            res.status(400).json({
+                code: 400,
+                message: 'slot 必须为 pre|mid|midday|post 之一',
+            })
+            return
+        }
+        try {
+            // 无数据返回 data:null，不用 404 让审计脚本区分“未产出”和“接口错误”。
+            const data = await service.getBriefing(date, slot)
+            res.json({ code: 0, data, message: '' })
+        } catch (err: unknown) {
+            sendError(res, err)
+        }
+    })
+
+    router.get('/runs', async (req: Request, res: Response) => {        const filter: RunFilter = {
             feature: queryString(req, 'feature'),
             profile: queryString(req, 'profile'),
             date: queryString(req, 'date'),

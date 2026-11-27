@@ -118,6 +118,25 @@ function stringValue(row: Record<string, unknown>, key: string): string {
     return typeof value === 'string' ? value : ''
 }
 
+function isoValue(value: unknown): string {
+    if (value instanceof Date) {
+        return Number.isNaN(value.getTime()) ? '' : value.toISOString()
+    }
+    return typeof value === 'string' ? value : ''
+}
+
+/** 简报时段 → V4 profile；`midday` 与既有 `mid` 都指向午报。 */
+const BRIEFING_PROFILE_BY_SLOT: Record<string, string> = {
+    pre: 'briefing_morning',
+    mid: 'briefing_midday',
+    midday: 'briefing_midday',
+    post: 'briefing_evening',
+}
+
+export function briefingProfileForSlot(slot: string): string | null {
+    return BRIEFING_PROFILE_BY_SLOT[slot] ?? null
+}
+
 export class BrainV4ArchiveService {
     constructor(private readonly db: SqlExecutor = defaultExecutor) {}
 
@@ -164,6 +183,47 @@ export class BrainV4ArchiveService {
             [v4RunId],
         )
         return result.rows[0] ?? null
+    }
+
+    /**
+     * 读取某日某时段的 V4 简报影子行（只读审计出口）。
+     *
+     * 硬约束：只查 `brain_v4_runs` 且只认 `is_shadow = TRUE` 与 payload 含
+     * `briefing_v1` 的行；取 `as_of DESC` 最新一条。找不到返回 null，
+     * 不用空对象伪装“有数据”。
+     */
+    async getBriefing(date: string, slot: string): Promise<ArchiveRow | null> {
+        const profile = briefingProfileForSlot(slot)
+        if (!profile) {
+            return null
+        }
+        const result = await this.db.query(
+            `SELECT * FROM brain_v4_runs
+             WHERE is_shadow = TRUE
+               AND as_of::date = $1::date
+               AND profile = $2
+               AND payload ? 'briefing_v1'
+               AND jsonb_typeof(payload->'briefing_v1') = 'object'
+             ORDER BY as_of DESC, v4_run_id ASC
+             LIMIT 1`,
+            [date, profile],
+        )
+        const row = result.rows[0]
+        if (!row) {
+            return null
+        }
+        const payload = asRecord(row['payload'])
+        const briefing = asRecord(payload['briefing_v1'])
+        const asOf = isoValue(row['as_of'])
+        return {
+            run_id: stringValue(row, 'v4_run_id') || stringValue(payload, 'run_id'),
+            profile: stringValue(row, 'profile'),
+            date: stringValue(briefing, 'date') || asOf.slice(0, 10),
+            as_of: asOf,
+            briefing_v1: payload['briefing_v1'] ?? null,
+            usage: payload['usage'] ?? null,
+            audit: payload['audit'] ?? null,
+        }
     }
 
     /** 列出影子运行；仅允许 feature / profile / date 过滤。 */

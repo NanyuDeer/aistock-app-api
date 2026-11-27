@@ -77,7 +77,7 @@ function runRecord(overrides: Partial<ArchiveRunRecord> = {}): ArchiveRunRecord 
 }
 
 function makeServiceStub(capture: { runs: ArchiveRunRecord[] }): BrainV4RouterService {
-    return {
+    const stub = {
         async archiveRun(record: ArchiveRunRecord) {
             capture.runs.push(record)
             return { ...record, id: 1, is_shadow: true, created_at: '2026-11-26T07:30:00Z' }
@@ -95,6 +95,40 @@ function makeServiceStub(capture: { runs: ArchiveRunRecord[] }): BrainV4RouterSe
         },
         async archiveComparison() {
             throw new Error('not used')
+        },
+        async getBriefing(date: string, slot: string) {
+            if (date !== '2026-11-27' || slot !== 'pre') {
+                return null
+            }
+            return briefingRow()
+        },
+    }
+    return stub
+}
+
+function briefingRow(): Record<string, unknown> {
+    return {
+        run_id: 'v4_2026-11-27_briefing_morning_1',
+        profile: 'briefing_morning',
+        date: '2026-11-27',
+        as_of: '2026-11-27T08:30:00+08:00',
+        briefing_v1: { schema_version: 'briefing.v1', slot: 'pre', date: '2026-11-27' },
+        usage: { tokens: 120, cost: null, latency_ms: null },
+        audit: { mode: 'BRIEFING_CHAIN', evidence_count: 2 },
+    }
+}
+
+/** 与 `brain_v4_runs` 真实列形状一致的假行（payload 是 JSONB 对象）。 */
+function briefingDbRow(): Record<string, unknown> {
+    return {
+        v4_run_id: 'v4_2026-11-27_briefing_morning_1',
+        profile: 'briefing_morning',
+        as_of: '2026-11-27T08:30:00+08:00',
+        is_shadow: true,
+        payload: {
+            briefing_v1: { schema_version: 'briefing.v1', slot: 'pre', date: '2026-11-27' },
+            usage: { tokens: 120, cost: null, latency_ms: null },
+            audit: { mode: 'BRIEFING_CHAIN', evidence_count: 2 },
         },
     }
 }
@@ -302,4 +336,85 @@ test('POST /archive comparison with mismatched SHA returns 409', async () => {
             localServer.close((err) => (err ? reject(err) : resolve())),
         )
     }
+})
+
+test('GET /briefings without date returns 400', async () => {
+    const res = await request(port, 'GET', '/internal/brain-v4/briefings?slot=pre', {
+        token: INTERNAL_TOKEN,
+    })
+    assert.equal(res.status, 400)
+    assert.equal(res.body.code, 400)
+})
+
+test('GET /briefings with invalid slot returns 400', async () => {
+    const res = await request(
+        port,
+        'GET',
+        '/internal/brain-v4/briefings?date=2026-11-27&slot=evening',
+        { token: INTERNAL_TOKEN },
+    )
+    assert.equal(res.status, 400)
+    assert.equal(res.body.code, 400)
+})
+
+test('GET /briefings returns null data when no shadow briefing exists', async () => {
+    const res = await request(
+        port,
+        'GET',
+        '/internal/brain-v4/briefings?date=2026-11-28&slot=pre',
+        { token: INTERNAL_TOKEN },
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.code, 0)
+    assert.equal(res.body.message, '')
+    assert.equal(res.body.data, null)
+})
+
+test('GET /briefings returns briefing_v1/usage/audit envelope', async () => {
+    const res = await request(
+        port,
+        'GET',
+        '/internal/brain-v4/briefings?date=2026-11-27&slot=pre',
+        { token: INTERNAL_TOKEN },
+    )
+    assert.equal(res.status, 200)
+    assert.equal(res.body.code, 0)
+    const data = res.body.data as Record<string, unknown>
+    assert.equal(data.run_id, 'v4_2026-11-27_briefing_morning_1')
+    assert.equal(data.profile, 'briefing_morning')
+    assert.equal(data.date, '2026-11-27')
+    assert.equal(data.as_of, '2026-11-27T08:30:00+08:00')
+    const briefing = data.briefing_v1 as Record<string, unknown>
+    assert.equal(briefing.slot, 'pre')
+    assert.ok('usage' in data)
+    assert.ok('audit' in data)
+})
+
+test('getBriefing queries only shadow brain_v4_runs rows with briefing_v1', async () => {
+    const { db, queries } = createFakeDb({
+        runRows: { '2026-11-27': briefingDbRow() },
+    })
+    const service = new BrainV4ArchiveService(db)
+
+    const row = await service.getBriefing('2026-11-27', 'pre')
+    assert.ok(row)
+    assert.equal(row.run_id, 'v4_2026-11-27_briefing_morning_1')
+    assert.equal(queries.length, 1)
+    const query = queries[0]
+    assert.ok(query)
+    assert.ok(!query.text.includes('brain_run_archives'))
+    assert.match(query.text, /FROM brain_v4_runs/i)
+    assert.match(query.text, /is_shadow\s*=\s*TRUE/i)
+    assert.ok(query.text.includes("payload ? 'briefing_v1'"))
+    assert.match(query.text, /ORDER BY as_of DESC/i)
+    assert.deepEqual(query.values, ['2026-11-27', 'briefing_morning'])
+})
+
+test('getBriefing maps midday slot alias and returns null on empty rows', async () => {
+    const { db, queries } = createFakeDb()
+    const service = new BrainV4ArchiveService(db)
+
+    const row = await service.getBriefing('2026-11-27', 'midday')
+    assert.equal(row, null)
+    assert.deepEqual(queries[0]?.values, ['2026-11-27', 'briefing_midday'])
 })
