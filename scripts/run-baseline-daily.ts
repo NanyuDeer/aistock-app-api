@@ -5,7 +5,7 @@
  * `scripts/` 不进 `dist`。挂在 `src/index.ts` 的 cron 在生产跑不起来。
  * 定案是用系统 crontab 调本脚本（见 S5 spec §8）。
  *
- * 顺序不能换：补数 → 状态 → 罕见度 → 前瞻分布 → claim → 验证（了结到期 claim）。
+ * 顺序不能换：补数 → 状态 → 筹码出清 → 罕见度 → 前瞻分布 → claim → 验证（了结到期 claim）。
  *
  * 【第 0 步为什么必须有】
  *   `stock_daily` 只有 `backfill-market-history.ts` 一个写入方，**没有任何每日自动更新**。
@@ -99,6 +99,8 @@ async function main(): Promise<void> {
 
     const steps: Step[] = [
         { name: '状态向量', script: 'build-state-daily.ts', extra: [], skip: hasFlag('skip-state') },
+        // 只依赖 margin_daily，不依赖 state_daily；放在状态之后是为了让日志顺序与「先状态、后派生」一致
+        { name: '筹码出清', script: 'build-margin-purge.ts', extra: [] },
         // 注意：--skip-state 只跳过第 1 步。后三步读的是 state_daily，仍要重建，
         // 否则改了状态口径却不重算分布，两张表会不一致。
         { name: '罕见度', script: 'build-state-rarity.ts', extra: [] },
