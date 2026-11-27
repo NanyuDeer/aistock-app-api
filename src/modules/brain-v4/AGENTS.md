@@ -65,6 +65,11 @@
 | `/internal/brain-v4/runs/:v4RunId` | GET | X-Internal-Token | 单条影子运行；不存在 404 |
 | `/internal/brain-v4/comparisons/:comparisonId` | GET | X-Internal-Token | 只读对比；仅查 `brain_v4_comparisons` 且 `is_shadow = TRUE` |
 
+> **归档幂等（P9）**：`archiveRun` 为 `INSERT ... ON CONFLICT (v4_run_id) DO UPDATE SET ...`
+> upsert——同一 `v4_run_id` 重复归档（重跑/重试）覆盖 `payload` 与版本字段
+> （config/method/model/relation 等），不再因 `brain_v4_runs_v4_run_id_key`
+> 唯一约束返回 500。
+
 ### 挂载顺序
 
 `src/index.ts` 中 `app.use('/internal/brain-v4', brainV4InternalRouter)` 必须位于

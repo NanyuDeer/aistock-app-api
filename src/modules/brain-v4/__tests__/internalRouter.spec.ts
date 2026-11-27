@@ -52,6 +52,59 @@ function createFakeDb(options: FakeDbOptions = {}): { db: SqlExecutor; queries: 
     return { db, queries }
 }
 
+/**
+ * 有状态假 SQL 执行器：模拟 `brain_v4_runs.v4_run_id` 唯一约束。
+ *
+ * - `INSERT ... ON CONFLICT (v4_run_id) DO UPDATE` 才能重复写同一 run_id；
+ * - 若 SQL 缺少 ON CONFLICT 而 run_id 已存在，按真实数据库抛唯一约束错误。
+ * 这样「同 run_id 二次归档」用例在实现为裸 INSERT 时会真实变红。
+ */
+function createStatefulRunDb(): {
+    db: SqlExecutor
+    rows: Map<string, Record<string, unknown>>
+    queries: QueryCapture[]
+} {
+    const rows = new Map<string, Record<string, unknown>>()
+    const queries: QueryCapture[] = []
+    const db: SqlExecutor = {
+        async query<T extends Record<string, unknown>>(text: string, values?: readonly unknown[]) {
+            queries.push({ text, values: [...(values ?? [])] })
+            if (!text.includes('INSERT INTO brain_v4_runs')) {
+                return { rows: [] as T[] }
+            }
+            const key = String(values?.[0] ?? '')
+            const record: Record<string, unknown> = {
+                v4_run_id: key,
+                legacy_run_id: values?.[1] ?? null,
+                feature_id: values?.[2],
+                profile: values?.[3],
+                subject_type: values?.[4],
+                subject_code: values?.[5],
+                as_of: values?.[6],
+                data_cutoff: values?.[7],
+                snapshot_id: values?.[8],
+                snapshot_sha: values?.[9],
+                parent_run_id: values?.[10] ?? null,
+                relation: values?.[11] ?? null,
+                config_version: values?.[12],
+                method_version: values?.[13],
+                model_version: values?.[14],
+                prompt_version: values?.[15] ?? null,
+                is_shadow: values?.[16],
+                payload: JSON.parse(String(values?.[17] ?? '{}')),
+            }
+            if (rows.has(key) && !/ON CONFLICT/i.test(text)) {
+                throw new Error(
+                    'duplicate key value violates unique constraint "brain_v4_runs_v4_run_id_key"',
+                )
+            }
+            rows.set(key, record)
+            return { rows: [record] as T[] }
+        },
+    }
+    return { db, rows, queries }
+}
+
 function runRecord(overrides: Partial<ArchiveRunRecord> = {}): ArchiveRunRecord {
     return {
         v4_run_id: 'v4-run-1',
@@ -264,6 +317,46 @@ test('archiveRun persists is_shadow=true and returns row', async () => {
     assert.match(queries[0]?.text ?? '', /INSERT INTO brain_v4_runs/i)
     assert.ok(queries[0]?.values.includes(true))
     assert.ok(!queries[0]?.values.includes(false))
+})
+
+test('archiveRun is idempotent and overwrites payload for the same v4_run_id', async () => {
+    const { db, rows, queries } = createStatefulRunDb()
+    const service = new BrainV4ArchiveService(db)
+
+    const first = await service.archiveRun(
+        runRecord({
+            config_version: 'c1',
+            method_version: 'v4.0',
+            model_version: 'm1',
+            relation: null,
+            payload: { headline: 'v1' },
+        }),
+    )
+    // 同一 run_id 二次归档不得因唯一约束 500：必须 upsert 成功。
+    const second = await service.archiveRun(
+        runRecord({
+            config_version: 'c2',
+            method_version: 'v4.1',
+            model_version: 'm2',
+            relation: 'revises',
+            payload: { headline: 'v2' },
+        }),
+    )
+
+    assert.equal(first.v4_run_id, 'v4-run-1')
+    assert.equal(second.v4_run_id, 'v4-run-1')
+    assert.equal(queries.length, 2)
+    assert.match(queries[1]?.text ?? '', /ON CONFLICT\s*\(\s*v4_run_id\s*\)\s*DO UPDATE/i)
+    assert.match(queries[1]?.text ?? '', /payload\s*=\s*EXCLUDED\.payload/i)
+
+    const stored = rows.get('v4-run-1')
+    assert.ok(stored)
+    // payload 与版本字段被第二次归档覆盖。
+    assert.deepEqual(stored['payload'], { headline: 'v2' })
+    assert.equal(stored['config_version'], 'c2')
+    assert.equal(stored['method_version'], 'v4.1')
+    assert.equal(stored['model_version'], 'm2')
+    assert.equal(stored['relation'], 'revises')
 })
 
 test('comparison with mismatched snapshot SHA is rejected', async () => {

@@ -145,13 +145,33 @@ export class BrainV4ArchiveService {
         const raw = record as unknown as Record<string, unknown>
         requireFields(raw, REQUIRED_RUN_FIELDS, 'archiveRun')
 
+        // 幂等 upsert：同一 v4_run_id 重复归档（重跑/重试）时更新 payload 与版本
+        // 字段，而不是撞 `brain_v4_runs_v4_run_id_key` 唯一约束返回 500。
         const sql = `INSERT INTO brain_v4_runs (
             v4_run_id, legacy_run_id, feature_id, profile, subject_type, subject_code,
             as_of, data_cutoff, snapshot_id, snapshot_sha, parent_run_id, relation,
             config_version, method_version, model_version, prompt_version, is_shadow, payload
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
-        ) RETURNING *`
+        ) ON CONFLICT (v4_run_id) DO UPDATE SET
+            legacy_run_id = EXCLUDED.legacy_run_id,
+            feature_id = EXCLUDED.feature_id,
+            profile = EXCLUDED.profile,
+            subject_type = EXCLUDED.subject_type,
+            subject_code = EXCLUDED.subject_code,
+            as_of = EXCLUDED.as_of,
+            data_cutoff = EXCLUDED.data_cutoff,
+            snapshot_id = EXCLUDED.snapshot_id,
+            snapshot_sha = EXCLUDED.snapshot_sha,
+            parent_run_id = EXCLUDED.parent_run_id,
+            relation = EXCLUDED.relation,
+            config_version = EXCLUDED.config_version,
+            method_version = EXCLUDED.method_version,
+            model_version = EXCLUDED.model_version,
+            prompt_version = EXCLUDED.prompt_version,
+            is_shadow = TRUE,
+            payload = EXCLUDED.payload
+        RETURNING *`
         const values: unknown[] = [
             record.v4_run_id,
             record.legacy_run_id ?? null,
