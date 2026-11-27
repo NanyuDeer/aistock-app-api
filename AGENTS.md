@@ -159,6 +159,7 @@ src/
 - `CacheService.ts` 实现双写策略：Redis + Map 本地缓存
 - Redis 不可用时降级到 Map 本地缓存
 - 详见 `shared/utils/CacheService.ts`
+- 缓存 miss 的并发穿透由 `shared/utils/SingleFlight.ts` 合并：只合并在途请求（不缓存结果）、失败即在 finally 清理可重试、不传 AbortSignal；已接入 `TencentQuoteService.getQuote`、`TushareKlineService.getKLine/getIndexKLine`、`ThsService.getProfitForecast`
 
 ### 6.3 LLM 降级
 

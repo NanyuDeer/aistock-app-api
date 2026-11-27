@@ -1,5 +1,36 @@
 # Changelog — aistock-app-api
 
+## [master] 2026-11-27 — 归档并删除未上线 brain 归档原型
+
+### 清理
+
+- 删除未提交的 brain 运行归档服务、内部接口、测试和建表迁移。
+- 删除前已将完整工作区差异、相关未跟踪文件及 SHA-256 清单归档到仓库外。
+- 本机 PostgreSQL 未启动，无法确认该未跟踪迁移是否曾被人工执行；需在可连接环境复核遗留表。
+
+---
+
+## [master] 2026-11-25 — 缓存穿透保护：SingleFlight 合并并发同 key 请求
+
+**开发者**: Aria
+
+### 新增
+
+- `src/shared/utils/SingleFlight.ts`：在途请求合并（Map<key, Promise>，成功/失败都在 finally 清理，不缓存结果，`stats()` 暴露 coalesced/inflight）。
+- `src/shared/utils/__tests__/singleFlight.spec.ts`：并发合并、失败后可重试、不同 key 不合并（本轮按要求**未执行**）。
+
+### 改进
+
+- `TencentQuoteService.getQuote`：缓存 miss 时合并同一 `(symbol, level)` 的在途请求；`getCachedQuote` 缓存命中路径不进 single-flight。
+- `TushareKlineService.getKLine` / `getIndexKLine`：合并同一组 K 线参数的在途请求（key 含 symbol/klt/fqt/limit/startDate/endDate）。
+- `ThsService.getProfitForecast`：内部路由、个股分析、分析 Agent 并发请求同一股票时只抓一次。
+
+### 验证
+
+- `npx tsc --noEmit` 通过（EXIT=0）。
+
+---
+
 ## [master] 2026-11-22 — briefing.v1 晚报 extras 与统一出口
 
 **开发者**: Aria

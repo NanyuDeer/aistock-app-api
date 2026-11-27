@@ -14,6 +14,7 @@ import {
 } from '../../shared/types/cache';
 import { getAShareAdaptiveCacheTtlSeconds } from '../../shared/utils/tradingTime';
 import { sessionFetch } from '../../shared/utils/httpAgent';
+import { SingleFlight } from '../../shared/utils/SingleFlight';
 
 export type QuoteLevel = 'core' | 'activity' | 'fundamental';
 
@@ -84,6 +85,9 @@ function normalizeTencentBatchSymbol(symbol: string): { requestCode: string; exp
 export class TencentQuoteService {
     private static readonly BASE_URL = 'https://qt.gtimg.cn/q=';
 
+    /** 缓存 miss 时合并同一 (symbol, level) 的在途请求，避免穿透瞬间重复打腾讯。 */
+    private static readonly quoteSingleFlight = new SingleFlight();
+
     private static readonly HEADERS: Record<string, string> = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
         'Accept': '*/*',
@@ -141,25 +145,27 @@ export class TencentQuoteService {
         const code = `${tencentPrefix}${symbol}`;
         const url = `${this.BASE_URL}${code}`;
 
-        await eastmoneyThrottler.throttle();
+        return this.quoteSingleFlight.run(`quote:${symbol}:${level}`, async () => {
+            await eastmoneyThrottler.throttle();
 
-        const response = await sessionFetch(url, {
-            method: 'GET',
-            headers: this.HEADERS,
+            const response = await sessionFetch(url, {
+                method: 'GET',
+                headers: this.HEADERS,
+            });
+
+            if (!response.ok) throw new Error(`腾讯行情接口请求失败: ${response.status}`);
+
+            // 腾讯接口返回GBK编码
+            const buffer = await response.arrayBuffer();
+            const text = new TextDecoder('gbk').decode(buffer);
+
+            const result = this.parseQuote(text, level);
+            if (Object.keys(result).length === 0) {
+                throw new Error('腾讯行情接口返回数据格式异常');
+            }
+
+            return result;
         });
-
-        if (!response.ok) throw new Error(`腾讯行情接口请求失败: ${response.status}`);
-
-        // 腾讯接口返回GBK编码
-        const buffer = await response.arrayBuffer();
-        const text = new TextDecoder('gbk').decode(buffer);
-
-        const result = this.parseQuote(text, level);
-        if (Object.keys(result).length === 0) {
-            throw new Error('腾讯行情接口返回数据格式异常');
-        }
-
-        return result;
     }
 
     static async getBatchQuotes(symbols: string[], level: QuoteLevel = 'core'): Promise<Record<string, any>[]> {

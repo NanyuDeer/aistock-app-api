@@ -1,6 +1,7 @@
 import { getStockIdentity } from '../../shared/utils/stock';
 import { tushareRequest } from './TushareService';
 import { createThrottler } from '../../shared/utils/throttle';
+import { SingleFlight } from '../../shared/utils/SingleFlight';
 
 const tushareKlineThrottler = createThrottler(150);
 
@@ -154,54 +155,63 @@ async function appendCurrentPeriodFromDaily(
 }
 
 export class TushareKlineService {
+    /** 缓存 miss 时合并同一组 K 线参数的在途请求，避免穿透瞬间重复打 Tushare。 */
+    private static readonly klineSingleFlight = new SingleFlight();
+
     static async getKLine(options: KLineOptions): Promise<Record<string, any>[]> {
         const { symbol, klt = 101, fqt = 1, limit = 120, startDate, endDate } = options;
-        const tsCode = toTsCode(symbol);
-        const apiName = getApiName(klt, tsCode);
+        const key = `kline:${symbol}:${klt}:${fqt}:${limit}:${startDate || ''}:${endDate || ''}`;
 
-        await tushareKlineThrottler.throttle();
+        return this.klineSingleFlight.run(key, async () => {
+            const tsCode = toTsCode(symbol);
+            const apiName = getApiName(klt, tsCode);
 
-        let rows: Record<string, any>[];
+            await tushareKlineThrottler.throttle();
 
-        if (klt < 100) {
-            const params: Record<string, any> = {
-                ts_code: tsCode,
-                freq: getPeriodParam(klt),
-            };
-            if (startDate) params.start_date = startDate;
-            if (endDate) params.end_date = endDate;
-            rows = await tushareRequest(apiName, params, OHLC_FIELDS);
-        } else {
-            const params: Record<string, any> = { ts_code: tsCode };
-            if (startDate) params.start_date = startDate;
-            if (endDate) params.end_date = endDate;
-            rows = await tushareRequest(apiName, params, OHLC_FIELDS);
-        }
+            let rows: Record<string, any>[];
 
-        if (!rows || rows.length === 0) return [];
+            if (klt < 100) {
+                const params: Record<string, any> = {
+                    ts_code: tsCode,
+                    freq: getPeriodParam(klt),
+                };
+                if (startDate) params.start_date = startDate;
+                if (endDate) params.end_date = endDate;
+                rows = await tushareRequest(apiName, params, OHLC_FIELDS);
+            } else {
+                const params: Record<string, any> = { ts_code: tsCode };
+                if (startDate) params.start_date = startDate;
+                if (endDate) params.end_date = endDate;
+                rows = await tushareRequest(apiName, params, OHLC_FIELDS);
+            }
 
-        const sorted = rows.sort((a, b) => {
-            const dateA = String(a.trade_date || '');
-            const dateB = String(b.trade_date || '');
-            return dateA.localeCompare(dateB);
+            if (!rows || rows.length === 0) return [];
+
+            const sorted = rows.sort((a, b) => {
+                const dateA = String(a.trade_date || '');
+                const dateB = String(b.trade_date || '');
+                return dateA.localeCompare(dateB);
+            });
+
+            const withCurrentPeriod = await appendCurrentPeriodFromDaily(sorted, tsCode, klt);
+            const sliced = limit > 0 ? withCurrentPeriod.slice(-limit) : withCurrentPeriod;
+
+            return sliced.map(normalizeRow);
         });
-
-        const withCurrentPeriod = await appendCurrentPeriodFromDaily(sorted, tsCode, klt);
-        const sliced = limit > 0 ? withCurrentPeriod.slice(-limit) : withCurrentPeriod;
-
-        return sliced.map(normalizeRow);
     }
 
     /** 指数日 K 线（P0 预测验证 v2 历史窗口数据源）。
      * 指数必须走 Tushare index_daily（ts_code 显式传，不经 getStockIdentity——
      * 000001 会被误判为深市个股平安银行 000001.SZ）。 */
     static async getIndexKLine(tsCode: string, limit = 120): Promise<Record<string, any>[]> {
-        await tushareKlineThrottler.throttle();
-        const rows = await tushareRequest('index_daily', { ts_code: tsCode });
-        if (!rows || rows.length === 0) return [];
-        const sorted = rows.sort((a, b) =>
-            String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
-        const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
-        return sliced.map(normalizeIndexKLineRow);
+        return this.klineSingleFlight.run(`index-kline:${tsCode}:${limit}`, async () => {
+            await tushareKlineThrottler.throttle();
+            const rows = await tushareRequest('index_daily', { ts_code: tsCode });
+            if (!rows || rows.length === 0) return [];
+            const sorted = rows.sort((a, b) =>
+                String(a.trade_date || '').localeCompare(String(b.trade_date || '')));
+            const sliced = limit > 0 ? sorted.slice(-limit) : sorted;
+            return sliced.map(normalizeIndexKLineRow);
+        });
     }
 }
