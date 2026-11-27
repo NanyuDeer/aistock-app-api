@@ -24,10 +24,11 @@ const hasFlag = (n: string): boolean => process.argv.includes(`--${n}`);
 
 interface PendingClaim {
     claimId: string;
-    /** null = 存量 claim 没有出处（本闭环跳过并计数） */
+    /** null = 存量 claim 没有出处（本闭环跳过，但必须计数） */
     sourceRef: string | null;
     asOf: string;
-    horizonDays: number;
+    /** null = 没写窗口长度，算不出到期日（跳过，同样必须计数） */
+    horizonDays: number | null;
     claimHorizon: string;
 }
 
@@ -54,22 +55,22 @@ async function loadCaliberReturns(caliber: string): Promise<Map<string, number>>
 }
 
 async function loadPending(): Promise<PendingClaim[]> {
-    // 不在 SQL 里 `source_ref LIKE 'frd:%'`：那样存量 claim（source_ref 为 null）
-    // 会被静默过滤掉，"跳过了多少条"就永远看不见。跳过必须在计数里体现。
+    // 取全部未了结的 claim，**不在 SQL 里做任何过滤**。
+    // 任何过滤都会让被筛掉的行在三个计数器里同时消失 —— 那就不是"跳过 N 条"，
+    // 而是"不知道有多少条没被看见"。归属判断一律放到循环里，逐条落桶。
     const r = await pool.query(
         `SELECT c.claim_id, c.source_ref, c.as_of::date::text AS as_of,
                 c.horizon_days, c.horizon
            FROM claim_ledger c
            LEFT JOIN claim_verification v ON v.claim_id = c.claim_id
           WHERE v.claim_id IS NULL
-            AND c.horizon_days IS NOT NULL
           ORDER BY c.as_of`,
     );
     return r.rows.map((x) => ({
         claimId: x.claim_id,
         sourceRef: x.source_ref === null ? null : String(x.source_ref),
         asOf: x.as_of,
-        horizonDays: Number(x.horizon_days),
+        horizonDays: x.horizon_days === null ? null : Number(x.horizon_days),
         claimHorizon: x.horizon,
     }));
 }
@@ -91,7 +92,17 @@ async function loadCell(sourceRef: string | null): Promise<Cell | null> {
     };
 }
 
-async function runVerification(): Promise<{ verified: number; pending: number; skipped: number }> {
+interface RunResult {
+    /** 三个桶必须覆盖 loadPending() 的行数：verified + pending + skipped === total */
+    verified: number;
+    pending: number;
+    skipped: number;
+    total: number;
+    /** 跳过原因分项 —— "跳过 2 条"不说什么原因，等于换了个地方沉默 */
+    skipReasons: Array<[string, number]>;
+}
+
+async function runVerification(): Promise<RunResult> {
     const dates = await loadTradingDates();
     const indexOf = new Map(dates.map((d, i) => [d, i]));
     const pendingClaims = await loadPending();
@@ -99,17 +110,24 @@ async function runVerification(): Promise<{ verified: number; pending: number; s
     let verified = 0;
     let pending = 0;
     let skipped = 0;
+    const skipReasons = new Map<string, number>();
+    const skip = (reason: string): void => {
+        skipped += 1;
+        skipReasons.set(reason, (skipReasons.get(reason) ?? 0) + 1);
+    };
     const returnCache = new Map<string, number[]>();
 
     for (const claim of pendingClaims) {
         const ref = parseSourceRef(claim.sourceRef);
-        if (!ref) { skipped += 1; continue; }
+        if (!ref) { skip(claim.sourceRef === null ? '无 source_ref' : 'source_ref 不合规'); continue; }
+
+        if (claim.horizonDays === null) { skip('缺 horizon_days'); continue; }
 
         const due = dueIndex(dates, claim.asOf, claim.horizonDays);
         if (due === null) { pending += 1; continue; }
 
         const cell = await loadCell(claim.sourceRef);
-        if (!cell) { skipped += 1; continue; }
+        if (!cell) { skip('向前分布格缺失'); continue; }
 
         let rets = returnCache.get(ref.caliber);
         if (!rets) {
@@ -119,12 +137,12 @@ async function runVerification(): Promise<{ verified: number; pending: number; s
         }
 
         const asOfIdx = indexOf.get(claim.asOf);
-        if (asOfIdx === undefined) { skipped += 1; continue; }
+        if (asOfIdx === undefined) { skip('as_of 不在交易日序列'); continue; }
         const actual = forwardReturn(rets, asOfIdx, claim.horizonDays);
-        if (actual === null) { skipped += 1; continue; }
+        if (actual === null) { skip('窗口内收益缺失'); continue; }
 
         const { isUp, inIqr } = judge(actual, cell.p25, cell.p75);
-        await pool.query(
+        const ins = await pool.query(
             `INSERT INTO claim_verification
                 (claim_id, due_date, actual_ret, is_up, in_iqr,
                  claimed_p25, claimed_p50, claimed_p75, claimed_prob_up,
@@ -134,9 +152,17 @@ async function runVerification(): Promise<{ verified: number; pending: number; s
             [claim.claimId, dates[due], actual, isUp, inIqr,
              cell.p25, cell.p50, cell.p75, cell.probUp, claim.horizonDays, ref.specVersion],
         );
-        verified += 1;
+        // 并发下别人已了结（PK 冲突）：不是本次的成果，也不能算漏
+        if (ins.rowCount === 1) verified += 1;
+        else skip('并发已了结');
     }
-    return { verified, pending, skipped };
+    return {
+        verified,
+        pending,
+        skipped,
+        total: pendingClaims.length,
+        skipReasons: [...skipReasons.entries()].sort((a, b) => b[1] - a[1]),
+    };
 }
 
 interface VerifiedRow {
@@ -213,7 +239,14 @@ async function main(): Promise<void> {
         return;
     }
     const r = await runVerification();
-    console.log(`[verify] 了结 ${r.verified} 条，未到期 ${r.pending} 条，跳过 ${r.skipped} 条`);
+    console.log(`[verify] 了结 ${r.verified} 条，未到期 ${r.pending} 条，跳过 ${r.skipped} 条（未了结共 ${r.total} 条）`);
+    for (const [reason, n] of r.skipReasons) {
+        console.log(`[verify]   ↳ ${reason} ×${n}`);
+    }
+    // 计数不闭合 = 有分支没落桶。宁可让日链这一步失败，也不要打出一个看似整齐的错数字。
+    if (r.verified + r.pending + r.skipped !== r.total) {
+        throw new Error(`计数不闭合：${r.verified}+${r.pending}+${r.skipped} != ${r.total}`);
+    }
     await pool.end();
 }
 
