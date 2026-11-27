@@ -28,9 +28,9 @@ import {
     type CompleteDailyResult,
     type DailyCoverageReason,
 } from './TushareService';
-import pool from '../../core/db';
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService';
 import { shanghaiDateYyyymmdd, shanghaiHourMinute } from '../../shared/utils/shanghaiTime';
+import { getStateRarity, type StateRarityFact } from './stateRarity';
 
 // ============================================================================
 // 对外类型定义
@@ -109,15 +109,11 @@ export interface QuickSnapshotDataAvailability {
  * 来源 state_rarity_daily（033）。用途是给 Python 侧的"现象闸门"提供频率维度：
  * 绝对阈值无法区分"常见"与"极端"（`limit_up >= 50` 在 59.8% 的交易日成立），
  * 分位可以。缺数据时整块为 null，Python 侧据此退回旧行为。
+ *
+ * 取数实现见 `stateRarity.ts`：快照构建时当日分位还不存在（日链 18:20 才算），
+ * 所以按"≤ 当日的最近一行"回退，并带 `as_of` 如实标注。
  */
-export interface StateRarityFact {
-    breadth_rank: number;
-    decline_rank: number;
-    style_rank: number;
-    limit_rank: number;
-    /** 窗口内实际交易日数；< 250 表示预热期，Python 侧视为不可用 */
-    window_days: number;
-}
+export type { StateRarityFact } from './stateRarity';
 
 /** 当日 A 股大盘收盘事实快照。 */
 export interface CloseMarketSnapshot {
@@ -170,7 +166,7 @@ export interface CloseMarketSnapshot {
 /** 15:30 后腾讯 quick snapshot 的专用事实契约。 */
 export interface QuickCloseMarketSnapshot extends Omit<
     CloseMarketSnapshot,
-    'breadth' | 'turnover' | 'limits' | 'main_force' | 'state_rarity'
+    'breadth' | 'turnover' | 'limits' | 'main_force'
 > {
     snapshot_kind: 'quick';
     breadth: {
@@ -274,33 +270,12 @@ export interface MarketSnapshotDeps {
 }
 
 /**
- * 读当日现象罕见度。
+ * 读当日现象罕见度（含 T-1 回退与过期保护，实现见 stateRarity.ts）。
  *
  * 任何异常都降级为 null —— 罕见度缺失只意味着 Python 侧退回绝对阈值，
  * 不应该让整份收盘快照失败（那是归因链路的唯一输入）。
  */
-async function getStateRarity(date: string): Promise<StateRarityFact | null> {
-    try {
-        const { rows } = await pool.query(
-            `SELECT breadth_rank::float8 AS breadth_rank,
-                    decline_rank::float8 AS decline_rank,
-                    style_rank::float8   AS style_rank,
-                    limit_rank::float8   AS limit_rank,
-                    window_days
-               FROM state_rarity_daily
-              WHERE trade_date = $1::date`,
-            [date],
-        );
-        if (rows.length === 0) return null;
-        return rows[0] as StateRarityFact;
-    } catch (err) {
-        console.warn(
-            '[MarketSnapshot] state_rarity 查询失败，按缺失处理:',
-            err instanceof Error ? err.message : String(err),
-        );
-        return null;
-    }
-}
+export { getStateRarity };
 
 export const __marketSnapshotDependencies: MarketSnapshotDeps = {
     getIndexDaily,

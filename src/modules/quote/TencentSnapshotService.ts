@@ -28,6 +28,7 @@ import {
     type QuickSnapshotDataAvailability,
 } from './MarketSnapshotService'
 import { TradingCalendarService } from '../../shared/utils/TradingCalendarService'
+import { getStateRarity, type StateRarityFact } from './stateRarity'
 import { shanghaiDateStr } from '../../shared/utils/shanghaiTime'
 
 // 概念板块 Top N（领涨/领跌），与 full 版 selectTopSectors 的 TOP_SECTOR_COUNT 保持一致
@@ -329,6 +330,9 @@ export class TencentSnapshotService {
             sectors,
             mainForce,
             quickDataAvailability,
+            // 盘中/15:30 时当日 state_rarity 还没算出来（日链 18:20），
+            // 取数回退到最近一日并用 as_of 标注；缺失为 null，Python 侧退回绝对阈值
+            await getStateRarity(tradeDate),
         )
     }
 
@@ -570,6 +574,7 @@ export class TencentSnapshotService {
         sectors: QuickCloseMarketSnapshot['sectors'],
         mainForce: QuickCloseMarketSnapshot['main_force'],
         quickDataAvailability: QuickSnapshotDataAvailability,
+        stateRarity: StateRarityFact | null,
     ): QuickCloseMarketSnapshot {
         // 填充 indexes 的 trade_date
         const filledIndexes = indexes.map((idx) => ({ ...idx, trade_date: tradeDate.replace(/-/g, '') }))
@@ -620,6 +625,7 @@ export class TencentSnapshotService {
             coverage_info: coverage,
             quick_data_availability: quickDataAvailability,
             market_breadth: marketBreadth,
+            state_rarity: stateRarity,
         }
     }
 }
